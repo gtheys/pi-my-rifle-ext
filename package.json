@@ -4,7 +4,7 @@
   "private": true,
   "description": "Personal pi extensions, skills, commands, and themes",
   "dependencies": {
-    "@gtheys/pi-per-commit-spend": "latest",
+    "@gtheys/pi-per-commit-spend": "0.2.5",
     "@shikijs/cli": "^4.0.2",
     "@sting8k/pi-vcc": "^0.3.12",
     "@tomooshi/caveman-milk-pi": "^0.2.0",
