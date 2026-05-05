@@ -20,6 +20,7 @@
       "./extensions/pi-sem/index.ts",
       "./extensions/leader-key/index.ts",
       "./extensions/desktop-notify/index.ts",
+      "./extensions/sonarqube/sonarqube.ts",
       "./node_modules/@tomooshi/condensed-milk-pi/index.ts",
       "./node_modules/@sting8k/pi-vcc/index.ts",
       "./node_modules/@tomooshi/caveman-milk-pi/index.ts",
