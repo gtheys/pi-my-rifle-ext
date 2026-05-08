@@ -50,6 +50,12 @@ When given a spec path or Jira ID:
 
 ## Implementation Philosophy
 
+> **Before writing any code**, load and follow the companion skills:
+> - `/skill:coding-standards` — TypeScript/JS style, naming, error handling, React patterns
+> - `/skill:tdd-workflow` — write tests first, verify 80%+ coverage
+>
+> All implementation must conform to these standards throughout.
+
 Specs are carefully designed, but reality can be messy. Your job is to:
 
 - Follow the spec's intent while adapting to what you find
@@ -235,6 +241,8 @@ When a user requests changes to an approved spec:
 
 ## Integration with Other Skills
 
+- `/skill:coding-standards` — TypeScript/JS/React/Node.js code style and best practices. **Load this before writing any code.**
+- `/skill:tdd-workflow` — TDD process, test patterns, and coverage requirements. **Load this before writing any code.**
 - `/skill:create-plan` — Create a new spec through interactive research. Use this for complex specs that need deep codebase research before writing.
 - `/skill:iterate-plan` — Modify an existing spec. Use this for targeted changes to a spec without full reimplementation.
 - `/skill:taskwarrior-plan` — Ticket management and workflow states.
