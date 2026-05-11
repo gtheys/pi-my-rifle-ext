@@ -3,7 +3,7 @@
  *
  * Produces an inverted-colour badge like ` write ` using theme semantic roles.
  */
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 
 /** Map tool name → theme semantic colour role for the pill badge. */
 const TOOL_ROLES: Record<string, string> = {

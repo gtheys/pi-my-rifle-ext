@@ -11,9 +11,9 @@
  *   - thinking:  (optional) default thinking level
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { matchesKey, Key } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { matchesKey, Key } from "@earendil-works/pi-tui";
 import { OverlayFrame } from "../shared/overlay.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";

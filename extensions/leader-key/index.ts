@@ -20,8 +20,8 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	Theme,
-} from "@mariozechner/pi-coding-agent";
-import { matchesKey, parseKey, Key } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { matchesKey, parseKey, Key } from "@earendil-works/pi-tui";
 import { searchableSelect } from "./model-switcher.js";
 import { runFavouriteModels } from "./favourite-models.js";
 import { OverlayFrame } from "../shared/overlay.js";

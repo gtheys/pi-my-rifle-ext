@@ -9,10 +9,10 @@
  * Exported for use by the leader-key extension.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { SettingsManager } from "@mariozechner/pi-coding-agent";
-import { fuzzyFilter, Key, matchesKey } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { fuzzyFilter, Key, matchesKey } from "@earendil-works/pi-tui";
 import { OverlayFrame } from "../shared/overlay.js";
 
 export const ALL_THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];

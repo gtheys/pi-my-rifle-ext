@@ -2,7 +2,7 @@
  * Shared types for leader-key extension.
  */
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export interface ActionItem {
 	key: string; // single character shortcut

@@ -5,7 +5,7 @@
  * • write, edit → Shiki-powered syntax-highlighted diffs (from pi-diff)
  */
 
-import type { ExtensionAPI, AgentToolResult, Theme } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	createBashToolDefinition,
 	createFindToolDefinition,
@@ -14,8 +14,8 @@ import {
 	createReadToolDefinition,
 	highlightCode,
 	keyHint,
-} from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { pill } from "./pill.js";
 import { registerDiffTools } from "./diff-renderer.js";
 

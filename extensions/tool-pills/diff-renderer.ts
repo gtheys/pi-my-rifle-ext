@@ -1090,11 +1090,11 @@ export function registerDiffTools(pi: any): void {
 
 	let createWriteFn: any, createEditFn: any, TextComponent: any, pillFn: any, keyHintFn: any;
 	try {
-		const sdk = require("@mariozechner/pi-coding-agent");
+		const sdk = require("@earendil-works/pi-coding-agent");
 		createWriteFn = sdk.createWriteTool;
 		createEditFn = sdk.createEditTool;
 		keyHintFn = sdk.keyHint;
-		TextComponent = require("@mariozechner/pi-tui").Text;
+		TextComponent = require("@earendil-works/pi-tui").Text;
 		pillFn = require("./pill.js").pill;
 	} catch {
 		return;

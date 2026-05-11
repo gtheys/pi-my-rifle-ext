@@ -5,8 +5,8 @@
 import type {
 	ExtensionAPI,
 	ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
-import { TreeSelectorComponent, SessionSelectorComponent, SessionManager } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
+import { TreeSelectorComponent, SessionSelectorComponent, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { TopLevelEntry } from "./types.js";
 import { tryNavigateTree, trySwitchSession } from "./context-helpers.js";
 

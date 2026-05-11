@@ -11,8 +11,8 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	ExtensionCommandContext,
-} from "@mariozechner/pi-coding-agent";
-import type { SessionTreeNode } from "@mariozechner/pi-coding-agent/dist/core/session-manager.js";
+} from "@earendil-works/pi-coding-agent";
+import type { SessionTreeNode } from "@earendil-works/pi-coding-agent/dist/core/session-manager.js";
 
 /** Check if ctx has full command context capabilities. */
 function isCommandCtx(ctx: ExtensionContext): ctx is ExtensionCommandContext {

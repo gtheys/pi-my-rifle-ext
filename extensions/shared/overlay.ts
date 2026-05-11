@@ -5,7 +5,7 @@
  * across leader-key, favourite-models, model-switcher, etc.
  */
 
-import { visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
+import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 
 type ThemeLike = {
 	fg: (role: string, text: string) => string;
