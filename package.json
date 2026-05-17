@@ -4,7 +4,7 @@
   "private": true,
   "description": "Personal pi extensions, skills, commands, and themes",
   "dependencies": {
-    "@gtheys/pi-per-commit-spend": "0.2.5",
+    "@gtheys/pi-per-commit-spend": "latest",
     "@shikijs/cli": "^4.0.2",
     "@sting8k/pi-vcc": "^0.3.12",
     "@tomooshi/caveman-milk-pi": "^0.2.0",
@@ -16,6 +16,7 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts",
+      "./extensions/context.ts",
       "./extensions/review/review.ts",
       "./extensions/tool-pills/index.ts",
       "./extensions/pi-sem/index.ts",
@@ -39,9 +40,9 @@
     ]
   },
   "devDependencies": {
-    "@mariozechner/pi-agent-core": "^0.72.0",
-    "@mariozechner/pi-coding-agent": "^0.72.0",
-    "@mariozechner/pi-tui": "^0.72.0",
-    "@types/diff": "^7.0.2"
+    "@earendil-works/pi-agent-core": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
+    "@types/diff": "latest"
   }
 }

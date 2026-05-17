@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Bootstrap a debugging session for issues encountered during manual testing or implementation. Investigates logs (minikube pods), database state (PostgreSQL nonprod), and git history without editing files. Use when something is broken, unexpected behavior occurs, or you need to trace an issue. Trigger on "debug", "something's broken", "help me debug", "what's wrong", "investigate issue", or when invoked with "start: Debug".
+description: "Bootstrap a debugging session for issues encountered during manual testing or implementation. Investigates logs (minikube pods), database state (PostgreSQL nonprod), and git history without editing files. Use when something is broken, unexpected behavior occurs, or you need to trace an issue. Trigger on 'debug', 'something's broken', 'help me debug', 'what's wrong', 'investigate issue', or when invoked with 'start: Debug'."
 ---
 
 # Debug Session
