@@ -21,9 +21,9 @@ import type {
   ExtensionCommandContext,
   ContextUsage,
   Theme,
-} from "@mariozechner/pi-coding-agent";
-import type { AssistantMessage, ToolResultMessage, UserMessage } from "@mariozechner/pi-ai";
-import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // ── Category definitions ──────────────────────────────────────────────
 
@@ -74,7 +74,9 @@ interface ContextBreakdown {
   turnCount: number;
 }
 
-function computeBreakdown(ctx: any): ContextBreakdown | null {
+// AIDEV-NOTE: ctx typed as ExtensionCommandContext; getSystemPrompt() may not exist on the
+// public type in all versions, so it is guarded with try/catch below.
+function computeBreakdown(ctx: ExtensionCommandContext): ContextBreakdown | null {
   const usage: ContextUsage | undefined = ctx.getContextUsage();
   if (!usage) return null;
 

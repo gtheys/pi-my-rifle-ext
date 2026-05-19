@@ -20,7 +20,7 @@ function isCommandCtx(ctx: ExtensionContext): ctx is ExtensionCommandContext {
 }
 
 /** Emit a slash command via the editor input. */
-function emitCommand(ctx: ExtensionContext, command: string) {
+export function emitCommand(ctx: ExtensionContext, command: string) {
 	ctx.ui.setEditorText(command);
 	setTimeout(() => process.stdin.emit("data", "\r"), 0);
 }

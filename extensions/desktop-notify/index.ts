@@ -53,14 +53,15 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_end", async (_event, ctx) => {
 		const now = Date.now();
-		const idleBeforeRun = now - lastAgentEndTs;
+		const previousEnd = lastAgentEndTs;
+		const idleBeforeRun = now - previousEnd;
 		lastAgentEndTs = now;
 
 		if (!state.enabled) return;
-		// Only notify if there was meaningful idle time before this run
-		// AIDEV-NOTE: We compare gap between previous agent_end and now.
-		// First run (lastAgentEndTs=0) always notifies — user just started pi.
-		if (lastAgentEndTs !== 0 && idleBeforeRun < state.idleThresholdMs) return;
+		// AIDEV-NOTE: Only notify when the user was idle long enough before this run.
+		// previousEnd===0 means first run in this session → always notify (idleBeforeRun is huge).
+		// Using previousEnd (captured before overwrite) so the guard is never trivially true.
+		if (previousEnd !== 0 && idleBeforeRun < state.idleThresholdMs) return;
 
 		// Extract snippet from last assistant message
 		const entries = ctx.sessionManager.getBranch();

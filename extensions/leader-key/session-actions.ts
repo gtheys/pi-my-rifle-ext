@@ -8,7 +8,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { TreeSelectorComponent, SessionSelectorComponent, SessionManager } from "@earendil-works/pi-coding-agent";
 import type { TopLevelEntry } from "./types.js";
-import { tryNavigateTree, trySwitchSession } from "./context-helpers.js";
+import { tryNavigateTree, trySwitchSession, emitCommand } from "./context-helpers.js";
 
 async function openSessionTree(pi: ExtensionAPI, ctx: ExtensionContext) {
 	const tree = ctx.sessionManager.getTree();
@@ -116,10 +116,7 @@ export function buildSessionEntries(pi: ExtensionAPI): TopLevelEntry {
 					key: "n",
 					label: "New session",
 					description: "start fresh",
-					action: (ctx) => {
-						ctx.ui.setEditorText("/new");
-						setTimeout(() => process.stdin.emit("data", "\r"), 0);
-					},
+					action: (ctx) => emitCommand(ctx, "/new"),
 				},
 				{
 					key: "s",
@@ -137,28 +134,19 @@ export function buildSessionEntries(pi: ExtensionAPI): TopLevelEntry {
 					key: "f",
 					label: "Fork session",
 					description: "fork into cmux split pane",
-					action: (ctx) => {
-						ctx.ui.setEditorText("/split-fork");
-						setTimeout(() => process.stdin.emit("data", "\r"), 0);
-					},
+					action: (ctx) => emitCommand(ctx, "/split-fork"),
 				},
 				{
 					key: "c",
 					label: "Compact",
 					description: "LLM summary",
-					action: (ctx) => {
-						ctx.ui.setEditorText("/compact");
-						setTimeout(() => process.stdin.emit("data", "\r"), 0);
-					},
+					action: (ctx) => emitCommand(ctx, "/compact"),
 				},
 				{
 					key: "v",
 					label: "Compact with VCC",
 					description: "algorithmic summary",
-					action: (ctx) => {
-						ctx.ui.setEditorText("/pi-vcc");
-						setTimeout(() => process.stdin.emit("data", "\r"), 0);
-					},
+					action: (ctx) => emitCommand(ctx, "/pi-vcc"),
 				},
 			],
 		},

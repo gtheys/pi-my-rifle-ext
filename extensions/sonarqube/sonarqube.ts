@@ -10,8 +10,8 @@
  * Usage:
  *   /sonarqube          — auto-detect PR from current branch + config from sonar-project.properties
  *   /sonarqube 283      — explicit PR number
- *   /sonarqube 283 --severity BLOCKER,CRITICAL
- *   /sonarqube 283 --types BUG,VULNERABILITY
+ *   /sonarqube 283 --severity=BLOCKER,CRITICAL
+ *   /sonarqube 283 --types=BUG,VULNERABILITY
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -89,6 +89,9 @@ const SEVERITY_ORDER: Record<string, number> = {
 	INFO: 4,
 };
 
+// AIDEV-NOTE: Emojis used intentionally here for terminal report readability (severity/type
+// indicators in the generated sonarqube-report.md). Coding-standards "no emojis" rule applies
+// to code comments and logic, not to user-facing report output.
 const SEVERITY_SYMBOLS: Record<string, string> = {
 	BLOCKER: "🔴",
 	CRITICAL: "🔴",

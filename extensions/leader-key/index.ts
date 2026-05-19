@@ -29,7 +29,7 @@ import { copyToClipboard } from "../pi-telescope/clipboard.js";
 import type { ActionItem, ActionGroup, TopLevelEntry } from "./types.js";
 import { buildSessionEntries } from "./session-actions.js";
 import { buildLabelEntries } from "./label-actions.js";
-import { registerBridgeCommands } from "./context-helpers.js";
+import { registerBridgeCommands, emitCommand } from "./context-helpers.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Build top-level entries
@@ -80,8 +80,7 @@ function buildEntries(pi: ExtensionAPI, ctx: ExtensionContext): TopLevelEntry[] 
 			);
 
 			if (selected) {
-				ctx.ui.setEditorText(`/mode ${selected}`);
-				setTimeout(() => process.stdin.emit("data", "\r"), 0);
+				emitCommand(ctx, `/mode ${selected}`);
 			}
 		},
 	});
@@ -162,10 +161,7 @@ function buildEntries(pi: ExtensionAPI, ctx: ExtensionContext): TopLevelEntry[] 
 		key: "r",
 		label: "Review",
 		description: "code review UI",
-		action: (ctx) => {
-			ctx.ui.setEditorText("/plannotator-review");
-			setTimeout(() => process.stdin.emit("data", "\r"), 0);
-		},
+		action: (ctx) => emitCommand(ctx, "/plannotator-review"),
 	});
 
 	entries.push({
@@ -173,10 +169,8 @@ function buildEntries(pi: ExtensionAPI, ctx: ExtensionContext): TopLevelEntry[] 
 		key: "a",
 		label: "Annotate last",
 		description: "annotate last assistant message",
-		action: (ctx) => {
-			ctx.ui.setEditorText("/plannotator-last");
-			setTimeout(() => process.stdin.emit("data", "\r"), 0);
-		},
+		action: (ctx) => emitCommand(ctx, "/plannotator-last"),
+	});
 	});
 
 	// ── Copy last response ──────────────────────────────────────────────
@@ -220,10 +214,7 @@ function buildEntries(pi: ExtensionAPI, ctx: ExtensionContext): TopLevelEntry[] 
 		key: "q",
 		label: "Exit",
 		description: "quit pi",
-		action: (ctx) => {
-			ctx.ui.setEditorText("/quit");
-			setTimeout(() => process.stdin.emit("data", "\r"), 0);
-		},
+		action: (ctx) => emitCommand(ctx, "/quit"),
 	});
 
 	return entries;
