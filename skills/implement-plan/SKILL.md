@@ -21,6 +21,37 @@ You are tasked with implementing an approved technical spec. Specs live in `note
    - If `$LLM_NOTES_ROOT` is set → `$LLM_NOTES_ROOT/<repo>/notes/specs/`
    - Otherwise → `notes/specs/` relative to the repo root
 
+## Scripts
+
+This skill ships a helper script in `scripts/`:
+
+### `scripts/jira-branch.sh` — Create a local branch from a Jira issue
+
+Shared script at the repo root `scripts/` dir. Fetches issue type and summary
+via `acli`, derives a branch name, creates the branch locally, and sets its
+git-town parent to `develop`.
+
+```bash
+# Normal use
+bash scripts/jira-branch.sh IMP-1234
+
+# Preview only (no branch created)
+bash scripts/jira-branch.sh IMP-1234 --dry-run
+```
+
+**Branch naming:** `<prefix>/<JIRA-KEY>-<summary-slug>` (first 5 words of summary)
+
+| Issue type | Prefix |
+|---|---|
+| Bug / Hotfix | `bugfix` / `hotfix` |
+| Story / Feature / Epic / Improvement | `feature` |
+| Task / Sub-task / Spike / Technical Debt | `chore` |
+| _(unknown)_ | `feature` |
+
+**Requires:** `acli`, `jq`, `git`, `git-town`
+
+---
+
 ## Getting Started
 
 When given a spec path or Jira ID:

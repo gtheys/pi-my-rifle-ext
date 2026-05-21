@@ -42,7 +42,32 @@ No taskwarrior task found for "$JIRA_ID". Make sure bugwarrior has synced.
 Run `bugwarrior pull` to sync, or describe the issue manually.
 ```
 
-#### Step 2 — Present context and ask what broke
+#### Step 2 — Create branch (if not already on one for this ticket)
+
+After fetching the ticket, check whether a branch for this Jira ID already
+exists locally. If not, create one using the shared helper:
+
+```bash
+# Check for an existing branch first
+git branch --list "*$JIRA_ID*"
+
+# If none found, create it
+bash scripts/jira-branch.sh $JIRA_ID
+```
+
+If the branch already exists, check it out:
+
+```bash
+git checkout $(git branch --list "*$JIRA_ID*" | head -1 | tr -d ' *')
+```
+
+> The script sets the git-town parent to `develop` and names the branch
+> `<prefix>/$JIRA_ID-<summary-slug>`. Use `--dry-run` to preview without
+> creating.
+
+---
+
+#### Step 3 — Present context and ask what broke
 
 ```
 I'll help debug issues with $JIRA_ID — $jirasummary.
