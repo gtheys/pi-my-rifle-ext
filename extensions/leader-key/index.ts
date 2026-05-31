@@ -171,7 +171,6 @@ function buildEntries(pi: ExtensionAPI, ctx: ExtensionContext): TopLevelEntry[] 
 		description: "annotate last assistant message",
 		action: (ctx) => emitCommand(ctx, "/plannotator-last"),
 	});
-	});
 
 	// ── Copy last response ──────────────────────────────────────────────
 	entries.push({
