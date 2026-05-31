@@ -5,13 +5,13 @@
   "description": "Personal pi extensions, skills, commands, and themes",
   "dependencies": {
     "@gtheys/pi-per-commit-spend": "latest",
-    "@shikijs/cli": "^4.0.2",
-    "@sting8k/pi-vcc": "^0.3.12",
+    "@shikijs/cli": "^4.1.0",
+    "@sting8k/pi-vcc": "^0.3.15",
     "@tomooshi/caveman-milk-pi": "^0.2.0",
     "@tomooshi/condensed-milk-pi": "^1.9.0",
     "diff": "^9.0.0",
     "graphify-pi": "^0.3.0",
-    "shiki": "^4.0.2"
+    "shiki": "^4.1.0"
   },
   "pi": {
     "extensions": [
@@ -26,8 +26,7 @@
       "./node_modules/@tomooshi/condensed-milk-pi/index.ts",
       "./node_modules/@sting8k/pi-vcc/index.ts",
       "./node_modules/@tomooshi/caveman-milk-pi/index.ts",
-      "./node_modules/@gtheys/pi-per-commit-spend/index.ts",
-      "./node_modules/graphify-pi/extensions/graphify.ts"
+      "./node_modules/@gtheys/pi-per-commit-spend/index.ts"
     ],
     "skills": [
       "./skills"
@@ -41,7 +40,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "latest",
-    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-coding-agent": "^0.75.3",
     "@earendil-works/pi-tui": "latest",
     "@types/diff": "latest"
   }
