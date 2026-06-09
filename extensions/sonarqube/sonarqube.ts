@@ -299,8 +299,9 @@ async function detectConfig(cwd: string): Promise<SonarConfig> {
 
 // ── PR number detection ───────────────────────────────────────────────────────
 
-async function detectPrNumber(ctx: ExtensionCommandContext): Promise<string> {
-	const result = await ctx.exec("gh", ["pr", "view", "--json", "number", "-q", ".number"], {
+// AIDEV-NOTE: exec lives on ExtensionAPI (pi), not on ExtensionCommandContext (ctx).
+async function detectPrNumber(pi: ExtensionAPI): Promise<string> {
+	const result = await pi.exec("gh", ["pr", "view", "--json", "number", "-q", ".number"], {
 		timeout: 10000,
 	});
 	if (result.code === 0 && result.stdout.trim()) {
@@ -524,7 +525,7 @@ export default function sonarqube(pi: ExtensionAPI) {
 			}
 
 			// 4. Detect PR number
-			const prNumber = parsed.prNumber || (await detectPrNumber(ctx));
+			const prNumber = parsed.prNumber || (await detectPrNumber(pi));
 			ctx.ui.notify(`Analyzing PR #${prNumber}...`, "info");
 
 			// 5. Fetch coverage
