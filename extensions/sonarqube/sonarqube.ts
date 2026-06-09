@@ -20,6 +20,7 @@ import path from "node:path";
 import {
 	type CoverageAnalysis,
 	type CoverageResponse,
+	type CoverageMeasure,
 	type FilterOptions,
 	type IssuesAnalysis,
 	type IssuesResponse,
@@ -36,6 +37,147 @@ import {
 	fetchAllIssues,
 	statusIcon,
 } from "../shared/sonarqube-utils.js";
+
+// ── Duplication types ────────────────────────────────────────────────────────
+
+interface DuplicationBlock {
+	from: number;
+	size: number;
+	_ref: string;
+}
+
+interface DuplicationEntry {
+	blocks: DuplicationBlock[];
+}
+
+interface DuplicationFile {
+	key: string;
+	name: string;
+	projectName?: string;
+}
+
+interface DuplicationsShowResponse {
+	duplications: DuplicationEntry[];
+	files: Record<string, DuplicationFile>;
+}
+
+interface ComponentMeasure {
+	key: string;
+	name: string;
+	qualifier: string;
+	measures: Array<{ metric: string; value?: string }>;
+}
+
+interface ComponentTreeResponse {
+	components: ComponentMeasure[];
+	paging: { pageIndex: number; pageSize: number; total: number };
+}
+
+interface DuplicatedFileDetail {
+	file: string;
+	key: string;
+	density: number;
+	blocks: number;
+	duplicatedLines: number;
+	duplicationGroups?: Array<{
+		blocks: Array<{ from: number; size: number; file: string }>;
+	}>;
+}
+
+interface DuplicationAnalysis {
+	density: number;
+	duplicatedLines: number;
+	duplicatedBlocks: number;
+	duplicatedFiles: number;
+	status: string;
+	icon: string;
+	topFiles: DuplicatedFileDetail[];
+}
+
+// ── Duplication fetching & analysis ─────────────────────────────────────────
+
+// AIDEV-NOTE: component_tree supports the `pullRequest` param so we scope results
+// to the PR diff. Falls back gracefully if the API returns no duplication data.
+async function fetchDuplicatedFiles(
+	baseUrl: string,
+	token: string,
+	projectKey: string,
+	prNumber: string,
+	signal?: AbortSignal,
+): Promise<DuplicatedFileDetail[]> {
+	const data = (await sonarFetch(
+		baseUrl,
+		token,
+		"measures/component_tree",
+		{
+			component: projectKey,
+			pullRequest: prNumber,
+			metricKeys: "duplicated_lines_density,duplicated_blocks,duplicated_lines",
+			qualifiers: "FIL",
+			s: "metric",
+			metricSort: "duplicated_lines_density",
+			asc: "false",
+			ps: "20",
+		},
+		signal,
+	)) as ComponentTreeResponse;
+
+	return (data.components ?? []).map((c) => {
+		const getMeasure = (metric: string) =>
+			parseFloat(c.measures.find((m) => m.metric === metric)?.value ?? "0") || 0;
+		return {
+			file: c.key.split(":")[1] || c.key,
+			key: c.key,
+			density: getMeasure("duplicated_lines_density"),
+			blocks: getMeasure("duplicated_blocks"),
+			duplicatedLines: getMeasure("duplicated_lines"),
+		};
+	}).filter((f) => f.density > 0);
+}
+
+async function fetchDuplicationDetails(
+	baseUrl: string,
+	token: string,
+	fileKey: string,
+	prNumber: string,
+	signal?: AbortSignal,
+): Promise<DuplicationsShowResponse | null> {
+	try {
+		return (await sonarFetch(
+			baseUrl,
+			token,
+			"duplications/show",
+			{ key: fileKey, pullRequest: prNumber },
+			signal,
+		)) as DuplicationsShowResponse;
+	} catch {
+		// Per-file detail is best-effort — don't fail the whole report
+		return null;
+	}
+}
+
+function analyzeDuplications(
+	coverageMeasures: CoverageMeasure[],
+	topFiles: DuplicatedFileDetail[],
+): DuplicationAnalysis {
+	const getMetric = (metric: string): number => {
+		const m = coverageMeasures.find((m) => m.metric === metric);
+		if (!m) return 0;
+		if (m.periods && m.periods.length > 0) return parseFloat(m.periods[0].value) || 0;
+		return parseFloat(m.value ?? "0") || 0;
+	};
+
+	const density = getMetric("duplicated_lines_density");
+	const duplicatedLines = Math.round(getMetric("duplicated_lines"));
+	const duplicatedBlocks = Math.round(getMetric("duplicated_blocks"));
+	const duplicatedFiles = Math.round(getMetric("duplicated_files"));
+
+	// AIDEV-NOTE: SonarCloud quality gate threshold for duplication density is typically 3%.
+	const status = density <= 3 ? "PASS" : density <= 10 ? "WARN" : "FAIL";
+	const icon = density <= 3 ? "✅" : density <= 10 ? "⚠️" : "❌";
+
+	return { density, duplicatedLines, duplicatedBlocks, duplicatedFiles, status, icon, topFiles };
+}
 
 // ── Arg parsing ───────────────────────────────────────────────────────────────
 
@@ -63,11 +205,53 @@ function parseArgs(args: string): { prNumber?: string; filter?: FilterOptions } 
 
 // ── Report generation ─────────────────────────────────────────────────────────
 
+function generateDuplicationSection(dup: DuplicationAnalysis): string[] {
+	const lines: string[] = [];
+	const sep = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+
+	lines.push(sep);
+	lines.push("🔁 CODE DUPLICATION REPORT");
+	lines.push(sep);
+	lines.push("");
+	lines.push(`Duplication Density: ${dup.density.toFixed(1)}% ${dup.icon}`);
+	lines.push(`Duplicated Lines:  ${dup.duplicatedLines}`);
+	lines.push(`Duplicated Blocks: ${dup.duplicatedBlocks}`);
+	lines.push(`Duplicated Files:  ${dup.duplicatedFiles}`);
+	lines.push("");
+	lines.push("Threshold: ≤3% PASS | ≤10% WARN | >10% FAIL");
+	lines.push("");
+
+	if (dup.topFiles.length > 0) {
+		lines.push("📂 Most Duplicated Files:");
+		lines.push("");
+		dup.topFiles.slice(0, 10).forEach((f, i) => {
+			lines.push(`${i + 1}. ${f.file}`);
+			lines.push(`   Density: ${f.density.toFixed(1)}%  Blocks: ${f.blocks}  Lines: ${f.duplicatedLines}`);
+			if (f.duplicationGroups && f.duplicationGroups.length > 0) {
+				f.duplicationGroups.slice(0, 3).forEach((g, gi) => {
+					lines.push(`   Group ${gi + 1}:`);
+					g.blocks.forEach((b) => {
+						const location = b.file !== f.file ? ` (in ${b.file})` : "";
+						lines.push(`     • Lines ${b.from}–${b.from + b.size - 1} [${b.size} lines]${location}`);
+					});
+				});
+			}
+			lines.push("");
+		});
+	} else {
+		lines.push("No duplicated files detected in this PR. ✅");
+		lines.push("");
+	}
+
+	return lines;
+}
+
 function generateReport(
 	prNumber: string,
 	config: SonarConfig,
 	coverage: CoverageAnalysis,
 	issues: IssuesAnalysis,
+	duplication?: DuplicationAnalysis,
 ): string {
 	const lines: string[] = [];
 	const sep = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
@@ -102,6 +286,11 @@ function generateReport(
 		`${coverage.icons.newBranch} New Branch: ${coverage.gaps.newBranch > 0 ? coverage.gaps.newBranch + "% to target" : "meets threshold"}`,
 	);
 	lines.push("");
+
+	// Duplication section (after coverage metrics)
+	if (duplication) {
+		lines.push(...generateDuplicationSection(duplication));
+	}
 
 	// Low-coverage files from issues
 	const lowCoverageFiles = issues.byFile.slice(0, 5);
@@ -295,10 +484,66 @@ export default function sonarqube(pi: ExtensionAPI) {
 			const coverage = analyzeCoverage(coverageData);
 			const issues = analyzeIssues({ total, issues: allIssues }, filter);
 
-			// 8. Generate report
-			const report = generateReport(prNumber, config, coverage, issues);
+			// 8. Fetch duplication data
+			let duplication: DuplicationAnalysis | undefined;
+			try {
+				ctx.ui.notify("Fetching duplication data...", "info");
 
-			// 9. Write report to repo root
+				// Project-level duplication metrics (added to existing coverage fetch params)
+				const dupMeasuresData = (await sonarFetch(
+					config.baseUrl,
+					token,
+					"measures/component",
+					{
+						component: config.projectKey,
+						pullRequest: prNumber,
+						metricKeys: "duplicated_lines_density,duplicated_lines,duplicated_blocks,duplicated_files",
+					},
+					ctx.signal,
+				)) as CoverageResponse;
+
+				// Per-file breakdown (top duplicated files)
+				const topFiles = await fetchDuplicatedFiles(
+					config.baseUrl,
+					token,
+					config.projectKey,
+					prNumber,
+					ctx.signal,
+				);
+
+				// Detailed block info for top 5 most-duplicated files
+				const TOP_N = 5;
+				for (const fileDetail of topFiles.slice(0, TOP_N)) {
+					const details = await fetchDuplicationDetails(
+						config.baseUrl,
+						token,
+						fileDetail.key,
+						prNumber,
+						ctx.signal,
+					);
+					if (details) {
+						fileDetail.duplicationGroups = details.duplications.map((d) => ({
+							blocks: d.blocks.map((b) => ({
+								from: b.from,
+								size: b.size,
+								file: details.files[b._ref]?.key.split(":")[1] ||
+									details.files[b._ref]?.key ||
+									fileDetail.file,
+							})),
+						}));
+					}
+				}
+
+				duplication = analyzeDuplications(dupMeasuresData.component?.measures ?? [], topFiles);
+			} catch (err) {
+				// AIDEV-NOTE: Duplication fetch is non-fatal — report still generated without it.
+				ctx.ui.notify(`Duplication fetch skipped: ${(err as Error).message}`, "info");
+			}
+
+			// 9. Generate report
+			const report = generateReport(prNumber, config, coverage, issues, duplication);
+
+			// 10. Write report to repo root
 			const reportPath = path.join(ctx.cwd, "sonarqube-report.md");
 			await fs.writeFile(reportPath, report, "utf8");
 
@@ -307,7 +552,7 @@ export default function sonarqube(pi: ExtensionAPI) {
 				"info",
 			);
 
-			// Send report as user message so the agent can act on it
+			// 11. Send report as user message so the agent can act on it
 			pi.sendUserMessage(report);
 		},
 	});
