@@ -5,13 +5,13 @@
   "description": "Personal pi extensions, skills, commands, and themes",
   "dependencies": {
     "@gtheys/pi-per-commit-spend": "latest",
-    "@shikijs/cli": "^4.1.0",
-    "@sting8k/pi-vcc": "^0.3.15",
+    "@shikijs/cli": "^4.2.0",
+    "@sting8k/pi-vcc": "^0.3.16",
     "@tomooshi/caveman-milk-pi": "^0.2.0",
     "@tomooshi/condensed-milk-pi": "^1.9.0",
     "diff": "^9.0.0",
     "graphify-pi": "^0.3.0",
-    "shiki": "^4.1.0"
+    "shiki": "^4.2.0"
   },
   "pi": {
     "extensions": [
