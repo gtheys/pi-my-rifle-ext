@@ -252,7 +252,7 @@ export default function sonarqube(pi: ExtensionAPI) {
 			}
 
 			// 4. Detect PR number
-			const prNumber = parsed.prNumber || (await detectPrNumber((cmd, args, opts) => ctx.exec(cmd, args, opts)));
+			const prNumber = parsed.prNumber || (await detectPrNumber("/sonarqube"));
 			ctx.ui.notify(`Analyzing PR #${prNumber}...`, "info");
 
 			// 5. Fetch coverage

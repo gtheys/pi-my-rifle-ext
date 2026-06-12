@@ -6,7 +6,32 @@
  */
 
 import { promises as fs } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
+
+const execFileAsync = promisify(execFile);
+
+// ── Shell exec helper ─────────────────────────────────────────────────────────
+
+// AIDEV-NOTE: ExtensionCommandContext does not expose an exec helper, so we
+// use node:child_process directly. Extensions run with full system permissions.
+export async function localExec(
+	cmd: string,
+	args: string[],
+	opts?: { timeout?: number },
+): Promise<{ code: number; stdout: string; stderr: string }> {
+	try {
+		const { stdout, stderr } = await execFileAsync(cmd, args, {
+			timeout: opts?.timeout,
+			maxBuffer: 10 * 1024 * 1024, // 10 MB — GraphQL responses can be large
+		});
+		return { code: 0, stdout, stderr };
+	} catch (err: unknown) {
+		const e = err as { code?: number; stdout?: string; stderr?: string };
+		return { code: e.code ?? 1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
+	}
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -290,19 +315,14 @@ export async function detectSonarConfig(cwd: string): Promise<SonarConfig> {
 
 // ── PR number detection via gh CLI ────────────────────────────────────────────
 
-// AIDEV-NOTE: ctx.exec is available on ExtensionCommandContext (not ExtensionContext).
-// Callers must pass in an exec function rather than ctx directly to keep this module
-// free of pi API imports.
-export async function detectPrNumber(
-	exec: (cmd: string, args: string[], opts?: { timeout?: number }) => Promise<{ code: number; stdout: string }>,
-): Promise<string> {
-	const result = await exec("gh", ["pr", "view", "--json", "number", "-q", ".number"], {
+export async function detectPrNumber(fallbackHint = "/pr-quality"): Promise<string> {
+	const result = await localExec("gh", ["pr", "view", "--json", "number", "-q", ".number"], {
 		timeout: 10000,
 	});
 	if (result.code === 0 && result.stdout.trim()) {
 		return result.stdout.trim();
 	}
-	throw new Error("Could not detect PR number. Provide it as argument: /pr-quality 283");
+	throw new Error(`Could not detect PR number. Provide it as argument: ${fallbackHint} <PR_NUMBER>`);
 }
 
 // ── Issue pagination ──────────────────────────────────────────────────────────

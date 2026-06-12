@@ -26,6 +26,7 @@ import {
 	type SonarIssue,
 	SEVERITY_SYMBOLS,
 	TYPE_SYMBOLS,
+	localExec,
 	sonarFetch,
 	analyzeCoverage,
 	analyzeIssues,
@@ -103,10 +104,9 @@ query($owner: String!, $repo: String!, $pr: Int!, $limit: Int!) {
 `.trim();
 
 async function fetchUnresolvedThreads(
-	exec: (cmd: string, args: string[], opts?: { timeout?: number }) => Promise<{ code: number; stdout: string; stderr: string }>,
 	prNumber: string,
 ): Promise<GhPrData> {
-	const result = await exec(
+	const result = await localExec(
 		"gh",
 		[
 			"api", "graphql",
@@ -362,7 +362,7 @@ export default function prQuality(pi: ExtensionAPI) {
 			const parsed = parseArgs(args);
 			let prNumber: string;
 			try {
-				prNumber = parsed.prNumber ?? (await detectPrNumber((cmd, a, opts) => ctx.exec(cmd, a, opts)));
+				prNumber = parsed.prNumber ?? (await detectPrNumber("/pr-quality"));
 			} catch (err) {
 				ctx.ui.notify(String((err as Error).message), "error");
 				return;
@@ -397,7 +397,7 @@ export default function prQuality(pi: ExtensionAPI) {
 
 			try {
 				[prData, coverageRaw, rawIssues] = await Promise.all([
-					fetchUnresolvedThreads((cmd, a, opts) => ctx.exec(cmd, a, opts), prNumber),
+					fetchUnresolvedThreads(prNumber),
 					sonarFetch(
 						sonarConfig.baseUrl,
 						token,
