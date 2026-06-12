@@ -37,6 +37,13 @@ import {
 
 // ── GitHub types ──────────────────────────────────────────────────────────────
 
+interface CheckRun {
+	name: string;
+	status: string; // "QUEUED" | "IN_PROGRESS" | "COMPLETED"
+	conclusion: string | null; // "SUCCESS" | "FAILURE" | "CANCELLED" | "SKIPPED" | ...
+	workflowName?: string;
+}
+
 interface GhComment {
 	author: string;
 	body: string;
@@ -59,6 +66,38 @@ interface GhPrData {
 	total_review_threads: number;
 	unresolved_count: number;
 	unresolved_threads: GhReviewThread[];
+}
+
+// ── GH Actions check ────────────────────────────────────────────────────────
+
+interface ActionsStatus {
+	complete: boolean;
+	pending: CheckRun[];
+	all: CheckRun[];
+}
+
+// AIDEV-NOTE: Uses statusCheckRollup from gh pr view — covers both GitHub
+// Actions CheckRuns and external status checks (e.g. SonarCloud gate itself).
+async function checkActionsComplete(prNumber: string): Promise<ActionsStatus> {
+	const result = await localExec(
+		"gh",
+		["pr", "view", prNumber, "--json", "statusCheckRollup"],
+		{ timeout: 15000 },
+	);
+
+	if (result.code !== 0) {
+		throw new Error(`gh pr view failed: ${result.stderr || result.stdout}`);
+	}
+
+	const data = JSON.parse(result.stdout) as { statusCheckRollup?: CheckRun[] };
+	const checks = data.statusCheckRollup ?? [];
+
+	// AIDEV-NOTE: Skip checks with conclusion "SKIPPED" — they never become
+	// COMPLETED in the traditional sense but do not block the workflow.
+	const relevant = checks.filter((c) => c.conclusion !== "SKIPPED");
+	const pending = relevant.filter((c) => c.status !== "COMPLETED");
+
+	return { complete: pending.length === 0, pending, all: checks };
 }
 
 // ── Arg parsing ───────────────────────────────────────────────────────────────
@@ -370,7 +409,27 @@ export default function prQuality(pi: ExtensionAPI) {
 
 			ctx.ui.notify(`PR Quality: analyzing PR #${prNumber}...`, "info");
 
-			// ── 3. Detect SonarCloud config ──────────────────────────────────
+			// ── 3. Guard: GH Actions must be complete ───────────────────────
+			let actionsStatus: ActionsStatus;
+			try {
+				actionsStatus = await checkActionsComplete(prNumber);
+			} catch (err) {
+				ctx.ui.notify(`Could not check Actions status: ${(err as Error).message}`, "error");
+				return;
+			}
+
+			if (!actionsStatus.complete) {
+				const names = actionsStatus.pending
+					.map((c) => `${c.workflowName ? c.workflowName + " / " : ""}${c.name} (${c.status.toLowerCase()})`)
+					.join(", ");
+				ctx.ui.notify(
+					`PR #${prNumber} CI not done yet — ${actionsStatus.pending.length} check(s) still running: ${names}`,
+					"warn",
+				);
+				return;
+			}
+
+			// ── 4. Detect SonarCloud config ──────────────────────────────────
 			let sonarConfig: SonarConfig;
 			try {
 				sonarConfig = await detectSonarConfig(ctx.cwd);
@@ -386,7 +445,7 @@ export default function prQuality(pi: ExtensionAPI) {
 				return;
 			}
 
-			// ── 4. Fetch in parallel ─────────────────────────────────────────
+			// ── 5. Fetch in parallel ─────────────────────────────────────────
 			// AIDEV-NOTE: GitHub and SonarCloud calls are independent — run them
 			// concurrently to reduce total wall-clock time.
 			ctx.ui.setStatus("pr-quality", "Fetching GitHub threads + SonarCloud data...");
@@ -426,11 +485,11 @@ export default function prQuality(pi: ExtensionAPI) {
 
 			ctx.ui.setStatus("pr-quality", undefined);
 
-			// ── 5. Analyze ───────────────────────────────────────────────────
+			// ── 6. Analyze ───────────────────────────────────────────────────
 			const coverage = analyzeCoverage(coverageRaw);
 			const issues = analyzeIssues(rawIssues);
 
-			// ── 6. Build and send prompt ─────────────────────────────────────
+			// ── 7. Build and send prompt ─────────────────────────────────────
 			ctx.ui.notify(
 				`Fetched ${prData.unresolved_count} unresolved threads, ${issues.total} SonarCloud issues. Starting triage...`,
 				"info",
