@@ -68,6 +68,8 @@ pi -e ./extensions/index.ts
 | `extensions/pi-sem` | Semantic code analysis tools — entity-level diff, impact analysis, context lookup, and blame via `pi-sem` | Code Analysis |
 | `extensions/leader-key` | Ctrl+X floating command palette (Vim which-key / Emacs leader-key style) with grouped actions | UI Enhancement |
 | `extensions/desktop-notify` | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
+| `extensions/sonarqube` | `/sonarqube` command — fetches SonarCloud coverage gaps and quality issues for a PR, generates actionable report | Code Quality |
+| `extensions/pr-quality` | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
 
 ### Published Packages
 
@@ -77,6 +79,111 @@ pi -e ./extensions/index.ts
 | [@sting8k/pi-vcc](https://www.npmjs.com/package/@sting8k/pi-vcc) | Algorithmic conversation compactor — transcript-preserving summaries, no LLM calls, searchable via `vcc_recall` | Token Reduction |
 | [@tomooshi/caveman-milk-pi](https://www.npmjs.com/package/@tomooshi/caveman-milk-pi) | Injects caveman terseness rules into system prompt — cache-safe, opt-in | Token Reduction |
 | [@gtheys/pi-per-commit-spend](https://www.npmjs.com/package/@gtheys/pi-per-commit-spend) | Tracks AI spend per git commit across sessions — calculates cost from token counts for subscription providers | Cost Tracking |
+
+## Code Quality Extensions
+
+Two extensions work together to keep PRs clean. Both share utilities from
+`extensions/shared/sonarqube-utils.ts`.
+
+### `/sonarqube`
+
+Fetches SonarCloud coverage metrics and quality issues for a PR, generates
+a `sonarqube-report.md` in the repo root, then sends the report to the agent
+so it can act on it.
+
+**Prerequisites**
+
+| Requirement | How to set up |
+|-------------|---------------|
+| `SONARQUBE_TOKEN` env var | Get at <https://sonarcloud.io/account/security>, then `export SONARQUBE_TOKEN=<token>` |
+| SonarCloud project config | `sonar-project.properties` in repo root with `sonar.projectKey` and `sonar.organization`, **or** set `SONAR_PROJECT_KEY` + `SONAR_ORGANIZATION` env vars |
+
+**Usage**
+
+```
+/sonarqube                          # auto-detect PR from current branch
+/sonarqube 283                      # explicit PR number
+/sonarqube 283 --severity=BLOCKER,CRITICAL
+/sonarqube 283 --types=BUG,VULNERABILITY
+/sonarqube 283 --files=src/auth/*
+```
+
+**What it does**
+
+1. Fetches coverage metrics (`coverage`, `new_coverage`, `branch_coverage`, …)
+2. Fetches all open issues for the PR (paginated, up to 500/page)
+3. Analyzes coverage gaps against the 80% threshold
+4. Groups issues by severity, type, file, and rule
+5. Writes `sonarqube-report.md` to the repo root
+6. Sends the report to the agent as a user message for follow-up action
+
+---
+
+### `/pr-quality`
+
+The combined command. Checks that CI is finished, then fetches both GitHub
+unresolved review threads and SonarCloud data in parallel, and sends a
+structured prompt to the agent to triage, resolve, and plan.
+
+**Prerequisites**
+
+| Requirement | How to set up |
+|-------------|---------------|
+| `gh` CLI | `gh auth login` |
+| `SONARQUBE_TOKEN` env var | Same as `/sonarqube` above |
+| SonarCloud project config | Same as `/sonarqube` above |
+
+**Usage**
+
+```
+/pr-quality          # auto-detect PR from current branch
+/pr-quality 283      # explicit PR number
+```
+
+**What it does**
+
+1. **CI guard** — calls `gh pr view <PR> --json statusCheckRollup`. If any
+   check is still `QUEUED` or `IN_PROGRESS`, shows a warning with the pending
+   check names and exits. `SKIPPED` checks are ignored.
+2. **Parallel fetch** — GitHub GraphQL (unresolved review threads) and
+   SonarCloud (coverage + issues) are fetched concurrently.
+3. **Agent prompt** — sends a structured message with three tasks:
+
+   | Task | What the agent does |
+   |------|---------------------|
+   | **A — Triage comments** | Reads each referenced file, classifies threads as VALID or INVALID, auto-resolves INVALID ones via `gh api graphql` mutation |
+   | **B — SonarCloud issues** | Cross-references VALID comment files with SonarCloud issues, addresses remaining issues in severity order (BLOCKER → CRITICAL → MAJOR) |
+   | **C — Action plan** | Writes `pr-quality-plan.md` to the repo root with checkbox lists for review comments, SonarCloud issues, and coverage gaps |
+
+**Output: `pr-quality-plan.md`**
+
+```markdown
+# PR Quality Plan — PR #283
+
+## Review Comments (VALID)
+- [ ] src/auth/token.ts:42 — validate expiry before signing (@reviewer)
+
+## SonarCloud Issues
+- [ ] CRITICAL src/auth/token.ts:38 — typescript:S4036: JWT secret hardcoded
+
+## Coverage Gaps
+- Overall: 71% (gap: 9% to 80% threshold)
+- New code: 65% (gap: 15% to 80% threshold)
+```
+
+---
+
+### Shared utilities
+
+`extensions/shared/sonarqube-utils.ts` contains all types and helpers used
+by both extensions:
+
+- `sonarFetch` — authenticated SonarCloud API call
+- `analyzeCoverage` / `analyzeIssues` — data analysis
+- `detectSonarConfig` — reads `sonar-project.properties` or env vars
+- `detectPrNumber` — `gh pr view` auto-detection
+- `fetchAllIssues` — paginated issue fetch
+- `localExec` — `node:child_process` wrapper (replaces `ctx.exec` which does not exist)
 
 ## Migrating
 
