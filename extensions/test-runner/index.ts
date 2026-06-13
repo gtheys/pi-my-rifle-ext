@@ -1,16 +1,17 @@
 /**
  * Test Runner Extension
  *
- * Provides a `run_tests` tool that:
- *   - Discovers test scripts from the nearest package.json
- *   - Prompts the user to select a script when multiple are found
- *   - Spawns an isolated pi subagent (bash-only) to execute the tests
- *   - Activates pi-intercom contact_supervisor in the subagent for live progress
- *   - Returns structured pass/fail results with per-failure details
+ * Provides a `run_tests` tool and `/run-tests` command that:
+ *   - Discover test scripts from the nearest package.json
+ *   - Spawn a fully-detached pi subagent with its own session file
+ *   - Use pi-intercom contact_supervisor as the sole result channel
+ *   - Allow switching into the subagent session to watch the live transcript
  *
- * Command: /run-tests [script-key]
- *
- * Requires: pi-intercom installed (bundled as dep) for live progress updates.
+ * Commands:
+ *   /run-tests [script]   — run tests (no LLM turn, truly non-blocking)
+ *   /test-runner switch   — jump into the most recent test session
+ *   /test-runner back     — return to the session you came from
+ *   /test-runner model    — configure the subagent model
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -19,8 +20,28 @@ import { Type } from "@sinclair/typebox";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { buildRunCommand, discoverTestScripts } from "./discover.ts";
-import { runTestSubagent, type TestFailure, type TestRunResult } from "./runner.ts";
+import { spawnTestSubagent, generateSessionFile } from "./runner.ts";
+
+// AIDEV-NOTE: Config is persisted to ~/.pi/agent/test-runner/config.json so it
+// survives new sessions. pi.appendEntry() is NOT used — that is session-scoped only.
+interface TestRunnerConfig {
+  defaultModel?: string;
+  /** Session to return to after /test-runner back. */
+  previousSession?: string;
+}
+
+// AIDEV-NOTE: TestRun is in-memory only (process lifetime). We don’t persist
+// the run list — the session files themselves are the persistent record.
+interface TestRun {
+  runId: string;
+  sessionFile: string;
+  script: string;
+  command: string;
+  cwd: string;
+  started: number;
+}
 
 // AIDEV-NOTE: Config is persisted to ~/.pi/agent/test-runner/config.json so it
 // survives new sessions. pi.appendEntry() is NOT used — that is session-scoped only.
@@ -48,11 +69,29 @@ function saveConfig(config: TestRunnerConfig): void {
 
 export default function (pi: ExtensionAPI) {
   let config: TestRunnerConfig = loadConfig();
+  // AIDEV-NOTE: activeRuns is in-memory. Session files are the persistent record.
+  const activeRuns: TestRun[] = [];
 
   pi.on("session_start", async () => {
-    // Re-read from disk each session start so changes from other sessions are picked up
     config = loadConfig();
   });
+
+  /** Shared spawn logic used by both the tool and the /run-tests command. */
+  function startRun(
+    script: string,
+    command: string,
+    runDir: string,
+    supervisorTarget: string | undefined,
+    model: string | undefined,
+  ): TestRun {
+    const runId = randomUUID().slice(0, 8);
+    const sessionFile = generateSessionFile(getAgentDir(), runId);
+    const run: TestRun = { runId, sessionFile, script, command, cwd: runDir, started: Date.now() };
+    activeRuns.push(run);
+    spawnTestSubagent({ command, cwd: runDir, runId, sessionFile, supervisorTarget, model });
+    return run;
+  }
+
 
   pi.registerTool({
     name: "run_tests",
@@ -123,58 +162,25 @@ export default function (pi: ExtensionAPI) {
 
       const command = buildRunCommand(selected.key, runDir);
 
-      // AIDEV-NOTE: The supervisor target is the pi session name registered with the
-      // pi-intercom broker. The subagent reads PI_SUBAGENT_ORCHESTRATOR_TARGET and uses
-      // it as the contact_supervisor destination. We use the existing session name if set,
-      // otherwise assign one so the subagent can find us.
       const existingName = pi.getSessionName();
       const supervisorTarget =
         existingName ?? `test-run-${Math.random().toString(36).slice(2, 10)}`;
-      if (!existingName) {
-        pi.setSessionName(supervisorTarget);
-      }
+      if (!existingName) pi.setSessionName(supervisorTarget);
 
-      const model = params.model ?? config.defaultModel;
-
-      // AIDEV-NOTE: Fire-and-forget — we do NOT await the subagent. The tool returns
-      // immediately so the main session is unblocked. When the subagent finishes,
-      // pi.sendMessage() injects the result back and triggerTurn re-engages the LLM.
-      // We intentionally omit the abort signal so the background run survives agent turns.
-      // Progress during the run comes via pi-intercom contact_supervisor messages.
-      runTestSubagent({ command, cwd: runDir, supervisorTarget, model })
-        .then((result) => {
-          const summary = buildSummaryText(selected!.key, command, result);
-          const icon = result.failed > 0 || result.exitCode !== 0 ? "⚠️" : "✅";
-          pi.sendMessage(
-            {
-              customType: "test-runner-complete",
-              content: `${icon} Test run complete (\`${selected!.key}\`):\n\n${summary}`,
-              display: true,
-              details: { script: selected!.key, command, cwd: runDir, ...result },
-            },
-            { deliverAs: "followUp", triggerTurn: true },
-          );
-        })
-        .catch((err: unknown) => {
-          pi.sendMessage(
-            {
-              customType: "test-runner-complete",
-              content: `❌ Test runner error for \`${selected!.key}\`: ${String(err)}`,
-              display: true,
-              details: { script: selected!.key, command, cwd: runDir, error: String(err) },
-            },
-            { deliverAs: "followUp", triggerTurn: true },
-          );
-        });
+      const run = startRun(selected.key, command, runDir, supervisorTarget, params.model ?? config.defaultModel);
 
       return {
         content: [
           {
             type: "text",
-            text: `Tests started in background: \`${command}\`\n\nSession is unlocked — you'll be notified here when the run completes.`,
+            text: [
+              `Tests started: \`${command}\``,
+              `Session: ${run.sessionFile}`,
+              `Use /test-runner switch to watch the live transcript, /test-runner back to return.`,
+            ].join("\n"),
           },
         ],
-        details: { running: true, script: selected.key, command, cwd: runDir },
+        details: { running: true, script: selected.key, command, cwd: runDir, sessionFile: run.sessionFile, runId: run.runId },
       };
     },
 
@@ -190,110 +196,36 @@ export default function (pi: ExtensionAPI) {
       );
     },
 
-    renderResult(result, { expanded }, theme) {
-      type Details = TestRunResult & {
+    renderResult(result, _opts, theme) {
+      type Details = {
         script?: string;
         command?: string;
         running?: boolean;
         found?: boolean;
         cancelled?: boolean;
+        sessionFile?: string;
+        runId?: string;
       };
 
       const details = result.details as Details | undefined;
+      const t = result.content[0];
+      const text = t?.type === "text" ? t.text : "(no output)";
 
-      if (!details) {
-        const t = result.content[0];
-        return new Text(t?.type === "text" ? t.text : "(no output)", 0, 0);
+      if (!details || details.found === false || details.cancelled) {
+        return new Text(theme.fg("muted", text), 0, 0);
       }
 
-      // Not-found / cancelled states
-      if (details.found === false || details.cancelled) {
-        const t = result.content[0];
-        return new Text(
-          theme.fg("muted", t?.type === "text" ? t.text : "(no output)"),
-          0,
-          0,
-        );
-      }
-
-      // While running — show progress text
       if (details.running) {
-        const t = result.content[0];
-        return new Text(
-          theme.fg("warning", "⏳ ") +
-            theme.fg("dim", t?.type === "text" ? t.text : "Running tests..."),
-          0,
-          0,
-        );
+        const container = new Container();
+        container.addChild(new Text(theme.fg("warning", "⏳ ") + theme.fg("accent", details.script ?? "tests") + theme.fg("muted", " running in background"), 0, 0));
+        if (details.sessionFile) {
+          container.addChild(new Text(theme.fg("dim", `   /test-runner switch to watch  •  /test-runner back to return`), 0, 0));
+        }
+        return container;
       }
 
-      const passed = details.passed ?? 0;
-      const failed = details.failed ?? 0;
-      const skipped = details.skipped ?? 0;
-      const hasFailed = failed > 0 || (details.exitCode ?? 0) !== 0;
-
-      const icon = hasFailed ? theme.fg("error", "✗") : theme.fg("success", "✓");
-      const parts = [
-        theme.fg("success", `${passed} passed`),
-        failed > 0 ? theme.fg("error", `${failed} failed`) : "",
-        skipped > 0 ? theme.fg("muted", `${skipped} skipped`) : "",
-      ]
-        .filter(Boolean)
-        .join(theme.fg("muted", " · "));
-
-      if (!expanded) {
-        let text = `${icon} ${parts}`;
-        const errors: TestFailure[] = details.errors ?? [];
-        if (hasFailed && errors.length > 0) {
-          const first = errors[0];
-          const label = first.test ?? first.file ?? "unknown";
-          text += "\n" + theme.fg("error", `  → ${label.slice(0, 80)}`);
-          if (errors.length > 1) {
-            text += theme.fg("muted", ` (+${errors.length - 1} more)`);
-          }
-        }
-        return new Text(text, 0, 0);
-      }
-
-      // Expanded: full error list
-      const container = new Container();
-      container.addChild(new Text(`${icon} ${parts}`, 0, 0));
-
-      const errors: TestFailure[] = details.errors ?? [];
-      if (errors.length > 0) {
-        container.addChild(new Spacer(1));
-        for (const err of errors) {
-          const label = [err.file, err.test].filter(Boolean).join(" › ");
-          container.addChild(
-            new Text(theme.fg("error", `✗ ${label || "Test failure"}`), 0, 0),
-          );
-          if (err.message) {
-            container.addChild(
-              new Text(theme.fg("dim", `  ${err.message.split("\n")[0]}`), 0, 0),
-            );
-          }
-          if (err.stack) {
-            for (const line of err.stack.split("\n").slice(0, 4)) {
-              container.addChild(
-                new Text(theme.fg("muted", `    ${line.trim()}`), 0, 0),
-              );
-            }
-          }
-        }
-      } else if (hasFailed && (details.exitCode ?? 0) !== 0) {
-        container.addChild(new Spacer(1));
-        container.addChild(
-          new Text(
-            theme.fg("error", `Process exited with code ${details.exitCode}`),
-            0,
-            0,
-          ),
-        );
-        if (details.rawOutput) {
-          const tail = details.rawOutput.split("\n").slice(-5).join("\n");
-          container.addChild(new Text(theme.fg("muted", tail), 0, 0));
-        }
-      }
+      return new Text(theme.fg("muted", text), 0, 0);
+    },
 
       if (details.command) {
         container.addChild(new Spacer(1));
@@ -347,45 +279,80 @@ export default function (pi: ExtensionAPI) {
       if (!selected) return;
 
       const command = buildRunCommand(selected.key, runDir);
-      const model = config.defaultModel;
 
       const existingName = pi.getSessionName();
       const supervisorTarget =
         existingName ?? `test-run-${Math.random().toString(36).slice(2, 10)}`;
       if (!existingName) pi.setSessionName(supervisorTarget);
 
-      ctx.ui.notify(`Tests started: ${command}`, "info");
+      const run = startRun(selected.key, command, runDir, supervisorTarget, config.defaultModel);
 
-      const capturedScript = selected;
-      runTestSubagent({ command, cwd: runDir, supervisorTarget, model })
-        .then((result) => {
-          const summary = buildSummaryText(capturedScript.key, command, result);
-          const icon = result.failed > 0 || result.exitCode !== 0 ? "⚠️" : "✅";
-          // AIDEV-NOTE: No triggerTurn — session stays idle after results arrive.
-          // User reads the transcript entry and manually asks the LLM to act if needed.
-          pi.sendMessage({
-            customType: "test-runner-complete",
-            content: `${icon} Test run complete (\`${capturedScript.key}\`):\n\n${summary}`,
-            display: true,
-            details: { script: capturedScript.key, command, cwd: runDir, ...result },
-          });
-        })
-        .catch((err: unknown) => {
-          ctx.ui.notify(`Test runner error: ${String(err)}`, "error");
-        });
+      // AIDEV-NOTE: No triggerTurn — session stays idle. Results arrive via
+      // pi-intercom contact_supervisor as inline messages in the main session.
+      // Use /test-runner switch to watch the subagent transcript live.
+      ctx.ui.notify(
+        `Tests started: ${command}\nSession: ${run.sessionFile}\n/test-runner switch to watch • /test-runner back to return`,
+        "info",
+      );
     },
   });
 
-  // AIDEV-NOTE: /test-runner command manages extension config.
-  // Usage: /test-runner model <id>  — set default model
-  //        /test-runner model       — show current default
-  //        /test-runner reset       — clear all config
+  // AIDEV-NOTE: /test-runner handles config, session switching, and run listing.
+  // switch/back use ctx.switchSession() which is only available in command handlers.
   pi.registerCommand("test-runner", {
-    description: "Configure the test-runner extension (model, reset)",
-    handler: (args, ctx) => {
+    description: "Manage test-runner: switch | back | model | reset",
+    handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean);
       const sub = parts[0];
 
+      // ── switch ──────────────────────────────────────────────────────────────
+      if (sub === "switch") {
+        if (activeRuns.length === 0) {
+          ctx.ui.notify("No test runs started in this session.", "warn");
+          return;
+        }
+
+        let run: TestRun;
+        if (activeRuns.length === 1) {
+          run = activeRuns[0];
+        } else {
+          const age = (r: TestRun) => {
+            const secs = Math.round((Date.now() - r.started) / 1000);
+            return secs < 60 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`;
+          };
+          const choices = activeRuns.map(
+            (r) => `${r.script} — ${r.command} (${age(r)})`,
+          );
+          const choice = await ctx.ui.select("Switch to test session:", choices);
+          if (!choice) return;
+          run = activeRuns[activeRuns.findIndex(
+            (r) => `${r.script} — ${r.command} (${age(r)})` === choice,
+          )];
+        }
+
+        // Store current session so /test-runner back can return here.
+        const currentFile = ctx.sessionManager.getSessionFile();
+        if (currentFile) {
+          config.previousSession = currentFile;
+          saveConfig(config);
+        }
+
+        ctx.ui.notify(`Switching to test session: ${run.script}`, "info");
+        await ctx.switchSession(run.sessionFile);
+        return;
+      }
+
+      // ── back ────────────────────────────────────────────────────────────────
+      if (sub === "back") {
+        if (!config.previousSession) {
+          ctx.ui.notify("No previous session stored. Use /resume to pick one.", "warn");
+          return;
+        }
+        await ctx.switchSession(config.previousSession);
+        return;
+      }
+
+      // ── model ───────────────────────────────────────────────────────────────
       if (sub === "model") {
         const modelId = parts[1];
         if (!modelId) {
@@ -403,6 +370,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
+      // ── reset ───────────────────────────────────────────────────────────────
       if (sub === "reset") {
         config = {};
         saveConfig(config);
@@ -410,46 +378,27 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // No subcommand — show current config
-      const lines = ["test-runner config:"];
-      lines.push(`  model: ${config.defaultModel ?? "(pi default)"}`);
+      // ── status / help ────────────────────────────────────────────────────────
+      const lines = ["test-runner:"];
+      if (activeRuns.length > 0) {
+        lines.push("");
+        lines.push("Active runs:");
+        for (const r of activeRuns) {
+          const secs = Math.round((Date.now() - r.started) / 1000);
+          const age = secs < 60 ? `${secs}s` : `${Math.round(secs / 60)}m`;
+          lines.push(`  ${r.script} (${age}) — ${r.sessionFile}`);
+        }
+      }
       lines.push("");
       lines.push("Commands:");
-      lines.push("  /test-runner model <id>   set default subagent model");
-      lines.push("  /test-runner model        show current model");
-      lines.push("  /test-runner reset        clear all config");
+      lines.push("  /test-runner switch        switch into most recent test session");
+      lines.push("  /test-runner back          return to previous session");
+      lines.push("  /test-runner model <id>    set default subagent model");
+      lines.push("  /test-runner model         show current model");
+      lines.push("  /test-runner reset         clear all config");
+      lines.push("");
+      lines.push(`Config: ${config.defaultModel ? `model=${config.defaultModel}` : "(defaults)"}`);
       ctx.ui.notify(lines.join("\n"), "info");
     },
   });
-}
-
-function buildSummaryText(
-  scriptKey: string,
-  command: string,
-  result: TestRunResult,
-): string {
-  const { passed, failed, skipped, errors, exitCode } = result;
-
-  if (exitCode !== 0 && passed === 0 && failed === 0) {
-    return `Tests failed to run (exit ${exitCode}). Command: \`${command}\`\n\nCheck that the command exists and all dependencies are installed.`;
-  }
-
-  const parts = [`${passed} passed`];
-  if (failed > 0) parts.push(`${failed} failed`);
-  if (skipped > 0) parts.push(`${skipped} skipped`);
-
-  const lines = [`Script \`${scriptKey}\`: ${parts.join(", ")}`];
-
-  if (errors.length > 0) {
-    lines.push("\n**Failed tests:**");
-    for (const err of errors) {
-      const label = [err.file, err.test].filter(Boolean).join(" › ");
-      lines.push(`- ✗ ${label || "unknown"}`);
-      if (err.message) {
-        lines.push(`  ${err.message.split("\n")[0]}`);
-      }
-    }
-  }
-
-  return lines.join("\n");
 }
