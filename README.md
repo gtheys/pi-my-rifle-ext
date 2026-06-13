@@ -70,6 +70,7 @@ pi -e ./extensions/index.ts
 | `extensions/desktop-notify` | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
 | `extensions/sonarqube` | `/sonarqube` command — fetches SonarCloud coverage gaps and quality issues for a PR, generates actionable report | Code Quality |
 | `extensions/pr-quality` | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
+| `extensions/test-runner` | `run_tests` tool — discovers and runs JS/TS tests from `package.json` using an isolated subagent; results injected back when done | Testing |
 
 ### Published Packages
 
@@ -79,6 +80,95 @@ pi -e ./extensions/index.ts
 | [@sting8k/pi-vcc](https://www.npmjs.com/package/@sting8k/pi-vcc) | Algorithmic conversation compactor — transcript-preserving summaries, no LLM calls, searchable via `vcc_recall` | Token Reduction |
 | [@tomooshi/caveman-milk-pi](https://www.npmjs.com/package/@tomooshi/caveman-milk-pi) | Injects caveman terseness rules into system prompt — cache-safe, opt-in | Token Reduction |
 | [@gtheys/pi-per-commit-spend](https://www.npmjs.com/package/@gtheys/pi-per-commit-spend) | Tracks AI spend per git commit across sessions — calculates cost from token counts for subscription providers | Cost Tracking |
+
+## Testing Extensions
+
+### `run_tests` — Test Runner
+
+Discovers and runs JS/TS test scripts from the nearest `package.json`. The test
+execution is **non-blocking** — the subagent runs in the background and results
+are injected back into the session automatically when done.
+
+Uses [pi-intercom](https://github.com/nicobailon/pi-intercom) to wire up
+`contact_supervisor` in the subagent so progress updates appear as inline
+intercom messages during the run.
+
+**How it works**
+
+1. Scans up from the current directory to find the nearest `package.json`
+2. Extracts scripts matching test patterns (`test`, `test:*`, `jest`, `vitest`,
+   `playwright`, `mocha`, `cypress`, `e2e`, `spec`)
+3. If multiple scripts exist and no `script` param is given, shows a picker
+4. Detects the package manager from lockfiles (`yarn.lock`, `pnpm-lock.yaml`,
+   fallback to `npm`)
+5. Spawns an isolated pi subprocess (`--mode json --tools bash`) as the subagent
+6. Returns **immediately** — session is unlocked while tests run
+7. Subagent sends `contact_supervisor` progress updates via pi-intercom
+8. When done, `pi.sendMessage({ triggerTurn: true })` re-engages the LLM with
+   structured pass/fail results and per-failure details
+
+**Tool parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `script` | `string?` | Script key from `package.json` (e.g. `test:unit`). Auto-detected if omitted. |
+| `cwd` | `string?` | Working directory to search. Defaults to current project directory. |
+| `model` | `string?` | Model ID for the subagent. Overrides the configured default. |
+
+**Commands**
+
+```
+/run-tests                          # trigger run_tests tool via LLM
+/run-tests test:unit                # run a specific script
+
+/test-runner                        # show current config
+/test-runner model <id>             # set default subagent model
+/test-runner model                  # show current default model
+/test-runner reset                  # clear all config
+```
+
+**Configuration**
+
+Config is stored at `~/.pi/agent/test-runner/config.json` and persists across
+sessions, `/new`, and process restarts.
+
+```json
+{
+  "defaultModel": "claude-haiku-4-5"
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `defaultModel` | `string` | _(pi default)_ | Model ID passed to the subagent via `--model`. Use a cheaper/faster model here since the subagent only runs bash and formats JSON. |
+
+You can edit the file directly or use the `/test-runner model <id>` command.
+The `model` tool parameter always wins over the config file for a single run.
+
+**Result rendering**
+
+| State | Display |
+|-------|---------|
+| Started | `⏳ Tests started in background: \`yarn test\`` |
+| Passed | `✓ 14 passed` |
+| Failures | `✗ 3 failed · 14 passed` → first failure name inline |
+| Expanded (Ctrl+O) | Per-failure: file › test name, error message, stack trace (4 lines) |
+
+**Detected test script patterns**
+
+`test`, `test:*`, `jest`, `vitest`, `playwright`, `mocha`, `cypress`, `e2e`,
+`e2e:*`, `spec`
+
+**Files**
+
+```
+extensions/test-runner/
+├── index.ts       # Extension entry, tool + command registration
+├── discover.ts    # package.json scanner, package manager detection
+└── runner.ts      # Subagent spawn, stdout parser, pi-intercom env wiring
+```
+
+---
 
 ## Code Quality Extensions
 
