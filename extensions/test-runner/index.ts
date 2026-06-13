@@ -76,6 +76,39 @@ export default function (pi: ExtensionAPI) {
     config = loadConfig();
   });
 
+  /**
+   * Resolve the pi-intercom target the spawned child should send
+   * contact_supervisor messages back to.
+   *
+   * AIDEV-NOTE: The intercom broker does NOT key sessions by the pi session UUID.
+   * On connect it generates its own random UUID and registers each session under
+   * that, plus the session's *presence name*. Broker.findSessions() resolves a
+   * target by broker-id first, then by presence name (case-insensitive).
+   *
+   * The broker-id is not reachable from here, but the presence name is stable and
+   * is pushed to the broker at registration (session_start) and re-synced on every
+   * turn_start — both happen before any child is spawned. So we target the presence
+   * name, which mirrors pi-intercom's resolveIntercomPresenceName():
+   *   - named session  → its display name (pi.getSessionName())
+   *   - unnamed session → `subagent-chat-<first 8 chars of pi session id>`
+   *
+   * Targeting the pi session UUID (ctx.sessionManager.getSessionId()) does NOT work
+   * — the broker doesn't know it, and the send fails with "Session not found".
+   * We deliberately do NOT call setSessionName() here: a name set mid-turn is not
+   * synced until the next turn_start, so a freshly-set random name would be
+   * unresolvable by the child. Reading the existing identity is race-free.
+   */
+  function resolveSupervisorTarget(
+    pi: ExtensionAPI,
+    ctx: Parameters<Parameters<typeof pi.registerCommand>[1]["handler"]>[1],
+  ): string {
+    const displayName = pi.getSessionName()?.trim();
+    if (displayName) return displayName;
+    const piSessionId = ctx.sessionManager.getSessionId();
+    const normalized = piSessionId.startsWith("session-") ? piSessionId.slice("session-".length) : piSessionId;
+    return `subagent-chat-${normalized.slice(0, 8)}`;
+  }
+
   /** Shared spawn logic used by the tool and both commands. */
   function startRun(
     script: string,
@@ -130,9 +163,7 @@ export default function (pi: ExtensionAPI) {
     if (!selected) return;
 
     const command = buildRunCommand(selected.key, runDir);
-    const existingName = pi.getSessionName();
-    const supervisorTarget = existingName ?? `test-run-${Math.random().toString(36).slice(2, 10)}`;
-    if (!existingName) pi.setSessionName(supervisorTarget);
+    const supervisorTarget = resolveSupervisorTarget(pi, ctx);
 
     const run = startRun(selected.key, command, runDir, supervisorTarget, config.defaultModel);
     ctx.ui.notify(
@@ -213,10 +244,7 @@ export default function (pi: ExtensionAPI) {
 
       const command = buildRunCommand(selected.key, runDir);
 
-      const existingName = pi.getSessionName();
-      const supervisorTarget =
-        existingName ?? `test-run-${Math.random().toString(36).slice(2, 10)}`;
-      if (!existingName) pi.setSessionName(supervisorTarget);
+      const supervisorTarget = resolveSupervisorTarget(pi, ctx);
 
       const run = startRun(selected.key, command, runDir, supervisorTarget, params.model ?? config.defaultModel);
 

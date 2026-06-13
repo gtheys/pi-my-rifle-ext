@@ -112,7 +112,10 @@ export function spawnTestSubagent(options: SpawnOptions): void {
     "-p",
     "--session", options.sessionFile,
     "--name", `test: ${cwdBase} › ${scriptName}`,
-    "--tools", "bash",
+    // AIDEV-NOTE: --tools is an allowlist; if contact_supervisor is omitted it gets
+    // filtered out even though pi-intercom registers it from the PI_SUBAGENT_* env vars.
+    // Without it in the allowlist the child has no result channel back to the supervisor.
+    "--tools", "bash,contact_supervisor",
     "--append-system-prompt", promptFile,
     "Run the test command as instructed in the system prompt.",
   ];
