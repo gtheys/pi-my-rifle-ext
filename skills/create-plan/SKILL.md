@@ -208,6 +208,8 @@ After structure approval:
 
 After the spec is written and approved, create the taskwarrior tracking structure.
 
+> **Note:** All tasks are created under `SalaryHero.$PROJECT` — see Taskwarrior Integration Guideline 7.
+
 ### 5.1 Create spec task (if not already existing)
 
 ```bash
@@ -218,7 +220,7 @@ If no spec task exists:
 
 ```bash
 task add "SPEC: $JIRA_ID $jirasummary" \
-  project:$PROJECT \
+  project:SalaryHero.$PROJECT \
   jiraid:$JIRA_ID \
   work_state:approved \
   +spec
@@ -237,7 +239,7 @@ For each phase in the spec:
 ```bash
 # Create phase
 task add "1. Phase: <phase-name>" \
-  project:$PROJECT \
+  project:SalaryHero.$PROJECT \
   jiraid:$JIRA_ID \
   repository:$REPO \
   work_state:todo \
@@ -248,7 +250,7 @@ PHASE_UUID=$(task <phase-id> _get uuid)
 
 # Create implementation tasks for this phase
 task add "1.1 <task-title>" \
-  project:$PROJECT \
+  project:SalaryHero.$PROJECT \
   jiraid:$JIRA_ID \
   repository:$REPO \
   work_state:todo \
@@ -450,3 +452,4 @@ Always separate into two categories:
 4. **Link via `jiraid` UDA** — never use `depends:` for Jira/spec/phase relationships
 5. **Annotate with context** — always add spec file reference as annotation
 6. **Report task hierarchy** after creation — show the full structure to the user
+7. **Nest projects under `SalaryHero`** — always assign `project:SalaryHero.$PROJECT` (never a bare `project:$PROJECT`) so every spec, phase, and impl task rolls up under the `SalaryHero` parent and can be scoped with `project:SalaryHero` or a matching context
