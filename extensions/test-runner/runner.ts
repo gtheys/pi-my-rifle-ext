@@ -36,6 +36,8 @@ export interface RunnerOptions {
   cwd: string;
   /** Intercom target name for pi-intercom contact_supervisor. */
   supervisorTarget?: string;
+  /** Model ID to pass to the subagent via --model. Uses pi default when omitted. */
+  model?: string;
   signal?: AbortSignal;
   /** Called with a short progress string as the subagent produces output. */
   onUpdate?: (text: string) => void;
@@ -172,8 +174,13 @@ export async function runTestSubagent(options: RunnerOptions): Promise<TestRunRe
       "--no-session",
       "--tools", "bash",
       "--append-system-prompt", promptFile,
-      "Run the test command as instructed in the system prompt.",
     ];
+
+    if (options.model) {
+      args.push("--model", options.model);
+    }
+
+    args.push("Run the test command as instructed in the system prompt.");
 
     // AIDEV-NOTE: PI_SUBAGENT_* env vars are read by pi-intercom on startup in the child
     // process. When present, pi-intercom registers the contact_supervisor tool so the

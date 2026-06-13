@@ -19,7 +19,25 @@ import { Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { buildRunCommand, discoverTestScripts } from "./discover.ts";
 import { runTestSubagent, type TestFailure, type TestRunResult } from "./runner.ts";
 
+// AIDEV-NOTE: Persisted state for the test-runner extension.
+// defaultModel survives session restarts via pi.appendEntry.
+interface TestRunnerState {
+  defaultModel?: string;
+}
+
 export default function (pi: ExtensionAPI) {
+  let state: TestRunnerState = {};
+
+  pi.on("session_start", async (_event, ctx) => {
+    // Restore persisted state from the most recent custom entry
+    for (let i = ctx.sessionManager.getEntries().length - 1; i >= 0; i--) {
+      const e = ctx.sessionManager.getEntries()[i];
+      if (e.type === "custom" && e.customType === "test-runner-state" && e.data) {
+        state = e.data as TestRunnerState;
+        break;
+      }
+    }
+  });
   pi.registerTool({
     name: "run_tests",
     label: "Run Tests",
@@ -30,6 +48,12 @@ export default function (pi: ExtensionAPI) {
     ].join(" "),
     promptSnippet: "Run JS/TS tests from package.json and return structured failures",
     parameters: Type.Object({
+      model: Type.Optional(
+        Type.String({
+          description:
+            "Model ID for the subagent (e.g. 'claude-haiku-4-5'). Overrides the configured default.",
+        }),
+      ),
       script: Type.Optional(
         Type.String({
           description:
@@ -94,12 +118,14 @@ export default function (pi: ExtensionAPI) {
         pi.setSessionName(supervisorTarget);
       }
 
+      const model = params.model ?? state.defaultModel;
+
       // AIDEV-NOTE: Fire-and-forget — we do NOT await the subagent. The tool returns
       // immediately so the main session is unblocked. When the subagent finishes,
       // pi.sendMessage() injects the result back and triggerTurn re-engages the LLM.
       // We intentionally omit the abort signal so the background run survives agent turns.
       // Progress during the run comes via pi-intercom contact_supervisor messages.
-      runTestSubagent({ command, cwd: runDir, supervisorTarget })
+      runTestSubagent({ command, cwd: runDir, supervisorTarget, model })
         .then((result) => {
           const summary = buildSummaryText(selected!.key, command, result);
           const icon = result.failed > 0 || result.exitCode !== 0 ? "⚠️" : "✅";
@@ -270,6 +296,52 @@ export default function (pi: ExtensionAPI) {
         ? `Please run the test script "${scriptArg}" using the run_tests tool.`
         : "Please run the tests using the run_tests tool.";
       pi.sendUserMessage(msg);
+    },
+  });
+
+  // AIDEV-NOTE: /test-runner command manages extension config.
+  // Usage: /test-runner model <id>  — set default model
+  //        /test-runner model       — show current default
+  //        /test-runner reset       — clear all config
+  pi.registerCommand("test-runner", {
+    description: "Configure the test-runner extension (model, reset)",
+    handler: (args, ctx) => {
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+      const sub = parts[0];
+
+      if (sub === "model") {
+        const modelId = parts[1];
+        if (!modelId) {
+          ctx.ui.notify(
+            state.defaultModel
+              ? `test-runner default model: ${state.defaultModel}`
+              : "test-runner default model: (pi default)",
+            "info",
+          );
+          return;
+        }
+        state.defaultModel = modelId;
+        pi.appendEntry("test-runner-state", state);
+        ctx.ui.notify(`test-runner default model set to: ${modelId}`, "info");
+        return;
+      }
+
+      if (sub === "reset") {
+        state = {};
+        pi.appendEntry("test-runner-state", state);
+        ctx.ui.notify("test-runner config reset", "info");
+        return;
+      }
+
+      // No subcommand — show current config
+      const lines = ["test-runner config:"];
+      lines.push(`  model: ${state.defaultModel ?? "(pi default)"}`);
+      lines.push("");
+      lines.push("Commands:");
+      lines.push("  /test-runner model <id>   set default subagent model");
+      lines.push("  /test-runner model        show current model");
+      lines.push("  /test-runner reset        clear all config");
+      ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 }
