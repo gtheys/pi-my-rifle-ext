@@ -76,7 +76,7 @@ export default function (pi: ExtensionAPI) {
     config = loadConfig();
   });
 
-  /** Shared spawn logic used by both the tool and the /run-tests command. */
+  /** Shared spawn logic used by the tool and both commands. */
   function startRun(
     script: string,
     command: string,
@@ -90,6 +90,57 @@ export default function (pi: ExtensionAPI) {
     activeRuns.push(run);
     spawnTestSubagent({ command, cwd: runDir, runId, sessionFile, supervisorTarget, model });
     return run;
+  }
+
+  // AIDEV-NOTE: Shared discovery + picker logic used by /test-runner (default) and /run-tests.
+  async function resolveAndRun(
+    scriptKey: string,
+    cwd: string,
+    ctx: Parameters<Parameters<typeof pi.registerCommand>[1]["handler"]>[1],
+  ): Promise<void> {
+    const { scripts, packageDir } = discoverTestScripts(cwd);
+    if (scripts.length === 0) {
+      ctx.ui.notify(`No test scripts found in package.json (searched from ${cwd})`, "warn");
+      return;
+    }
+
+    const runDir = packageDir ?? cwd;
+    let selected: (typeof scripts)[0] | undefined;
+
+    if (scriptKey) {
+      selected = scripts.find((s) => s.key === scriptKey);
+      if (!selected) {
+        ctx.ui.notify(
+          `Script "${scriptKey}" not found. Available: ${scripts.map((s) => s.key).join(", ")}`,
+          "warn",
+        );
+        return;
+      }
+    } else if (scripts.length === 1) {
+      selected = scripts[0];
+    } else if (ctx.hasUI) {
+      const choices = scripts.map((s) => `${s.key}: ${s.command}`);
+      const choice = await ctx.ui.select("Which test script to run?", choices);
+      if (!choice) return;
+      selected = scripts[scripts.findIndex((s) => `${s.key}: ${s.command}` === choice)];
+    } else {
+      selected = scripts[0];
+    }
+
+    if (!selected) return;
+
+    const command = buildRunCommand(selected.key, runDir);
+    const existingName = pi.getSessionName();
+    const supervisorTarget = existingName ?? `test-run-${Math.random().toString(36).slice(2, 10)}`;
+    if (!existingName) pi.setSessionName(supervisorTarget);
+
+    const run = startRun(selected.key, command, runDir, supervisorTarget, config.defaultModel);
+    ctx.ui.notify(
+      `Tests started: ${command}\n/test-runner switch to watch  •  /test-runner back to return`,
+      "info",
+    );
+    // Keep the session file path accessible in the notification for reference
+    ctx.ui.setStatus("test-runner", `⏳ ${selected.key} — ${run.runId}`);
   }
 
 
@@ -234,58 +285,9 @@ export default function (pi: ExtensionAPI) {
   // Results are injected into the transcript via pi.sendMessage(display:true)
   // without triggerTurn, so the user decides whether to ask the LLM to act.
   pi.registerCommand("run-tests", {
-    description: "Run test scripts from the nearest package.json (non-blocking, no LLM turn)",
+    description: "Alias for /test-runner — run test scripts from package.json",
     handler: async (args, ctx) => {
-      const workDir = ctx.cwd;
-      const { scripts, packageDir } = discoverTestScripts(workDir);
-
-      if (scripts.length === 0) {
-        ctx.ui.notify(`No test scripts found in package.json (searched from ${workDir})`, "warn");
-        return;
-      }
-
-      const runDir = packageDir ?? workDir;
-      let selected: (typeof scripts)[0] | undefined;
-      const scriptKey = args.trim();
-
-      if (scriptKey) {
-        selected = scripts.find((s) => s.key === scriptKey);
-        if (!selected) {
-          ctx.ui.notify(
-            `Script "${scriptKey}" not found. Available: ${scripts.map((s) => s.key).join(", ")}`,
-            "warn",
-          );
-          return;
-        }
-      } else if (scripts.length === 1) {
-        selected = scripts[0];
-      } else if (ctx.hasUI) {
-        const choices = scripts.map((s) => `${s.key}: ${s.command}`);
-        const choice = await ctx.ui.select("Which test script to run?", choices);
-        if (!choice) return;
-        selected = scripts[scripts.findIndex((s) => `${s.key}: ${s.command}` === choice)];
-      } else {
-        selected = scripts[0];
-      }
-
-      if (!selected) return;
-
-      const command = buildRunCommand(selected.key, runDir);
-
-      const existingName = pi.getSessionName();
-      const supervisorTarget =
-        existingName ?? `test-run-${Math.random().toString(36).slice(2, 10)}`;
-      if (!existingName) pi.setSessionName(supervisorTarget);
-
-      const run = startRun(selected.key, command, runDir, supervisorTarget, config.defaultModel);
-
-      // AIDEV-NOTE: No triggerTurn — session stays idle. Results arrive via
-      // pi-intercom contact_supervisor as inline messages in the main session.
-      // Use /test-runner switch to watch the subagent transcript live.
-      ctx.ui.notify(
-        `Tests started: ${command}\nSession: ${run.sessionFile}\n/test-runner switch to watch • /test-runner back to return`,
-        "info",
-      );
+      await resolveAndRun(args.trim(), ctx.cwd, ctx);
     },
   });
 
@@ -370,27 +372,28 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // ── status / help ────────────────────────────────────────────────────────
-      const lines = ["test-runner:"];
-      if (activeRuns.length > 0) {
-        lines.push("");
-        lines.push("Active runs:");
-        for (const r of activeRuns) {
-          const secs = Math.round((Date.now() - r.started) / 1000);
-          const age = secs < 60 ? `${secs}s` : `${Math.round(secs / 60)}m`;
-          lines.push(`  ${r.script} (${age}) — ${r.sessionFile}`);
+      // ── status ─────────────────────────────────────────────────────────────
+      if (sub === "status") {
+        const lines = ["test-runner status:"];
+        lines.push(`  model: ${config.defaultModel ?? "(pi default)"}`);
+        if (activeRuns.length > 0) {
+          lines.push("");
+          lines.push("Active runs this session:");
+          for (const r of activeRuns) {
+            const secs = Math.round((Date.now() - r.started) / 1000);
+            const age = secs < 60 ? `${secs}s` : `${Math.round(secs / 60)}m`;
+            lines.push(`  ${r.script} (${age}) — ${r.runId}`);
+          }
         }
+        lines.push("");
+        lines.push("/test-runner switch | back | model | reset | status");
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
       }
-      lines.push("");
-      lines.push("Commands:");
-      lines.push("  /test-runner switch        switch into most recent test session");
-      lines.push("  /test-runner back          return to previous session");
-      lines.push("  /test-runner model <id>    set default subagent model");
-      lines.push("  /test-runner model         show current model");
-      lines.push("  /test-runner reset         clear all config");
-      lines.push("");
-      lines.push(`Config: ${config.defaultModel ? `model=${config.defaultModel}` : "(defaults)"}`);
-      ctx.ui.notify(lines.join("\n"), "info");
+      // ── default: run tests ────────────────────────────────────────────────
+      // /test-runner [script-key] starts a test run.
+      // Unrecognised subcommands are treated as script keys (e.g. /test-runner test:unit).
+      await resolveAndRun(args.trim(), ctx.cwd, ctx);
     },
   });
 }
