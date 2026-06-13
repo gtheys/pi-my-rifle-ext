@@ -14,30 +14,46 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { buildRunCommand, discoverTestScripts } from "./discover.ts";
 import { runTestSubagent, type TestFailure, type TestRunResult } from "./runner.ts";
 
-// AIDEV-NOTE: Persisted state for the test-runner extension.
-// defaultModel survives session restarts via pi.appendEntry.
-interface TestRunnerState {
+// AIDEV-NOTE: Config is persisted to ~/.pi/agent/test-runner/config.json so it
+// survives new sessions. pi.appendEntry() is NOT used — that is session-scoped only.
+interface TestRunnerConfig {
   defaultModel?: string;
 }
 
-export default function (pi: ExtensionAPI) {
-  let state: TestRunnerState = {};
+function getConfigPath(): string {
+  return path.join(getAgentDir(), "test-runner", "config.json");
+}
 
-  pi.on("session_start", async (_event, ctx) => {
-    // Restore persisted state from the most recent custom entry
-    for (let i = ctx.sessionManager.getEntries().length - 1; i >= 0; i--) {
-      const e = ctx.sessionManager.getEntries()[i];
-      if (e.type === "custom" && e.customType === "test-runner-state" && e.data) {
-        state = e.data as TestRunnerState;
-        break;
-      }
-    }
+function loadConfig(): TestRunnerConfig {
+  try {
+    return JSON.parse(fs.readFileSync(getConfigPath(), "utf-8")) as TestRunnerConfig;
+  } catch {
+    return {};
+  }
+}
+
+function saveConfig(config: TestRunnerConfig): void {
+  const configPath = getConfigPath();
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+}
+
+export default function (pi: ExtensionAPI) {
+  let config: TestRunnerConfig = loadConfig();
+
+  pi.on("session_start", async () => {
+    // Re-read from disk each session start so changes from other sessions are picked up
+    config = loadConfig();
   });
+
   pi.registerTool({
     name: "run_tests",
     label: "Run Tests",
@@ -118,7 +134,7 @@ export default function (pi: ExtensionAPI) {
         pi.setSessionName(supervisorTarget);
       }
 
-      const model = params.model ?? state.defaultModel;
+      const model = params.model ?? config.defaultModel;
 
       // AIDEV-NOTE: Fire-and-forget — we do NOT await the subagent. The tool returns
       // immediately so the main session is unblocked. When the subagent finishes,
@@ -313,29 +329,29 @@ export default function (pi: ExtensionAPI) {
         const modelId = parts[1];
         if (!modelId) {
           ctx.ui.notify(
-            state.defaultModel
-              ? `test-runner default model: ${state.defaultModel}`
+            config.defaultModel
+              ? `test-runner default model: ${config.defaultModel}`
               : "test-runner default model: (pi default)",
             "info",
           );
           return;
         }
-        state.defaultModel = modelId;
-        pi.appendEntry("test-runner-state", state);
+        config.defaultModel = modelId;
+        saveConfig(config);
         ctx.ui.notify(`test-runner default model set to: ${modelId}`, "info");
         return;
       }
 
       if (sub === "reset") {
-        state = {};
-        pi.appendEntry("test-runner-state", state);
+        config = {};
+        saveConfig(config);
         ctx.ui.notify("test-runner config reset", "info");
         return;
       }
 
       // No subcommand — show current config
       const lines = ["test-runner config:"];
-      lines.push(`  model: ${state.defaultModel ?? "(pi default)"}`);
+      lines.push(`  model: ${config.defaultModel ?? "(pi default)"}`);
       lines.push("");
       lines.push("Commands:");
       lines.push("  /test-runner model <id>   set default subagent model");
