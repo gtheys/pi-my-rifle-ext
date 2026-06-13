@@ -304,14 +304,75 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // AIDEV-NOTE: /run-tests runs tests WITHOUT going through the LLM at all.
+  // Command handlers have no agent turn — fire-and-forget here truly means
+  // the session stays idle while tests run and after results arrive.
+  // Results are injected into the transcript via pi.sendMessage(display:true)
+  // without triggerTurn, so the user decides whether to ask the LLM to act.
   pi.registerCommand("run-tests", {
-    description: "Run test scripts from the nearest package.json",
-    handler: (args) => {
-      const scriptArg = args.trim();
-      const msg = scriptArg
-        ? `Please run the test script "${scriptArg}" using the run_tests tool.`
-        : "Please run the tests using the run_tests tool.";
-      pi.sendUserMessage(msg);
+    description: "Run test scripts from the nearest package.json (non-blocking, no LLM turn)",
+    handler: async (args, ctx) => {
+      const workDir = ctx.cwd;
+      const { scripts, packageDir } = discoverTestScripts(workDir);
+
+      if (scripts.length === 0) {
+        ctx.ui.notify(`No test scripts found in package.json (searched from ${workDir})`, "warn");
+        return;
+      }
+
+      const runDir = packageDir ?? workDir;
+      let selected: (typeof scripts)[0] | undefined;
+      const scriptKey = args.trim();
+
+      if (scriptKey) {
+        selected = scripts.find((s) => s.key === scriptKey);
+        if (!selected) {
+          ctx.ui.notify(
+            `Script "${scriptKey}" not found. Available: ${scripts.map((s) => s.key).join(", ")}`,
+            "warn",
+          );
+          return;
+        }
+      } else if (scripts.length === 1) {
+        selected = scripts[0];
+      } else if (ctx.hasUI) {
+        const choices = scripts.map((s) => `${s.key}: ${s.command}`);
+        const choice = await ctx.ui.select("Which test script to run?", choices);
+        if (!choice) return;
+        selected = scripts[scripts.findIndex((s) => `${s.key}: ${s.command}` === choice)];
+      } else {
+        selected = scripts[0];
+      }
+
+      if (!selected) return;
+
+      const command = buildRunCommand(selected.key, runDir);
+      const model = config.defaultModel;
+
+      const existingName = pi.getSessionName();
+      const supervisorTarget =
+        existingName ?? `test-run-${Math.random().toString(36).slice(2, 10)}`;
+      if (!existingName) pi.setSessionName(supervisorTarget);
+
+      ctx.ui.notify(`Tests started: ${command}`, "info");
+
+      const capturedScript = selected;
+      runTestSubagent({ command, cwd: runDir, supervisorTarget, model })
+        .then((result) => {
+          const summary = buildSummaryText(capturedScript.key, command, result);
+          const icon = result.failed > 0 || result.exitCode !== 0 ? "⚠️" : "✅";
+          // AIDEV-NOTE: No triggerTurn — session stays idle after results arrive.
+          // User reads the transcript entry and manually asks the LLM to act if needed.
+          pi.sendMessage({
+            customType: "test-runner-complete",
+            content: `${icon} Test run complete (\`${capturedScript.key}\`):\n\n${summary}`,
+            display: true,
+            details: { script: capturedScript.key, command, cwd: runDir, ...result },
+          });
+        })
+        .catch((err: unknown) => {
+          ctx.ui.notify(`Test runner error: ${String(err)}`, "error");
+        });
     },
   });
 

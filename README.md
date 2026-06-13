@@ -118,7 +118,7 @@ intercom messages during the run.
 **Commands**
 
 ```
-/run-tests                          # trigger run_tests tool via LLM
+/run-tests                          # run tests — truly non-blocking, no LLM turn
 /run-tests test:unit                # run a specific script
 
 /test-runner                        # show current config
@@ -126,6 +126,19 @@ intercom messages during the run.
 /test-runner model                  # show current default model
 /test-runner reset                  # clear all config
 ```
+
+**`/run-tests` vs `run_tests` tool**
+
+| | `/run-tests` command | `run_tests` tool |
+|--|---------------------|------------------|
+| Triggered by | You (directly) | LLM |
+| LLM turn while running | None | One turn for "started", one for results |
+| Results delivery | `pi.sendMessage` in transcript, no LLM | `pi.sendMessage` + `triggerTurn` |
+| Session stays idle? | ✓ Always | ✗ LLM responds twice |
+| When to use | Normal test runs | LLM-driven workflows |
+
+Use `/run-tests` for day-to-day test runs. The `run_tests` tool is for when the
+LLM itself needs to check test results as part of a larger task.
 
 **Configuration**
 
