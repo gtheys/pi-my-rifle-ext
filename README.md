@@ -70,7 +70,7 @@ pi -e ./extensions/index.ts
 | `extensions/desktop-notify` | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
 | `extensions/sonarqube` | `/sonarqube` command — fetches SonarCloud coverage gaps and quality issues for a PR, generates actionable report | Code Quality |
 | `extensions/pr-quality` | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
-| `extensions/test-runner` | `run_tests` tool — discovers and runs JS/TS tests from `package.json` using an isolated subagent; results injected back when done | Testing |
+| `extensions/test-runner` | `run_tests` tool — discovers and runs JS/TS tests from `package.json` using an isolated subagent; results injected back when done ⚠️ *experimental/WIP* | Testing |
 
 ### Published Packages
 
@@ -84,6 +84,8 @@ pi -e ./extensions/index.ts
 ## Testing Extensions
 
 ### `run_tests` — Test Runner
+
+> ⚠️ **Experimental / Work in Progress** — behaviour may change; use with caution.
 
 Discovers and runs JS/TS test scripts from the nearest `package.json`. The test
 execution is **non-blocking** — the subagent runs in the background and results
