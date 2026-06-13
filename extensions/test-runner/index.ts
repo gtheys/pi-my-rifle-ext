@@ -44,7 +44,7 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
 
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const workDir = params.cwd ?? ctx.cwd;
       const { scripts, packageDir } = discoverTestScripts(workDir);
 
@@ -94,30 +94,45 @@ export default function (pi: ExtensionAPI) {
         pi.setSessionName(supervisorTarget);
       }
 
-      onUpdate?.({
-        content: [{ type: "text", text: `Starting: ${command}` }],
-        details: { running: true, script: selected.key, command, cwd: runDir },
-      });
-
-      const result = await runTestSubagent({
-        command,
-        cwd: runDir,
-        supervisorTarget,
-        signal: signal ?? undefined,
-        onUpdate: (text) => {
-          onUpdate?.({
-            content: [{ type: "text", text: text }],
-            details: { running: true },
-          });
-        },
-      });
-
-      const summary = buildSummaryText(selected.key, command, result);
+      // AIDEV-NOTE: Fire-and-forget — we do NOT await the subagent. The tool returns
+      // immediately so the main session is unblocked. When the subagent finishes,
+      // pi.sendMessage() injects the result back and triggerTurn re-engages the LLM.
+      // We intentionally omit the abort signal so the background run survives agent turns.
+      // Progress during the run comes via pi-intercom contact_supervisor messages.
+      runTestSubagent({ command, cwd: runDir, supervisorTarget })
+        .then((result) => {
+          const summary = buildSummaryText(selected!.key, command, result);
+          const icon = result.failed > 0 || result.exitCode !== 0 ? "⚠️" : "✅";
+          pi.sendMessage(
+            {
+              customType: "test-runner-complete",
+              content: `${icon} Test run complete (\`${selected!.key}\`):\n\n${summary}`,
+              display: true,
+              details: { script: selected!.key, command, cwd: runDir, ...result },
+            },
+            { deliverAs: "followUp", triggerTurn: true },
+          );
+        })
+        .catch((err: unknown) => {
+          pi.sendMessage(
+            {
+              customType: "test-runner-complete",
+              content: `❌ Test runner error for \`${selected!.key}\`: ${String(err)}`,
+              display: true,
+              details: { script: selected!.key, command, cwd: runDir, error: String(err) },
+            },
+            { deliverAs: "followUp", triggerTurn: true },
+          );
+        });
 
       return {
-        content: [{ type: "text", text: summary }],
-        details: { script: selected.key, command, cwd: runDir, ...result },
-        isError: result.failed > 0 || result.exitCode !== 0,
+        content: [
+          {
+            type: "text",
+            text: `Tests started in background: \`${command}\`\n\nSession is unlocked — you'll be notified here when the run completes.`,
+          },
+        ],
+        details: { running: true, script: selected.key, command, cwd: runDir },
       };
     },
 
