@@ -17,7 +17,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -225,14 +225,6 @@ export default function (pi: ExtensionAPI) {
       }
 
       return new Text(theme.fg("muted", text), 0, 0);
-    },
-
-      if (details.command) {
-        container.addChild(new Spacer(1));
-        container.addChild(new Text(theme.fg("dim", `$ ${details.command}`), 0, 0));
-      }
-
-      return container;
     },
   });
 
