@@ -29,35 +29,17 @@ Then wait for the user's input.
 
 ## Resolving the Spec File Location
 
-1. **Get the current repo name**:
+Use the `resolve_spec_path` tool with the Jira ID and `jirasummary`. It handles repo name detection, `$LLM_NOTES_ROOT`, and slug generation automatically.
 
-   ```bash
-   basename "$(git remote get-url origin 2>/dev/null | sed 's/\.git$//')" 2>/dev/null
-   ```
-
-   If this fails, fall back to `basename "$(git rev-parse --show-toplevel 2>/dev/null)"`, then to `basename "$PWD"`.
-
-2. **Resolve the spec path**:
-   - If `$LLM_NOTES_ROOT` is set → `$LLM_NOTES_ROOT/<repo>/notes/specs/<JIRAKEY>__<slug>.md`
-   - Otherwise → `notes/specs/<JIRAKEY>__<slug>.md` relative to repo root
-
-3. **Generate `<slug>` from `jirasummary`**:
-   - Lowercase
-   - Replace spaces with dashes
-   - Max 5 words
-   - Example: "Implement User Balance Write" → `implement-user-balance-write`
-
-Full example: `notes/specs/IMP-7070__implement-user-balance-write.md`
+Full example result: `notes/specs/IMP-7070__implement-user-balance-write.md`
 
 ## Step 0: Fetch Ticket Context from Taskwarrior
 
 ### 0.1 Fetch the Jira task
 
-```bash
-task jiraid:$JIRA_ID +jira export
-```
+Use the `tw_get_ticket` tool with the Jira ID.
 
-Parse the JSON output. Key fields:
+Key fields returned:
 
 | Field | Purpose |
 |-------|---------|
@@ -79,23 +61,13 @@ No taskwarrior task found for Jira ID "$JIRA_ID". Make sure bugwarrior has synce
 
 ### 0.2 Fetch the spec task (if one exists)
 
-```bash
-task jiraid:$JIRA_ID +spec export
-```
-
-If found, extract the spec file path from annotations (pattern: `Spec(repo=<repo>): <path>`). Read the spec file FULLY if it exists.
+Use the `tw_get_spec_task` tool with the Jira ID. The `specPath` field in the result contains the spec file path if an annotation exists. Read the spec file FULLY if it exists.
 
 ### 0.3 Fetch existing phases and implementation tasks
 
-```bash
-# Get all phases
-task jiraid:$JIRA_ID +phase export
+Use `tw_get_phases` and `tw_get_impl_tasks` tools with the Jira ID.
 
-# Get all implementation tasks
-task jiraid:$JIRA_ID +impl export
-```
-
-If phases/tasks already exist, review them to understand prior planning. Check `work_state` values and annotations for references to existing spec files.
+If phases/tasks already exist, review them to understand prior planning. Check `work_state` values for existing spec files.
 
 ### 0.4 Present summary to user
 
@@ -200,63 +172,30 @@ Once aligned on approach:
 
 After structure approval:
 
-1. **Write the spec** to the resolved spec path (see "Resolving the Spec File Location" above).
+1. **Resolve the spec path** using the `resolve_spec_path` tool with the Jira ID and `jirasummary`.
 
-2. **Use the template** at the end of this document.
+2. **Write the spec** to the resolved path.
+
+3. **Use the template** at the end of this document.
 
 ## Step 5: Create Taskwarrior Tasks
 
 After the spec is written and approved, create the taskwarrior tracking structure.
 
-> **Note:** All tasks are created under `SalaryHero.$PROJECT` — see Taskwarrior Integration Guideline 7.
+> **Note:** All tasks are created under `SalaryHero.$PROJECT` — the tools handle this prefix automatically.
 
 ### 5.1 Create spec task (if not already existing)
 
-```bash
-task jiraid:$JIRA_ID +spec export
-```
-
-If no spec task exists:
-
-```bash
-task add "SPEC: $JIRA_ID $jirasummary" \
-  project:SalaryHero.$PROJECT \
-  jiraid:$JIRA_ID \
-  work_state:approved \
-  +spec
-```
-
-Add annotation linking to the spec file:
-
-```bash
-task <spec-uuid> annotate "Spec(repo=$REPO): notes/specs/$JIRA_ID__$SLUG.md"
-```
+Check with `tw_get_spec_task`. If no spec task exists, use `tw_create_spec_task` with:
+- `jira_id`, `summary`, `project`, `repo`
+- `spec_path` — the relative path returned by `resolve_spec_path` (relative portion, e.g. `notes/specs/IMP-7070__slug.md`)
 
 ### 5.2 Create phase and implementation tasks
 
 For each phase in the spec:
 
-```bash
-# Create phase
-task add "1. Phase: <phase-name>" \
-  project:SalaryHero.$PROJECT \
-  jiraid:$JIRA_ID \
-  repository:$REPO \
-  work_state:todo \
-  +impl +phase
-
-# Get phase UUID
-PHASE_UUID=$(task <phase-id> _get uuid)
-
-# Create implementation tasks for this phase
-task add "1.1 <task-title>" \
-  project:SalaryHero.$PROJECT \
-  jiraid:$JIRA_ID \
-  repository:$REPO \
-  work_state:todo \
-  +impl \
-  depends:$PHASE_UUID
-```
+1. Use `tw_create_phase` — returns the phase UUID
+2. Use `tw_create_impl_task` for each task under that phase, passing the phase UUID as `depends_uuid`
 
 ### 5.3 Report created structure
 
@@ -288,7 +227,7 @@ Taskwarrior hierarchy created for $JIRA_ID:
 
 This skill works with:
 
-- `/skill:taskwarrior-plan` — Ticket management, status transitions, and workflow states. Reference this for query patterns and `work_state` values.
+- `/skill:taskwarrior-plan` — Ticket management, status transitions, and workflow states. Reference this for `work_state` values.
 - `/skill:notes-locator` — Find existing specs, research docs, tickets, and PR descriptions in the notes directory.
 - `/skill:codebase-locator` — Find source files related to the ticket.
 - `/skill:codebase-analyzer` — Understand current implementation details.
@@ -446,10 +385,8 @@ Always separate into two categories:
 
 ## Taskwarrior Integration Guidelines
 
-1. **Always use `export` command** for structured data — `task ... export` returns JSON
-2. **Always check for existing tasks** before creating new ones
-3. **Always set both `status` and `work_state`** when completing tasks
-4. **Link via `jiraid` UDA** — never use `depends:` for Jira/spec/phase relationships
-5. **Annotate with context** — always add spec file reference as annotation
-6. **Report task hierarchy** after creation — show the full structure to the user
-7. **Nest projects under `SalaryHero`** — always assign `project:SalaryHero.$PROJECT` (never a bare `project:$PROJECT`) so every spec, phase, and impl task rolls up under the `SalaryHero` parent and can be scoped with `project:SalaryHero` or a matching context
+1. **Always check for existing tasks** before creating new ones — use `tw_get_spec_task`, `tw_get_phases`, `tw_get_impl_tasks`
+2. **Link via `jiraid` UDA** — all tools handle this automatically
+3. **Annotate with context** — `tw_create_spec_task` adds the spec file annotation automatically
+4. **Report task hierarchy** after creation — show the full structure to the user
+5. **Nest projects under `SalaryHero`** — all tools prefix project with `SalaryHero.` automatically

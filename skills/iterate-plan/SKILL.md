@@ -9,19 +9,16 @@ You are tasked with updating existing implementation specs based on user feedbac
 
 ## Resolving the Notes Directory
 
-When looking for spec files, resolve the path:
+Use the `resolve_spec_path` tool with the Jira ID and summary to compute the canonical spec path. It handles repo name detection and `$LLM_NOTES_ROOT` automatically.
 
-1. **Get the current repo name**:
-
-   ```bash
-   basename "$(git remote get-url origin 2>/dev/null | sed 's/\.git$//')" 2>/dev/null
-   ```
-
-   If this fails, fall back to `basename "$(git rev-parse --show-toplevel 2>/dev/null)"`, then to `basename "$PWD"`.
-
-2. **Resolve the notes path**:
-   - If `$LLM_NOTES_ROOT` is set → `$LLM_NOTES_ROOT/<repo>/notes/specs/`
-   - Otherwise → `notes/specs/` relative to the repo root
+Alternatively, list recent specs:
+```bash
+ls -lt notes/specs/ | head
+```
+Or search by Jira ID:
+```bash
+ls notes/specs/ | grep -i IMP-7070
+```
 
 ## Initial Response
 
@@ -91,7 +88,6 @@ If the user's feedback requires understanding new code patterns or validating as
    - `/skill:codebase-analyzer` — understand implementation details
    - `/skill:codebase-pattern-finder` — find similar patterns
    - `/skill:notes-locator` — find related research or decisions
-   - `/skill:notes-analyzer` — extract insights from documents
 
    **Be EXTREMELY specific about directories** — if the change involves "WUI", specify `humanlayer-wui/`; never use generic terms.
 
@@ -143,15 +139,15 @@ Get user confirmation before proceeding.
 
 ### Step 5: Update Taskwarrior (If Applicable)
 
-If the spec has associated taskwarrior tasks, update them to reflect changes:
+If the spec has associated taskwarrior tasks, update them to reflect changes.
 
-```bash
-# Find existing tasks for this Jira ID
-task jiraid:$JIRA_ID +impl export
-task jiraid:$JIRA_ID +phase export
-```
+Use these tools to inspect and update:
+- `tw_get_phases` — list existing phase tasks
+- `tw_get_impl_tasks` — list existing implementation tasks
+- `tw_create_phase` — add a new phase task (returns UUID)
+- `tw_create_impl_task` — add a new impl task under a phase
 
-If phases were added, removed, or restructured, update taskwarrior to match. See `/skill:taskwarrior-plan` for task management patterns.
+See `/skill:taskwarrior-plan` for task management patterns and `work_state` transitions.
 
 ### Step 6: Review
 
@@ -178,7 +174,6 @@ If phases were added, removed, or restructured, update taskwarrior to match. See
 - `/skill:create-plan` — Use this to create a new spec from scratch. Use `iterate-plan` to modify an existing one.
 - `/skill:taskwarrior-plan` — Ticket management and workflow states. Update tasks when spec phases change.
 - `/skill:notes-locator` — Find existing specs, research docs, and related notes.
-- `/skill:notes-analyzer` — Deep-dive analysis of notes to inform spec changes.
 - `/skill:codebase-locator` / `/skill:codebase-analyzer` / `/skill:codebase-pattern-finder` — Research the codebase when changes require new technical understanding.
 
 ## Important Guidelines
