@@ -28,6 +28,7 @@
       "./extensions/tool-pills/index.ts",
       "./extensions/pi-sem/index.ts",
       "./extensions/plan-tools/index.ts",
+      "./extensions/implement-plan/index.ts",
       "./extensions/leader-key/index.ts",
       "./extensions/desktop-notify/index.ts",
       "./extensions/sonarqube/sonarqube.ts",

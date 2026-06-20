@@ -9,7 +9,7 @@ Taskwarrior is the source of truth for *what* to do and *in what order*. The spe
 
 ## Input contract
 
-The user provides a **Jira ID** (e.g. `DP-121`). That's the only entry point. If they hand you a spec path directly, ask for the Jira ID so the taskwarrior tree is in scope — implementation without ticking off tasks breaks the workflow.
+The user provides a **Jira ID** (e.g. `DP-121`). That's the only entry point. You can also be invoked via `/implement <JIRA_ID>` — in that case the execution plan summary is pre-populated in the prompt; use it but still call `tw_execution_plan` to get the full structured data.
 
 If no Jira ID is given:
 
@@ -19,17 +19,13 @@ If no Jira ID is given:
 
 ### The `work_state` UDA — canonical values
 
-The `work_state` UDA is the per-task lifecycle field. It is **string-typed with an enumerated set**:
-
 ```
 approved, review, draft, rejected, todo, inprogress, done, new
 ```
 
-**Never invent values outside this list** — taskwarrior will accept the string but the color rules and downstream tooling expect exact matches. The states this skill writes are `inprogress` and `done`. The states it reads are `approved` (spec), `todo` (phases/subtasks pending), `inprogress` (in flight), `done` (complete). Other values (`new`, `draft`, `review`, `rejected`) appear on other task types but this skill doesn't transition them.
+Never invent values outside this list. The states this skill writes are `inprogress` and `done` (via `tw_advance_task`). The states it reads are `approved` (spec), `todo` / `inprogress` / `done` (phases/subtasks).
 
 ### The task tree
-
-For a single Jira ID, taskwarrior holds a small tree:
 
 ```
 Jira task         status:pending  tags:[jira]            work_state:new
@@ -45,75 +41,45 @@ Jira task         status:pending  tags:[jira]            work_state:new
         └── Subtask "2.1 ..."   depends: [<phase-uuid>]
 ```
 
-Key facts:
+## Step 1 — Pull the execution plan
 
-- **All tasks share `jiraid:<JIRA-ID>`**. That's the join key.
-- **Phase tasks** carry both `+impl` and `+phase`. Their description starts with `N. Phase:`.
-- **Subtasks** carry `+impl` only. Their description starts with `N.M`. They link to their phase via `depends:[<phase-uuid>]`.
-- **Order is encoded in the description prefix** (`1.`, `1.1`, `2.`, `2.1` …), not in `urgency` or `entry`.
-- **Spec path lives in an annotation** on the spec task: `Spec(repo=<repo>): <repo>/notes/specs/<file>.md`.
-- **work_state progression for impl tasks:** `todo` → `inprogress` → `done`. Move it as you go.
+Call `tw_execution_plan` with the Jira ID:
 
-## Step 1 — Pull the tree
-
-```bash
-JIRA_ID="DP-121"   # from the user
-
-# Everything for this Jira ID, in one shot
-task jiraid:"$JIRA_ID" status:pending export > /tmp/tw.json
+```
+tw_execution_plan({ jira_id: "DP-121" })
 ```
 
-Sanity check the result:
+This returns:
+- `plan.phases[]` — sorted by N. prefix, each with `uuid`, `number`, `name`, `work_state`, `subtasks[]`
+- `plan.currentPhase` — first non-done phase (resume target)
+- `plan.currentSubtask` — first non-done subtask within that phase (resume target)
+- `plan.doneSubtasks / plan.totalSubtasks` — progress counters
 
-```bash
-jq 'length' /tmp/tw.json   # should be >= 3 (jira + spec + at least one phase)
-```
-
-If empty: tell the user `bugwarrior-pull` may need to run, or the Jira ID is wrong, and stop.
+If no impl tasks found: tell the user `bugwarrior-pull` may need to run, or suggest `/plan <JIRA_ID>` if the spec hasn't been created yet.
 
 ## Step 2 — Locate the spec file
 
-Parse the spec task's annotation:
+Call `tw_get_spec_task` to get the spec task and extract the spec file path:
 
-```bash
-spec_rel=$(jq -r '
-  .[] | select(.tags // [] | index("spec")) |
-  .annotations[]?.description |
-  capture("Spec\\(repo=(?<repo>[^)]+)\\): (?<path>.+)") | .path
-' /tmp/tw.json)
-# e.g. "ewa-api/notes/specs/DP-121__e2e-db-tests-dual-read.md"
+```
+tw_get_spec_task({ jira_id: "DP-121" })
 ```
 
-Resolve the path against the workspace. If `$LLM_NOTES_ROOT` is set, the spec lives at `$LLM_NOTES_ROOT/$spec_rel`; otherwise it's relative to the workspace root. If the file isn't found at either location, stop and report — do not guess.
+Resolve the path against the workspace: if `$LLM_NOTES_ROOT` is set, the spec lives at `$LLM_NOTES_ROOT/<repo>/<specRelPath>`; otherwise it's relative to the workspace root.
 
-Read the spec **completely** before touching code. Note any `- [x]` marks already present; those phases are done.
+Read the spec **completely** before touching code. Note any `- [x]` marks; those phases are done.
 
 If the spec task's `work_state` is not `approved`, warn once and ask whether to proceed.
 
-## Step 3 — Build the execution plan
+## Step 3 — Build and present the execution plan
 
-Extract phases in numeric order from their description prefix:
+Using the `plan` from Step 1, present the full task tree to the user before starting:
 
-```bash
-jq -r '
-  [ .[] | select((.tags // []) as $t | ($t | index("phase")) and ($t | index("impl"))) ]
-  | sort_by(.description | capture("^(?<n>[0-9]+)\\.").n | tonumber)
-  | .[] | "\(.uuid)\t\(.description)\t\(.work_state)"
-' /tmp/tw.json
-```
+- Phases with ✓ `done`, ▶ `inprogress`, or ○ `todo`
+- Subtasks under each phase with the same icons
+- Bold resume point: "Resuming at Phase N, subtask N.M <name>"
 
-For each phase, enumerate its subtasks by walking `depends:`:
-
-```bash
-PHASE_UUID="a5524e87-988d-4b6e-b5fb-fd9138856940"
-jq -r --arg p "$PHASE_UUID" '
-  [ .[] | select((.depends // []) | index($p)) ]
-  | sort_by(.description | capture("^(?<a>[0-9]+)\\.(?<b>[0-9]+)").b | tonumber)
-  | .[] | "\(.uuid)\t\(.description)\t\(.work_state)"
-' /tmp/tw.json
-```
-
-Present this plan to the user as your todo list before starting. Skip phases already marked `work_state:done` (don't re-do completed work — trust it unless something looks visibly broken).
+Skip phases already `work_state:done` — trust them unless codebase evidence suggests otherwise.
 
 ## Step 4 — Load companion skills
 
@@ -126,41 +92,31 @@ These are mandatory. If either fails to load, surface it before proceeding.
 
 ## Step 5 — The execution loop
 
-For each phase, in order:
+For each phase (starting from `plan.currentPhase`), in order:
 
-1. **Mark the phase `inprogress`:**
+### 5a — Mark phase inprogress
 
-   ```bash
-   task <phase-uuid> modify work_state:inprogress
-   ```
+```
+tw_advance_task({ uuid: "<phase-uuid>", state: "inprogress", description: "1. Phase: Setup" })
+```
 
-2. **For each subtask under that phase, in `N.M` order:**
-   a. `task <subtask-uuid> modify work_state:inprogress`
-   b. Read all files the subtask touches — fully, not partial reads.
-   c. Reconcile spec with reality. If they disagree, **stop** and report (template below).
-   d. Write tests first (per `tdd-workflow`), then implementation.
-   e. Run the phase's success criteria from the spec (usually `make check test` or `yarn test`).
-   f. Check off the matching item in the spec file (`- [ ]` → `- [x]`).
-   g. `task <subtask-uuid> modify work_state:done && task <subtask-uuid> done`
+### 5b — For each subtask under that phase (starting from `plan.currentSubtask`):
 
-3. **When all subtasks are done, run the phase's full success criteria once more** to confirm the integrated result.
+1. `tw_advance_task({ uuid: "<subtask-uuid>", state: "inprogress", description: "1.1 ..." })`
+2. Read all files the subtask touches — fully, not partial reads.
+3. Reconcile spec with reality. If they disagree, **stop** and report (template below).
+4. Write tests first (per `tdd-workflow`), then implementation.
+5. Run tests: `run_tests({})` — wait for results before continuing.
+6. Check off the matching item in the spec file (`- [ ]` → `- [x]`).
+7. `tw_advance_task({ uuid: "<subtask-uuid>", state: "done", description: "1.1 ..." })`
 
-4. **Pause for human verification** (see gate below). Do not advance until the user confirms.
+### 5c — When all subtasks are done
 
-5. **Mark the phase done:**
+Run `run_tests({})` once more to confirm the full phase result.
 
-   ```bash
-   task <phase-uuid> modify work_state:done
-   task <phase-uuid> done
-   ```
+### 5d — Verification gate
 
-6. **Move to the next phase.**
-
-If the user explicitly said "implement all phases" or "run end-to-end", skip the inter-phase pause and only stop at the end. Default is phase-by-phase.
-
-### Verification gate
-
-After automated checks pass for a phase, post:
+Post this and **wait for human confirmation** before closing the phase:
 
 ```
 Phase <N> complete — ready for manual verification.
@@ -177,10 +133,40 @@ Manual verification (from the spec):
   - <item 1>
   - <item 2>
 
-Reply when manual testing is done and I'll close the phase task and start Phase <N+1>.
+Reply when manual testing is done and I'll close the phase and commit.
 ```
 
-Do **not** check off manual-verification items in the spec, and do **not** mark the phase task `done`, until the user confirms.
+Do **not** close the phase or commit until the user confirms.
+
+### 5e — Phase checkpoint
+
+After user confirms:
+
+```
+tw_phase_checkpoint({
+  jira_id: "DP-121",
+  phase_uuid: "<uuid>",
+  phase_number: 1,
+  phase_name: "Setup"
+})
+```
+
+This marks the phase done in taskwarrior and returns a `commitMessage`. Present it to the user:
+
+```
+Ready to commit:
+  git add -u && git commit -m "<commitMessage>"
+
+Confirm to commit, or edit the message.
+```
+
+Wait for confirmation, then run the git commit command.
+
+### 5f — Move to next phase
+
+Proceed to the next phase in `plan.phases` where `work_state !== "done"`.
+
+If the user explicitly said "implement all phases" or "run end-to-end", skip inter-phase pauses and only stop at the end.
 
 ### Spec mismatch template
 
@@ -197,27 +183,23 @@ How should I proceed?
 
 ## Step 6 — Close the spec
 
-After the final phase is verified and closed:
+After the final phase is committed and verified:
 
-```bash
-# Close the spec task
-task jiraid:"$JIRA_ID" +spec modify work_state:done
-task jiraid:"$JIRA_ID" +spec done
+```
+tw_get_spec_task({ jira_id: "DP-121" })
+// then:
+tw_advance_task({ uuid: "<spec-uuid>", state: "done", description: "SPEC: DP-121 ..." })
 ```
 
 The parent Jira task is closed in Jira, not taskwarrior — leave it alone and report completion to the user with the Jira URL for their final transition.
 
 ## Resuming a partially complete spec
 
-If some tasks are already `work_state:done`:
-
-- Trust them. Skip their work.
-- Pick up from the first phase or subtask that isn't `done`.
-- If `done` work looks stale relative to the current codebase (renamed files, missing functions), flag it before continuing.
+`tw_execution_plan` already handles this: `currentPhase` and `currentSubtask` point to the first non-done items. Start there. If `done` work looks stale relative to the codebase (renamed files, missing functions), flag it before continuing.
 
 ## Starting a branch (optional)
 
-If the user hasn't created a working branch yet, offer `scripts/jira-branch.sh <JIRA_ID>`. It derives the branch name from the issue type and summary, creates it, and sets `develop` as the git-town parent. Use `--dry-run` to preview. Requires `acli`, `jq`, `git`, `git-town`.
+If the user hasn't created a working branch yet, offer `scripts/jira-branch.sh <JIRA_ID>`. Requires `acli`, `jq`, `git`, `git-town`.
 
 ## Boundaries — what this skill does NOT do
 
@@ -225,5 +207,3 @@ If the user hasn't created a working branch yet, offer `scripts/jira-branch.sh <
 - **Modifying approved specs** → `/skill:iterate-plan`
 - **Finding existing notes** → `/skill:notes-locator`
 - **General taskwarrior workflow / state taxonomy** → `/skill:taskwarrior-plan`
-
-If a request lands here that belongs elsewhere, name the right skill and hand off — don't half-do another skill's job.
