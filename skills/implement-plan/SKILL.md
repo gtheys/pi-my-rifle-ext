@@ -71,7 +71,39 @@ Read the spec **completely** before touching code. Note any `- [x]` marks; those
 
 If the spec task's `work_state` is not `approved`, warn once and ask whether to proceed.
 
-## Step 3 — Build and present the execution plan
+## Step 3 — Verify working branch
+
+Before touching any code, confirm the workspace is on the correct feature branch.
+
+### 3a — Derive the expected branch name
+
+Run the script in dry-run mode to get the canonical branch name without creating anything:
+
+```bash
+bash scripts/jira-branch.sh <JIRA_ID> --dry-run
+```
+
+Parse the `Branch:` line from the output — format is `<prefix>/<JIRA_ID>-<slug>`.
+
+### 3b — Check the current branch
+
+```bash
+git rev-parse --abbrev-ref HEAD
+```
+
+### 3c — Act on the result
+
+| Situation | Action |
+|-----------|--------|
+| Current branch == expected branch | ✓ Proceed |
+| Expected branch exists locally (`git show-ref --verify refs/heads/<branch>`) | `git checkout <branch>` |
+| Expected branch does not exist | `bash scripts/jira-branch.sh <JIRA_ID>` — creates branch and sets git-town parent |
+
+If the script fails (e.g. `acli` not available or repo is a personal project with no Jira), report the error and ask the user how to proceed before continuing.
+
+Do **not** skip this step even when resuming a partially complete spec — always confirm the branch.
+
+## Step 4 — Build and present the execution plan
 
 Using the `plan` from Step 1, present the full task tree to the user before starting:
 
@@ -81,7 +113,7 @@ Using the `plan` from Step 1, present the full task tree to the user before star
 
 Skip phases already `work_state:done` — trust them unless codebase evidence suggests otherwise.
 
-## Step 4 — Load companion skills
+## Step 5 — Load companion skills
 
 Before the first edit, load:
 
@@ -90,7 +122,7 @@ Before the first edit, load:
 
 These are mandatory. If either fails to load, surface it before proceeding.
 
-## Step 5 — The execution loop
+## Step 6 — The execution loop
 
 For each phase (starting from `plan.currentPhase`), in order:
 
@@ -181,7 +213,7 @@ Spec mismatch in Phase <N>, subtask <N.M>:
 How should I proceed?
 ```
 
-## Step 6 — Close the spec
+## Step 7 — Close the spec
 
 After the final phase is committed and verified:
 
@@ -196,10 +228,6 @@ The parent Jira task is closed in Jira, not taskwarrior — leave it alone and r
 ## Resuming a partially complete spec
 
 `tw_execution_plan` already handles this: `currentPhase` and `currentSubtask` point to the first non-done items. Start there. If `done` work looks stale relative to the codebase (renamed files, missing functions), flag it before continuing.
-
-## Starting a branch (optional)
-
-If the user hasn't created a working branch yet, offer `scripts/jira-branch.sh <JIRA_ID>`. Requires `acli`, `jq`, `git`, `git-town`.
 
 ## Boundaries — what this skill does NOT do
 
