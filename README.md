@@ -71,6 +71,7 @@ pi -e ./extensions/index.ts
 | `extensions/sonarqube` | `/sonarqube` command — fetches SonarCloud coverage gaps and quality issues for a PR, generates actionable report | Code Quality |
 | `extensions/pr-quality` | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
 | `extensions/test-runner` | `run_tests` tool — discovers and runs JS/TS tests from `package.json` using an isolated subagent; results injected back when done ⚠️ *experimental/WIP* | Testing |
+| `extensions/fastcontext` | `fast_context_search` tool + `/fastcontext` command — fast read-only codebase search via local Microsoft FastContext (llama.cpp); returns compact `file:line` citations | Code Search |
 
 ### Published Packages
 
@@ -80,6 +81,99 @@ pi -e ./extensions/index.ts
 | [@sting8k/pi-vcc](https://www.npmjs.com/package/@sting8k/pi-vcc) | Algorithmic conversation compactor — transcript-preserving summaries, no LLM calls, searchable via `vcc_recall` | Token Reduction |
 | [@tomooshi/caveman-milk-pi](https://www.npmjs.com/package/@tomooshi/caveman-milk-pi) | Injects caveman terseness rules into system prompt — cache-safe, opt-in | Token Reduction |
 | [@gtheys/pi-per-commit-spend](https://www.npmjs.com/package/@gtheys/pi-per-commit-spend) | Tracks AI spend per git commit across sessions — calculates cost from token counts for subscription providers | Cost Tracking |
+
+## Code Search Extension
+
+### `fast_context_search` — FastContext
+
+Runs a local [Microsoft FastContext](https://github.com/microsoft/fastcontext) model via llama.cpp to answer natural-language code-search queries without touching the LLM. Returns compact `file:line` citations only — read-only, no writes.
+
+**How it works**
+
+1. Spawns a mini agentic loop against a locally running llama.cpp server
+2. The FastContext model gets three tools: `GLOB`, `GREP`, `READ` (all scoped to the repo root)
+3. Runs up to `maxTurns` tool turns, then forces a `<final_answer>` block
+4. Citations are validated (file exists, line numbers in bounds) and normalised to repo-relative paths
+5. Returns up to 12 `relative/path:START-END — short reason` lines
+
+**Prerequisites**
+
+| Requirement | Details |
+|-------------|--------|
+| llama.cpp server | Running at `http://127.0.0.1:8772/v1` (default) with a FastContext model loaded |
+| Model file | Default: `FastContext-1.0-4B-RL-Q4_K_M.gguf` |
+
+**Tool parameters**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | `string` | Natural-language code search query |
+| `cwd` | `string?` | Repository root. Defaults to current pi cwd |
+| `baseUrl` | `string?` | OpenAI-compatible base URL. Defaults to config/env or `http://127.0.0.1:8772/v1` |
+| `model` | `string?` | Model ID. Defaults to config/env or `FastContext-1.0-4B-RL-Q4_K_M.gguf` |
+| `maxTurns` | `integer?` | Tool turns before forced finalization (1–8). Default 6 |
+| `maxTokens` | `integer?` | Max tokens per model response (128–4096). Default 1400 |
+| `includeTranscript` | `boolean?` | Include raw turn-by-turn transcript in tool details. Default false |
+
+**Commands**
+
+```
+/fastcontext <query>    # run a code search and display results as a notification
+```
+
+**Configuration**
+
+Config is resolved in priority order (later overrides earlier):
+
+1. Built-in defaults
+2. User config: `~/.pi/agent/fastcontext.json`
+3. Project config: `.pi/fastcontext.json` (in repo root)
+4. Environment variables
+5. Tool call parameters (highest priority)
+
+```json
+{
+  "baseUrl": "http://127.0.0.1:8772/v1",
+  "model": "FastContext-1.0-4B-RL-Q4_K_M.gguf",
+  "maxTurns": 6,
+  "maxTokens": 1400
+}
+```
+
+**Environment variables**
+
+| Variable | Description |
+|----------|-------------|
+| `FASTCONTEXT_BASE_URL` | Override llama.cpp server URL |
+| `FASTCONTEXT_MODEL` | Override model ID |
+| `FASTCONTEXT_MAX_TURNS` | Override max tool turns |
+| `FASTCONTEXT_MAX_TOKENS` | Override max tokens per response |
+
+**Output format**
+
+```
+# FastContext Result
+
+<final_answer>
+relative/path:START-END — short reason (≤8 words)
+...
+</final_answer>
+
+## Validation
+- Valid citations: 4/4
+- Tool calls: 3 (0 failed)
+- Time: 2.1s
+- Tokens: prompt 1820, completion 312
+```
+
+**Files**
+
+```
+extensions/fastcontext/
+└── index.ts    # Extension entry, tool + command registration, full FastContext loop
+```
+
+---
 
 ## Testing Extensions
 

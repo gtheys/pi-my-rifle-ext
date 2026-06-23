@@ -21,6 +21,7 @@
     "extensions": [
       "./extensions/index.ts",
       "./extensions/test-runner/index.ts",
+      "./extensions/fastcontext/index.ts",
       "./node_modules/pi-intercom/index.ts",
       "./node_modules/pi-session-switch/extensions/session-switch/index.ts",
       "./extensions/context.ts",
