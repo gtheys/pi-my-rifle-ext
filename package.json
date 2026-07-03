@@ -5,17 +5,17 @@
   "description": "Personal pi extensions, skills, commands, and themes",
   "dependencies": {
     "@gtheys/pi-per-commit-spend": "latest",
-    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.79.1",
-    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.79.1",
-    "@shikijs/cli": "^4.2.0",
-    "@sting8k/pi-vcc": "^0.3.17",
+    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.79.10",
+    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.79.10",
+    "@shikijs/cli": "^4.3.0",
+    "@sting8k/pi-vcc": "^0.3.18",
     "@tomooshi/caveman-milk-pi": "^0.2.0",
     "@tomooshi/condensed-milk-pi": "^1.9.0",
     "diff": "^9.0.0",
     "graphify-pi": "^0.3.0",
     "pi-intercom": "^0.6.0",
     "pi-session-switch": "^0.3.0",
-    "shiki": "^4.2.0"
+    "shiki": "^4.3.0"
   },
   "pi": {
     "extensions": [
@@ -50,9 +50,9 @@
     ]
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.79.1",
-    "@earendil-works/pi-coding-agent": "^0.79.1",
-    "@earendil-works/pi-tui": "^0.79.1",
+    "@earendil-works/pi-agent-core": "^0.79.10",
+    "@earendil-works/pi-coding-agent": "^0.79.10",
+    "@earendil-works/pi-tui": "^0.79.10",
     "@types/diff": "latest"
   }
 }
