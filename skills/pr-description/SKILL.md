@@ -112,20 +112,38 @@ Think deeply about the code changes, their architectural implications, and poten
 
 ### 10. Wait for Checks and Run PR Quality
 
-After the PR description is updated, watch for all checks to complete:
+After the PR description is updated, poll checks every 60 seconds with status updates so the user sees progress (checks can take up to 20+ minutes — do NOT use `--watch` as a single blocking call):
 
 ```bash
-gh pr checks {number} --watch
+while true; do
+  STATUS=$(gh pr checks {number} 2>&1)
+  PENDING=$(echo "$STATUS" | grep -c 'pending\|in_progress' || true)
+  FAILING=$(echo "$STATUS" | grep -c 'fail' || true)
+  PASSING=$(echo "$STATUS" | grep -c 'pass' || true)
+  echo "[$(date +%H:%M)] checks — pending: $PENDING, passing: $PASSING, failing: $FAILING"
+  if [ "$FAILING" -gt 0 ]; then
+    echo "FAILED"
+    echo "$STATUS"
+    exit 1
+  fi
+  if [ "$PENDING" -eq 0 ]; then
+    echo "ALL PASSED"
+    exit 0
+  fi
+  sleep 60
+done
 ```
 
-This blocks until all checks finish. Once all checks pass (exit 0), immediately invoke:
+Run this with **no timeout** so it can run as long as needed.
+
+Once exit 0 (all passed), immediately invoke:
 
 ```
 /pr-quality
 ```
 
-If any check fails:
-- Report which check failed and its URL to the user.
+If exit 1 (a check failed):
+- Report which check failed and its logs URL to the user.
 - Do NOT invoke `/pr-quality`.
 - Ask the user how to proceed.
 
