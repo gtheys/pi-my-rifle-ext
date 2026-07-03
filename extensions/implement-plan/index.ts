@@ -330,13 +330,28 @@ export default function (pi: ExtensionAPI) {
 
       ctx.ui.notify(`Fetching execution plan for ${jiraId}...`, "info");
 
+      // AIDEV-NOTE: Check issue type BEFORE evaluating impl tasks.
+      // Bugs don't have spec/phase tasks — skip the "no impl tasks" guard for them.
+      let isBug = false;
+      try {
+        const ticketData = await twExport(pi, [`jiraid:${jiraId}`]);
+        const ticket = ticketData[0];
+        if (ticket) {
+          const issueType = (ticket as TwTask & { jiraissuetype?: string }).jiraissuetype ?? "";
+          const tags = ticket.tags ?? [];
+          isBug = issueType === "Bug" || tags.includes("bug");
+        }
+      } catch {
+        // ignore — skill will handle it
+      }
+
       let summary = "";
       try {
         const all = await twExport(pi, [`jiraid:${jiraId}`, "+impl"]);
         if (all.length > 0) {
           const plan = buildExecutionPlan(jiraId, all);
           summary = `\n\n${planSummary(plan)}`;
-        } else {
+        } else if (!isBug) {
           ctx.ui.notify(`No impl tasks found for ${jiraId}. Has the plan been created? Try /plan ${jiraId}.`, "warning");
           return;
         }
