@@ -227,7 +227,6 @@ Taskwarrior hierarchy created for $JIRA_ID:
 
 This skill works with:
 
-- `/skill:taskwarrior-plan` — Ticket management, status transitions, and workflow states. Reference this for `work_state` values.
 - `/skill:notes-locator` — Find existing specs, research docs, tickets, and PR descriptions in the notes directory.
 - `fast_context_search` / `grep` / `find` — Find source files related to the ticket.
 - `read` / `sem_context` — Understand current implementation details.

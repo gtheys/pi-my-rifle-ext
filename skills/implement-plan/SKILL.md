@@ -268,4 +268,3 @@ The parent Jira task is closed in Jira, not taskwarrior — leave it alone and r
 - **Authoring specs** → `/skill:create-plan`
 - **Modifying approved specs** → `/skill:iterate-plan`
 - **Finding existing notes** → `/skill:notes-locator`
-- **General taskwarrior workflow / state taxonomy** → `/skill:taskwarrior-plan`

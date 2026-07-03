@@ -147,7 +147,6 @@ Use these tools to inspect and update:
 - `tw_create_phase` — add a new phase task (returns UUID)
 - `tw_create_impl_task` — add a new impl task under a phase
 
-See `/skill:taskwarrior-plan` for task management patterns and `work_state` transitions.
 
 ### Step 6: Review
 
@@ -172,7 +171,6 @@ See `/skill:taskwarrior-plan` for task management patterns and `work_state` tran
 ## Integration with Other Skills
 
 - `/skill:create-plan` — Use this to create a new spec from scratch. Use `iterate-plan` to modify an existing one.
-- `/skill:taskwarrior-plan` — Ticket management and workflow states. Update tasks when spec phases change.
 - `/skill:notes-locator` — Find existing specs, research docs, and related notes.
 - `fast_context_search` / `grep` / `find` / `sem_context` — Research the codebase when changes require new technical understanding.
 
