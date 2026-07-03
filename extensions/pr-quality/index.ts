@@ -6,7 +6,7 @@
  *   - Triage each review thread (VALID / INVALID)
  *   - Auto-resolve INVALID threads via GitHub GraphQL
  *   - Cross-reference VALID comments with SonarCloud issues by file
- *   - Write a combined action plan to pr-quality-plan.md
+ *   - Fix issues immediately — no plan file written
  *
  * Prerequisites:
  *   - gh CLI installed and authenticated
@@ -229,10 +229,10 @@ function buildAgentPrompt(
 	lines.push("## Your Tasks");
 	lines.push("");
 	lines.push(
-		"You have two data sources below. Work through them in order:",
+		"You have two data sources below. Triage first, then fix immediately. Do NOT write a plan file.",
 	);
 	lines.push("");
-	lines.push("### Task A — Triage GitHub Review Comments");
+	lines.push("### Task A — Triage & Fix GitHub Review Comments");
 	lines.push("");
 	lines.push(
 		"For each unresolved thread in **Section 2**, read the referenced file at the given line, then classify the thread:",
@@ -256,31 +256,25 @@ function buildAgentPrompt(
 	lines.push("```");
 	lines.push("(Replace `<THREAD_ID>` with the threadId from Section 2.)");
 	lines.push("");
-	lines.push("### Task B — Address SonarCloud Issues");
+	lines.push("For every **VALID** thread, **fix the issue now**:");
+	lines.push("  1. Read the file at the referenced line.");
+	lines.push("  2. Apply the fix directly using your edit tools.");
+	lines.push("  3. Run tests to confirm nothing is broken.");
+	lines.push("");
+	lines.push("### Task B — Fix SonarCloud Issues");
 	lines.push("");
 	lines.push(
-		"Using the SonarCloud data in **Section 3**, identify which files overlap with VALID review comments and prioritise fixes there first.",
+		"Using the SonarCloud data in **Section 3**, fix issues in severity order (BLOCKER → CRITICAL → MAJOR).",
 	);
-	lines.push("Then address remaining SonarCloud issues in severity order (BLOCKER → CRITICAL → MAJOR).");
+	lines.push("Prioritise files that also have VALID review comments — fix both at once.");
+	lines.push("For each issue: read the file, apply the fix, run tests.");
 	lines.push("");
-	lines.push("### Task C — Write Action Plan");
+	lines.push("### Task C — Final Summary");
 	lines.push("");
-	lines.push(
-		"After triaging all comments and reviewing SonarCloud data, write a combined action plan to `pr-quality-plan.md` in the repo root.",
-	);
-	lines.push("Structure:");
-	lines.push("```");
-	lines.push(`# PR Quality Plan — PR #${prNumber}`);
-	lines.push("");
-	lines.push("## Review Comments (VALID)");
-	lines.push("- [ ] <file>:<line> — <actionable description> (@<author>)");
-	lines.push("");
-	lines.push("## SonarCloud Issues");
-	lines.push("- [ ] <severity> <file>:<line> — <rule>: <message>");
-	lines.push("");
-	lines.push("## Coverage Gaps");
-	lines.push("- [ ] <file> — add tests to reach 80% coverage");
-	lines.push("```");
+	lines.push("After all fixes are applied and tests pass:");
+	lines.push("  - Run `git diff --stat` to confirm scope of changes.");
+	lines.push("  - Present a short summary of what was fixed and what (if anything) was skipped and why.");
+	lines.push("  - Commit the fixes with a clear message referencing the PR number.");
 	lines.push("");
 
 	// ── Section 2: review threads ────────────────────────────────────────────
@@ -471,7 +465,7 @@ done
 
 	pi.registerCommand("pr-quality", {
 		description:
-			"Triage unresolved PR review comments + SonarCloud analysis, then write a combined action plan",
+			"Triage unresolved PR review comments + SonarCloud issues and fix them immediately",
 		handler: async (args, ctx) => {
 			// ── 1. Guard: SONARQUBE_TOKEN ────────────────────────────────────
 			const token = process.env.SONARQUBE_TOKEN;
