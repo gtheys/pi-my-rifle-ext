@@ -18,9 +18,6 @@
  *   /pr-quality 283      — explicit PR number
  */
 
-import { spawn } from "node:child_process";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	type CoverageResponse,
@@ -81,11 +78,11 @@ interface ActionsStatus {
 
 // AIDEV-NOTE: Uses statusCheckRollup from gh pr view — covers both GitHub
 // Actions CheckRuns and external status checks (e.g. SonarCloud gate itself).
-async function checkActionsComplete(prNumber: string): Promise<ActionsStatus> {
+async function checkActionsComplete(prNumber: string, cwd?: string): Promise<ActionsStatus> {
 	const result = await localExec(
 		"gh",
 		["pr", "view", prNumber, "--json", "statusCheckRollup"],
-		{ timeout: 15000 },
+		{ timeout: 15000, cwd },
 	);
 
 	if (result.code !== 0) {
@@ -374,9 +371,12 @@ function buildAgentPrompt(
 
 // ── Extension ─────────────────────────────────────────────────────────────────
 
-// AIDEV-NOTE: Tracks active fs.Watcher instances keyed by PR number so we can
-// clean them up on session_shutdown and avoid duplicate watchers.
-const activeWatchers = new Map<string, fs.FSWatcher>();
+// AIDEV-NOTE: Tracks active poll intervals keyed by PR number so we can
+// clear them on session_shutdown and prevent duplicate watchers.
+// Uses setInterval + checkActionsComplete (same gh API call as /pr-quality guard)
+// instead of a detached bash process + sentinel files, which had PATH and
+// fs.watch reliability issues.
+const activePollers = new Map<string, ReturnType<typeof setInterval>>();
 
 export default function prQuality(pi: ExtensionAPI) {
 
@@ -393,72 +393,56 @@ export default function prQuality(pi: ExtensionAPI) {
 				return;
 			}
 
-			if (activeWatchers.has(prNumber)) {
+			if (activePollers.has(prNumber)) {
 				ctx.ui.notify(`Already watching PR #${prNumber}`, "warning");
 				return;
 			}
 
-			const sentinelDone = `/tmp/pi-pr-checks-${prNumber}-done`;
-			const sentinelFail = `/tmp/pi-pr-checks-${prNumber}-failed`;
+			// Capture cwd now so the poller always runs gh in the right repo
+			const cwd = ctx.cwd;
 
-			// Clean up stale sentinels from a previous run
-			for (const f of [sentinelDone, sentinelFail]) {
-				try { fs.unlinkSync(f); } catch { /* ignore */ }
-			}
-
-			// AIDEV-NOTE: Poll script runs detached so it outlives any pi tool timeout.
-			// Writes sentinel file when done; fs.watch below picks it up.
-			const pollScript = `
-set -euo pipefail
-while true; do
-  STATUS=$(gh pr checks ${prNumber} 2>&1)
-  PENDING=$(echo "$STATUS" | grep -cE 'pending|in_progress' || true)
-  FAILING=$(echo "$STATUS" | grep -c 'fail' || true)
-  echo "[$(date +%H:%M)] pending=$PENDING failing=$FAILING"
-  if [ "$FAILING" -gt 0 ]; then
-    echo "$STATUS" > "${sentinelFail}"
-    exit 1
-  fi
-  if [ "$PENDING" -eq 0 ]; then
-    echo "done" > "${sentinelDone}"
-    exit 0
-  fi
-  sleep 60
-done
-`;
-			const child = spawn("bash", ["-c", pollScript], {
-				detached: true,
-				stdio: ["ignore", "ignore", "ignore"],
-			});
-			child.unref();
-
-			// Watch /tmp for the sentinel files
-			const watcher = fs.watch(path.dirname(sentinelDone), (_, filename) => {
-				if (filename === path.basename(sentinelDone)) {
-					watcher.close();
-					activeWatchers.delete(prNumber);
-					ctx.ui.notify(`PR #${prNumber} checks passed — triggering /pr-quality`, "info");
-					pi.sendUserMessage(`/pr-quality ${prNumber}`);
-				} else if (filename === path.basename(sentinelFail)) {
-					watcher.close();
-					activeWatchers.delete(prNumber);
-					ctx.ui.notify(`PR #${prNumber} — a check FAILED. Run /pr-quality manually after fixing.`, "error");
+			const poll = async () => {
+				try {
+					const status = await checkActionsComplete(prNumber, cwd);
+					if (status.complete) {
+						clearInterval(activePollers.get(prNumber));
+						activePollers.delete(prNumber);
+						ctx.ui.notify(`PR #${prNumber} ✔ all checks passed — triggering /pr-quality`, "info");
+						pi.sendUserMessage(`/pr-quality ${prNumber}`);
+					} else {
+						const failing = status.all.filter(
+							(c) => c.conclusion && c.conclusion !== "SUCCESS" && c.conclusion !== "SKIPPED",
+						);
+						if (failing.length > 0) {
+							clearInterval(activePollers.get(prNumber));
+							activePollers.delete(prNumber);
+							const names = failing.map((c) => c.name).join(", ");
+							ctx.ui.notify(`PR #${prNumber} ✖ check(s) failed: ${names}`, "error");
+						}
+						// else still pending — keep polling
+					}
+				} catch {
+					// transient error — keep polling
 				}
-			});
+			};
 
-			activeWatchers.set(prNumber, watcher);
+			// Run once immediately, then every 60s
+			void poll();
+			const interval = setInterval(() => { void poll(); }, 60_000);
+			activePollers.set(prNumber, interval);
+
 			ctx.ui.notify(
-				`Watching PR #${prNumber} checks in background. Will trigger /pr-quality when all pass. You can keep working.`,
+				`Watching PR #${prNumber} checks (polling every 60s). Will trigger /pr-quality when all pass.`,
 				"info",
 			);
 		},
 	});
 
-	// Clean up watchers when session ends
+	// Clean up pollers when session ends
 	pi.on("session_shutdown", async () => {
-		for (const [pr, watcher] of activeWatchers) {
-			watcher.close();
-			activeWatchers.delete(pr);
+		for (const [pr, interval] of activePollers) {
+			clearInterval(interval);
+			activePollers.delete(pr);
 		}
 	});
 

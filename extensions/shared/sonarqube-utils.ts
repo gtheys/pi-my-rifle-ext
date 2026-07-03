@@ -19,11 +19,12 @@ const execFileAsync = promisify(execFile);
 export async function localExec(
 	cmd: string,
 	args: string[],
-	opts?: { timeout?: number },
+	opts?: { timeout?: number; cwd?: string },
 ): Promise<{ code: number; stdout: string; stderr: string }> {
 	try {
 		const { stdout, stderr } = await execFileAsync(cmd, args, {
 			timeout: opts?.timeout,
+			cwd: opts?.cwd,
 			maxBuffer: 10 * 1024 * 1024, // 10 MB — GraphQL responses can be large
 		});
 		return { code: 0, stdout, stderr };
