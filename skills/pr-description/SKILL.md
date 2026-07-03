@@ -110,6 +110,27 @@ Think deeply about the code changes, their architectural implications, and poten
 - Confirm the update was successful
 - If any verification steps remain unchecked, remind the user to complete them before merging
 
+### 10. Wait for Checks and Run PR Quality
+
+After the PR description is updated, watch for all checks to complete:
+
+```bash
+gh pr checks {number} --watch
+```
+
+This blocks until all checks finish. Once all checks pass (exit 0), immediately invoke:
+
+```
+/pr-quality
+```
+
+If any check fails:
+- Report which check failed and its URL to the user.
+- Do NOT invoke `/pr-quality`.
+- Ask the user how to proceed.
+
+---
+
 ## Integration with Other Skills
 
 - `/skill:notes-locator` — Find existing PR descriptions, specs, and related notes.
