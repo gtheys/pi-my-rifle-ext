@@ -110,42 +110,17 @@ Think deeply about the code changes, their architectural implications, and poten
 - Confirm the update was successful
 - If any verification steps remain unchecked, remind the user to complete them before merging
 
-### 10. Wait for Checks and Run PR Quality
+### 10. Watch Checks and Trigger PR Quality
 
-After the PR description is updated, poll checks every 60 seconds with status updates so the user sees progress (checks can take up to 20+ minutes — do NOT use `--watch` as a single blocking call):
-
-```bash
-while true; do
-  STATUS=$(gh pr checks {number} 2>&1)
-  PENDING=$(echo "$STATUS" | grep -c 'pending\|in_progress' || true)
-  FAILING=$(echo "$STATUS" | grep -c 'fail' || true)
-  PASSING=$(echo "$STATUS" | grep -c 'pass' || true)
-  echo "[$(date +%H:%M)] checks — pending: $PENDING, passing: $PASSING, failing: $FAILING"
-  if [ "$FAILING" -gt 0 ]; then
-    echo "FAILED"
-    echo "$STATUS"
-    exit 1
-  fi
-  if [ "$PENDING" -eq 0 ]; then
-    echo "ALL PASSED"
-    exit 0
-  fi
-  sleep 60
-done
-```
-
-Run this with **no timeout** so it can run as long as needed.
-
-Once exit 0 (all passed), immediately invoke:
+After updating the PR description, kick off background check watching:
 
 ```
-/pr-quality
+/pr-watch {number}
 ```
 
-If exit 1 (a check failed):
-- Report which check failed and its logs URL to the user.
-- Do NOT invoke `/pr-quality`.
-- Ask the user how to proceed.
+This returns immediately — the extension spawns a detached background process that polls `gh pr checks` every 60s. When all checks pass it automatically triggers `/pr-quality`. If a check fails it notifies via the pi status bar.
+
+You can continue with other work after invoking `/pr-watch`.
 
 ---
 

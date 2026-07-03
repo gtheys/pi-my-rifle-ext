@@ -18,6 +18,9 @@
  *   /pr-quality 283      — explicit PR number
  */
 
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	type CoverageResponse,
@@ -377,7 +380,95 @@ function buildAgentPrompt(
 
 // ── Extension ─────────────────────────────────────────────────────────────────
 
+// AIDEV-NOTE: Tracks active fs.Watcher instances keyed by PR number so we can
+// clean them up on session_shutdown and avoid duplicate watchers.
+const activeWatchers = new Map<string, fs.FSWatcher>();
+
 export default function prQuality(pi: ExtensionAPI) {
+
+	// ── /pr-watch ────────────────────────────────────────────────────────────
+	pi.registerCommand("pr-watch", {
+		description: "Watch PR checks in background; triggers /pr-quality when all pass",
+		handler: async (args, ctx) => {
+			const parsed = parseArgs(args);
+			let prNumber: string;
+			try {
+				prNumber = parsed.prNumber ?? (await detectPrNumber("/pr-watch"));
+			} catch (err) {
+				ctx.ui.notify(String((err as Error).message), "error");
+				return;
+			}
+
+			if (activeWatchers.has(prNumber)) {
+				ctx.ui.notify(`Already watching PR #${prNumber}`, "warning");
+				return;
+			}
+
+			const sentinelDone = `/tmp/pi-pr-checks-${prNumber}-done`;
+			const sentinelFail = `/tmp/pi-pr-checks-${prNumber}-failed`;
+
+			// Clean up stale sentinels from a previous run
+			for (const f of [sentinelDone, sentinelFail]) {
+				try { fs.unlinkSync(f); } catch { /* ignore */ }
+			}
+
+			// AIDEV-NOTE: Poll script runs detached so it outlives any pi tool timeout.
+			// Writes sentinel file when done; fs.watch below picks it up.
+			const pollScript = `
+set -euo pipefail
+while true; do
+  STATUS=$(gh pr checks ${prNumber} 2>&1)
+  PENDING=$(echo "$STATUS" | grep -cE 'pending|in_progress' || true)
+  FAILING=$(echo "$STATUS" | grep -c 'fail' || true)
+  echo "[$(date +%H:%M)] pending=$PENDING failing=$FAILING"
+  if [ "$FAILING" -gt 0 ]; then
+    echo "$STATUS" > "${sentinelFail}"
+    exit 1
+  fi
+  if [ "$PENDING" -eq 0 ]; then
+    echo "done" > "${sentinelDone}"
+    exit 0
+  fi
+  sleep 60
+done
+`;
+			const child = spawn("bash", ["-c", pollScript], {
+				detached: true,
+				stdio: ["ignore", "ignore", "ignore"],
+			});
+			child.unref();
+
+			// Watch /tmp for the sentinel files
+			const watcher = fs.watch(path.dirname(sentinelDone), (_, filename) => {
+				if (filename === path.basename(sentinelDone)) {
+					watcher.close();
+					activeWatchers.delete(prNumber);
+					ctx.ui.notify(`PR #${prNumber} checks passed — triggering /pr-quality`, "info");
+					pi.sendUserMessage(`/pr-quality ${prNumber}`);
+				} else if (filename === path.basename(sentinelFail)) {
+					watcher.close();
+					activeWatchers.delete(prNumber);
+					ctx.ui.notify(`PR #${prNumber} — a check FAILED. Run /pr-quality manually after fixing.`, "error");
+				}
+			});
+
+			activeWatchers.set(prNumber, watcher);
+			ctx.ui.notify(
+				`Watching PR #${prNumber} checks in background. Will trigger /pr-quality when all pass. You can keep working.`,
+				"info",
+			);
+		},
+	});
+
+	// Clean up watchers when session ends
+	pi.on("session_shutdown", async () => {
+		for (const [pr, watcher] of activeWatchers) {
+			watcher.close();
+			activeWatchers.delete(pr);
+		}
+	});
+
+
 	pi.registerCommand("pr-quality", {
 		description:
 			"Triage unresolved PR review comments + SonarCloud analysis, then write a combined action plan",
@@ -424,7 +515,7 @@ export default function prQuality(pi: ExtensionAPI) {
 					.join(", ");
 				ctx.ui.notify(
 					`PR #${prNumber} CI not done yet — ${actionsStatus.pending.length} check(s) still running: ${names}`,
-					"warn",
+					"warning",
 				);
 				return;
 			}
