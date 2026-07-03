@@ -84,9 +84,9 @@ If the user's feedback requires understanding new code patterns or validating as
 1. **Create a research todo list** using markdown checkboxes
 
 2. **Use skills for research**:
-   - `/skill:codebase-locator` — find relevant files
-   - `/skill:codebase-analyzer` — understand implementation details
-   - `/skill:codebase-pattern-finder` — find similar patterns
+   - `fast_context_search` / `grep` / `find` — find relevant files
+   - `read` / `sem_context` — understand implementation details
+   - `fast_context_search` / `grep` — find similar patterns
    - `/skill:notes-locator` — find related research or decisions
 
    **Be EXTREMELY specific about directories** — if the change involves "WUI", specify `humanlayer-wui/`; never use generic terms.
@@ -174,7 +174,7 @@ See `/skill:taskwarrior-plan` for task management patterns and `work_state` tran
 - `/skill:create-plan` — Use this to create a new spec from scratch. Use `iterate-plan` to modify an existing one.
 - `/skill:taskwarrior-plan` — Ticket management and workflow states. Update tasks when spec phases change.
 - `/skill:notes-locator` — Find existing specs, research docs, and related notes.
-- `/skill:codebase-locator` / `/skill:codebase-analyzer` / `/skill:codebase-pattern-finder` — Research the codebase when changes require new technical understanding.
+- `fast_context_search` / `grep` / `find` / `sem_context` — Research the codebase when changes require new technical understanding.
 
 ## Important Guidelines
 

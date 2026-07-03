@@ -128,7 +128,7 @@ You can continue with other work after invoking `/pr-watch`.
 
 - `/skill:notes-locator` — Find existing PR descriptions, specs, and related notes.
 - `/skill:create-plan` — If the PR implements a spec, reference it in the description.
-- `/skill:codebase-analyzer` — For deeper understanding of changed code when the diff isn't enough context.
+- `read` / `sem_context` / `fast_context_search` — For deeper understanding of changed code when the diff isn't enough context.
 
 ## Important Notes
 

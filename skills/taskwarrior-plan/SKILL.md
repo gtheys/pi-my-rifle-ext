@@ -193,7 +193,6 @@ This skill works with:
 - `/skill:create-plan` — Full spec → tasks → implement pipeline (use when a ticket is ready for planning)
 - `/skill:notes-locator` — Find existing notes, specs, research, and tickets
 - `/skill:taskwarrior` — Reference for query patterns and state management
-- `/skill:research-codebase` — When a ticket needs research
 - `/skill:implement-plan` — When a ticket is ready for development
 
 ## Important Guidelines

@@ -99,9 +99,9 @@ Based on this ticket, I understand we need to [accurate summary].
 Before asking the user any questions, research the codebase:
 
 1. **Spawn research tasks** using available skills:
-   - `/skill:codebase-locator` — find all files related to the ticket
-   - `/skill:codebase-analyzer` — understand current implementation
-   - `/skill:codebase-pattern-finder` — find similar features to model after
+   - `fast_context_search` / `grep` / `find` — find all files related to the ticket
+   - `read` / `sem_context` — understand current implementation
+   - `fast_context_search` / `grep` — find similar features to model after
    - `/skill:notes-locator` — find any existing notes about this feature
 
 2. **Read all files identified by research** FULLY — never read files partially.
@@ -137,9 +137,9 @@ After getting initial clarifications:
 2. **Create a research todo list** with markdown checkboxes to track exploration.
 
 3. **Use skills for comprehensive research**:
-   - `/skill:codebase-locator` — find more specific files
-   - `/skill:codebase-analyzer` — understand implementation details
-   - `/skill:codebase-pattern-finder` — find similar implementations
+   - `fast_context_search` / `grep` / `find` — find more specific files
+   - `read` / `sem_context` — understand implementation details
+   - `fast_context_search` / `grep` — find similar implementations
    - `/skill:notes-locator` — find research, specs, or decisions
 
 4. **Wait for ALL research to complete** before proceeding.
@@ -229,9 +229,9 @@ This skill works with:
 
 - `/skill:taskwarrior-plan` — Ticket management, status transitions, and workflow states. Reference this for `work_state` values.
 - `/skill:notes-locator` — Find existing specs, research docs, tickets, and PR descriptions in the notes directory.
-- `/skill:codebase-locator` — Find source files related to the ticket.
-- `/skill:codebase-analyzer` — Understand current implementation details.
-- `/skill:codebase-pattern-finder` — Find similar features to model after.
+- `fast_context_search` / `grep` / `find` — Find source files related to the ticket.
+- `read` / `sem_context` — Understand current implementation details.
+- `fast_context_search` / `grep` — Find similar features to model after.
 - `/skill:implement-plan` — When the spec is approved and ready for development.
 
 ## Important Guidelines
