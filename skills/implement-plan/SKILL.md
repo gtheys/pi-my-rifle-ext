@@ -57,7 +57,39 @@ This returns:
 
 If no impl tasks found: tell the user `bugwarrior-pull` may need to run, or suggest `/plan <JIRA_ID>` if the spec hasn't been created yet.
 
+## Step 1b — Bug fast path check
+
+After pulling the execution plan, check the ticket's issue type:
+
+```
+tw_get_ticket({ jira_id: "<JIRA_ID>" })
+```
+
+If `jiraissuetype === "Bug"` (or the task has the `+bug` tag), **take the bug fast path** — do NOT require a spec:
+
+### Bug fast path
+
+Ask the user one question:
+
+> Is the fix already clear, or do you need to investigate first?
+
+**Fix is clear** → Skip Steps 2–5 (spec, branch script is still required). Go directly to Step 6 (execution loop) with simplified tracking:
+- No phase tasks needed — work directly, file by file.
+- Write tests first per `tdd-workflow`, then implement.
+- After tests pass, present a commit message and wait for confirmation.
+- Mark the Jira task done after user confirms.
+
+**Fix is NOT clear** → Load `/skill:debug` immediately:
+- Run through the debug skill's investigation workflow (logs, DB state, git history).
+- Once root cause is identified, ask the user: "Fix now clear — want me to implement it?" then take the **Fix is clear** path above.
+
+> For bugs, never block on a missing spec. Speed over ceremony.
+
+---
+
 ## Step 2 — Locate the spec file
+
+*(Skip entirely for bugs — use the bug fast path above.)*
 
 Call `tw_get_spec_task` to get the spec task and extract the spec file path:
 
