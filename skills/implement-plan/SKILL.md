@@ -55,17 +55,17 @@ This returns:
 - `plan.currentSubtask` — first non-done subtask within that phase (resume target)
 - `plan.doneSubtasks / plan.totalSubtasks` — progress counters
 
-If no impl tasks found: tell the user `bugwarrior-pull` may need to run, or suggest `/plan <JIRA_ID>` if the spec hasn't been created yet.
+**Immediately after pulling the plan**, call `tw_get_ticket` to check the issue type — do this before evaluating whether impl tasks exist:
 
-## Step 1b — Bug fast path check
-
-After pulling the execution plan, check the ticket's issue type:
+## Step 1b — Bug fast path check (runs before any "no impl tasks" guard)
 
 ```
 tw_get_ticket({ jira_id: "<JIRA_ID>" })
 ```
 
-If `jiraissuetype === "Bug"` (or the task has the `+bug` tag), **take the bug fast path** — do NOT require a spec:
+If `jiraissuetype === "Bug"` (or the task has the `+bug` tag), **take the bug fast path** — do NOT require a spec or impl tasks:
+
+> ⚠️ Do NOT show the "no impl tasks" warning for bugs — it is expected and irrelevant.
 
 ### Bug fast path
 
@@ -84,6 +84,8 @@ Ask the user one question:
 - Once root cause is identified, ask the user: "Fix now clear — want me to implement it?" then take the **Fix is clear** path above.
 
 > For bugs, never block on a missing spec. Speed over ceremony.
+
+**For non-bugs only:** if no impl tasks found after the bug check, tell the user `bugwarrior-pull` may need to run, or suggest `/plan <JIRA_ID>` if the spec hasn't been created yet.
 
 ---
 
