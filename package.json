@@ -4,7 +4,6 @@
   "private": true,
   "description": "Personal pi extensions, skills, commands, and themes",
   "dependencies": {
-    "@gtheys/pi-per-commit-spend": "latest",
     "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.80.3",
     "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.80.3",
     "@shikijs/cli": "^4.3.1",
@@ -36,8 +35,7 @@
       "./extensions/pr-quality/index.ts",
       "./node_modules/@tomooshi/condensed-milk-pi/index.ts",
       "./node_modules/@sting8k/pi-vcc/index.ts",
-      "./node_modules/@tomooshi/caveman-milk-pi/index.ts",
-      "./node_modules/@gtheys/pi-per-commit-spend/index.ts"
+      "./node_modules/@tomooshi/caveman-milk-pi/index.ts"
     ],
     "skills": [
       "./skills"
