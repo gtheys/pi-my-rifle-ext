@@ -196,7 +196,14 @@ function autoDeriveBgFromTheme(theme: any): void {
 }
 
 function loadDiffConfig(): DiffUserConfig {
-	const paths = [`${process.cwd()}/.pi/settings.json`, `${process.env.HOME ?? ""}/.pi/settings.json`];
+	// AIDEV-NOTE: ~/.pi/agent/settings.json is the canonical pi config location;
+	// ~/.pi/settings.json is legacy fallback, cwd/.pi/settings.json is project-level override.
+	const home = process.env.HOME ?? "";
+	const paths = [
+		`${process.cwd()}/.pi/settings.json`,
+		`${home}/.pi/agent/settings.json`,
+		`${home}/.pi/settings.json`,
+	];
 	for (const p of paths) {
 		try {
 			if (existsSync(p)) {
