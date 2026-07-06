@@ -1,0 +1,50 @@
+{
+  "name": "@barlevalon/worktrunk-skill",
+  "version": "0.2.0",
+  "description": "Use Worktrunk for git worktree workflows, hooks, config, aliases, approvals, LLM commit generation, and troubleshooting.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/barlevalon/skills.git",
+    "directory": "skills/engineering/worktrunk"
+  },
+  "bugs": {
+    "url": "https://github.com/barlevalon/skills/issues"
+  },
+  "homepage": "https://github.com/barlevalon/skills/tree/main/skills/engineering/worktrunk#readme",
+  "keywords": [
+    "agent-skill",
+    "agent-skills",
+    "ai-agent",
+    "engineering",
+    "pi",
+    "pi-package",
+    "skills",
+    "worktrunk"
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "SKILL.md",
+    "reference/config.md",
+    "reference/hook.md",
+    "reference/switch.md",
+    "reference/merge.md",
+    "reference/remove.md",
+    "reference/list.md",
+    "reference/llm-commits.md",
+    "reference/extending.md",
+    "reference/tips-patterns.md",
+    "reference/shell-integration.md",
+    "reference/troubleshooting.md"
+  ],
+  "scripts": {
+    "pack:check": "npm pack --dry-run"
+  },
+  "pi": {
+    "skills": [
+      "./SKILL.md"
+    ]
+  },
+  "curator": "Alon Hearter"
+}
