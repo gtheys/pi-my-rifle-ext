@@ -28,10 +28,15 @@ Without this, kustomize overlays will not be found. Add it to your shell profile
 
 ---
 
-## Available services
+## Service inventory
 
-`account-api`, `account-worker`, `auth-api`, `bank-api`, `bank-worker`,
-`balance-worker`, `company-service`, `console`, `flexben-api`, `flexben-worker`
+Run `devctl services list --json` for the canonical, always-current list of
+services, their repos, ports, and kustomize paths — generated from
+`internal/services/registry.go`, the single source of truth.
+
+Current services: `account-api`, `account-worker`, `auth-api`, `bank-api`,
+`bank-worker`, `balance-worker`, `company-service`, `console`, `flexben-api`,
+`flexben-worker`
 
 ---
 
@@ -114,6 +119,19 @@ devctl hosts show                   # print what would be written
 devctl hosts plan                   # dry-run
 devctl hosts remove                 # remove entries
 ```
+
+### services list — inspect the service registry
+
+```bash
+devctl services list           # table: name, image, port, ingress host, health path
+devctl services list --json    # full JSON — includes kustomizePath, buildContext, watchPaths
+```
+
+Outputs the canonical list from `internal/services/registry.go`. Use `--json` for
+tooling, scripts, or AI context (e.g. `devctl services list --json` is the
+authoritative service inventory).
+
+---
 
 ### migrate — database migrations
 
