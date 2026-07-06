@@ -30,9 +30,12 @@ Personal pi extensions, skills, commands, and themes.
 ## Structure
 
 ```
-pi-custom-ext/
+pi-my-rifle-ext/
 ├── extensions/     # Custom extensions (index.ts)
 ├── skills/         # Skills (each in subdirectory with SKILL.md)
+│   ├── engineering/
+│   ├── productivity/
+│   └── tools/
 ├── prompts/        # Prompt templates / slash commands (.md files)
 ├── themes/         # Theme JSON files
 └── package.json    # pi package manifest
@@ -56,6 +59,8 @@ Or via CLI:
 pi -e ./extensions/index.ts
 ```
 
+---
+
 ## Extensions
 
 ### Local Extensions
@@ -72,6 +77,8 @@ pi -e ./extensions/index.ts
 | `extensions/pr-quality` | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
 | `extensions/test-runner` | `run_tests` tool — discovers and runs JS/TS tests from `package.json` using an isolated subagent; results injected back when done ⚠️ *experimental/WIP* | Testing |
 | `extensions/fastcontext` | `fast_context_search` tool + `/fastcontext` command — fast read-only codebase search via local Microsoft FastContext (llama.cpp); returns compact `file:line` citations | Code Search |
+| `extensions/plan-tools` | `/plan` command + taskwarrior tools (`tw_get_ticket`, `tw_get_spec_task`, `tw_get_phases`, `tw_get_impl_tasks`, `resolve_spec_path`, `tw_create_spec_task`, `tw_create_phase`, `tw_create_impl_task`) for spec/plan creation | Planning |
+| `extensions/implement-plan` | `/implement` command + taskwarrior tools (`tw_execution_plan`, `tw_advance_task`, `tw_phase_checkpoint`) for driving implementation from a spec | Planning |
 
 ### Published Packages
 
@@ -82,9 +89,129 @@ pi -e ./extensions/index.ts
 | [@tomooshi/caveman-milk-pi](https://www.npmjs.com/package/@tomooshi/caveman-milk-pi) | Injects caveman terseness rules into system prompt — cache-safe, opt-in | Token Reduction |
 | [@gtheys/pi-per-commit-spend](https://www.npmjs.com/package/@gtheys/pi-per-commit-spend) | Tracks AI spend per git commit across sessions — calculates cost from token counts for subscription providers | Cost Tracking |
 
-## Code Search Extension
+---
 
-### `fast_context_search` — FastContext
+## Skills
+
+### Engineering
+
+| Skill | Description |
+|-------|-------------|
+| `aws-architecture-diagram` | Generate validated AWS architecture diagrams as draw.io XML using official AWS4 icon libraries; supports codebase analysis and interactive brainstorm modes |
+| `coding-standards` | Universal coding standards, best practices, and patterns for TypeScript, JavaScript, React, and Node.js development |
+| `create-plan` | Create detailed implementation plans from Jira tickets via taskwarrior |
+| `debug` | Bootstrap a debugging session — investigates pod logs, DB state, and git history without editing files |
+| `feature-ticket` | Interview-driven feature ticket creation for personal projects; records as Taskwarrior ticket |
+| `gh-unresolved-comments` | Fetch unresolved PR review comments, classify as VALID/INVALID, auto-resolve stale threads, produce resolution plan |
+| `implement-plan` | Execute an approved implementation spec by driving work from taskwarrior phase/subtask tree |
+| `iterate-plan` | Iterate on existing implementation specs with thorough research and updates |
+| `notes-locator` | Discover relevant documents in `notes/` or `$LLM_NOTES_ROOT` for a given topic or task |
+| `pr-description` | Generate comprehensive PR descriptions following repository templates |
+| `tdd-workflow` | TDD workflow enforcement with 80%+ coverage — unit, integration, and E2E |
+| `teams-pr-notify` | Send PR review request as Adaptive Card to a Microsoft Teams channel via Power Automate |
+| `worktrunk` | `wt` CLI for git worktree workflows — switching, creating, merging, hooks, LLM commit generation |
+
+### Tools
+
+| Skill | Description |
+|-------|-------------|
+| `acli` | Atlassian CLI reference — Jira work items, projects, boards, sprints, filters, dashboards, org admin |
+| `cli-microsoft365` | CLI for Microsoft 365 — SharePoint, Entra ID, Teams, Power Platform, Graph API |
+| `devctl` | `devctl` CLI guide for the SalaryHero local Kubernetes dev environment (minikube-based) |
+| `sem` | Entity-aware code change analysis via pi-sem tools — diff, impact, context, blame, history |
+
+### Productivity
+
+| Skill | Description |
+|-------|-------------|
+| `writing-great-skills` | Reference for writing and editing skills well — vocabulary and principles |
+
+---
+
+## Prompts
+
+| Prompt | Description |
+|--------|-------------|
+| `git.md` | Git workflow helpers and commit message templates |
+
+---
+
+## Themes
+
+| Theme | Description |
+|-------|-------------|
+| `tokyo-night.json` | Tokyo Night color theme |
+
+---
+
+## Extension Details
+
+### Planning Extensions
+
+Two extensions provide typed taskwarrior tools for the spec/implement workflow.
+
+#### `plan-tools` — Spec & Plan Creation
+
+Typed tools for the `create-plan` and `iterate-plan` skills, replacing raw bash command construction.
+
+**Tools registered**
+
+| Tool | Description |
+|------|-------------|
+| `tw_get_ticket` | Fetch Jira ticket details from taskwarrior by Jira ID |
+| `tw_get_spec_task` | Fetch spec task + extract spec file path from annotation |
+| `tw_get_phases` | Fetch all phase tasks (`+phase` tag) for a Jira ticket |
+| `tw_get_impl_tasks` | Fetch all implementation tasks (`+impl` tag) for a Jira ticket |
+| `resolve_spec_path` | Compute canonical spec file path (respects `$LLM_NOTES_ROOT`) |
+| `tw_create_spec_task` | Create spec task in taskwarrior and annotate it with the spec file path |
+| `tw_create_phase` | Create a phase task; returns UUID for use as `depends_uuid` |
+| `tw_create_impl_task` | Create an implementation subtask under a phase |
+
+**Command**
+
+```
+/plan <JIRA-ID>    # create or iterate on an implementation plan
+```
+
+**Files**
+
+```
+extensions/plan-tools/
+└── index.ts    # Extension entry, all tool + command registration
+```
+
+---
+
+#### `implement-plan` — Spec Execution
+
+Typed tools for the `implement-plan` skill, driving work from the taskwarrior phase/subtask tree.
+
+**Tools registered**
+
+| Tool | Description |
+|------|-------------|
+| `tw_execution_plan` | Fetch full sorted phase + subtask tree; returns `currentPhase`/`currentSubtask` resume pointers |
+| `tw_advance_task` | Transition a task to `todo`, `inprogress`, or `done` |
+| `tw_phase_checkpoint` | Mark phase done and return a ready-made git commit message |
+
+**Command**
+
+```
+/implement <JIRA-ID>    # show execution plan and start implementing
+```
+
+**Files**
+
+```
+extensions/implement-plan/
+└── index.ts    # Extension entry, all tool + command registration
+```
+
+---
+
+### Code Search Extension
+
+#### `fast_context_search` — FastContext
 
 Runs a local [Microsoft FastContext](https://github.com/microsoft/fastcontext) model via llama.cpp to answer natural-language code-search queries without touching the LLM. Returns compact `file:line` citations only — read-only, no writes.
 
@@ -123,7 +250,7 @@ Runs a local [Microsoft FastContext](https://github.com/microsoft/fastcontext) m
 
 **Configuration**
 
-Config is resolved in priority order (later overrides earlier):
+Config resolved in priority order (later overrides earlier):
 
 1. Built-in defaults
 2. User config: `~/.pi/agent/fastcontext.json`
@@ -149,23 +276,6 @@ Config is resolved in priority order (later overrides earlier):
 | `FASTCONTEXT_MAX_TURNS` | Override max tool turns |
 | `FASTCONTEXT_MAX_TOKENS` | Override max tokens per response |
 
-**Output format**
-
-```
-# FastContext Result
-
-<final_answer>
-relative/path:START-END — short reason (≤8 words)
-...
-</final_answer>
-
-## Validation
-- Valid citations: 4/4
-- Tool calls: 3 (0 failed)
-- Time: 2.1s
-- Tokens: prompt 1820, completion 312
-```
-
 **Files**
 
 ```
@@ -175,9 +285,9 @@ extensions/fastcontext/
 
 ---
 
-## Testing Extensions
+### Testing Extension
 
-### `run_tests` — Test Runner
+#### `run_tests` — Test Runner
 
 > ⚠️ **Experimental / Work in Progress** — behaviour may change; use with caution.
 
@@ -185,23 +295,16 @@ Discovers and runs JS/TS test scripts from the nearest `package.json`. The test
 execution is **non-blocking** — the subagent runs in the background and results
 are injected back into the session automatically when done.
 
-Uses [pi-intercom](https://github.com/nicobailon/pi-intercom) to wire up
-`contact_supervisor` in the subagent so progress updates appear as inline
-intercom messages during the run.
-
 **How it works**
 
 1. Scans up from the current directory to find the nearest `package.json`
-2. Extracts scripts matching test patterns (`test`, `test:*`, `jest`, `vitest`,
-   `playwright`, `mocha`, `cypress`, `e2e`, `spec`)
+2. Extracts scripts matching test patterns (`test`, `test:*`, `jest`, `vitest`, `playwright`, `mocha`, `cypress`, `e2e`, `spec`)
 3. If multiple scripts exist and no `script` param is given, shows a picker
-4. Detects the package manager from lockfiles (`yarn.lock`, `pnpm-lock.yaml`,
-   fallback to `npm`)
+4. Detects the package manager from lockfiles (`yarn.lock`, `pnpm-lock.yaml`, fallback to `npm`)
 5. Spawns an isolated pi subprocess (`--mode json --tools bash`) as the subagent
 6. Returns **immediately** — session is unlocked while tests run
 7. Subagent sends `contact_supervisor` progress updates via pi-intercom
-8. When done, `pi.sendMessage({ triggerTurn: true })` re-engages the LLM with
-   structured pass/fail results and per-failure details
+8. When done, `pi.sendMessage({ triggerTurn: true })` re-engages the LLM with structured pass/fail results
 
 **Tool parameters**
 
@@ -233,40 +336,15 @@ intercom messages during the run.
 | Session stays idle? | ✓ Always | ✗ LLM responds twice |
 | When to use | Normal test runs | LLM-driven workflows |
 
-Use `/run-tests` for day-to-day test runs. The `run_tests` tool is for when the
-LLM itself needs to check test results as part of a larger task.
-
 **Configuration**
 
-Config is stored at `~/.pi/agent/test-runner/config.json` and persists across
-sessions, `/new`, and process restarts.
+Config stored at `~/.pi/agent/test-runner/config.json`.
 
 ```json
 {
   "defaultModel": "claude-haiku-4-5"
 }
 ```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `defaultModel` | `string` | _(pi default)_ | Model ID passed to the subagent via `--model`. Use a cheaper/faster model here since the subagent only runs bash and formats JSON. |
-
-You can edit the file directly or use the `/test-runner model <id>` command.
-The `model` tool parameter always wins over the config file for a single run.
-
-**Result rendering**
-
-| State | Display |
-|-------|---------|
-| Started | `⏳ Tests started in background: \`yarn test\`` |
-| Passed | `✓ 14 passed` |
-| Failures | `✗ 3 failed · 14 passed` → first failure name inline |
-| Expanded (Ctrl+O) | Per-failure: file › test name, error message, stack trace (4 lines) |
-
-**Detected test script patterns**
-
-`test`, `test:*`, `jest`, `vitest`, `playwright`, `mocha`, `cypress`, `e2e`,
-`e2e:*`, `spec`
 
 **Files**
 
@@ -279,16 +357,15 @@ extensions/test-runner/
 
 ---
 
-## Code Quality Extensions
+### Code Quality Extensions
 
 Two extensions work together to keep PRs clean. Both share utilities from
 `extensions/shared/sonarqube-utils.ts`.
 
-### `/sonarqube`
+#### `/sonarqube`
 
 Fetches SonarCloud coverage metrics and quality issues for a PR, generates
-a `sonarqube-report.md` in the repo root, then sends the report to the agent
-so it can act on it.
+a `sonarqube-report.md` in the repo root, then sends the report to the agent.
 
 **Prerequisites**
 
@@ -307,30 +384,15 @@ so it can act on it.
 /sonarqube 283 --files=src/auth/*
 ```
 
-**What it does**
-
-1. Fetches coverage metrics (`coverage`, `new_coverage`, `branch_coverage`, …)
-2. Fetches all open issues for the PR (paginated, up to 500/page)
-3. Analyzes coverage gaps against the 80% threshold
-4. Groups issues by severity, type, file, and rule
-5. Writes `sonarqube-report.md` to the repo root
-6. Sends the report to the agent as a user message for follow-up action
-
 ---
 
-### `/pr-quality`
+#### `/pr-quality`
 
-The combined command. Checks that CI is finished, then fetches both GitHub
-unresolved review threads and SonarCloud data in parallel, and sends a
-structured prompt to the agent to triage, resolve, and plan.
+Combined command: CI guard → GitHub unresolved threads + SonarCloud data (parallel) → structured agent prompt.
 
 **Prerequisites**
 
-| Requirement | How to set up |
-|-------------|---------------|
-| `gh` CLI | `gh auth login` |
-| `SONARQUBE_TOKEN` env var | Same as `/sonarqube` above |
-| SonarCloud project config | Same as `/sonarqube` above |
+Same as `/sonarqube` above, plus `gh` CLI (`gh auth login`).
 
 **Usage**
 
@@ -341,48 +403,21 @@ structured prompt to the agent to triage, resolve, and plan.
 
 **What it does**
 
-1. **CI guard** — calls `gh pr view <PR> --json statusCheckRollup`. If any
-   check is still `QUEUED` or `IN_PROGRESS`, shows a warning with the pending
-   check names and exits. `SKIPPED` checks are ignored.
-2. **Parallel fetch** — GitHub GraphQL (unresolved review threads) and
-   SonarCloud (coverage + issues) are fetched concurrently.
-3. **Agent prompt** — sends a structured message with three tasks:
+1. **CI guard** — checks `gh pr view <PR> --json statusCheckRollup`; exits if any check is `QUEUED` or `IN_PROGRESS`
+2. **Parallel fetch** — GitHub GraphQL (unresolved review threads) + SonarCloud (coverage + issues)
+3. **Agent prompt** — three tasks:
 
-   | Task | What the agent does |
-   |------|---------------------|
-   | **A — Triage comments** | Reads each referenced file, classifies threads as VALID or INVALID, auto-resolves INVALID ones via `gh api graphql` mutation |
-   | **B — SonarCloud issues** | Cross-references VALID comment files with SonarCloud issues, addresses remaining issues in severity order (BLOCKER → CRITICAL → MAJOR) |
-   | **C — Action plan** | Writes `pr-quality-plan.md` to the repo root with checkbox lists for review comments, SonarCloud issues, and coverage gaps |
+| Task | What the agent does |
+|------|---------------------|
+| **A — Triage comments** | Classifies threads VALID/INVALID, auto-resolves INVALID via `gh api graphql` mutation |
+| **B — SonarCloud issues** | Addresses issues in severity order (BLOCKER → CRITICAL → MAJOR) |
+| **C — Action plan** | Writes `pr-quality-plan.md` to repo root with checkbox lists |
 
-**Output: `pr-quality-plan.md`**
+**Shared utilities**
 
-```markdown
-# PR Quality Plan — PR #283
-
-## Review Comments (VALID)
-- [ ] src/auth/token.ts:42 — validate expiry before signing (@reviewer)
-
-## SonarCloud Issues
-- [ ] CRITICAL src/auth/token.ts:38 — typescript:S4036: JWT secret hardcoded
-
-## Coverage Gaps
-- Overall: 71% (gap: 9% to 80% threshold)
-- New code: 65% (gap: 15% to 80% threshold)
-```
+`extensions/shared/sonarqube-utils.ts` — `sonarFetch`, `analyzeCoverage`, `analyzeIssues`, `detectSonarConfig`, `detectPrNumber`, `fetchAllIssues`, `localExec`
 
 ---
-
-### Shared utilities
-
-`extensions/shared/sonarqube-utils.ts` contains all types and helpers used
-by both extensions:
-
-- `sonarFetch` — authenticated SonarCloud API call
-- `analyzeCoverage` / `analyzeIssues` — data analysis
-- `detectSonarConfig` — reads `sonar-project.properties` or env vars
-- `detectPrNumber` — `gh pr view` auto-detection
-- `fetchAllIssues` — paginated issue fetch
-- `localExec` — `node:child_process` wrapper (replaces `ctx.exec` which does not exist)
 
 ## Migrating
 
