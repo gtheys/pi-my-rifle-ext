@@ -15,7 +15,7 @@ import { extname, relative } from "node:path";
 
 import { codeToANSI } from "@shikijs/cli";
 import * as Diff from "diff";
-import type { BundledLanguage, BundledTheme } from "shiki";
+import type { BundledLanguage, BundledTheme } from "@shikijs/cli";
 
 // ---------------------------------------------------------------------------
 // Diff Theme System

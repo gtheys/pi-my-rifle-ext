@@ -22,29 +22,17 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { twExport } from "../shared/tw-utils.js";
 
 // AIDEV-NOTE: All taskwarrior commands use rc.confirmation:no to avoid interactive prompts.
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function twExport(pi: ExtensionAPI, filter: string[]): Promise<any[]> {
-  const result = await pi.exec("task", [...filter, "export"], {});
-  if (!result.stdout.trim()) return [];
-  try {
-    return JSON.parse(result.stdout);
-  } catch {
-    return [];
-  }
-}
-
 async function getRepoName(pi: ExtensionAPI): Promise<string> {
+  // ponytail: git rev-parse --show-toplevel always works in a repo; remote URL is optional
   try {
-    const r = await pi.exec("bash", ["-c", "basename \"$(git remote get-url origin 2>/dev/null | sed 's/\\.git$//')\" 2>/dev/null"], {});
-    if (r.stdout.trim()) return r.stdout.trim();
-  } catch {}
-  try {
-    const r = await pi.exec("bash", ["-c", "basename \"$(git rev-parse --show-toplevel 2>/dev/null)\""], {});
-    if (r.stdout.trim()) return r.stdout.trim();
+    const r = await pi.exec("git", ["rev-parse", "--show-toplevel"], {});
+    if (r.stdout.trim()) return r.stdout.trim().split("/").pop() ?? "unknown";
   } catch {}
   return "unknown";
 }

@@ -13,8 +13,7 @@
     "diff": "^9.0.0",
     "graphify-pi": "^0.3.0",
     "pi-intercom": "^0.6.0",
-    "pi-session-switch": "^0.3.0",
-    "shiki": "^4.3.1"
+    "pi-session-switch": "^0.3.0"
   },
   "pi": {
     "extensions": [

@@ -34,19 +34,19 @@ interface FavouriteModelEntry {
 const MAX_FAVOURITES = 8;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Load config
+// Load config — lazy singleton, parsed once at first use
 // ─────────────────────────────────────────────────────────────────────────────
 
+let _favourites: FavouriteModelEntry[] | null = null;
+
 function loadFavourites(): FavouriteModelEntry[] {
+	if (_favourites !== null) return _favourites;
 	const configPath = join(dirname(new URL(import.meta.url).pathname), "favourite-models.json");
 	try {
 		const raw = readFileSync(configPath, "utf-8");
 		const parsed = JSON.parse(raw) as FavouriteModelEntry[];
-		if (!Array.isArray(parsed)) {
-			return [];
-		}
-		// Enforce max and validate
-		return parsed
+		if (!Array.isArray(parsed)) return (_favourites = []);
+		_favourites = parsed
 			.filter(
 				(e) =>
 					typeof e.label === "string" &&
@@ -55,8 +55,9 @@ function loadFavourites(): FavouriteModelEntry[] {
 			)
 			.slice(0, MAX_FAVOURITES);
 	} catch {
-		return [];
+		_favourites = [];
 	}
+	return _favourites;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

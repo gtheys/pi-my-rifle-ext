@@ -15,6 +15,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { twExport } from "../shared/tw-utils.js";
 
 // AIDEV-NOTE: All taskwarrior commands use rc.confirmation:no to avoid interactive prompts.
 
@@ -55,16 +56,6 @@ interface ExecutionPlan {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-async function twExport(pi: ExtensionAPI, filter: string[]): Promise<TwTask[]> {
-  const result = await pi.exec("task", [...filter, "export"], {});
-  if (!result.stdout.trim()) return [];
-  try {
-    return JSON.parse(result.stdout) as TwTask[];
-  } catch {
-    return [];
-  }
-}
 
 function parsePhaseNumber(description: string): number | null {
   const m = description.match(/^(\d+)\.\s*Phase:/i);

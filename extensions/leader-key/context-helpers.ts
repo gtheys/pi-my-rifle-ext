@@ -22,6 +22,8 @@ function isCommandCtx(ctx: ExtensionContext): ctx is ExtensionCommandContext {
 /** Emit a slash command via the editor input. */
 export function emitCommand(ctx: ExtensionContext, command: string) {
 	ctx.ui.setEditorText(command);
+	// ponytail: shortcut handlers get ExtensionContext, not ExtensionCommandContext, so no
+	// direct dispatch API. Simulating Enter via stdin is the only hook available.
 	setTimeout(() => process.stdin.emit("data", "\r"), 0);
 }
 
