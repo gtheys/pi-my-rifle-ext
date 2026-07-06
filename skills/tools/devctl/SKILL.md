@@ -6,9 +6,10 @@ description: >
   asks about: starting or stopping services locally, bootstrapping the dev
   environment, rebuilding a service image, watching for code changes, streaming
   pod logs, shelling into a pod, checking deployed image tags, managing /etc/hosts
-  entries, or running database migrations locally. Also use it when someone asks
-  "how do I deploy X locally", "why is my service not updating", or "how do I
-  get the local env running". Covers first-time setup through day-to-day workflows.
+  entries, running database migrations locally, or syncing/cloning all SalaryHero
+  GitHub repositories. Also use it when someone asks "how do I deploy X locally",
+  "why is my service not updating", "how do I get the local env running", or
+  "how do I clone all repos". Covers first-time setup through day-to-day workflows.
 ---
 
 # devctl — SalaryHero Local Dev Tool
@@ -122,6 +123,33 @@ devctl migrate                      # run DB migrations
 
 > Note: prefer `sh-db-schema` over `devctl migrate` for schema changes.
 
+### sync — clone or update all SalaryHero repos
+
+```bash
+devctl sync                         # clone missing repos, pull updates for existing ones
+devctl sync --path ~/projects       # override checkout directory for this run
+devctl sync --verbose               # show branch, upstream ref, and pull summary per repo
+devctl sync --config ~/my.json      # use a custom config file
+```
+
+On first run creates `~/.config/devctl/sync.json` with all known repos
+pre-populated. Edit that file to add or remove repos.
+
+**Config file** (`~/.config/devctl/sync.json`):
+```json
+{
+  "org": "salaryhero",
+  "checkout_path": "~/Code/salaryhero",
+  "repos": ["account-api", "auth-api", "..."]
+}
+```
+
+**Update behaviour per repo:**
+- Runs `git fetch --all --prune` first (always safe)
+- If current branch has a remote upstream → `git pull --ff-only`
+- If no upstream (orphaned feature branch) → checks out `develop` and pulls
+- Always prints the current branch name so you know where each repo stands
+
 ---
 
 ## First-time setup
@@ -206,6 +234,9 @@ bash scripts/add-sqs-queues.sh messages my-q purge    # purge messages
 | `devctl hosts apply` fails with permission error | Needs write access to `/etc/hosts`; run with sudo or grant user permission |
 | Image tag is `dev` instead of branch-SHA | `devctl` could not read git info from the service repo — ensure the service repo exists at `../service-name` relative to infra |
 | `account-worker` not updating after account-api build | They share an image; rebuilding `account-api` also rebuilds the worker — start both |
+| `sync` clone fails with "Could not resolve to a Repository" | Repo name in `~/.config/devctl/sync.json` doesn't match GitHub — fix the name and re-run |
+| `sync` pull fails with merge conflicts | devctl only fast-forwards; resolve the conflict manually then re-run `devctl sync` |
+| `sync` reports "could not checkout develop" | Repo has no `develop` branch (some use `main`) — check out the correct branch manually |
 
 ---
 
