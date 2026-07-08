@@ -1,0 +1,23 @@
+{
+  "name": "@gtheys/pi-tool-pills",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "diff": "^9.0.0",
+    "@shikijs/cli": "^4.3.1",
+    "shiki": "^4.3.1"
+  },
+  "devDependencies": {
+    "@types/diff": "latest"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

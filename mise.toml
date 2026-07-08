@@ -1,0 +1,33 @@
+[tools]
+bun = "1.3.14"
+
+[env]
+_.path = [
+  # Keep the global Pi CLI ahead of any workspace shim.
+  "{{env.HOME}}/.local/share/mise/installs/npm-earendil-works-pi-coding-agent/latest/bin",
+  "{{config_root}}/node_modules/.bin",
+]
+
+[tasks.setup]
+description = "Install dependencies for the workspace"
+run = "bun install"
+
+[tasks.format]
+description = "Format and apply safe fixes with Biome"
+run = "bun run format"
+
+[tasks.lint]
+description = "Run lint checks with Biome"
+run = "bun run lint"
+
+[tasks.typecheck]
+description = "Type-check all packages"
+run = "bun run typecheck"
+
+[tasks.test]
+description = "Run tests across all workspaces"
+run = "bun run test"
+
+[tasks.check]
+description = "Run lint, typecheck, and tests"
+run = "bun run check"

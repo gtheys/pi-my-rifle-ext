@@ -3,38 +3,33 @@
   "version": "0.1.0",
   "private": true,
   "description": "Personal pi extensions, skills, commands, and themes",
-  "dependencies": {
-    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.80.3",
-    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.80.3",
-    "@shikijs/cli": "^4.3.1",
-    "@sting8k/pi-vcc": "^0.3.18",
-    "@tomooshi/caveman-milk-pi": "^0.2.0",
-    "@tomooshi/condensed-milk-pi": "^1.9.0",
-    "diff": "^9.0.0",
-    "graphify-pi": "^0.3.0",
-    "pi-intercom": "^0.6.0",
-    "pi-session-switch": "^0.3.0"
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "prepare": "lefthook install || true",
+    "format": "bunx @biomejs/biome check --write .",
+    "lint": "bunx @biomejs/biome check .",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit",
+    "test": "bun run --workspaces --if-present test",
+    "check": "bun run lint && bun run typecheck && bun run test"
   },
   "pi": {
     "extensions": [
-      "./extensions/index.ts",
-      "./extensions/test-runner/index.ts",
-      "./extensions/fastcontext/index.ts",
-      "./node_modules/pi-intercom/index.ts",
-      "./node_modules/pi-session-switch/extensions/session-switch/index.ts",
-      "./extensions/context.ts",
-      "./extensions/review/review.ts",
-      "./extensions/tool-pills/index.ts",
-      "./extensions/pi-sem/index.ts",
-      "./extensions/plan-tools/index.ts",
-      "./extensions/implement-plan/index.ts",
-      "./extensions/leader-key/index.ts",
-      "./extensions/desktop-notify/index.ts",
-      "./extensions/sonarqube/sonarqube.ts",
-      "./extensions/pr-quality/index.ts",
-      "./node_modules/@tomooshi/condensed-milk-pi/index.ts",
-      "./node_modules/@sting8k/pi-vcc/index.ts",
-      "./node_modules/@tomooshi/caveman-milk-pi/index.ts"
+      "./packages/pi-bootstrap/index.ts",
+      "./packages/pi-context/context.ts",
+      "./packages/pi-review/review/review.ts",
+      "./packages/pi-review/sonarqube/sonarqube.ts",
+      "./packages/pi-review/pr-quality/index.ts",
+      "./packages/pi-test-runner/index.ts",
+      "./packages/pi-fastcontext/index.ts",
+      "./packages/pi-planning/plan-tools/index.ts",
+      "./packages/pi-planning/implement-plan/index.ts",
+      "./packages/pi-sem/index.ts",
+      "./packages/pi-tool-pills/index.ts",
+      "./packages/pi-desktop-notify/index.ts"
     ],
     "skills": [
       "./skills"
@@ -46,10 +41,17 @@
       "./themes"
     ]
   },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.80.3",
+    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.80.3"
+  },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.79.10",
     "@earendil-works/pi-coding-agent": "^0.80.3",
     "@earendil-works/pi-tui": "^0.80.3",
-    "@types/diff": "latest"
+    "@biomejs/biome": "2.4.13",
+    "lefthook": "2.1.6",
+    "typescript": "5.9.3",
+    "bun-types": "latest"
   }
 }

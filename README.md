@@ -29,21 +29,37 @@ Personal pi extensions, skills, commands, and themes.
 
 ## Structure
 
+This is a [bun](https://bun.sh) workspace monorepo. Each extension group lives under `packages/*` as its own package declaring `pi.extensions` and `peerDependencies`. Shared helpers are co-located with their only consumer.
+
 ```
 pi-my-rifle-ext/
-├── extensions/     # Custom extensions (index.ts)
-├── skills/         # Skills (each in subdirectory with SKILL.md)
+├── packages/          # Workspace packages (each a pi extension group)
+│   ├── pi-bootstrap/        # Startup bootstrap (symlinks AGENTS.md)
+│   ├── pi-context/          # /context command
+│   ├── pi-review/           # review + sonarqube + pr-quality
+│   ├── pi-test-runner/      # run_tests tool + /run-tests
+│   ├── pi-fastcontext/      # fast_context_search tool + /fastcontext
+│   ├── pi-planning/         # plan-tools + implement-plan
+│   ├── pi-sem/              # pi-sem semantic code tools
+│   ├── pi-tool-pills/       # tool pill badges + Shiki diff rendering
+│   └── pi-desktop-notify/   # /notify command
+├── skills/            # Skills (each in a subdirectory with SKILL.md)
 │   ├── engineering/
 │   ├── productivity/
 │   └── tools/
-├── prompts/        # Prompt templates / slash commands (.md files)
-├── themes/         # Theme JSON files
-└── package.json    # pi package manifest
+├── prompts/          # Prompt templates / slash commands (.md files)
+├── themes/           # Theme JSON files
+├── agents/           # AGENTS.md (symlinked to ~/.pi/agent/ on startup)
+├── mise.toml         # bun toolchain pin + task runner
+├── biome.json        # lint + format (scoped to packages/**)
+├── lefthook.yml      # git hooks (pre-commit biome, pre-push check)
+├── tsconfig.json     # root typecheck
+└── package.json      # workspace manifest + pi package manifest
 ```
 
 ## Usage
 
-Test locally by adding to `settings.json`:
+Load locally by adding the repo to `settings.json`:
 
 ```json
 {
@@ -53,10 +69,34 @@ Test locally by adding to `settings.json`:
 }
 ```
 
-Or via CLI:
+## Development
+
+Requirements: [mise](https://mise.jdx.dev/) and bun (pinned via `mise.toml`).
 
 ```bash
-pi -e ./extensions/index.ts
+mise install     # install the pinned bun toolchain
+mise run setup   # bun install (+ lefthook hooks)
+
+mise run format     # biome format + safe fixes
+mise run lint       # biome check
+mise run typecheck  # tsc --noEmit over packages/**
+mise run test       # node --test across workspaces
+mise run check      # lint && typecheck && test
+```
+
+Git hooks (installed by `lefthook`):
+
+- **pre-commit** — runs biome on staged `packages/**` files and re-stages fixes.
+- **pre-push** — runs `bun run check`.
+
+Third-party pi packages (token reducers, compactors, etc.) are **not** bundled here. Install them separately so they load from user settings instead of this repo's `node_modules`:
+
+```bash
+pi install npm:@tomooshi/condensed-milk-pi
+pi install npm:@tomooshi/caveman-milk-pi
+pi install npm:@sting8k/pi-vcc
+pi install npm:pi-intercom
+pi install git:github.com/DietrichGebert/ponytail
 ```
 
 ---
@@ -65,28 +105,31 @@ pi -e ./extensions/index.ts
 
 ### Local Extensions
 
-| Extension | Description | Category |
-|-----------|-------------|----------|
-| `extensions/index.ts` | Startup bootstrap — symlinks `agents/AGENTS.md` to `~/.pi/agent/AGENTS.md` | Bootstrap |
-| `extensions/review` | `/review` command — code review for PRs, branches, uncommitted changes, or specific commits with semantic tool guidance | Code Review |
-| `extensions/tool-pills` | Colored pill badges for tool headers + Shiki-powered syntax-highlighted diffs for write/edit | UI Enhancement |
-| `extensions/pi-sem` | Semantic code analysis tools — entity-level diff, impact analysis, context lookup, and blame via `pi-sem` | Code Analysis |
-| `extensions/leader-key` | Ctrl+X floating command palette (Vim which-key / Emacs leader-key style) with grouped actions | UI Enhancement |
-| `extensions/desktop-notify` | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
-| `extensions/sonarqube` | `/sonarqube` command — fetches SonarCloud coverage gaps and quality issues for a PR, generates actionable report | Code Quality |
-| `extensions/pr-quality` | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
-| `extensions/test-runner` | `run_tests` tool — discovers and runs JS/TS tests from `package.json` using an isolated subagent; results injected back when done ⚠️ *experimental/WIP* | Testing |
-| `extensions/fastcontext` | `fast_context_search` tool + `/fastcontext` command — fast read-only codebase search via local Microsoft FastContext (llama.cpp); returns compact `file:line` citations | Code Search |
-| `extensions/plan-tools` | `/plan` command + taskwarrior tools (`tw_get_ticket`, `tw_get_spec_task`, `tw_get_phases`, `tw_get_impl_tasks`, `resolve_spec_path`, `tw_create_spec_task`, `tw_create_phase`, `tw_create_impl_task`) for spec/plan creation | Planning |
-| `extensions/implement-plan` | `/implement` command + taskwarrior tools (`tw_execution_plan`, `tw_advance_task`, `tw_phase_checkpoint`) for driving implementation from a spec | Planning |
+| Package | Description | Category |
+|---------|-------------|----------|
+| `packages/pi-bootstrap` | Startup bootstrap — symlinks `agents/AGENTS.md` to `~/.pi/agent/AGENTS.md` | Bootstrap |
+| `packages/pi-review` (review) | `/review` command — code review for PRs, branches, uncommitted changes, or specific commits with semantic tool guidance | Code Review |
+| `packages/pi-review` (sonarqube) | `/sonarqube` command — fetches SonarCloud coverage gaps and quality issues for a PR, generates actionable report | Code Quality |
+| `packages/pi-review` (pr-quality) | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
+| `packages/pi-tool-pills` | Colored pill badges for tool headers + Shiki-powered syntax-highlighted diffs for write/edit | UI Enhancement |
+| `packages/pi-sem` | Semantic code analysis tools — entity-level diff, impact analysis, context lookup, and blame via `pi-sem` | Code Analysis |
+| `packages/pi-desktop-notify` | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
+| `packages/pi-test-runner` | `run_tests` tool — discovers and runs JS/TS tests from `package.json` using an isolated subagent; results injected back when done ⚠️ *experimental/WIP* | Testing |
+| `packages/pi-fastcontext` | `fast_context_search` tool + `/fastcontext` command — fast read-only codebase search via local Microsoft FastContext (llama.cpp); returns compact `file:line` citations | Code Search |
+| `packages/pi-planning` (plan-tools) | `/plan` command + taskwarrior tools (`tw_get_ticket`, `tw_get_spec_task`, `tw_get_phases`, `tw_get_impl_tasks`, `resolve_spec_path`, `tw_create_spec_task`, `tw_create_phase`, `tw_create_impl_task`) for spec/plan creation | Planning |
+| `packages/pi-planning` (implement-plan) | `/implement` command + taskwarrior tools (`tw_execution_plan`, `tw_advance_task`, `tw_phase_checkpoint`) for driving implementation from a spec | Planning |
+| `packages/pi-context` | `/context` command — visualize current context/token usage as a colored grid overlay | UI Enhancement |
 
-### Published Packages
+### Companion Packages (installed separately)
+
+These complementary pi packages are **not** part of this repo. Install them with `pi install` so they load from your user settings:
 
 | Package | Description | Category |
 |---------|-------------|----------|
 | [@tomooshi/condensed-milk-pi](https://github.com/tomooshi/condensed-milk-pi) | Semantic token compression — filters noisy bash output and retroactively masks stale tool results | Token Reduction |
 | [@sting8k/pi-vcc](https://www.npmjs.com/package/@sting8k/pi-vcc) | Algorithmic conversation compactor — transcript-preserving summaries, no LLM calls, searchable via `vcc_recall` | Token Reduction |
 | [@tomooshi/caveman-milk-pi](https://www.npmjs.com/package/@tomooshi/caveman-milk-pi) | Injects caveman terseness rules into system prompt — cache-safe, opt-in | Token Reduction |
+| [ponytail](https://github.com/DietrichGebert/ponytail) | Forces the laziest working solution — YAGNI, stdlib/native first, shortest diff, deletion over addition; channels a senior dev who has seen every over-engineered codebase | Coding Behavior |
 | [@gtheys/pi-per-commit-spend](https://www.npmjs.com/package/@gtheys/pi-per-commit-spend) | Tracks AI spend per git commit across sessions — calculates cost from token counts for subscription providers | Cost Tracking |
 
 ---
@@ -176,7 +219,7 @@ Typed tools for the `create-plan` and `iterate-plan` skills, replacing raw bash 
 **Files**
 
 ```
-extensions/plan-tools/
+packages/pi-planning/plan-tools/
 └── index.ts    # Extension entry, all tool + command registration
 ```
 
@@ -203,7 +246,7 @@ Typed tools for the `implement-plan` skill, driving work from the taskwarrior ph
 **Files**
 
 ```
-extensions/implement-plan/
+packages/pi-planning/implement-plan/
 └── index.ts    # Extension entry, all tool + command registration
 ```
 
@@ -279,7 +322,7 @@ Config resolved in priority order (later overrides earlier):
 **Files**
 
 ```
-extensions/fastcontext/
+packages/pi-fastcontext/
 └── index.ts    # Extension entry, tool + command registration, full FastContext loop
 ```
 
@@ -349,7 +392,7 @@ Config stored at `~/.pi/agent/test-runner/config.json`.
 **Files**
 
 ```
-extensions/test-runner/
+packages/pi-test-runner/
 ├── index.ts       # Extension entry, tool + command registration
 ├── discover.ts    # package.json scanner, package manager detection
 └── runner.ts      # Subagent spawn, stdout parser, pi-intercom env wiring
@@ -360,7 +403,7 @@ extensions/test-runner/
 ### Code Quality Extensions
 
 Two extensions work together to keep PRs clean. Both share utilities from
-`extensions/shared/sonarqube-utils.ts`.
+`packages/pi-review/shared/sonarqube-utils.ts`.
 
 #### `/sonarqube`
 
@@ -415,10 +458,15 @@ Same as `/sonarqube` above, plus `gh` CLI (`gh auth login`).
 
 **Shared utilities**
 
-`extensions/shared/sonarqube-utils.ts` — `sonarFetch`, `analyzeCoverage`, `analyzeIssues`, `detectSonarConfig`, `detectPrNumber`, `fetchAllIssues`, `localExec`
+`packages/pi-review/shared/sonarqube-utils.ts` — `sonarFetch`, `analyzeCoverage`, `analyzeIssues`, `detectSonarConfig`, `detectPrNumber`, `fetchAllIssues`, `localExec`
 
 ---
 
-## Migrating
+## Repository Layout
 
-Move skills/commands/themes one by one into the appropriate directory. Test with `/reload` after each move.
+This repo is a bun workspace. The workspace packages live under `packages/*` and
+are all listed in the root `package.json` under `pi.extensions`. Add a new
+extension group by creating `packages/pi-<name>/` with a `package.json`
+(declaring `pi.extensions` and `peerDependencies`) and registering its entry
+point in the root manifest. Run `mise run check` before pushing — the pre-push
+hook does the same.
