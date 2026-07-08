@@ -31,7 +31,16 @@ Then wait for the user's input.
 
 Use the `resolve_spec_path` tool with the Jira ID and `jirasummary`. It handles repo name detection, `$LLM_NOTES_ROOT`, and slug generation automatically.
 
-Full example result: `notes/specs/IMP-7070__implement-user-balance-write.md`
+**⚠️ IMPORTANT — never create a local `notes/` directory in the repo.** If
+`$LLM_NOTES_ROOT` is set in the environment, `resolve_spec_path` returns an
+absolute path under `$LLM_NOTES_ROOT/<repo>/notes/specs/` — always use that
+returned path verbatim (do not shorten it, do not fall back to a repo-relative
+`notes/specs/...` path, do not `mkdir` a `notes/` folder in the repo yourself).
+Only when `$LLM_NOTES_ROOT` is unset does the tool fall back to a repo-local
+`notes/specs/` path. Check `echo $LLM_NOTES_ROOT` if unsure before writing.
+
+Example result when `$LLM_NOTES_ROOT` is unset: `notes/specs/IMP-7070__implement-user-balance-write.md`
+Example result when set: `$LLM_NOTES_ROOT/<repo>/notes/specs/IMP-7070__implement-user-balance-write.md`
 
 ## Step 0: Fetch Ticket Context from Taskwarrior
 
@@ -174,7 +183,7 @@ After structure approval:
 
 1. **Resolve the spec path** using the `resolve_spec_path` tool with the Jira ID and `jirasummary`.
 
-2. **Write the spec** to the resolved path.
+2. **Write the spec** to the exact path the tool returned — never substitute a repo-local `notes/specs/...` path when `$LLM_NOTES_ROOT` is set.
 
 3. **Use the template** at the end of this document.
 
@@ -378,7 +387,7 @@ Always separate into two categories:
 
 - Jira ticket: [$JIRA_ID]($jiraurl)
 - Taskwarrior: `task jiraid:$JIRA_ID +impl list`
-- Spec file: `notes/specs/$JIRA_ID__$SLUG.md`
+- Spec file: path returned by `resolve_spec_path` (`$LLM_NOTES_ROOT/<repo>/notes/specs/$JIRA_ID__$SLUG.md` if `$LLM_NOTES_ROOT` is set, else `notes/specs/$JIRA_ID__$SLUG.md`)
 
 ```
 

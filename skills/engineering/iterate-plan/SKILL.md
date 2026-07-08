@@ -9,9 +9,15 @@ You are tasked with updating existing implementation specs based on user feedbac
 
 ## Resolving the Notes Directory
 
-Use the `resolve_spec_path` tool with the Jira ID and summary to compute the canonical spec path. It handles repo name detection and `$LLM_NOTES_ROOT` automatically.
+Use the `resolve_spec_path` tool with the Jira ID and summary to compute the canonical spec path, or `tw_get_spec_task` to read the actual annotated path off the taskwarrior spec task. Either handles repo name detection and `$LLM_NOTES_ROOT` automatically — **always use the path either tool returns, verbatim**.
 
-Alternatively, list recent specs:
+**⚠️ IMPORTANT — never assume specs live in a repo-local `notes/specs/`.** If
+`$LLM_NOTES_ROOT` is set, specs live under `$LLM_NOTES_ROOT/<repo>/notes/specs/`
+instead. Don't `ls notes/specs/` blindly — check `echo $LLM_NOTES_ROOT` first, or
+just ask `tw_get_spec_task`/`resolve_spec_path` for the path rather than guessing.
+Never create a `notes/` directory in the repo yourself.
+
+If `$LLM_NOTES_ROOT` is unset, list recent specs with:
 ```bash
 ls -lt notes/specs/ | head
 ```
@@ -19,6 +25,7 @@ Or search by Jira ID:
 ```bash
 ls notes/specs/ | grep -i IMP-7070
 ```
+If `$LLM_NOTES_ROOT` is set, list/search under `$LLM_NOTES_ROOT/<repo>/notes/specs/` instead.
 
 ## Initial Response
 
@@ -37,8 +44,9 @@ When this skill is invoked:
 
    Which spec would you like to update? Please provide the path or Jira ID.
 
-   Tip: You can list recent specs with `ls -lt notes/specs/ | head`
-   Or search by Jira ID: `ls notes/specs/ | grep -i IMP-7070`
+   Tip: use `tw_get_spec_task` or `resolve_spec_path` to get the exact path
+   (respects `$LLM_NOTES_ROOT`). If unset, list recent specs with
+   `ls -lt notes/specs/ | head`, or search by Jira ID: `ls notes/specs/ | grep -i IMP-7070`.
    ```
 
    Wait for user input, then re-check for feedback.
