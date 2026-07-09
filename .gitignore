@@ -1,4 +1,5 @@
 /node_modules
+packages/*/node_modules
 # AIDEV-NOTE: this repo uses bun (bun.lock is the source of truth); ignore stray npm lockfiles
 package-lock.json
 

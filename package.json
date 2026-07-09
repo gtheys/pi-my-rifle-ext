@@ -15,7 +15,6 @@
     "typecheck": "bunx tsc -p tsconfig.json --noEmit",
     "test": "bun run --workspaces --if-present test",
     "check": "bun run lint && bun run typecheck && bun run test"
-  }
   },
   "pi": {
     "extensions": [
@@ -61,7 +60,7 @@
     "@earendil-works/pi-coding-agent": "^0.80.3",
     "@earendil-works/pi-tui": "^0.80.3",
     "@biomejs/biome": "2.4.13",
-    "@types/diff": "^9.0.0",
+    "@types/diff": "latest",
     "lefthook": "2.1.6",
     "typescript": "5.9.3",
     "bun-types": "latest"
