@@ -15,6 +15,7 @@
     "typecheck": "bunx tsc -p tsconfig.json --noEmit",
     "test": "bun run --workspaces --if-present test",
     "check": "bun run lint && bun run typecheck && bun run test"
+  }
   },
   "pi": {
     "extensions": [
@@ -42,14 +43,25 @@
     ]
   },
   "dependencies": {
+    "@gtheys/pi-per-commit-spend": "latest",
     "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.80.3",
-    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.80.3"
+    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.80.3",
+    "@shikijs/cli": "^4.3.1",
+    "@sting8k/pi-vcc": "^0.3.18",
+    "@tomooshi/caveman-milk-pi": "^0.2.0",
+    "@tomooshi/condensed-milk-pi": "^1.9.0",
+    "diff": "^9.0.0",
+    "graphify-pi": "^0.3.0",
+    "pi-intercom": "^0.6.0",
+    "pi-session-switch": "^0.3.0",
+    "shiki": "^4.3.1"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.79.10",
     "@earendil-works/pi-coding-agent": "^0.80.3",
     "@earendil-works/pi-tui": "^0.80.3",
     "@biomejs/biome": "2.4.13",
+    "@types/diff": "^9.0.0",
     "lefthook": "2.1.6",
     "typescript": "5.9.3",
     "bun-types": "latest"
