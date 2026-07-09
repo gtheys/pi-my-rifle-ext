@@ -17,23 +17,48 @@ You are tasked with generating a comprehensive pull request description followin
 
    If this fails, fall back to `basename "$(git rev-parse --show-toplevel 2>/dev/null)"`, then to `basename "$PWD"`.
 
-2. **Resolve the notes path**:
+2. **Resolve the notes path** — check first with `echo $LLM_NOTES_ROOT`:
    - If `$LLM_NOTES_ROOT` is set → `$LLM_NOTES_ROOT/<repo>/notes/`
    - Otherwise → `notes/` relative to the repo root
+
+   **⚠️ IMPORTANT — never create a local `notes/` directory in the repo.** When
+   `$LLM_NOTES_ROOT` is set, always read from and write to the absolute
+   `$LLM_NOTES_ROOT/<repo>/notes/prs/` path verbatim — do not fall back to a
+   repo-relative `notes/prs/...` path, and do not `mkdir` a `notes/` folder in
+   the repo yourself. Only when `$LLM_NOTES_ROOT` is unset do notes live at the
+   repo-local `notes/` path.
+
+3. **Template is shared, output is per-repo**:
+   - The PR description **template** (`pr_description.md`) is **shared across all
+     repos** at `$LLM_NOTES_ROOT/_default/notes/prs/pr_description.md` — a repo
+     only needs its own copy to override. See Step 1 for the full fallback chain.
+   - Generated descriptions (`{number}_description.md`) are written **per-repo**
+     at the resolved notes path from step 2.
 
 ## Steps
 
 ### 1. Read the PR Description Template
 
-- Check if `notes/prs/pr_description.md` exists at the resolved notes path
-- If it doesn't exist, inform the user:
+Resolve the template with a fallback chain — use the first one that exists:
 
-  ```
-  No PR description template found at notes/prs/pr_description.md.
-  Please create a template there so I know what format to follow.
-  ```
+1. Repo-specific override: `<resolved notes path>/prs/pr_description.md`
+   (i.e. `$LLM_NOTES_ROOT/<repo>/notes/prs/pr_description.md`, or repo-local
+   `notes/prs/pr_description.md` when `$LLM_NOTES_ROOT` is unset)
+2. Shared default: `$LLM_NOTES_ROOT/_default/notes/prs/pr_description.md`
+   (only when `$LLM_NOTES_ROOT` is set)
 
-- Read the template carefully to understand all sections and requirements
+The shared default is the normal case.
+
+If neither exists, inform the user:
+
+```
+No PR description template found. Checked:
+  - $LLM_NOTES_ROOT/<repo>/notes/prs/pr_description.md
+  - $LLM_NOTES_ROOT/_default/notes/prs/pr_description.md
+Create a template so I know what format to follow.
+```
+
+Read the template carefully to understand all sections and requirements.
 
 ### 2. Identify the PR to Describe
 
