@@ -1,6 +1,8 @@
-# Skill: jira-status-timestamps
+---
+description: Set up Jira status-entry timestamps using custom datetime fields and Automation rules. Stamps the exact moment each ticket transitions into a workflow status (Requirement & Design At, In Development At, etc.). Includes field creation, automation rule generation, and import workflow for SalaryHero projects (Solutions, DevOps).
+---
 
-Create datetime custom fields + Jira Automation rules that stamp the exact time a ticket enters each workflow status. Mirrors the "DevOps - Done At" pattern used at SalaryHero.
+# Skill: jira-status-timestamps
 
 ## Trigger phrases
 
