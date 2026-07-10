@@ -1,8 +1,25 @@
 {
   "name": "@gtheys/pi-fastcontext",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Pi extension — fast_context_search tool backed by a local Microsoft FastContext llama.cpp server",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-fastcontext"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "config.schema.json",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"

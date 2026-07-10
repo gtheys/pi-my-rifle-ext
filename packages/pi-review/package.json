@@ -1,8 +1,29 @@
 {
   "name": "@gtheys/pi-review",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Pi extension — /review, /sonarqube, and /pr-quality commands powered by GitHub and SonarCloud",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-review"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "review/review.ts",
+    "review/sem-guidance.mjs",
+    "review/sem-guidance.d.mts",
+    "sonarqube/sonarqube.ts",
+    "pr-quality/index.ts",
+    "shared/sonarqube-utils.ts",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./review/review.ts",

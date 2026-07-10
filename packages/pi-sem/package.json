@@ -1,8 +1,27 @@
 {
   "name": "@gtheys/pi-sem",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Pi extension — entity-aware semantic code tools (diff, impact, context, blame, log) via the sem CLI",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-sem"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "core.mjs",
+    "core.d.mts",
+    "bin/sem-eval.mjs",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"

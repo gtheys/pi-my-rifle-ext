@@ -1,8 +1,24 @@
 {
   "name": "@gtheys/pi-bootstrap",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Pi extension that symlinks agents/AGENTS.md into the Pi agent directory on startup",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-bootstrap"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"

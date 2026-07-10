@@ -1,8 +1,24 @@
 {
   "name": "@gtheys/pi-context",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Pi extension that adds a /context command to visualise context-window token usage as a coloured grid",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-context"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "context.ts",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./context.ts"

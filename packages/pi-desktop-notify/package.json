@@ -1,8 +1,24 @@
 {
   "name": "@gtheys/pi-desktop-notify",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Pi extension that sends desktop notifications when Pi finishes work after an idle period",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-desktop-notify"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"

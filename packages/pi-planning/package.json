@@ -1,8 +1,26 @@
 {
   "name": "@gtheys/pi-planning",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Pi extension — typed taskwarrior tools for the create-plan and implement-plan skills",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-planning"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "plan-tools/index.ts",
+    "implement-plan/index.ts",
+    "shared/tw-utils.ts",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./plan-tools/index.ts",

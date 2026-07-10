@@ -1,8 +1,26 @@
 {
   "name": "@gtheys/pi-tool-pills",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Pi extension — coloured pill badges for tool calls and Shiki-powered syntax-highlighted diffs for write/edit",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-tool-pills"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "diff-renderer.ts",
+    "pill.ts",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"

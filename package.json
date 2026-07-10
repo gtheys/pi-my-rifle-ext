@@ -14,7 +14,8 @@
     "lint": "bunx @biomejs/biome check .",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit",
     "test": "bun run --workspaces --if-present test",
-    "check": "bun run lint && bun run typecheck && bun run test"
+    "check": "bun run lint && bun run typecheck && bun run test",
+    "publish:all": "npm publish --workspaces --access public"
   },
   "pi": {
     "extensions": [
