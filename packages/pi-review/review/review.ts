@@ -33,7 +33,11 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent'
-import { BorderedLoader, DynamicBorder } from '@earendil-works/pi-coding-agent'
+import {
+  BorderedLoader,
+  CONFIG_DIR_NAME,
+  DynamicBorder,
+} from '@earendil-works/pi-coding-agent'
 import {
   Container,
   type SelectItem,
@@ -215,7 +219,7 @@ async function loadProjectReviewGuidelines(
   let currentDir = path.resolve(cwd)
 
   while (true) {
-    const piDir = path.join(currentDir, '.pi')
+    const piDir = path.join(currentDir, CONFIG_DIR_NAME)
     const guidelinesPath = path.join(currentDir, 'REVIEW_GUIDELINES.md')
 
     const piStats = await fs.stat(piDir).catch(() => null)
