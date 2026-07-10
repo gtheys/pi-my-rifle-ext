@@ -12,10 +12,12 @@
     "prepare": "lefthook install || true",
     "format": "bunx @biomejs/biome check --write .",
     "lint": "bunx @biomejs/biome check .",
+    "lint:fix": "bunx @biomejs/biome check --write .",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit",
     "test": "bun run --workspaces --if-present test",
     "check": "bun run lint && bun run typecheck && bun run test",
-    "publish:all": "npm publish --workspaces --access public"
+    "release": "npm publish --workspaces --access public",
+    "release:dry-run": "npm publish --workspaces --access public --dry-run"
   },
   "pi": {
     "extensions": [
