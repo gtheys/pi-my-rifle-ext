@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
-import { homedir } from 'node:os'
 import path from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8772/v1'
@@ -12,10 +12,7 @@ const MAX_GREP_RESULTS = 40
 const MAX_GLOB_RESULTS = 80
 const MAX_FINAL_CITATIONS = 12
 
-const USER_CONFIG_PATH = path.join(
-  process.env.PI_CODING_AGENT_DIR || path.join(homedir(), '.pi', 'agent'),
-  'fastcontext.json',
-)
+const USER_CONFIG_PATH = path.join(getAgentDir(), 'fastcontext.json')
 
 type FastContextConfig = {
   baseUrl: string
