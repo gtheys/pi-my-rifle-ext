@@ -34,6 +34,11 @@ representative tool registration.
 
 ## Workspace layout and dependency direction
 
+All packages are published to npm under `@gtheys/*` (e.g. `@gtheys/pi-fastcontext`).
+Each `package.json` has a `files` allowlist shipping only TypeScript source —
+no build step, no `dist/`. Use `make release-dry-run` to verify tarballs before
+publishing.
+
 ```
 packages/
 ├── pi-bootstrap/        no deps — pure side effect on session_start

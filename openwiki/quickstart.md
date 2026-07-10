@@ -26,7 +26,23 @@ section for the `pi install` commands.
 ```bash
 mise install     # pin bun via mise.toml
 mise run setup   # bun install + lefthook hooks
+```
 
+**Via `make` (Makefile at repo root):**
+
+```bash
+make fmt           # biome format + safe fixes
+make lint          # biome check only
+make test          # workspace tests
+make check         # lint + typecheck + test
+make fix           # lint:fix then format (both safe-fix passes)
+make release       # npm publish --workspaces --access public
+make release-dry-run  # dry run — shows what would be published
+```
+
+**Via `mise run` or `npm run` (same scripts):**
+
+```bash
 mise run format      # biome format + safe fixes
 mise run lint        # biome check
 mise run typecheck   # tsc --noEmit over packages/**
@@ -37,6 +53,21 @@ mise run check       # lint && typecheck && test
 Git hooks (`lefthook.yml:1`): pre-commit runs biome on staged `packages/**` files;
 pre-push runs the full `check` pipeline. There is no build step — extensions are
 loaded as TypeScript source directly by pi's runtime.
+
+## Publishing to npm
+
+All packages are published under the `@gtheys` scope on npm. Each package has:
+- `"publishConfig": { "access": "public" }` for scoped public access
+- A `"files"` allowlist (source `.ts` files + `README.md` + `config.schema.json` where applicable)
+- No build step — TypeScript source ships directly
+
+```bash
+make release          # publish all packages
+make release-dry-run  # verify tarballs before publishing
+npm publish -w packages/pi-fastcontext --access public  # publish one package
+```
+
+Bump versions manually in each `packages/*/package.json` before releasing.
 
 ## Repo layout
 
@@ -75,11 +106,8 @@ pi's own packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, 
 - **`AIDEV-NOTE:` / `AIDEV-TODO:` / `AIDEV-QUESTION:`** comments mark non-trivial,
   confusing, or important code for both humans and agents. Grep for them before
   editing a file (`agents/AGENTS.md:1`). Never delete them without explicit instruction.
-- **`ponytail:`** comments mark a deliberate simplification with a named ceiling
-  (e.g. "global lock, per-account locks if throughput matters") — this repo is
-  written in a YAGNI/lazy-first style; see `packages/pi-planning/plan-tools/index.ts:34`
-  for an example.
+- **`ponytail:`** comments mark a deliberate simplification with a named ceiling.
 - Root `tsconfig.json` typechecks all of `packages/**`; `biome.json` scopes lint/format
-  to `packages/**` only (skills/prompts/themes are plain markdown/JSON, not linted).
-- No test framework beyond Node's built-in `node --test` — see `pi-review` and
-  `pi-sem` `package.json` `"test": "node --test"` scripts.
+  to `packages/**` only. No ternary expressions in TypeScript — prefer `if`/`else`.
+- Local imports use explicit `.ts` suffixes (`allowImportingTsExtensions: true`).
+- No test framework beyond Node's built-in `node --test`.

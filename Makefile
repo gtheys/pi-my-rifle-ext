@@ -27,4 +27,17 @@ fix:
 	npm run lint:fix
 	npm run format
 
-.PHONY: fmt lint test check release release-dry-run fix
+# Show available targets
+help:
+	@echo ""
+	@echo "  fmt              Format code (biome --write)"
+	@echo "  lint             Check for lint issues (biome check)"
+	@echo "  fix              Apply lint + format fixes"
+	@echo "  test             Run tests across all workspaces"
+	@echo "  check            lint + typecheck + test (full CI pass)"
+	@echo "  release          Publish all packages to npm"
+	@echo "  release-dry-run  Dry-run publish (shows tarball contents)"
+	@echo "  help             Show this message"
+	@echo ""
+
+.PHONY: fmt lint test check release release-dry-run fix help
