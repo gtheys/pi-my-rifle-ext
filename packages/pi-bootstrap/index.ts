@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { existsSync, lstatSync, readlinkSync, rmSync, symlinkSync } from 'fs'
-import { homedir } from 'os'
 import { join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -14,7 +14,7 @@ export default function (pi: ExtensionAPI) {
     const source = fileURLToPath(
       new URL('../../agents/AGENTS.md', import.meta.url),
     )
-    const target = join(homedir(), '.pi', 'agent', 'AGENTS.md')
+    const target = join(getAgentDir(), 'AGENTS.md')
 
     // Classify whatever currently sits at the target.
     let isSymlink = false
