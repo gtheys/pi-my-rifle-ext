@@ -11,7 +11,8 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { extname, relative } from 'node:path'
+import { extname, join, relative } from 'node:path'
+import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { codeToANSI } from '@shikijs/cli'
 import * as Diff from 'diff'
 import type { BundledLanguage, BundledTheme } from 'shiki'
@@ -198,13 +199,12 @@ function autoDeriveBgFromTheme(theme: any): void {
 }
 
 function loadDiffConfig(): DiffUserConfig {
-  // AIDEV-NOTE: ~/.pi/agent/settings.json is the canonical pi config location;
-  // ~/.pi/settings.json is legacy fallback, cwd/.pi/settings.json is project-level override.
-  const home = process.env.HOME ?? ''
+  // AIDEV-NOTE: getAgentDir()/settings.json is the canonical pi config location;
+  // ~/.pi/settings.json is legacy fallback, cwd/CONFIG_DIR_NAME/settings.json is project-level override.
   const paths = [
-    `${process.cwd()}/.pi/settings.json`,
-    `${home}/.pi/agent/settings.json`,
-    `${home}/.pi/settings.json`,
+    join(process.cwd(), CONFIG_DIR_NAME, 'settings.json'),
+    join(getAgentDir(), 'settings.json'),
+    join(getAgentDir(), '..', 'settings.json'),
   ]
   for (const p of paths) {
     try {
