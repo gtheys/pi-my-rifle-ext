@@ -316,8 +316,18 @@ function buildAgentPrompt(
     lines.push('_No unresolved threads. Skip Task A._')
   } else {
     for (const [i, thread] of prData.unresolved_threads.entries()) {
-      const loc = thread.line ? `${thread.path}:${thread.line}` : thread.path
-      const outdated = thread.isOutdated ? ' _(outdated diff)_' : ''
+      let loc: string
+      if (thread.line) {
+        loc = `${thread.path}:${thread.line}`
+      } else {
+        loc = thread.path
+      }
+      let outdated: string
+      if (thread.isOutdated) {
+        outdated = ' _(outdated diff)_'
+      } else {
+        outdated = ''
+      }
       lines.push(`### Thread ${i + 1} — \`${loc}\`${outdated}`)
       lines.push(`**threadId:** \`${thread.threadId}\``)
       lines.push('')
@@ -384,7 +394,12 @@ function buildAgentPrompt(
       for (const f of issues.byFile.slice(0, 15)) {
         lines.push(`#### \`${f.file}\` — ${f.count} issue(s)`)
         for (const issue of f.issues.slice(0, 20)) {
-          const loc = issue.line ? `:${issue.line}` : ''
+          let loc: string
+          if (issue.line) {
+            loc = `:${issue.line}`
+          } else {
+            loc = ''
+          }
           const sym = SEVERITY_SYMBOLS[issue.severity] ?? '❓'
           const typeSym = TYPE_SYMBOLS[issue.type] ?? '❓'
           lines.push(
@@ -548,10 +563,15 @@ export default function prQuality(pi: ExtensionAPI) {
 
       if (!actionsStatus.complete) {
         const names = actionsStatus.pending
-          .map(
-            (c) =>
-              `${c.workflowName ? c.workflowName + ' / ' : ''}${c.name} (${c.status.toLowerCase()})`,
-          )
+          .map((c) => {
+            let wf: string
+            if (c.workflowName) {
+              wf = `${c.workflowName} / `
+            } else {
+              wf = ''
+            }
+            return `${wf}${c.name} (${c.status.toLowerCase()})`
+          })
           .join(', ')
         ctx.ui.notify(
           `PR #${prNumber} CI not done yet — ${actionsStatus.pending.length} check(s) still running: ${names}`,

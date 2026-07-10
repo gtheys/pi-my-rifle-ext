@@ -29,7 +29,10 @@ const COLLAPSED_MAX_LINES = 15
 /** Extract the first text content from a tool result */
 function getText(result: AgentToolResult<unknown>): string | undefined {
   const c = result.content.find((c) => c.type === 'text')
-  return c?.type === 'text' ? c.text : undefined
+  if (c?.type === 'text') {
+    return c.text
+  }
+  return undefined
 }
 
 /**

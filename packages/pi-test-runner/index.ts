@@ -110,9 +110,12 @@ export default function (pi: ExtensionAPI) {
     const displayName = pi.getSessionName()?.trim()
     if (displayName) return displayName
     const piSessionId = ctx.sessionManager.getSessionId()
-    const normalized = piSessionId.startsWith('session-')
-      ? piSessionId.slice('session-'.length)
-      : piSessionId
+    let normalized: string
+    if (piSessionId.startsWith('session-')) {
+      normalized = piSessionId.slice('session-'.length)
+    } else {
+      normalized = piSessionId
+    }
     return `subagent-chat-${normalized.slice(0, 8)}`
   }
 
@@ -255,9 +258,10 @@ export default function (pi: ExtensionAPI) {
       const runDir = packageDir ?? workDir
 
       // Resolve which script to run
-      let selected = params.script
-        ? scripts.find((s) => s.key === params.script)
-        : undefined
+      let selected: ReturnType<typeof scripts.find>
+      if (params.script) {
+        selected = scripts.find((s) => s.key === params.script)
+      }
 
       if (!selected && scripts.length > 1 && ctx.hasUI) {
         const choices = scripts.map((s) => `${s.key}: ${s.command}`)
@@ -310,7 +314,12 @@ export default function (pi: ExtensionAPI) {
 
     renderCall(args, theme) {
       const script = args.script ?? 'auto-detect'
-      const cwdSuffix = args.cwd ? theme.fg('muted', ` in ${args.cwd}`) : ''
+      let cwdSuffix: string
+      if (args.cwd) {
+        cwdSuffix = theme.fg('muted', ` in ${args.cwd}`)
+      } else {
+        cwdSuffix = ''
+      }
       return new Text(
         theme.fg('toolTitle', theme.bold('run_tests ')) +
           theme.fg('accent', script) +
@@ -333,7 +342,12 @@ export default function (pi: ExtensionAPI) {
 
       const details = result.details as Details | undefined
       const t = result.content[0]
-      const text = t?.type === 'text' ? t.text : '(no output)'
+      let text: string
+      if (t?.type === 'text') {
+        text = t.text
+      } else {
+        text = '(no output)'
+      }
 
       if (!details || details.found === false || details.cancelled) {
         return new Text(theme.fg('muted', text), 0, 0)
@@ -402,7 +416,10 @@ export default function (pi: ExtensionAPI) {
         } else {
           const age = (r: TestRun) => {
             const secs = Math.round((Date.now() - r.started) / 1000)
-            return secs < 60 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`
+            if (secs < 60) {
+              return `${secs}s ago`
+            }
+            return `${Math.round(secs / 60)}m ago`
           }
           const choices = activeRuns.map(
             (r) => `${r.script} — ${r.command} (${age(r)})`,
@@ -446,12 +463,13 @@ export default function (pi: ExtensionAPI) {
       if (sub === 'model') {
         const modelId = parts[1]
         if (!modelId) {
-          ctx.ui.notify(
-            config.defaultModel
-              ? `test-runner default model: ${config.defaultModel}`
-              : 'test-runner default model: (pi default)',
-            'info',
-          )
+          let modelMsg: string
+          if (config.defaultModel) {
+            modelMsg = `test-runner default model: ${config.defaultModel}`
+          } else {
+            modelMsg = 'test-runner default model: (pi default)'
+          }
+          ctx.ui.notify(modelMsg, 'info')
           return
         }
         config.defaultModel = modelId
@@ -477,7 +495,12 @@ export default function (pi: ExtensionAPI) {
           lines.push('Active runs this session:')
           for (const r of activeRuns) {
             const secs = Math.round((Date.now() - r.started) / 1000)
-            const age = secs < 60 ? `${secs}s` : `${Math.round(secs / 60)}m`
+            let age: string
+            if (secs < 60) {
+              age = `${secs}s`
+            } else {
+              age = `${Math.round(secs / 60)}m`
+            }
             lines.push(`  ${r.script} (${age}) — ${r.runId}`)
           }
         }

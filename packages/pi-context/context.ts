@@ -342,10 +342,13 @@ function renderGrid(
   const cells: string[] = []
   let cellIdx = 0
   for (const cat of breakdown.categories) {
-    const numCells = Math.max(
-      cat.tokens > 0 && cat.key !== 'free' ? 1 : 0,
-      Math.round(cat.tokens / tokensPerCell),
-    )
+    let minCell: number
+    if (cat.tokens > 0 && cat.key !== 'free') {
+      minCell = 1
+    } else {
+      minCell = 0
+    }
+    const numCells = Math.max(minCell, Math.round(cat.tokens / tokensPerCell))
     for (let i = 0; i < numCells && cellIdx < cellsTotal; i++) {
       cells.push(cat.square)
       cellIdx++
@@ -361,7 +364,12 @@ function renderGrid(
   // Calculate grid width and centering padding
   const gridW = cols * squareW
   const leftPad = Math.floor((width - gridW) / 2)
-  const leftPadStr = leftPad > 0 ? ' '.repeat(leftPad) : ''
+  let leftPadStr: string
+  if (leftPad > 0) {
+    leftPadStr = ' '.repeat(leftPad)
+  } else {
+    leftPadStr = ''
+  }
 
   // Render grid rows
   for (let row = 0; row < targetRows; row++) {
@@ -414,8 +422,12 @@ function buildOverlay(
   lines.push(theme.fg('border', `╭${'─'.repeat(innerW)}╮`))
 
   // Title
-  const pct =
-    breakdown.percent !== null ? ` (${breakdown.percent.toFixed(1)}%)` : ''
+  let pct: string
+  if (breakdown.percent !== null) {
+    pct = ` (${breakdown.percent.toFixed(1)}%)`
+  } else {
+    pct = ''
+  }
   const titleText = `Context Window Usage${pct}`
   lines.push(row(theme.bold(theme.fg('accent', titleText))))
 
@@ -499,14 +511,26 @@ function buildOverlay(
     const item = theme.fg('muted', stats[i]!)
     const itemW = visibleWidth(item)
     const needsSep = currentW > 0
-    const addW = (needsSep ? sepW : 0) + itemW
+    let sepPad: number
+    if (needsSep) {
+      sepPad = sepW
+    } else {
+      sepPad = 0
+    }
+    const addW = sepPad + itemW
     if (currentW > 0 && currentW + addW > contentW) {
       // Flush current line and start a new one
       lines.push(row(currentLine))
       currentLine = item
       currentW = itemW
     } else {
-      currentLine += (needsSep ? sep : '') + item
+      let sepStr: string
+      if (needsSep) {
+        sepStr = sep
+      } else {
+        sepStr = ''
+      }
+      currentLine += sepStr + item
       currentW += addW
     }
   }

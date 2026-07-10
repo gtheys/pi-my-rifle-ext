@@ -91,6 +91,9 @@ export function buildRunCommand(key: string, dir: string): string {
     case 'pnpm':
       return `pnpm run ${key}`
     default:
-      return key === 'test' ? 'npm test' : `npm run ${key}`
+      if (key === 'test') {
+        return 'npm test'
+      }
+      return `npm run ${key}`
   }
 }

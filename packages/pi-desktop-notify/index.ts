@@ -148,11 +148,14 @@ export default function (pi: ExtensionAPI) {
 
       // No arg or unknown — toggle
       state.enabled = !state.enabled
+      let notifyStatus: string
+      if (state.enabled) {
+        notifyStatus = 'enabled'
+      } else {
+        notifyStatus = 'disabled'
+      }
       pi.appendEntry('desktop-notify-state', state)
-      ctx.ui.notify(
-        `Desktop notifications ${state.enabled ? 'enabled' : 'disabled'}`,
-        'info',
-      )
+      ctx.ui.notify(`Desktop notifications ${notifyStatus}`, 'info')
     },
   })
 }

@@ -31,6 +31,13 @@ import {
   summarizeSemDiffPayload,
 } from './core.mjs'
 
+function errMsg(e: unknown): string {
+  if (e instanceof Error) {
+    return e.message
+  }
+  return String(e)
+}
+
 type ToolResult = {
   content: Array<{ type: 'text'; text: string }>
   details: Record<string, unknown>
@@ -119,7 +126,7 @@ async function runSem(
       invocation,
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = errMsg(error)
     if (message.includes('ENOENT') || message.includes('not found')) {
       throw new Error(['sem CLI not found.', '', SEM_INSTALL_HINT].join('\n'))
     }
@@ -153,7 +160,7 @@ function parseJson(toolName: string, text: string): unknown {
   try {
     return parseSemJsonOutput(toolName, text)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = errMsg(error)
     throw new Error(`${toolName} returned invalid JSON: ${message}`)
   }
 }
@@ -407,13 +414,19 @@ export default function (pi: ExtensionAPI) {
       const args = buildLogArgs(params)
       const result = await runSem(pi, ctx.cwd, args, signal)
       const payload = parseJson('sem log', result.stdout)
+      let verboseLabel: string
+      if (params.verbose) {
+        verboseLabel = 'yes'
+      } else {
+        verboseLabel = 'no'
+      }
       return formatJsonResult(
         'sem-log',
         `sem log (${params.entity})`,
         [
           `- file: ${params.file ?? 'auto'}`,
           `- limit: ${params.limit ?? 'default'}`,
-          `- verbose: ${params.verbose ? 'yes' : 'no'}`,
+          `- verbose: ${verboseLabel}`,
           `- command: ${formatCommand(result.invocation, args)}`,
         ],
         payload,
@@ -560,9 +573,10 @@ export default function (pi: ExtensionAPI) {
         .map((line) => line.trim())
         .filter(Boolean)
 
-      const impactTargets = includeImpact
-        ? pickImpactTargets(semPayload, impactLimit)
-        : []
+      let impactTargets: ReturnType<typeof pickImpactTargets> = []
+      if (includeImpact) {
+        impactTargets = pickImpactTargets(semPayload, impactLimit)
+      }
       const impactResults: Array<{
         entity: string
         file: string
@@ -586,7 +600,7 @@ export default function (pi: ExtensionAPI) {
             entity: target.entity,
             file: target.file,
             result: {
-              error: error instanceof Error ? error.message : String(error),
+              error: errMsg(error),
             },
           })
         }

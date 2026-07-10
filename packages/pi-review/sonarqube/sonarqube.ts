@@ -179,9 +179,18 @@ function analyzeDuplications(
   const duplicatedBlocks = Math.round(getMetric('duplicated_blocks'))
   const duplicatedFiles = Math.round(getMetric('duplicated_files'))
 
-  // AIDEV-NOTE: SonarCloud quality gate threshold for duplication density is typically 3%.
-  const status = density <= 3 ? 'PASS' : density <= 10 ? 'WARN' : 'FAIL'
-  const icon = density <= 3 ? '✅' : density <= 10 ? '⚠️' : '❌'
+  let status: 'PASS' | 'WARN' | 'FAIL'
+  let icon: string
+  if (density <= 3) {
+    status = 'PASS'
+    icon = '✅'
+  } else if (density <= 10) {
+    status = 'WARN'
+    icon = '⚠️'
+  } else {
+    status = 'FAIL'
+    icon = '❌'
+  }
 
   return {
     density,
@@ -218,9 +227,15 @@ function parseArgs(args: string): {
     }
   }
 
+  let filterArg: typeof filter | undefined
+  if (Object.keys(filter).length > 0) {
+    filterArg = filter
+  } else {
+    filterArg = undefined
+  }
   return {
     prNumber,
-    filter: Object.keys(filter).length > 0 ? filter : undefined,
+    filter: filterArg,
   }
 }
 
@@ -254,7 +269,12 @@ function generateDuplicationSection(dup: DuplicationAnalysis): string[] {
         f.duplicationGroups.slice(0, 3).forEach((g, gi) => {
           lines.push(`   Group ${gi + 1}:`)
           g.blocks.forEach((b) => {
-            const location = b.file !== f.file ? ` (in ${b.file})` : ''
+            let location: string
+            if (b.file !== f.file) {
+              location = ` (in ${b.file})`
+            } else {
+              location = ''
+            }
             lines.push(
               `     • Lines ${b.from}–${b.from + b.size - 1} [${b.size} lines]${location}`,
             )
@@ -308,17 +328,21 @@ function generateReport(
   )
   lines.push('')
   lines.push('Coverage Thresholds (80% minimum):')
+  const fmtGap = (gap: number): string => {
+    if (gap > 0) {
+      return `${gap}% to target`
+    }
+    return 'meets threshold'
+  }
   lines.push(
-    `${coverage.icons.overall} Overall: ${coverage.gaps.overall > 0 ? coverage.gaps.overall + '% to target' : 'meets threshold'}`,
+    `${coverage.icons.overall} Overall: ${fmtGap(coverage.gaps.overall)}`,
   )
   lines.push(
-    `${coverage.icons.newCode} New Code: ${coverage.gaps.newCode > 0 ? coverage.gaps.newCode + '% to target' : 'meets threshold'}`,
+    `${coverage.icons.newCode} New Code: ${fmtGap(coverage.gaps.newCode)}`,
   )
+  lines.push(`${coverage.icons.branch} Branch: ${fmtGap(coverage.gaps.branch)}`)
   lines.push(
-    `${coverage.icons.branch} Branch: ${coverage.gaps.branch > 0 ? coverage.gaps.branch + '% to target' : 'meets threshold'}`,
-  )
-  lines.push(
-    `${coverage.icons.newBranch} New Branch: ${coverage.gaps.newBranch > 0 ? coverage.gaps.newBranch + '% to target' : 'meets threshold'}`,
+    `${coverage.icons.newBranch} New Branch: ${fmtGap(coverage.gaps.newBranch)}`,
   )
   lines.push('')
 

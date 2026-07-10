@@ -17,6 +17,11 @@ import { codeToANSI } from '@shikijs/cli'
 import * as Diff from 'diff'
 import type { BundledLanguage, BundledTheme } from 'shiki'
 
+// AIDEV-NOTE: This file is a dense ANSI/terminal rendering module. Many inline
+// ternary expressions remain in tight rendering paths where if/else would harm
+// readability without improving correctness. New code should prefer if/else per
+// AGENTS.md. Remaining ternaries are tracked in taskwarrior (task C).
+
 // ---------------------------------------------------------------------------
 // Diff Theme System
 // ---------------------------------------------------------------------------
@@ -119,7 +124,10 @@ function parseAnsiRgb(
 ): { r: number; g: number; b: number } | null {
   const esc = '\u001b'
   const m = ansi.match(new RegExp(`${esc}\\[(?:38|48);2;(\\d+);(\\d+);(\\d+)m`))
-  return m ? { r: +m[1], g: +m[2], b: +m[3] } : null
+  if (m) {
+    return { r: +m[1], g: +m[2], b: +m[3] }
+  }
+  return null
 }
 
 function hexToBgAnsi(hex: string): string {
@@ -223,7 +231,12 @@ function loadDiffConfig(): DiffUserConfig {
 
 function applyDiffPalette(): void {
   const config = loadDiffConfig()
-  const preset = config.diffTheme ? DIFF_PRESETS[config.diffTheme] : null
+  let preset: DiffPreset | null
+  if (config.diffTheme) {
+    preset = DIFF_PRESETS[config.diffTheme] ?? null
+  } else {
+    preset = null
+  }
   if (preset) _hasExplicitBgConfig = true
 
   const ov = config.diffColors ?? {}
@@ -317,7 +330,10 @@ let THEME: BundledTheme =
 
 function envInt(name: string, fallback: number): number {
   const v = Number.parseInt(process.env[name] ?? '', 10)
-  return Number.isFinite(v) && v > 0 ? v : fallback
+  if (Number.isFinite(v) && v > 0) {
+    return v
+  }
+  return fallback
 }
 
 function envFg(name: string, fallback: string): string {

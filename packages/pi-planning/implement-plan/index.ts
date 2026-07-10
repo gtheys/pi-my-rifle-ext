@@ -59,12 +59,18 @@ interface ExecutionPlan {
 
 function parsePhaseNumber(description: string): number | null {
   const m = description.match(/^(\d+)\.\s*Phase:/i)
-  return m ? parseInt(m[1]!, 10) : null
+  if (m) {
+    return parseInt(m[1]!, 10)
+  }
+  return null
 }
 
 function parseSubtaskNumber(description: string): string | null {
   const m = description.match(/^(\d+\.\d+)/)
-  return m ? m[1]! : null
+  if (m) {
+    return m[1]!
+  }
+  return null
 }
 
 function parseSubtaskName(description: string): string {
@@ -147,9 +153,10 @@ function buildExecutionPlan(jiraId: string, allTasks: TwTask[]): ExecutionPlan {
 
   // Resume target: first non-done phase, then first non-done subtask within it
   const currentPhase = firstNonDone(phases)
-  const currentSubtask = currentPhase
-    ? firstNonDone(currentPhase.subtasks)
-    : null
+  let currentSubtask: Subtask | null = null
+  if (currentPhase) {
+    currentSubtask = firstNonDone(currentPhase.subtasks)
+  }
 
   return {
     jiraId,
@@ -172,22 +179,26 @@ function planSummary(plan: ExecutionPlan): string {
     const doneSubs = phase.subtasks.filter(
       (s) => s.work_state === 'done',
     ).length
-    const icon =
-      phase.work_state === 'done'
-        ? '✓'
-        : phase.work_state === 'inprogress'
-          ? '▶'
-          : '○'
+    let icon: string
+    if (phase.work_state === 'done') {
+      icon = '✓'
+    } else if (phase.work_state === 'inprogress') {
+      icon = '▶'
+    } else {
+      icon = '○'
+    }
     lines.push(
       `  ${icon} Phase ${phase.number}: ${phase.name} [${phase.work_state}] (${doneSubs}/${phase.subtasks.length})`,
     )
     for (const sub of phase.subtasks) {
-      const sicon =
-        sub.work_state === 'done'
-          ? '  ✓'
-          : sub.work_state === 'inprogress'
-            ? '  ▶'
-            : '  ○'
+      let sicon: string
+      if (sub.work_state === 'done') {
+        sicon = '  ✓'
+      } else if (sub.work_state === 'inprogress') {
+        sicon = '  ▶'
+      } else {
+        sicon = '  ○'
+      }
       lines.push(`    ${sicon} ${sub.number} ${sub.name} [${sub.work_state}]`)
     }
   }
@@ -303,7 +314,12 @@ export default function (pi: ExtensionAPI) {
         await pi.exec('task', [params.uuid, 'done', 'rc.confirmation:no'], {})
       }
 
-      const label = params.description ? `"${params.description}"` : params.uuid
+      let label: string
+      if (params.description) {
+        label = `"${params.description}"`
+      } else {
+        label = params.uuid
+      }
       return {
         content: [{ type: 'text', text: `Task ${label} → ${params.state}` }],
         details: { uuid: params.uuid, state: params.state },

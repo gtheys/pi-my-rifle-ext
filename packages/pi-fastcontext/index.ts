@@ -48,7 +48,10 @@ function intFromEnv(name: string): number | undefined {
   const raw = process.env[name]
   if (!raw) return undefined
   const value = Number(raw)
-  return Number.isFinite(value) ? value : undefined
+  if (Number.isFinite(value)) {
+    return value
+  }
+  return undefined
 }
 
 async function resolveConfig(
@@ -246,7 +249,10 @@ type RunOptions = {
 }
 
 function stripAt(s: string): string {
-  return s.startsWith('@') ? s.slice(1) : s
+  if (s.startsWith('@')) {
+    return s.slice(1)
+  }
+  return s
 }
 
 function normalizeRel(raw: string, root: string): string {
@@ -335,9 +341,10 @@ async function resolveExistingSafe(
 }
 
 function truncate(s: string, max = MAX_TOOL_CHARS): string {
-  return s.length <= max
-    ? s
-    : s.slice(0, max) + `\n... [truncated to ${max} chars]`
+  if (s.length <= max) {
+    return s
+  }
+  return `${s.slice(0, max)}\n... [truncated to ${max} chars]`
 }
 
 function skipRel(rel: string): boolean {
@@ -461,9 +468,12 @@ async function readTool(
     .slice(offset - 1, end)
     .map((line, idx) => `${offset + idx}:${line}`)
     .join('\n')
-  const correction = corrected
-    ? `\n[Path corrected from ${rawPath} to ${rel}]`
-    : ''
+  let correction: string
+  if (corrected) {
+    correction = `\n[Path corrected from ${rawPath} to ${rel}]`
+  } else {
+    correction = ''
+  }
   return truncate(
     `FILE ${rel} lines ${offset}-${end}/${lines.length}${correction}\n${body}`,
   )
@@ -491,14 +501,18 @@ async function globTool(
     return `No files matched ${raw}. Tried: ${patterns.join(', ')}. Try broader patterns like '**/*.go', '**/*.ts', '**/*.h', or a keyword GREP.`
   }
   const shown = matches.slice(0, MAX_GLOB_RESULTS)
-  const more =
-    matches.length > shown.length
-      ? `\n... [${matches.length - shown.length} more]`
-      : ''
-  const correction =
-    usedPattern !== patterns[0]
-      ? `[Pattern corrected from ${raw} to ${usedPattern}]\n`
-      : ''
+  let more: string
+  if (matches.length > shown.length) {
+    more = `\n... [${matches.length - shown.length} more]`
+  } else {
+    more = ''
+  }
+  let correction: string
+  if (usedPattern !== patterns[0]) {
+    correction = `[Pattern corrected from ${raw} to ${usedPattern}]\n`
+  } else {
+    correction = ''
+  }
   return truncate(correction + shown.join('\n') + more)
 }
 
@@ -548,10 +562,12 @@ async function grepTool(
   }
   if (results.length === 0)
     return `No matches for ${pattern} in ${rel || 'repo root'} after scanning ${scanned} text files.`
-  const more =
-    results.length >= MAX_GREP_RESULTS
-      ? `\n... [stopped after ${MAX_GREP_RESULTS} matches]`
-      : ''
+  let more: string
+  if (results.length >= MAX_GREP_RESULTS) {
+    more = `\n... [stopped after ${MAX_GREP_RESULTS} matches]`
+  } else {
+    more = ''
+  }
   return truncate(results.join('\n') + more)
 }
 
@@ -570,7 +586,11 @@ function normalizeToolCalls(msg: any): ToolCall[] {
     let parsed: Record<string, any> = {}
     if (typeof fn.arguments === 'string') {
       try {
-        parsed = fn.arguments.trim() ? JSON.parse(fn.arguments) : {}
+        if (fn.arguments.trim()) {
+          parsed = JSON.parse(fn.arguments)
+        } else {
+          parsed = {}
+        }
       } catch {
         parsed = { _parse_error: fn.arguments }
       }
@@ -607,7 +627,13 @@ async function normalizeFinalCitations(
     for (const m of matches.reverse()) {
       const resolved = await resolveExistingSafe(root, m[1])
       if (resolved.error || !(await isFile(resolved.abs))) continue
-      const replacement = `${resolved.rel}:${m[2]}${m[3] ? `-${m[3]}` : ''}`
+      let lineSuffix: string
+      if (m[3] !== undefined) {
+        lineSuffix = `-${m[3]}`
+      } else {
+        lineSuffix = ''
+      }
+      const replacement = `${resolved.rel}:${m[2]}${lineSuffix}`
       const idx = m.index ?? 0
       normalized =
         normalized.slice(0, idx) +
@@ -758,9 +784,13 @@ async function runFastContext(
       options.maxTokens,
       options.signal,
     )
+    let transcriptEntry: typeof response | undefined
+    if (options.includeTranscript) {
+      transcriptEntry = response
+    }
     transcript.push({
       turn,
-      response: options.includeTranscript ? response : undefined,
+      response: transcriptEntry,
     })
     const usage = response.usage || {}
     promptTokens += Number(usage.prompt_tokens || 0)
@@ -789,10 +819,16 @@ async function runFastContext(
         result = await execFcTool(root, call)
         if (result.startsWith('ERR:')) failedTools++
       }
+      let toolResultEntry: string
+      if (options.includeTranscript) {
+        toolResultEntry = result
+      } else {
+        toolResultEntry = result.slice(0, 500)
+      }
       transcript.push({
         turn,
         tool: call,
-        result: options.includeTranscript ? result : result.slice(0, 500),
+        result: toolResultEntry,
       })
       messages.push({ role: 'tool', tool_call_id: call.id, content: result })
     }
@@ -814,9 +850,13 @@ async function runFastContext(
       options.maxTokens,
       options.signal,
     )
+    let forceFinalEntry: typeof response | undefined
+    if (options.includeTranscript) {
+      forceFinalEntry = response
+    }
     transcript.push({
       turn: 'force_final',
-      response: options.includeTranscript ? response : undefined,
+      response: forceFinalEntry,
     })
     const usage = response.usage || {}
     promptTokens += Number(usage.prompt_tokens || 0)
@@ -866,22 +906,34 @@ async function runFastContext(
     )
   if (!final) warnings.push('no final answer produced')
 
-  const text = [
+  let finalBlock: string
+  if (final) {
+    finalBlock = `<final_answer>\n${final}\n</final_answer>`
+  } else {
+    finalBlock = `(no final answer)`
+  }
+  let text = [
     `# FastContext Result`,
     ``,
-    final ? `<final_answer>\n${final}\n</final_answer>` : `(no final answer)`,
+    finalBlock,
     ``,
     `## Validation`,
     `- Valid citations: ${valid.length}/${citations.length}`,
     `- Tool calls: ${toolCalls} (${failedTools} failed)`,
     `- Time: ${(elapsedMs / 1000).toFixed(1)}s`,
     `- Tokens: prompt ${promptTokens}, completion ${completionTokens}`,
-    warnings.length
-      ? `\n## Warnings\n${warnings.map((w) => `- ${w}`).join('\n')}`
-      : '',
   ]
     .filter(Boolean)
     .join('\n')
+
+  if (warnings.length) {
+    text += `\n## Warnings\n${warnings.map((w) => `- ${w}`).join('\n')}`
+  }
+
+  let transcriptOut: typeof transcript | undefined
+  if (options.includeTranscript) {
+    transcriptOut = transcript
+  }
 
   return {
     text,
@@ -898,7 +950,7 @@ async function runFastContext(
       promptTokens,
       completionTokens,
       warnings,
-      transcript: options.includeTranscript ? transcript : undefined,
+      transcript: transcriptOut,
     },
   }
 }

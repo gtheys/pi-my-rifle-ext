@@ -229,7 +229,10 @@ async function loadProjectReviewGuidelines(
         try {
           const content = await fs.readFile(guidelinesPath, 'utf8')
           const trimmed = content.trim()
-          return trimmed ? trimmed : null
+          if (trimmed) {
+            return trimmed
+          }
+          return null
         } catch {
           return null
         }
@@ -530,28 +533,33 @@ function getUserFacingHint(target: ReviewTarget): string {
       return `changes against '${target.branch}'`
     case 'commit': {
       const shortSha = target.sha.slice(0, 7)
-      return target.title
-        ? `commit ${shortSha}: ${target.title}`
-        : `commit ${shortSha}`
+      if (target.title) {
+        return `commit ${shortSha}: ${target.title}`
+      }
+      return `commit ${shortSha}`
     }
-    case 'custom':
-      return target.instructions.length > 40
-        ? target.instructions.slice(0, 37) + '...'
-        : target.instructions
-
+    case 'custom': {
+      if (target.instructions.length > 40) {
+        return `${target.instructions.slice(0, 37)}...`
+      }
+      return target.instructions
+    }
     case 'pullRequest': {
-      const shortTitle =
-        target.title.length > 30
-          ? target.title.slice(0, 27) + '...'
-          : target.title
+      let shortTitle: string
+      if (target.title.length > 30) {
+        shortTitle = `${target.title.slice(0, 27)}...`
+      } else {
+        shortTitle = target.title
+      }
       return `PR #${target.prNumber}: ${shortTitle}`
     }
 
     case 'folder': {
       const joined = target.paths.join(', ')
-      return joined.length > 40
-        ? `folders: ${joined.slice(0, 37)}...`
-        : `folders: ${joined}`
+      if (joined.length > 40) {
+        return `folders: ${joined.slice(0, 37)}...`
+      }
+      return `folders: ${joined}`
     }
   }
 }
@@ -742,17 +750,21 @@ export default function reviewExtension(pi: ExtensionAPI) {
     const defaultBranch = await getDefaultBranch(pi)
 
     // Never offer the current branch as a base branch (reviewing against itself is meaningless).
-    const candidateBranches = currentBranch
-      ? branches.filter((b) => b !== currentBranch)
-      : branches
+    let candidateBranches: string[]
+    if (currentBranch) {
+      candidateBranches = branches.filter((b) => b !== currentBranch)
+    } else {
+      candidateBranches = branches
+    }
 
     if (candidateBranches.length === 0) {
-      ctx.ui.notify(
-        currentBranch
-          ? `No other branches found (current branch: ${currentBranch})`
-          : 'No branches found',
-        'error',
-      )
+      let noBranchMsg: string
+      if (currentBranch) {
+        noBranchMsg = `No other branches found (current branch: ${currentBranch})`
+      } else {
+        noBranchMsg = 'No branches found'
+      }
+      ctx.ui.notify(noBranchMsg, 'error')
       return null
     }
 
@@ -763,11 +775,15 @@ export default function reviewExtension(pi: ExtensionAPI) {
       return a.localeCompare(b)
     })
 
-    const items: SelectItem[] = sortedBranches.map((branch) => ({
-      value: branch,
-      label: branch,
-      description: branch === defaultBranch ? '(default)' : '',
-    }))
+    const items: SelectItem[] = sortedBranches.map((branch) => {
+      let description: string
+      if (branch === defaultBranch) {
+        description = '(default)'
+      } else {
+        description = ''
+      }
+      return { value: branch, label: branch, description }
+    })
 
     const result = await ctx.ui.custom<string | null>(
       (tui, theme, _kb, done) => {
@@ -1078,10 +1094,13 @@ export default function reviewExtension(pi: ExtensionAPI) {
       } catch (error) {
         // Clean up state if navigation fails
         reviewOriginId = undefined
-        ctx.ui.notify(
-          `Failed to start review: ${error instanceof Error ? error.message : String(error)}`,
-          'error',
-        )
+        let errMsg: string
+        if (error instanceof Error) {
+          errMsg = error.message
+        } else {
+          errMsg = String(error)
+        }
+        ctx.ui.notify(`Failed to start review: ${errMsg}`, 'error')
         return
       }
 
@@ -1117,7 +1136,12 @@ export default function reviewExtension(pi: ExtensionAPI) {
       fullPrompt += `\n\nThis project has additional instructions for code reviews:\n\n${projectGuidelines}`
     }
 
-    const modeHint = useFreshSession ? ' (fresh session)' : ''
+    let modeHint: string
+    if (useFreshSession) {
+      modeHint = ' (fresh session)'
+    } else {
+      modeHint = ''
+    }
     ctx.ui.notify(`Starting review: ${hint}${modeHint}`, 'info')
 
     // Send as a user message that triggers a turn
@@ -1464,12 +1488,14 @@ Instructions:
         return
       }
 
-      const action: EndReviewAction =
-        choice === 'Return and fix findings'
-          ? 'returnAndFix'
-          : choice === 'Return and summarize'
-            ? 'returnAndSummarize'
-            : 'returnOnly'
+      let action: EndReviewAction
+      if (choice === 'Return and fix findings') {
+        action = 'returnAndFix'
+      } else if (choice === 'Return and summarize') {
+        action = 'returnAndSummarize'
+      } else {
+        action = 'returnOnly'
+      }
       if (action === 'returnOnly') {
         try {
           const result = await ctx.navigateTree(originId, { summarize: false })
@@ -1481,10 +1507,13 @@ Instructions:
             return
           }
         } catch (error) {
-          ctx.ui.notify(
-            `Failed to return: ${error instanceof Error ? error.message : String(error)}`,
-            'error',
-          )
+          let errMsg2: string
+          if (error instanceof Error) {
+            errMsg2 = error.message
+          } else {
+            errMsg2 = String(error)
+          }
+          ctx.ui.notify(`Failed to return: ${errMsg2}`, 'error')
           return
         }
 
@@ -1511,12 +1540,15 @@ Instructions:
             replaceInstructions: true,
           })
           .then(done)
-          .catch((err) =>
-            done({
-              cancelled: false,
-              error: err instanceof Error ? err.message : String(err),
-            }),
-          )
+          .catch((err) => {
+            let errStr: string
+            if (err instanceof Error) {
+              errStr = err.message
+            } else {
+              errStr = String(err)
+            }
+            done({ cancelled: false, error: errStr })
+          })
 
         return loader
       })

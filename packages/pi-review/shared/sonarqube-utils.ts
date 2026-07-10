@@ -148,7 +148,12 @@ export async function sonarFetch(
   params: Record<string, string>,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  const base = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/'
+  let base: string
+  if (baseUrl.endsWith('/')) {
+    base = baseUrl
+  } else {
+    base = `${baseUrl}/`
+  }
   const url = new URL(endpoint, base)
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, v)
@@ -163,8 +168,14 @@ export async function sonarFetch(
 
   if (!resp.ok) {
     const body = await resp.text().catch(() => '')
+    let bodySnippet: string
+    if (body) {
+      bodySnippet = ` — ${body.slice(0, 200)}`
+    } else {
+      bodySnippet = ''
+    }
     throw new Error(
-      `SonarCloud API ${resp.status}: ${resp.statusText}${body ? ' — ' + body.slice(0, 200) : ''}`,
+      `SonarCloud API ${resp.status}: ${resp.statusText}${bodySnippet}`,
     )
   }
 
@@ -199,6 +210,17 @@ export function analyzeCoverage(data: CoverageResponse): CoverageAnalysis {
   const uncoveredLines = Math.round(metrics['uncovered_lines'] || 0)
   const linesToCover = Math.round(metrics['lines_to_cover'] || 0)
 
+  const passOrFail = (v: number): 'PASS' | 'FAIL' => {
+    if (v >= 80) {
+      return 'PASS'
+    }
+    return 'FAIL'
+  }
+  const overallStatus = passOrFail(overallCoverage)
+  const newCodeStatus = passOrFail(newCoverage)
+  const branchStatus = passOrFail(branchCoverage)
+  const newBranchStatus = passOrFail(newBranchCoverage)
+
   return {
     overallCoverage,
     newCoverage,
@@ -213,10 +235,10 @@ export function analyzeCoverage(data: CoverageResponse): CoverageAnalysis {
       newBranch: Math.max(0, 80 - newBranchCoverage),
     },
     status: {
-      overall: overallCoverage >= 80 ? 'PASS' : 'FAIL',
-      newCode: newCoverage >= 80 ? 'PASS' : 'FAIL',
-      branch: branchCoverage >= 80 ? 'PASS' : 'FAIL',
-      newBranch: newBranchCoverage >= 80 ? 'PASS' : 'FAIL',
+      overall: overallStatus,
+      newCode: newCodeStatus,
+      branch: branchStatus,
+      newBranch: newBranchStatus,
     },
     icons: {
       overall: statusIcon(overallCoverage),
