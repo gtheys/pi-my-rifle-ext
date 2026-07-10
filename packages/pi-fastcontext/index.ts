@@ -1,8 +1,10 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
-import { Type } from 'typebox'
+import { type Static, Type } from 'typebox'
+import { Value } from 'typebox/value'
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8772/v1'
 const DEFAULT_MODEL = 'FastContext-1.0-4B-RL-Q4_K_M.gguf'
@@ -14,33 +16,57 @@ const MAX_FINAL_CITATIONS = 12
 
 const USER_CONFIG_PATH = path.join(getAgentDir(), 'fastcontext.json')
 
-type FastContextConfig = {
-  baseUrl: string
-  model: string
-  maxTurns: number
-  maxTokens: number
-}
+// AIDEV-NOTE: TypeBox schema is the source of truth for config shape.
+// config.schema.json is generated from this at startup if missing/stale.
+const FastContextConfigSchema = Type.Object({
+  baseUrl: Type.Optional(
+    Type.String({
+      description: 'OpenAI-compatible base URL for FastContext server',
+      default: DEFAULT_BASE_URL,
+    }),
+  ),
+  model: Type.Optional(
+    Type.String({
+      description: 'FastContext model ID',
+      default: DEFAULT_MODEL,
+    }),
+  ),
+  maxTurns: Type.Optional(
+    Type.Integer({
+      description: 'Maximum tool-call turns per search',
+      default: 6,
+      minimum: 1,
+      maximum: 8,
+    }),
+  ),
+  maxTokens: Type.Optional(
+    Type.Integer({
+      description: 'Max tokens per FastContext model response',
+      default: 1400,
+      minimum: 128,
+      maximum: 4096,
+    }),
+  ),
+})
 
-type FastContextConfigOverrides = Partial<FastContextConfig>
+type FastContextConfigOverrides = Static<typeof FastContextConfigSchema>
+
+type FastContextConfig = Required<FastContextConfigOverrides>
 
 async function readConfigFile(
   file: string,
 ): Promise<FastContextConfigOverrides> {
   try {
     const raw = await fs.readFile(file, 'utf8')
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const config: FastContextConfigOverrides = {}
-    if (typeof parsed.baseUrl === 'string') config.baseUrl = parsed.baseUrl
-    if (typeof parsed.model === 'string') config.model = parsed.model
-    if (typeof parsed.maxTurns === 'number') config.maxTurns = parsed.maxTurns
-    if (typeof parsed.maxTokens === 'number')
-      config.maxTokens = parsed.maxTokens
-    return config
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') return {}
-    throw new Error(
-      `Failed to read FastContext config ${file}: ${error?.message || error}`,
-    )
+    const parsed: unknown = JSON.parse(raw)
+    if (!Value.Check(FastContextConfigSchema, parsed)) {
+      return {}
+    }
+    return parsed
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return {}
+    const msg = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to read FastContext config ${file}: ${msg}`)
   }
 }
 
@@ -956,6 +982,23 @@ async function runFastContext(
 }
 
 export default function (pi: ExtensionAPI) {
+  // Scaffold config.schema.json next to this file when missing.
+  pi.on('session_start', async (event) => {
+    if (event.reason !== 'startup') return
+    const schemaPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'config.schema.json',
+    )
+    try {
+      await fs.access(schemaPath)
+    } catch {
+      await fs.writeFile(
+        schemaPath,
+        JSON.stringify(FastContextConfigSchema, null, 2),
+        'utf-8',
+      )
+    }
+  })
   pi.registerTool({
     name: 'fast_context_search',
     label: 'FastContext Search',

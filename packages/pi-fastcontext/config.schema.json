@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FastContext Extension Config",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "baseUrl": {
+      "type": "string",
+      "description": "OpenAI-compatible base URL for FastContext server",
+      "default": "http://127.0.0.1:8772/v1"
+    },
+    "model": {
+      "type": "string",
+      "description": "FastContext model ID",
+      "default": "FastContext-1.0-4B-RL-Q4_K_M.gguf"
+    },
+    "maxTurns": {
+      "type": "integer",
+      "description": "Maximum tool-call turns per search",
+      "default": 6,
+      "minimum": 1,
+      "maximum": 8
+    },
+    "maxTokens": {
+      "type": "integer",
+      "description": "Max tokens per FastContext model response",
+      "default": 1400,
+      "minimum": 128,
+      "maximum": 4096
+    }
+  },
+  "additionalProperties": false
+}

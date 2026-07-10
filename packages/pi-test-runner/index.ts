@@ -17,23 +17,35 @@
 import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Container, Text } from '@earendil-works/pi-tui'
-import { Type } from '@sinclair/typebox'
+import { type Static, Type } from '@sinclair/typebox'
+import { Value } from '@sinclair/typebox/value'
 import { buildRunCommand, discoverTestScripts } from './discover.ts'
 import { generateSessionFile, spawnTestSubagent } from './runner.ts'
 
-// AIDEV-NOTE: Config is persisted to ~/.pi/agent/test-runner/config.json so it
-// survives new sessions. pi.appendEntry() is NOT used — that is session-scoped only.
-interface TestRunnerConfig {
-  defaultModel?: string
-  /** Session to return to after /test-runner back. */
-  previousSession?: string
-}
+// AIDEV-NOTE: TypeBox schema is the source of truth for config shape.
+// config.schema.json is generated/refreshed at startup when missing.
+const TestRunnerConfigSchema = Type.Object({
+  defaultModel: Type.Optional(
+    Type.String({
+      description:
+        "Model ID for the test-runner subagent. Uses Pi's default when absent.",
+    }),
+  ),
+  previousSession: Type.Optional(
+    Type.String({
+      description: 'Session file to return to via /test-runner back.',
+    }),
+  ),
+})
+
+type TestRunnerConfig = Static<typeof TestRunnerConfigSchema>
 
 // AIDEV-NOTE: TestRun is in-memory only (process lifetime). We don’t persist
 // the run list — the session files themselves are the persistent record.
@@ -48,19 +60,18 @@ interface TestRun {
 
 // AIDEV-NOTE: Config is persisted to ~/.pi/agent/test-runner/config.json so it
 // survives new sessions. pi.appendEntry() is NOT used — that is session-scoped only.
-interface TestRunnerConfig {
-  defaultModel?: string
-}
-
 function getConfigPath(): string {
   return path.join(getAgentDir(), 'test-runner', 'config.json')
 }
 
 function loadConfig(): TestRunnerConfig {
   try {
-    return JSON.parse(
-      fs.readFileSync(getConfigPath(), 'utf-8'),
-    ) as TestRunnerConfig
+    const raw = fs.readFileSync(getConfigPath(), 'utf-8')
+    const parsed: unknown = JSON.parse(raw)
+    if (Value.Check(TestRunnerConfigSchema, parsed)) {
+      return parsed
+    }
+    return {}
   } catch {
     return {}
   }
@@ -77,8 +88,21 @@ export default function (pi: ExtensionAPI) {
   // AIDEV-NOTE: activeRuns is in-memory. Session files are the persistent record.
   const activeRuns: TestRun[] = []
 
-  pi.on('session_start', async () => {
+  pi.on('session_start', async (event) => {
     config = loadConfig()
+    if (event.reason !== 'startup') return
+    // Scaffold config.schema.json next to this file when missing.
+    const schemaPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'config.schema.json',
+    )
+    if (!fs.existsSync(schemaPath)) {
+      fs.writeFileSync(
+        schemaPath,
+        JSON.stringify(TestRunnerConfigSchema, null, 2),
+        'utf-8',
+      )
+    }
   })
 
   /**

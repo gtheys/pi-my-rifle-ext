@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Test Runner Extension Config",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "defaultModel": {
+      "type": "string",
+      "description": "Model ID for the test-runner subagent. Uses Pi's default when absent."
+    },
+    "previousSession": {
+      "type": "string",
+      "description": "Session file to return to via /test-runner back."
+    }
+  },
+  "additionalProperties": false
+}
