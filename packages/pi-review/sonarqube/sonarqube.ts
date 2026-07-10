@@ -39,7 +39,7 @@ import {
   sonarFetch,
   statusIcon,
   TYPE_SYMBOLS,
-} from '../shared/sonarqube-utils.js'
+} from '../shared/sonarqube-utils.ts'
 
 // ── Duplication types ────────────────────────────────────────────────────────
 

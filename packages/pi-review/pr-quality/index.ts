@@ -33,7 +33,7 @@ import {
   type SonarIssue,
   sonarFetch,
   TYPE_SYMBOLS,
-} from '../shared/sonarqube-utils.js'
+} from '../shared/sonarqube-utils.ts'
 
 // ── GitHub types ──────────────────────────────────────────────────────────────
 

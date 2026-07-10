@@ -20,8 +20,8 @@ import {
   keyHint,
 } from '@earendil-works/pi-coding-agent'
 import { Text } from '@earendil-works/pi-tui'
-import { registerDiffTools } from './diff-renderer.js'
-import { pill } from './pill.js'
+import { registerDiffTools } from './diff-renderer.ts'
+import { pill } from './pill.ts'
 
 /** Max lines shown in collapsed (non-expanded) result view */
 const COLLAPSED_MAX_LINES = 15

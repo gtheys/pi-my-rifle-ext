@@ -22,7 +22,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { twExport } from '../shared/tw-utils.js'
+import { twExport } from '../shared/tw-utils.ts'
 
 // AIDEV-NOTE: All taskwarrior commands use rc.confirmation:no to avoid interactive prompts.
 
