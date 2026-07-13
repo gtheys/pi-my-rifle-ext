@@ -46,7 +46,7 @@
   },
   "dependencies": {
     "@gtheys/pi-per-commit-spend": "latest",
-    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.80.3",
+    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.80.6",
     "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.80.3",
     "@shikijs/cli": "^4.3.1",
     "@sting8k/pi-vcc": "^0.3.18",
@@ -60,8 +60,8 @@
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.79.10",
-    "@earendil-works/pi-coding-agent": "^0.80.3",
-    "@earendil-works/pi-tui": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
+    "@earendil-works/pi-tui": "^0.80.6",
     "@biomejs/biome": "2.4.13",
     "@types/diff": "latest",
     "lefthook": "2.1.6",
