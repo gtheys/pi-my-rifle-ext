@@ -1,7 +1,6 @@
 {
+  "updatedAt": "2026-07-17T07:51:45.183Z",
   "command": "update",
-  "model": "claude-sonnet-4-5",
-  "updatedAt": "2026-07-10T04:59:08.853Z",
-  "gitHead": "15755da9be493fa6815c527c38181edca317a13d",
-  "snapshotHash": "b3Blbndpa2kvYXJj"
+  "gitHead": "2802e356d4db55f7580e166ecbd88ab29ab10bfe",
+  "model": "claude-haiku-4-5"
 }

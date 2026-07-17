@@ -32,6 +32,7 @@ trigger phrases. Organized into three categories (`b237694c` reorg):
 | `cli-microsoft365` | `m365` CLI — SharePoint, Entra ID, Teams, Power Platform, Graph |
 | `devctl` | SalaryHero's local minikube dev environment CLI |
 | `jira-status-timestamps` | Create datetime custom fields + Jira Automation rules stamping time-in-status |
+| `qmd` | QMD markdown search — find notes, docs, wikis, and transcripts in local markdown collections; retrieve full documents with `qmd get`/`qmd multi-get` |
 | `sem` | How/when to use the `pi-sem` tools (`sem_diff`, `sem_impact`, etc.) as a semantic lens, not a replacement, for raw git diff |
 
 ### `skills/productivity/`
