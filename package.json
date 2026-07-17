@@ -32,7 +32,8 @@
       "./packages/pi-planning/implement-plan/index.ts",
       "./packages/pi-sem/index.ts",
       "./packages/pi-tool-pills/index.ts",
-      "./packages/pi-desktop-notify/index.ts"
+      "./packages/pi-desktop-notify/index.ts",
+      "./packages/pi-teams-transcript/index.ts"
     ],
     "skills": [
       "./skills"

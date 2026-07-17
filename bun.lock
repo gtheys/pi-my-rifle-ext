@@ -89,6 +89,14 @@
         "typebox": "*",
       },
     },
+    "packages/pi-teams-transcript": {
+      "name": "@gtheys/pi-teams-transcript",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": "*",
+        "typebox": "*",
+      },
+    },
     "packages/pi-test-runner": {
       "name": "@gtheys/pi-test-runner",
       "version": "0.1.0",
@@ -265,6 +273,8 @@
     "@gtheys/pi-review": ["@gtheys/pi-review@workspace:packages/pi-review"],
 
     "@gtheys/pi-sem": ["@gtheys/pi-sem@workspace:packages/pi-sem"],
+
+    "@gtheys/pi-teams-transcript": ["@gtheys/pi-teams-transcript@workspace:packages/pi-teams-transcript"],
 
     "@gtheys/pi-test-runner": ["@gtheys/pi-test-runner@workspace:packages/pi-test-runner"],
 

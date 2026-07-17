@@ -42,7 +42,8 @@ pi-my-rifle-ext/
 │   ├── pi-planning/         # plan-tools + implement-plan
 │   ├── pi-sem/              # pi-sem semantic code tools
 │   ├── pi-tool-pills/       # tool pill badges + Shiki diff rendering
-│   └── pi-desktop-notify/   # /notify command
+│   ├── pi-desktop-notify/   # /notify command
+│   └── pi-teams-transcript/ # teams_transcript tool (MS Graph)
 ├── skills/            # Skills (each in a subdirectory with SKILL.md)
 │   ├── engineering/
 │   ├── productivity/
@@ -119,6 +120,7 @@ pi install git:github.com/DietrichGebert/ponytail
 | [`pi-planning`](packages/pi-planning/) (plan-tools) | `/plan` command + taskwarrior tools (`tw_get_ticket`, `tw_get_spec_task`, `tw_get_phases`, `tw_get_impl_tasks`, `resolve_spec_path`, `tw_create_spec_task`, `tw_create_phase`, `tw_create_impl_task`) for spec/plan creation | Planning |
 | [`pi-planning`](packages/pi-planning/) (implement-plan) | `/implement` command + taskwarrior tools (`tw_execution_plan`, `tw_advance_task`, `tw_phase_checkpoint`) for driving implementation from a spec | Planning |
 | [`pi-context`](packages/pi-context/) | `/context` command — visualize current context/token usage as a colored grid overlay | UI Enhancement |
+| [`pi-teams-transcript`](packages/pi-teams-transcript/) | `teams_transcript` tool — list/download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth) ⚠️ *work in progress* | Integrations |
 
 ### Companion Packages (installed separately)
 
