@@ -22,8 +22,6 @@ PACKAGES=(
   "npm:@zigai/pi-tree"
   "npm:@zigai/pi-model-modes"
   "npm:pi-inspect"
-  "npm:@heyhuynhgiabuu/pi-pretty"
-  "npm:@heyhuynhgiabuu/pi-diff"
 )
 
 command -v pi >/dev/null 2>&1 || {
