@@ -70,6 +70,18 @@ Load locally by adding the repo to `settings.json`:
 }
 ```
 
+### Bootstrap on a fresh machine
+
+Installs the pinned bun toolchain, repo npm deps, and the external pi packages
+(ponytail, pi-vcc, pi-intercom, …) into global `~/.pi/agent`. Idempotent —
+re-run after editing the list in `scripts/install-pi-packages.sh`.
+
+```bash
+mise install        # pinned bun toolchain
+mise run setup      # bun install (repo deps + lefthook hooks)
+mise run pi-install # external pi packages (global, idempotent)
+```
+
 ## Development
 
 Requirements: [mise](https://mise.jdx.dev/) and bun (pinned via `mise.toml`).

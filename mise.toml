@@ -12,6 +12,10 @@ _.path = [
 description = "Install dependencies for the workspace"
 run = "bun install"
 
+[tasks.pi-install]
+description = "Install external pi packages (idempotent, global ~/.pi/agent)"
+run = "bash scripts/install-pi-packages.sh"
+
 [tasks.format]
 description = "Format and apply safe fixes with Biome"
 run = "bun run format"
