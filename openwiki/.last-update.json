@@ -1,7 +1,7 @@
 {
-  "command": "init",
-  "model": "claude-opus-4.6 (via pi)",
-  "updatedAt": "2026-07-08T09:17:37.051Z",
-  "gitHead": "15a83bd55ab278d703814d4dd836a24e0ebe3dca",
+  "command": "update",
+  "model": "claude-sonnet-4-5",
+  "updatedAt": "2026-07-10T04:59:08.853Z",
+  "gitHead": "15755da9be493fa6815c527c38181edca317a13d",
   "snapshotHash": "b3Blbndpa2kvYXJj"
 }
