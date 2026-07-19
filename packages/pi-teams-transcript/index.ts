@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Type } from 'typebox'
+import { Type } from '@sinclair/typebox'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
 
