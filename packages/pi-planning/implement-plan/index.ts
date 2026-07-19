@@ -15,21 +15,11 @@
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { twExport } from '../shared/tw-utils.ts'
+import { type TwTask, twExport } from '../shared/tw-utils.ts'
 
 // AIDEV-NOTE: All taskwarrior commands use rc.confirmation:no to avoid interactive prompts.
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface TwTask {
-  uuid: string
-  description: string
-  tags?: string[]
-  depends?: string[]
-  work_state?: string
-  status?: string
-  [key: string]: unknown
-}
 
 interface Subtask {
   uuid: string
@@ -59,18 +49,13 @@ interface ExecutionPlan {
 
 function parsePhaseNumber(description: string): number | null {
   const m = description.match(/^(\d+)\.\s*Phase:/i)
-  if (m) {
-    return parseInt(m[1]!, 10)
-  }
-  return null
+  const n = m?.[1]
+  return n ? parseInt(n, 10) : null
 }
 
 function parseSubtaskNumber(description: string): string | null {
   const m = description.match(/^(\d+\.\d+)/)
-  if (m) {
-    return m[1]!
-  }
-  return null
+  return m?.[1] ?? null
 }
 
 function parseSubtaskName(description: string): string {

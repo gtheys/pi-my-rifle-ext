@@ -3,10 +3,10 @@
  *
  * Produces an inverted-colour badge like ` write ` using theme semantic roles.
  */
-import type { Theme } from '@earendil-works/pi-coding-agent'
+import type { Theme, ThemeColor } from '@earendil-works/pi-coding-agent'
 
 /** Map tool name → theme semantic colour role for the pill badge. */
-const TOOL_ROLES: Record<string, string> = {
+const TOOL_ROLES: Partial<Record<string, ThemeColor>> = {
   ls: 'success',
   read: 'success',
   find: 'mdCode',
@@ -19,6 +19,6 @@ const TOOL_ROLES: Record<string, string> = {
 
 /** Render an inverted-colour pill badge: ` name ` */
 export function pill(name: string, theme: Theme): string {
-  const role = TOOL_ROLES[name] ?? 'dim'
-  return theme.bold(theme.inverse(theme.fg(role as any, ` ${name} `)))
+  const role: ThemeColor = TOOL_ROLES[name] ?? 'dim'
+  return theme.bold(theme.inverse(theme.fg(role, ` ${name} `)))
 }

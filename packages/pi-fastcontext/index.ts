@@ -1,7 +1,10 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type {
+  AgentToolUpdateCallback,
+  ExtensionAPI,
+} from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
@@ -249,8 +252,8 @@ relative/path:START-END — short reason
 relative/path:START-END — short reason
 </final_answer>`
 
-type Message = Record<string, any>
-type ToolCall = { id: string; name: string; arguments: Record<string, any> }
+type Message = Record<string, unknown>
+type ToolCall = { id: string; name: string; arguments: Record<string, unknown> }
 type Citation = {
   path: string
   start: number
@@ -270,8 +273,8 @@ type RunOptions = {
   forceFinal: boolean
   includeTranscript: boolean
   signal?: AbortSignal
-  // AIDEV-NOTE: widened so the tool's AgentToolUpdateCallback can be passed through unchanged
-  onUpdate?: (update: any) => void
+  // AIDEV-NOTE: typed as AgentToolUpdateCallback so the tool's onUpdate passes through unchanged.
+  onUpdate?: AgentToolUpdateCallback<unknown>
 }
 
 function stripAt(s: string): string {
@@ -466,7 +469,7 @@ async function listFiles(root: string, start = root): Promise<string[]> {
 
 async function readTool(
   root: string,
-  args: Record<string, any>,
+  args: Record<string, unknown>,
 ): Promise<string> {
   const rawPath = String(args.path || '')
   const { abs, rel, error, corrected, tried } = await resolveExistingSafe(
@@ -507,7 +510,7 @@ async function readTool(
 
 async function globTool(
   root: string,
-  args: Record<string, any>,
+  args: Record<string, unknown>,
 ): Promise<string> {
   const raw = String(args.pattern || '')
   const patterns = relCandidates(raw, root).filter(Boolean)
@@ -544,15 +547,16 @@ async function globTool(
 
 async function grepTool(
   root: string,
-  args: Record<string, any>,
+  args: Record<string, unknown>,
 ): Promise<string> {
   const pattern = String(args.pattern || '')
   if (!pattern) return 'ERR: empty grep pattern'
   let rx: RegExp
   try {
     rx = new RegExp(pattern, 'i')
-  } catch (e: any) {
-    return `ERR: invalid regex ${pattern}: ${e.message}`
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return `ERR: invalid regex ${pattern}: ${msg}`
   }
   const { abs, rel, error, tried } = await resolveExistingSafe(
     root,
@@ -605,15 +609,17 @@ async function execFcTool(root: string, call: ToolCall): Promise<string> {
   return `ERR: unknown tool ${call.name}; use READ, GLOB, or GREP`
 }
 
-function normalizeToolCalls(msg: any): ToolCall[] {
-  const calls = msg?.tool_calls || []
-  return calls.map((tc: any, idx: number) => {
-    const fn = tc.function || {}
-    let parsed: Record<string, any> = {}
+function normalizeToolCalls(msg: Message): ToolCall[] {
+  const raw = msg?.tool_calls
+  const calls: unknown[] = Array.isArray(raw) ? raw : []
+  return calls.map((tc, idx) => {
+    const t = (tc ?? {}) as Record<string, unknown>
+    const fn = (t.function ?? {}) as Record<string, unknown>
+    let parsed: Record<string, unknown> = {}
     if (typeof fn.arguments === 'string') {
       try {
         if (fn.arguments.trim()) {
-          parsed = JSON.parse(fn.arguments)
+          parsed = JSON.parse(fn.arguments) as Record<string, unknown>
         } else {
           parsed = {}
         }
@@ -621,10 +627,10 @@ function normalizeToolCalls(msg: any): ToolCall[] {
         parsed = { _parse_error: fn.arguments }
       }
     } else if (fn.arguments && typeof fn.arguments === 'object') {
-      parsed = fn.arguments
+      parsed = fn.arguments as Record<string, unknown>
     }
     return {
-      id: tc.id || `call_${idx}`,
+      id: String(t.id || `call_${idx}`),
       name: String(fn.name || ''),
       arguments: parsed,
     }
@@ -734,16 +740,22 @@ async function validateCitations(
   })
 }
 
+/** Minimal shape of an OpenAI-compatible /chat/completions response. */
+interface ChatResponse {
+  choices?: Array<{ message?: Message }>
+  usage?: { prompt_tokens?: number; completion_tokens?: number }
+}
+
 async function chat(
   baseUrl: string,
   model: string,
   messages: Message[],
-  tools: any[] | undefined,
+  tools: unknown[] | undefined,
   maxTokens: number,
   signal?: AbortSignal,
-): Promise<any> {
+): Promise<ChatResponse> {
   const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     model,
     messages,
     temperature: 0,
@@ -770,7 +782,7 @@ async function chat(
 
 async function runFastContext(
   options: RunOptions,
-): Promise<{ text: string; details: any }> {
+): Promise<{ text: string; details: unknown }> {
   const root = path.resolve(options.cwd)
   if (!(await isDir(root)))
     throw new Error(`Repository path not found or not a directory: ${root}`)
@@ -782,7 +794,7 @@ async function runFastContext(
       content: `Repository root basename: ${path.basename(root)}\nQuery: ${options.query}`,
     },
   ]
-  const transcript: any[] = []
+  const transcript: unknown[] = []
   const errors: string[] = []
   const outputWarnings: string[] = []
   let toolCalls = 0
@@ -801,6 +813,7 @@ async function runFastContext(
           text: `FastContext turn ${turn}/${options.maxTurns}...`,
         },
       ],
+      details: {},
     })
     const response = await chat(
       options.baseUrl,
@@ -863,6 +876,7 @@ async function runFastContext(
   if (!final && options.forceFinal) {
     options.onUpdate?.({
       content: [{ type: 'text', text: 'FastContext forcing final answer...' }],
+      details: {},
     })
     messages.push({
       role: 'user',

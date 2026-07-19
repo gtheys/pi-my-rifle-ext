@@ -52,14 +52,17 @@ function estimateStringTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
-function estimateContentTokens(
-  content: string | Array<{ type: string; [k: string]: any }>,
-): number {
+// AIDEV-NOTE: accepts any content-block array (text/image/thinking/toolCall).
+// Typed as `unknown[]` + narrowed inside so it accepts Pi's named content
+// interfaces (TextContent, ImageContent, …) without forcing an index
+// signature on them.
+function estimateContentTokens(content: string | unknown[]): number {
   if (typeof content === 'string') return estimateStringTokens(content)
   let total = 0
-  for (const block of content) {
+  for (const raw of content) {
+    const block = raw as { type?: string; text?: unknown }
     if (block.type === 'text') {
-      total += estimateStringTokens(block.text ?? '')
+      total += estimateStringTokens(String(block.text ?? ''))
     } else if (block.type === 'image') {
       // Images are typically ~1600 tokens for a standard image
       total += 1600
@@ -152,10 +155,13 @@ function computeBreakdown(
             // Thinking tokens are in the output but we estimate content size
             thinkingTokens += estimateStringTokens(block.thinking)
           }
-          // ToolCall blocks: their tokens are small (function name + args JSON)
-          if ((block as any).type === 'tool_use' || (block as any).toolCallId) {
+          // ToolCall blocks: their tokens are small (function name + args JSON).
+          // AIDEV-NOTE: previously checked Anthropic field names ('tool_use' /
+          // toolCallId) which never matched Pi's ToolCall shape (type 'toolCall',
+          // field 'id') — the `as any` hid this dead branch.
+          if (block.type === 'toolCall') {
             assistantTextTokens += estimateStringTokens(
-              JSON.stringify((block as any).arguments ?? {}),
+              JSON.stringify(block.arguments ?? {}),
             )
           }
         }
@@ -253,6 +259,7 @@ function computeBreakdown(
     const builtin = builtinTools[name]
     const colorCode =
       builtin?.colorCode ??
+      // biome-ignore lint/style/noNonNullAssertion: customToolColors is a hardcoded 8-elem array, modulo always yields a valid index
       customToolColors[customColorIdx++ % customToolColors.length]!
     const label = builtin?.label ?? `Tool: ${name}`
     addCat(
@@ -461,6 +468,7 @@ function buildOverlay(
   }
 
   for (let i = 0; i < nonFreeCategories.length; i += 2) {
+    // biome-ignore lint/style/noNonNullAssertion: i < length guarantees the left slot
     const left = nonFreeCategories[i]!
     const right = nonFreeCategories[i + 1]
 
@@ -504,6 +512,7 @@ function buildOverlay(
   let currentLine = ''
   let currentW = 0
   for (let i = 0; i < stats.length; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: i < stats.length guarantees the slot
     const item = theme.fg('muted', stats[i]!)
     const itemW = visibleWidth(item)
     const needsSep = currentW > 0

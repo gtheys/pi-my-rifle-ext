@@ -22,7 +22,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { twExport } from '../shared/tw-utils.ts'
+import { type TwTask, twExport } from '../shared/tw-utils.ts'
 
 // AIDEV-NOTE: All taskwarrior commands use rc.confirmation:no to avoid interactive prompts.
 
@@ -64,11 +64,11 @@ async function resolveSpecPath(
 }
 
 // AIDEV-NOTE: Annotation format is "Spec(repo=<repo>): <relative-path>"
-function extractSpecPath(task: any): string | null {
-  const annotations: any[] = task.annotations ?? []
+function extractSpecPath(task: TwTask): string | null {
+  const annotations = task.annotations ?? []
   for (const ann of annotations) {
     const match = (ann.description ?? '').match(/Spec\(repo=[^)]+\):\s*(.+)/)
-    if (match) return (match[1] as string).trim()
+    if (match) return match[1].trim()
   }
   return null
 }
@@ -104,12 +104,12 @@ export default function (pi: ExtensionAPI) {
               text: `No taskwarrior task found for "${params.jira_id}". Run \`bugwarrior pull\` to sync, or provide ticket details manually.`,
             },
           ],
-          details: { found: false },
+          details: { found: false, task: undefined as TwTask | undefined },
         }
       }
       return {
         content: [{ type: 'text', text: JSON.stringify(tasks[0], null, 2) }],
-        details: { found: true, task: tasks[0] },
+        details: { found: true, task: tasks[0] as TwTask | undefined },
       }
     },
   })
@@ -130,7 +130,11 @@ export default function (pi: ExtensionAPI) {
           content: [
             { type: 'text', text: `No spec task found for ${params.jira_id}.` },
           ],
-          details: { found: false, specPath: null as string | null },
+          details: {
+            found: false,
+            specPath: null as string | null,
+            task: undefined as TwTask | undefined,
+          },
         }
       }
       const task = tasks[0]
@@ -139,7 +143,7 @@ export default function (pi: ExtensionAPI) {
         content: [
           { type: 'text', text: JSON.stringify({ task, specPath }, null, 2) },
         ],
-        details: { found: true, task, specPath },
+        details: { found: true, task: task as TwTask | undefined, specPath },
       }
     },
   })
@@ -246,6 +250,7 @@ export default function (pi: ExtensionAPI) {
           `Failed to create spec task: ${addResult.stdout} ${addResult.stderr}`,
         )
 
+      // biome-ignore lint/style/noNonNullAssertion: regex '/Created task (\d+)' guarantees capture group 1
       const uuid = await getTaskUuid(pi, match[1]!)
       await pi.exec(
         'task',
@@ -311,6 +316,7 @@ export default function (pi: ExtensionAPI) {
           `Failed to create phase task: ${addResult.stdout} ${addResult.stderr}`,
         )
 
+      // biome-ignore lint/style/noNonNullAssertion: regex '/Created task (\d+)' guarantees capture group 1
       const uuid = await getTaskUuid(pi, match[1]!)
 
       return {
@@ -367,6 +373,7 @@ export default function (pi: ExtensionAPI) {
           `Failed to create impl task: ${addResult.stdout} ${addResult.stderr}`,
         )
 
+      // biome-ignore lint/style/noNonNullAssertion: regex '/Created task (\d+)' guarantees capture group 1
       const uuid = await getTaskUuid(pi, match[1]!)
 
       return {
