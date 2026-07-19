@@ -16,10 +16,7 @@
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-} from '@earendil-works/pi-coding-agent'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
   analyzeCoverage,
   analyzeIssues,
@@ -31,13 +28,9 @@ import {
   type FilterOptions,
   fetchAllIssues,
   type IssuesAnalysis,
-  type IssuesResponse,
-  SEVERITY_ORDER,
-  SEVERITY_SYMBOLS,
   type SonarConfig,
   type SonarIssue,
   sonarFetch,
-  statusIcon,
   TYPE_SYMBOLS,
 } from '../shared/sonarqube-utils.ts'
 
@@ -376,10 +369,10 @@ function generateReport(
   // By severity
   lines.push('By Severity:')
   const blockCrit =
-    (issues.bySeverity['BLOCKER'] || 0) + (issues.bySeverity['CRITICAL'] || 0)
-  const major = issues.bySeverity['MAJOR'] || 0
+    (issues.bySeverity.BLOCKER || 0) + (issues.bySeverity.CRITICAL || 0)
+  const major = issues.bySeverity.MAJOR || 0
   const minorInfo =
-    (issues.bySeverity['MINOR'] || 0) + (issues.bySeverity['INFO'] || 0)
+    (issues.bySeverity.MINOR || 0) + (issues.bySeverity.INFO || 0)
   lines.push(`🔴 Blocker/Critical: ${blockCrit}`)
   lines.push(`🟡 Major: ${major}`)
   lines.push(`🔵 Minor/Info: ${minorInfo}`)

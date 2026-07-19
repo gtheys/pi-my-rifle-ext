@@ -364,7 +364,7 @@ function parsePrReference(ref: string): number | null {
 
   // Try as a number first
   const num = parseInt(trimmed, 10)
-  if (!isNaN(num) && num > 0) {
+  if (!Number.isNaN(num) && num > 0) {
     return num
   }
 

@@ -51,7 +51,7 @@ async function resolveSpecPath(
     .slice(0, 5)
     .join('-')
 
-  const notesRoot = process.env['LLM_NOTES_ROOT']
+  const notesRoot = process.env.LLM_NOTES_ROOT
   let specDir: string
   if (notesRoot) {
     specDir = join(notesRoot, repoName, 'notes', 'specs')
@@ -403,7 +403,7 @@ export default function (pi: ExtensionAPI) {
         if (tasks.length > 0) {
           const specRelPath = extractSpecPath(tasks[0])
           if (specRelPath) {
-            const notesRoot = process.env['LLM_NOTES_ROOT']
+            const notesRoot = process.env.LLM_NOTES_ROOT
             let fullPath: string
             if (notesRoot) {
               const repoName = await getRepoName(pi)

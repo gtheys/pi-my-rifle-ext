@@ -44,7 +44,7 @@ function renderTextResult(
   theme: Theme,
   mode: 'head' | 'tail' = 'head',
 ): Text {
-  if (!text || !text.trim()) return new Text('', 0, 0)
+  if (!text?.trim()) return new Text('', 0, 0)
 
   const lines = text.split('\n')
 
@@ -82,7 +82,7 @@ function wrapBasicTool(
     ...orig,
     parameters: { ...orig.parameters },
     renderCall(args: any, theme: Theme, _ctx: any) {
-      return new Text(pill(name, theme) + ' ' + mkCallText(args, theme), 0, 0)
+      return new Text(`${pill(name, theme)} ${mkCallText(args, theme)}`, 0, 0)
     },
     renderResult(
       result: any,
@@ -140,9 +140,9 @@ export default function (pi: ExtensionAPI) {
       const highlighted = highlightCode(cmd, 'bash').join('\n')
       const isMultiLine = cmd.includes('\n') || cmd.length > 80
       if (isMultiLine) {
-        return new Text(pill('bash', theme) + '\n' + highlighted, 0, 0)
+        return new Text(`${pill('bash', theme)}\n${highlighted}`, 0, 0)
       }
-      return new Text(pill('bash', theme) + ' ' + highlighted, 0, 0)
+      return new Text(`${pill('bash', theme)} ${highlighted}`, 0, 0)
     },
     renderResult(
       result: any,

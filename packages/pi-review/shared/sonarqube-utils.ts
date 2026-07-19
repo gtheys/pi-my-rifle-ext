@@ -161,7 +161,7 @@ export async function sonarFetch(
 
   const resp = await fetch(url.toString(), {
     headers: {
-      Authorization: 'Basic ' + Buffer.from(token + ':').toString('base64'),
+      Authorization: `Basic ${Buffer.from(`${token}:`).toString('base64')}`,
     },
     signal,
   })
@@ -202,13 +202,12 @@ export function analyzeCoverage(data: CoverageResponse): CoverageAnalysis {
     }
   }
 
-  const overallCoverage = metrics['coverage'] || 0
-  const newCoverage =
-    metrics['new_coverage'] || metrics['new_line_coverage'] || 0
-  const branchCoverage = metrics['branch_coverage'] || 0
-  const newBranchCoverage = metrics['new_branch_coverage'] || 0
-  const uncoveredLines = Math.round(metrics['uncovered_lines'] || 0)
-  const linesToCover = Math.round(metrics['lines_to_cover'] || 0)
+  const overallCoverage = metrics.coverage || 0
+  const newCoverage = metrics.new_coverage || metrics.new_line_coverage || 0
+  const branchCoverage = metrics.branch_coverage || 0
+  const newBranchCoverage = metrics.new_branch_coverage || 0
+  const uncoveredLines = Math.round(metrics.uncovered_lines || 0)
+  const linesToCover = Math.round(metrics.lines_to_cover || 0)
 
   const passOrFail = (v: number): 'PASS' | 'FAIL' => {
     if (v >= 80) {
@@ -258,10 +257,10 @@ export function analyzeIssues(
   let issues = data.issues ?? []
 
   if (filter?.severity?.length) {
-    issues = issues.filter((i) => filter.severity!.includes(i.severity))
+    issues = issues.filter((i) => filter.severity?.includes(i.severity))
   }
   if (filter?.types?.length) {
-    issues = issues.filter((i) => filter.types!.includes(i.type))
+    issues = issues.filter((i) => filter.types?.includes(i.type))
   }
   if (filter?.files) {
     const pattern = new RegExp(filter.files.replace(/\*/g, '.*'))

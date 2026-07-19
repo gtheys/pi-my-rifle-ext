@@ -21,7 +21,6 @@ import {
   buildLogArgs,
   buildSemDiffArgs,
   compareCoverage,
-  describeSelection,
   formatEvaluationReport,
   normalizeSelection,
   parseSemJsonOutput,
@@ -136,7 +135,7 @@ async function runSem(
 
 async function runGit(
   pi: ExtensionAPI,
-  cwd: string,
+  _cwd: string,
   args: string[],
   signal?: AbortSignal,
 ): Promise<ExecResult> {

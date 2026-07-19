@@ -17,7 +17,7 @@ import {
 
 function printHelp() {
   process.stdout.write(
-    [
+    `${[
       'Usage: sem-eval [options]',
       '',
       'Compare sem diff with raw git diff for the same selection.',
@@ -31,7 +31,7 @@ function printHelp() {
       '  --impact-limit <n>       Number of entities for impact samples (default: 3)',
       '  --format <markdown|json> Output format (default: markdown)',
       '  --help                   Show this help',
-    ].join('\n') + '\n',
+    ].join('\n')}\n`,
   )
 }
 

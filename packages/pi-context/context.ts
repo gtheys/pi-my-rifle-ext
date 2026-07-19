@@ -27,11 +27,7 @@ import type {
   ExtensionCommandContext,
   Theme,
 } from '@earendil-works/pi-coding-agent'
-import {
-  matchesKey,
-  truncateToWidth,
-  visibleWidth,
-} from '@earendil-works/pi-tui'
+import { matchesKey, visibleWidth } from '@earendil-works/pi-tui'
 
 // ── Category definitions ──────────────────────────────────────────────
 
@@ -202,7 +198,7 @@ function computeBreakdown(
     'system',
     'System Prompt',
     systemPromptTokens,
-    (th, t) => ansi256Fg(141, t),
+    (_th, t) => ansi256Fg(141, t),
     ansi256Bg(141, '  '),
   ) // Purple
 
@@ -210,7 +206,7 @@ function computeBreakdown(
     'user',
     'User Messages',
     userTokens,
-    (th, t) => ansi256Fg(75, t),
+    (_th, t) => ansi256Fg(75, t),
     ansi256Bg(75, '  '),
   ) // Blue
 
@@ -218,7 +214,7 @@ function computeBreakdown(
     'assistant',
     'Assistant Text',
     assistantTextTokens,
-    (th, t) => ansi256Fg(114, t),
+    (_th, t) => ansi256Fg(114, t),
     ansi256Bg(114, '  '),
   ) // Green
 
@@ -226,7 +222,7 @@ function computeBreakdown(
     'thinking',
     'Thinking',
     thinkingTokens,
-    (th, t) => ansi256Fg(216, t),
+    (_th, t) => ansi256Fg(216, t),
     ansi256Bg(216, '  '),
   ) // Orange
 
@@ -272,7 +268,7 @@ function computeBreakdown(
     'compaction',
     'Compaction',
     compactionTokens,
-    (th, t) => ansi256Fg(245, t),
+    (_th, t) => ansi256Fg(245, t),
     ansi256Bg(245, '  '),
   ) // Gray
 
@@ -280,7 +276,7 @@ function computeBreakdown(
     'custom',
     'Custom Messages',
     customMessageTokens,
-    (th, t) => ansi256Fg(183, t),
+    (_th, t) => ansi256Fg(183, t),
     ansi256Bg(183, '  '),
   ) // Lavender
 
@@ -288,7 +284,7 @@ function computeBreakdown(
     'images',
     'Images',
     imageTokens,
-    (th, t) => ansi256Fg(219, t),
+    (_th, t) => ansi256Fg(219, t),
     ansi256Bg(219, '  '),
   ) // Pink
 
@@ -326,7 +322,7 @@ function computeBreakdown(
 function renderGrid(
   breakdown: ContextBreakdown,
   width: number,
-  theme: Theme,
+  _theme: Theme,
 ): string[] {
   const lines: string[] = []
   const squareW = 2 // Each grid cell is 2 chars wide
@@ -468,7 +464,7 @@ function buildOverlay(
     const left = nonFreeCategories[i]!
     const right = nonFreeCategories[i + 1]
 
-    let content = ' ' + formatEntry(left, colW)
+    let content = ` ${formatEntry(left, colW)}`
     if (right) {
       content += formatEntry(right, colW)
     }
@@ -593,7 +589,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       await ctx.ui.custom<void>(
-        (tui, theme, _keybindings, done) => {
+        (_tui, theme, _keybindings, done) => {
           const cachedBreakdown = breakdown
 
           return {

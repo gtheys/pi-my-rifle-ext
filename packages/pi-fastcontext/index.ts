@@ -290,7 +290,7 @@ function normalizeRel(raw: string, root: string): string {
   const base = path.basename(root)
   // FastContext often emits /repo-name/path after SWE-bench-style Docker mounts.
   if (rel === base) rel = ''
-  if (rel.startsWith(base + '/')) rel = rel.slice(base.length + 1)
+  if (rel.startsWith(`${base}/`)) rel = rel.slice(base.length + 1)
   return rel
 }
 
@@ -742,7 +742,7 @@ async function chat(
   maxTokens: number,
   signal?: AbortSignal,
 ): Promise<any> {
-  const url = baseUrl.replace(/\/$/, '') + '/chat/completions'
+  const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`
   const body: Record<string, any> = {
     model,
     messages,

@@ -146,7 +146,7 @@ function hexToFgAnsi(hex: string): string {
   return `\x1b[38;2;${r};${g};${b}m`
 }
 
-function deriveBgFromFg(fgAnsi: string, intensity: number): string {
+function _deriveBgFromFg(fgAnsi: string, intensity: number): string {
   const rgb = parseAnsiRgb(fgAnsi)
   if (!rgb) return ''
   const r = Math.round(rgb.r * intensity)
@@ -387,7 +387,7 @@ let BG_ADD_W = envBg('DIFF_BG_ADD_HL', '\x1b[48;2;35;75;50m')
 let BG_DEL_W = envBg('DIFF_BG_DEL_HL', '\x1b[48;2;80;35;35m')
 let BG_GUTTER_ADD = envBg('DIFF_BG_GUTTER_ADD', '\x1b[48;2;18;32;26m')
 let BG_GUTTER_DEL = envBg('DIFF_BG_GUTTER_DEL', '\x1b[48;2;38;22;22m')
-const BG_GUTTER_CTX = ''
+const _BG_GUTTER_CTX = ''
 let BG_EMPTY = '\x1b[48;2;18;18;18m'
 
 let FG_ADD = envFg('DIFF_FG_ADD', '\x1b[38;2;100;180;120m')
@@ -1779,7 +1779,7 @@ export function registerDiffTools(pi: any): void {
 
     renderResult(result: any, opts: any, theme: any, ctx: any) {
       const text = ctx.lastComponent ?? new TextComponent('', 0, 0)
-      const expanded = opts?.expanded ?? ctx.expanded ?? false
+      const _expanded = opts?.expanded ?? ctx.expanded ?? false
 
       if (ctx.isError) {
         const e =

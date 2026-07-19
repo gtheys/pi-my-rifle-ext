@@ -107,7 +107,7 @@ export default function (pi: ExtensionAPI) {
         summary,
         fullBody,
       ])
-    } catch (e) {
+    } catch (_e) {
       // Silently ignore — notification daemon may not be running
     }
   })
@@ -133,7 +133,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (action === 'idle') {
         const secs = parseInt(parts[1], 10)
-        if (isNaN(secs) || secs < 1) {
+        if (Number.isNaN(secs) || secs < 1) {
           ctx.ui.notify(
             `Idle threshold: ${state.idleThresholdMs / 1000}s`,
             'info',
