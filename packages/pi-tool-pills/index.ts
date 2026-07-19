@@ -26,6 +26,16 @@ import { pill } from './pill.ts'
 /** Max lines shown in collapsed (non-expanded) result view */
 const COLLAPSED_MAX_LINES = 15
 
+/** Superset of param fields read across the basic tools (ls/read/find/grep/bash). */
+type BasicToolArgs = {
+  path?: string
+  pattern?: string
+  glob?: string
+  offset?: number
+  limit?: number
+  command?: string
+}
+
 /** Extract the first text content from a tool result */
 function getText(result: AgentToolResult<unknown>): string | undefined {
   const c = result.content.find((c) => c.type === 'text')
@@ -73,22 +83,24 @@ function renderTextResult(
 /** Helper to register a basic tool (ls, read, find, grep) with pill + collapsed output. */
 function wrapBasicTool(
   pi: ExtensionAPI,
+  // biome-ignore lint/suspicious/noExplicitAny: Pi's ToolDefinition<TParams,...> is invariant in TParams, so no single non-`any` type accepts all of ls/read/find/grep/bash defs.
   orig: any,
   name: string,
-  mkCallText: (args: any, theme: Theme) => string,
+  mkCallText: (args: BasicToolArgs, theme: Theme) => string,
   mode: 'head' | 'tail' = 'head',
 ) {
   pi.registerTool({
     ...orig,
     parameters: { ...orig.parameters },
-    renderCall(args: any, theme: Theme, _ctx: any) {
-      return new Text(`${pill(name, theme)} ${mkCallText(args, theme)}`, 0, 0)
+    renderCall(args: unknown, theme: Theme, _ctx: unknown) {
+      const a = args as BasicToolArgs
+      return new Text(`${pill(name, theme)} ${mkCallText(a, theme)}`, 0, 0)
     },
     renderResult(
-      result: any,
+      result: AgentToolResult<unknown>,
       { expanded }: { expanded: boolean },
       theme: Theme,
-      _ctx: any,
+      _ctx: unknown,
     ) {
       return renderTextResult(getText(result), expanded, theme, mode)
     },
@@ -105,7 +117,7 @@ export default function (pi: ExtensionAPI) {
 
   // read
   wrapBasicTool(pi, createReadToolDefinition(cwd), 'read', (args, theme) => {
-    let t = theme.fg('accent', args.path)
+    let t = theme.fg('accent', args.path ?? '')
     if (args.offset || args.limit) {
       const parts: string[] = []
       if (args.offset) parts.push(`L${args.offset}`)
@@ -135,8 +147,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...origBash,
     parameters: { ...origBash.parameters },
-    renderCall(args: any, theme: Theme, _ctx: any) {
-      const cmd = args.command
+    renderCall(args: unknown, theme: Theme, _ctx: unknown) {
+      const cmd = (args as BasicToolArgs).command ?? ''
       const highlighted = highlightCode(cmd, 'bash').join('\n')
       const isMultiLine = cmd.includes('\n') || cmd.length > 80
       if (isMultiLine) {
@@ -145,10 +157,10 @@ export default function (pi: ExtensionAPI) {
       return new Text(`${pill('bash', theme)} ${highlighted}`, 0, 0)
     },
     renderResult(
-      result: any,
+      result: AgentToolResult<unknown>,
       { expanded }: { expanded: boolean },
       theme: Theme,
-      _ctx: any,
+      _ctx: unknown,
     ) {
       return renderTextResult(getText(result), expanded, theme, 'tail')
     },

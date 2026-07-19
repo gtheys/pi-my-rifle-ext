@@ -12,7 +12,16 @@
 
 import { existsSync, readFileSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
+import type {
+  AgentToolResult,
+  AgentToolUpdateCallback,
+  ExtensionAPI,
+  ExtensionContext,
+  Theme,
+  ToolDefinition,
+} from '@earendil-works/pi-coding-agent'
 import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
+import type { Text } from '@earendil-works/pi-tui'
 import { codeToANSI } from '@shikijs/cli'
 import * as Diff from 'diff'
 import type { BundledLanguage, BundledTheme } from 'shiki'
@@ -169,7 +178,7 @@ function mixBg(
 let _autoDerivePending = true
 let _hasExplicitBgConfig = false
 
-function autoDeriveBgFromTheme(theme: any): void {
+function autoDeriveBgFromTheme(theme: Theme | undefined): void {
   if (!theme?.getFgAnsi) return
   try {
     const fgAdd = theme.getFgAnsi('toolDiffAdded')
@@ -429,7 +438,7 @@ let DEFAULT_DIFF_COLORS: DiffColors = {
   fgCtx: FG_DIM,
 }
 
-function resolveDiffColors(theme?: any): DiffColors {
+function resolveDiffColors(theme?: Theme): DiffColors {
   if (theme?.getBgAnsi && BG_BASE === BG_DEFAULT) {
     try {
       const bgAnsi = theme.getBgAnsi('toolSuccessBg')
@@ -503,7 +512,7 @@ function tabs(s: string): string {
 function termW(): number {
   const raw =
     process.stdout.columns ||
-    (process.stderr as any).columns ||
+    (process.stderr as { columns?: number }).columns ||
     Number.parseInt(process.env.COLUMNS ?? '', 10) ||
     DEFAULT_TERM_WIDTH
   return Math.max(80, Math.min(raw - 4, MAX_TERM_WIDTH))
@@ -1324,14 +1333,74 @@ async function renderSplit(
 // Public API — register write/edit tools with diff rendering
 // ---------------------------------------------------------------------------
 
-export function registerDiffTools(pi: any): void {
+// ---------------------------------------------------------------------------
+// Render-hook structural types
+// ---------------------------------------------------------------------------
+// AIDEV-NOTE: Pi's ToolRenderContext<TState,TArgs> isn't exported from the
+// main SDK entry, so we model the subset diff-renderer reads/writes locally.
+// `result.details` is mutated in place; the union below covers every shape we
+// stash there across write/edit execute + render paths.
+
+interface DiffState {
+  _isNewFile?: boolean | null
+  _previewKey?: string
+  _previewText?: string
+  _wdk?: string
+  _wdt?: string
+  _nfk?: string
+  _nft?: string
+  _pk?: string
+  _pt?: string
+}
+
+interface RenderCtx {
+  state: DiffState
+  lastComponent?: Text
+  expanded?: boolean
+  isError?: boolean
+  argsComplete?: boolean
+  invalidate(): void
+}
+
+/** Execute ctx is ExtensionContext, but diff-renderer stashes render state on it. */
+type ExecCtx = ExtensionContext & { state?: DiffState }
+
+type DiffDetails =
+  | {
+      _type: 'diff'
+      summary: string
+      diff: ParsedDiff
+      language?: BundledLanguage
+    }
+  | { _type: 'new'; lines: number; content: string; filePath: string }
+  | { _type: 'noChange' }
+  | { _type: 'fallback' }
+  | { _type: 'editInfo'; summary: string; editLine: number }
+  | {
+      _type: 'multiEditInfo'
+      summary: string
+      editCount: number
+      diffLineCount: number
+    }
+
+interface TextBlock {
+  type: string
+  text?: string
+}
+
+/** A tool result whose `details` field we mutate in place. */
+type MutableResult = AgentToolResult<DiffDetails> & {
+  details: DiffDetails | undefined
+}
+
+export function registerDiffTools(pi: ExtensionAPI): void {
   applyDiffPalette()
 
-  let createWriteFn: any,
-    createEditFn: any,
-    TextComponent: any,
-    pillFn: any,
-    keyHintFn: any
+  let createWriteFn: ((cwd: string) => ToolDefinition) | undefined,
+    createEditFn: ((cwd: string) => ToolDefinition) | undefined,
+    TextComponent: typeof Text | undefined,
+    pillFn: ((name: string, theme: Theme) => string) | undefined,
+    keyHintFn: ((key: string, fallback: string) => string) | undefined
   try {
     const sdk = require('@earendil-works/pi-coding-agent')
     createWriteFn = sdk.createWriteTool
@@ -1353,7 +1422,7 @@ export function registerDiffTools(pi: any): void {
   const COLLAPSED_NEW_FILE_LINES = 12
 
   /** Expand hint text */
-  function expandHint(theme: any): string {
+  function expandHint(theme: Theme): string {
     const hint = keyHintFn
       ? keyHintFn('app.tools.expand', 'to expand')
       : 'expand to see more'
@@ -1361,17 +1430,20 @@ export function registerDiffTools(pi: any): void {
   }
 
   /** Get raw text from tool result (fallback rendering) */
-  function fallbackText(result: any, theme: any): string {
+  function fallbackText(
+    result: AgentToolResult<unknown>,
+    theme: Theme,
+  ): string {
     const raw =
-      result?.content
-        ?.filter((c: any) => c.type === 'text')
-        .map((c: any) => c.text || '')
+      result.content
+        ?.filter((c: TextBlock) => c.type === 'text')
+        .map((c: TextBlock) => c.text || '')
         .join('\n') ?? ''
     return raw ? theme.fg('dim', raw.slice(0, 200)) : ''
   }
 
   /** Render a pill header for write/create/edit */
-  function header(label: string, fp: string, theme: any): string {
+  function header(label: string, fp: string, theme: Theme): string {
     const p = pillFn
       ? pillFn(label, theme)
       : theme.fg('toolTitle', theme.bold(label))
@@ -1388,8 +1460,17 @@ export function registerDiffTools(pi: any): void {
     ...origWrite,
     parameters: { ...origWrite.parameters },
 
-    async execute(tid: string, params: any, sig: any, upd: any, ctx: any) {
-      const fp = params.path ?? params.file_path ?? ''
+    async execute(
+      tid: string,
+      params: Record<string, unknown>,
+      sig: AbortSignal | undefined,
+      upd: AgentToolUpdateCallback<unknown> | undefined,
+      ctxr: ExecCtx,
+    ) {
+      const fp =
+        (params.path as string | undefined) ??
+        (params.file_path as string | undefined) ??
+        ''
       let old: string | null = null
       try {
         if (fp && existsSync(fp)) old = readFileSync(fp, 'utf-8')
@@ -1398,16 +1479,22 @@ export function registerDiffTools(pi: any): void {
       }
 
       // Store isNew decision in state so renderCall/renderResult stay consistent
-      if (ctx.state) ctx.state._isNewFile = old === null
+      if (ctxr.state) ctxr.state._isNewFile = old === null
 
-      const result = await origWrite.execute(tid, params, sig, upd, ctx)
-      const content = params.content ?? ''
+      const result = (await origWrite.execute(
+        tid,
+        params,
+        sig,
+        upd,
+        ctxr as ExtensionContext,
+      )) as MutableResult
+      const content = (params.content as string | undefined) ?? ''
 
       try {
         if (old !== null && old !== content) {
           const diff = parseDiff(old, content)
           const lg = lang(fp)
-          ;(result as any).details = {
+          result.details = {
             _type: 'diff',
             summary: summarize(diff.added, diff.removed),
             diff,
@@ -1415,72 +1502,79 @@ export function registerDiffTools(pi: any): void {
           }
         } else if (old === null) {
           const lineCount = content ? content.split('\n').length : 0
-          ;(result as any).details = {
+          result.details = {
             _type: 'new',
             lines: lineCount,
             content: content ?? '',
             filePath: fp,
           }
         } else if (old === content) {
-          ;(result as any).details = { _type: 'noChange' }
+          result.details = { _type: 'noChange' }
         }
       } catch {
         // Fallback: if diff computation fails, just report success
-        ;(result as any).details = { _type: 'fallback' }
+        result.details = { _type: 'fallback' }
       }
       return result
     },
 
-    renderCall(args: any, theme: any, ctx: any) {
-      const fp = args?.path ?? args?.file_path ?? ''
+    renderCall(args: unknown, theme: Theme, ctx: unknown) {
+      const a = (args ?? {}) as {
+        path?: string
+        file_path?: string
+        content?: string
+      }
+      const ctxr = ctx as RenderCtx
+      const fp = a.path ?? a.file_path ?? ''
       // Use state from execute if available, otherwise check filesystem
-      const isNew = ctx.state?._isNewFile ?? (!fp || !existsSync(fp))
+      const isNew = ctxr.state?._isNewFile ?? (!fp || !existsSync(fp))
       const label = isNew ? 'create' : 'write'
-      const text = ctx.lastComponent ?? new TextComponent('', 0, 0)
+      const text = ctxr.lastComponent ?? new TextComponent('', 0, 0)
       const hdr = header(label, fp, theme)
 
       // Streaming: show line count progress
-      if (args?.content && !ctx.argsComplete) {
-        const n = String(args.content).split('\n').length
+      if (a.content && !ctxr.argsComplete) {
+        const n = String(a.content).split('\n').length
         text.setText(`${hdr}  ${theme.fg('muted', `(${n} lines…)`)}`)
         return text
       }
 
       // Create preview: syntax-highlight new file content
-      if (args?.content && ctx.argsComplete && isNew) {
-        const previewKey = `create:${fp}:${String(args.content).length}:${ctx.expanded}`
-        if (ctx.state._previewKey !== previewKey) {
-          ctx.state._previewKey = previewKey
-          ctx.state._previewText = hdr
+      if (a.content && ctxr.argsComplete && isNew) {
+        const contentStr = a.content
+        const previewKey = `create:${fp}:${contentStr.length}:${ctxr.expanded}`
+        if (ctxr.state._previewKey !== previewKey) {
+          ctxr.state._previewKey = previewKey
+          ctxr.state._previewText = hdr
           const lg = lang(fp)
-          hlBlock(args.content, lg)
+          hlBlock(contentStr, lg)
             .then((lines: string[]) => {
-              if (ctx.state._previewKey !== previewKey) return
-              const maxShow = ctx.expanded
+              if (ctxr.state._previewKey !== previewKey) return
+              const maxShow = ctxr.expanded
                 ? lines.length
                 : COLLAPSED_NEW_FILE_LINES
               const preview = lines.slice(0, maxShow).join('\n')
               const rem = lines.length - maxShow
               let out = `${hdr}\n\n${preview}`
               if (rem > 0) out += `\n${expandHint(theme)}`
-              ctx.state._previewText = out
-              ctx.invalidate()
+              ctxr.state._previewText = out
+              ctxr.invalidate()
             })
             .catch(() => {
               // Fallback: show plain content
-              const lines = args.content.split('\n')
-              const maxShow = ctx.expanded
+              const lines = contentStr.split('\n')
+              const maxShow = ctxr.expanded
                 ? lines.length
                 : COLLAPSED_NEW_FILE_LINES
               const preview = lines.slice(0, maxShow).join('\n')
               const rem = lines.length - maxShow
               let out = `${hdr}\n\n${preview}`
               if (rem > 0) out += `\n${expandHint(theme)}`
-              ctx.state._previewText = out
-              ctx.invalidate()
+              ctxr.state._previewText = out
+              ctxr.invalidate()
             })
         }
-        text.setText(ctx.state._previewText ?? hdr)
+        text.setText(ctxr.state._previewText ?? hdr)
         return text
       }
 
@@ -1488,52 +1582,55 @@ export function registerDiffTools(pi: any): void {
       return text
     },
 
-    renderResult(result: any, opts: any, theme: any, ctx: any) {
-      const text = ctx.lastComponent ?? new TextComponent('', 0, 0)
-      const expanded = opts?.expanded ?? ctx.expanded ?? false
+    renderResult(result: unknown, opts: unknown, theme: Theme, ctx: unknown) {
+      const res = result as AgentToolResult<unknown>
+      const ctxr = ctx as RenderCtx
+      const opt = opts as { expanded?: boolean } | undefined
+      const text = ctxr.lastComponent ?? new TextComponent('', 0, 0)
+      const expanded = opt?.expanded ?? ctxr.expanded ?? false
 
-      if (ctx.isError) {
+      if (ctxr.isError) {
         const e =
-          result.content
-            ?.filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text || '')
+          res.content
+            ?.filter((c: TextBlock) => c.type === 'text')
+            .map((c: TextBlock) => c.text || '')
             .join('\n') ?? 'Error'
         text.setText(`\n${theme.fg('error', e)}`)
         return text
       }
 
-      const d = result.details
+      const d = res.details as DiffDetails | undefined
 
       // Diff result (overwrite of existing file)
       if (d?._type === 'diff') {
         const w = termW()
         const maxLines = expanded ? MAX_RENDER_LINES : COLLAPSED_DIFF_LINES
         const key = `wd:${w}:${maxLines}:${d.summary}:${d.diff?.lines?.length ?? 0}:${d.language ?? ''}`
-        if (ctx.state._wdk !== key) {
-          ctx.state._wdk = key
-          ctx.state._wdt = `  ${d.summary}\n${theme.fg('muted', '  rendering diff…')}`
+        if (ctxr.state._wdk !== key) {
+          ctxr.state._wdk = key
+          ctxr.state._wdt = `  ${d.summary}\n${theme.fg('muted', '  rendering diff…')}`
           try {
             const dc = resolveDiffColors(theme)
             renderSplit(d.diff, d.language, maxLines, dc)
               .then((rendered: string) => {
-                if (ctx.state._wdk !== key) return
+                if (ctxr.state._wdk !== key) return
                 let out = `  ${d.summary}\n${rendered}`
                 if (!expanded && d.diff.lines.length > COLLAPSED_DIFF_LINES) {
                   out += `\n${expandHint(theme)}`
                 }
-                ctx.state._wdt = out
-                ctx.invalidate()
+                ctxr.state._wdt = out
+                ctxr.invalidate()
               })
               .catch(() => {
-                if (ctx.state._wdk !== key) return
-                ctx.state._wdt = `  ${d.summary}`
-                ctx.invalidate()
+                if (ctxr.state._wdk !== key) return
+                ctxr.state._wdt = `  ${d.summary}`
+                ctxr.invalidate()
               })
           } catch {
-            ctx.state._wdt = `  ${d.summary}`
+            ctxr.state._wdt = `  ${d.summary}`
           }
         }
-        text.setText(ctx.state._wdt ?? `  ${d.summary}`)
+        text.setText(ctxr.state._wdt ?? `  ${d.summary}`)
         return text
       }
 
@@ -1548,21 +1645,21 @@ export function registerDiffTools(pi: any): void {
         const { lines: lineCount, content: rawContent, filePath: fp } = d
         const maxShow = expanded ? Infinity : COLLAPSED_NEW_FILE_LINES
         const pk = `nf:${fp}:${lineCount}:${maxShow}`
-        if (ctx.state._nfk !== pk) {
-          ctx.state._nfk = pk
-          ctx.state._nft = `  ${theme.fg('success', `✓ new file (${lineCount} lines)`)}`
+        if (ctxr.state._nfk !== pk) {
+          ctxr.state._nfk = pk
+          ctxr.state._nft = `  ${theme.fg('success', `✓ new file (${lineCount} lines)`)}`
           const lg = lang(fp)
           if (rawContent) {
             hlBlock(rawContent, lg)
               .then((hlLines: string[]) => {
-                if (ctx.state._nfk !== pk) return
+                if (ctxr.state._nfk !== pk) return
                 const shown = hlLines.slice(0, maxShow)
                 const preview = shown.join('\n')
                 const rem = hlLines.length - shown.length
                 let out = `  ${theme.fg('success', `✓ new file (${lineCount} lines)`)}\n${preview}`
                 if (rem > 0) out += `\n${expandHint(theme)}`
-                ctx.state._nft = out
-                ctx.invalidate()
+                ctxr.state._nft = out
+                ctxr.invalidate()
               })
               .catch(() => {
                 // Fallback: plain text preview
@@ -1571,20 +1668,20 @@ export function registerDiffTools(pi: any): void {
                 const rem = lines.length - shown.length
                 let out = `  ${theme.fg('success', `✓ new file (${lineCount} lines)`)}\n${shown.join('\n')}`
                 if (rem > 0) out += `\n${expandHint(theme)}`
-                ctx.state._nft = out
-                ctx.invalidate()
+                ctxr.state._nft = out
+                ctxr.invalidate()
               })
           }
         }
         text.setText(
-          ctx.state._nft ??
+          ctxr.state._nft ??
             `  ${theme.fg('success', `✓ new file (${lineCount} lines)`)}`,
         )
         return text
       }
 
       // Fallback: show raw result text
-      const fb = fallbackText(result, theme)
+      const fb = fallbackText(res, theme)
       text.setText(fb ? `  ${fb}` : `  ${theme.fg('dim', 'written')}`)
       return text
     },
@@ -1597,11 +1694,12 @@ export function registerDiffTools(pi: any): void {
   const origEdit = createEditFn(cwd)
 
   function getEditOperations(
-    input: any,
+    input: unknown,
   ): Array<{ oldText: string; newText: string }> {
-    if (Array.isArray(input?.edits)) {
-      return input.edits
-        .map((edit: any) => ({
+    const inp = (input ?? {}) as Record<string, unknown>
+    if (Array.isArray(inp?.edits)) {
+      return inp.edits
+        .map((edit: Record<string, unknown>) => ({
           oldText:
             typeof edit?.oldText === 'string'
               ? edit.oldText
@@ -1622,16 +1720,16 @@ export function registerDiffTools(pi: any): void {
     }
 
     const oldText =
-      typeof input?.oldText === 'string'
-        ? input.oldText
-        : typeof input?.old_text === 'string'
-          ? input.old_text
+      typeof inp?.oldText === 'string'
+        ? inp.oldText
+        : typeof inp?.old_text === 'string'
+          ? inp.old_text
           : ''
     const newText =
-      typeof input?.newText === 'string'
-        ? input.newText
-        : typeof input?.new_text === 'string'
-          ? input.new_text
+      typeof inp?.newText === 'string'
+        ? inp.newText
+        : typeof inp?.new_text === 'string'
+          ? inp.new_text
           : ''
     return oldText !== newText ? [{ oldText, newText }] : []
   }
@@ -1656,8 +1754,17 @@ export function registerDiffTools(pi: any): void {
     ...origEdit,
     parameters: { ...origEdit.parameters },
 
-    async execute(tid: string, params: any, sig: any, upd: any, ctx: any) {
-      const fp = params.path ?? params.file_path ?? ''
+    async execute(
+      tid: string,
+      params: Record<string, unknown>,
+      sig: AbortSignal | undefined,
+      upd: AgentToolUpdateCallback<unknown> | undefined,
+      ctxr: ExecCtx,
+    ) {
+      const fp =
+        (params.path as string | undefined) ??
+        (params.file_path as string | undefined) ??
+        ''
       const operations = getEditOperations(params)
 
       // Read old content BEFORE executing, to find correct line offset
@@ -1668,7 +1775,13 @@ export function registerDiffTools(pi: any): void {
         preEditContent = null
       }
 
-      const result = await origEdit.execute(tid, params, sig, upd, ctx)
+      const result = (await origEdit.execute(
+        tid,
+        params,
+        sig,
+        upd,
+        ctxr as ExtensionContext,
+      )) as MutableResult
 
       if (operations.length === 0) return result
 
@@ -1682,11 +1795,11 @@ export function registerDiffTools(pi: any): void {
             if (idx >= 0)
               editLine = preEditContent.slice(0, idx).split('\n').length
           }
-          ;(result as any).details = { _type: 'editInfo', summary, editLine }
+          result.details = { _type: 'editInfo', summary, editLine }
           return result
         }
 
-        ;(result as any).details = {
+        result.details = {
           _type: 'multiEditInfo',
           summary,
           editCount: operations.length,
@@ -1696,27 +1809,29 @@ export function registerDiffTools(pi: any): void {
           ),
         }
       } catch {
-        ;(result as any).details = { _type: 'fallback' }
+        result.details = { _type: 'fallback' }
       }
       return result
     },
 
-    renderCall(args: any, theme: any, ctx: any) {
-      const fp = args?.path ?? args?.file_path ?? ''
+    renderCall(args: unknown, theme: Theme, ctx: unknown) {
+      const a = (args ?? {}) as { path?: string; file_path?: string }
+      const ctxr = ctx as RenderCtx
+      const fp = a.path ?? a.file_path ?? ''
       const operations = getEditOperations(args)
-      const text = ctx.lastComponent ?? new TextComponent('', 0, 0)
+      const text = ctxr.lastComponent ?? new TextComponent('', 0, 0)
       const hdr = header('edit', fp, theme)
 
-      if (!(ctx.argsComplete && operations.length > 0)) {
+      if (!(ctxr.argsComplete && operations.length > 0)) {
         text.setText(hdr)
         return text
       }
 
-      const expanded = ctx.expanded ?? false
+      const expanded = ctxr.expanded ?? false
       const pk = JSON.stringify({ fp, operations, w: termW(), expanded })
-      if (ctx.state._pk !== pk) {
-        ctx.state._pk = pk
-        ctx.state._pt = `${hdr}  ${theme.fg('muted', '(rendering…)')}`
+      if (ctxr.state._pk !== pk) {
+        ctxr.state._pk = pk
+        ctxr.state._pt = `${hdr}  ${theme.fg('muted', '(rendering…)')}`
         const lg = lang(fp)
         const dc = resolveDiffColors(theme)
         const maxLines = expanded ? MAX_PREVIEW_LINES : COLLAPSED_DIFF_LINES
@@ -1725,18 +1840,18 @@ export function registerDiffTools(pi: any): void {
           const diff = parseDiff(operations[0].oldText, operations[0].newText)
           renderSplit(diff, lg, maxLines, dc)
             .then((rendered) => {
-              if (ctx.state._pk !== pk) return
+              if (ctxr.state._pk !== pk) return
               let out = `${hdr}\n${summarize(diff.added, diff.removed)}\n${rendered}`
               if (!expanded && diff.lines.length > COLLAPSED_DIFF_LINES) {
                 out += `\n${expandHint(theme)}`
               }
-              ctx.state._pt = out
-              ctx.invalidate()
+              ctxr.state._pt = out
+              ctxr.invalidate()
             })
             .catch(() => {
-              if (ctx.state._pk !== pk) return
-              ctx.state._pt = `${hdr}  ${summarize(diff.added, diff.removed)}`
-              ctx.invalidate()
+              if (ctxr.state._pk !== pk) return
+              ctxr.state._pt = `${hdr}  ${summarize(diff.added, diff.removed)}`
+              ctxr.invalidate()
             })
         } else {
           const { diffs, summary } = summarizeEditOperations(operations)
@@ -1756,51 +1871,55 @@ export function registerDiffTools(pi: any): void {
             ),
           )
             .then((sections) => {
-              if (ctx.state._pk !== pk) return
+              if (ctxr.state._pk !== pk) return
               const remainder = operations.length - maxShown
               const suffix =
                 remainder > 0
                   ? `\n${theme.fg('muted', `… ${remainder} more edit blocks`)}`
                   : ''
-              ctx.state._pt = `${hdr}\n${operations.length} edits ${summary}\n\n${sections.join('\n\n')}${suffix}`
-              ctx.invalidate()
+              ctxr.state._pt = `${hdr}\n${operations.length} edits ${summary}\n\n${sections.join('\n\n')}${suffix}`
+              ctxr.invalidate()
             })
             .catch(() => {
-              if (ctx.state._pk !== pk) return
-              ctx.state._pt = `${hdr}  ${operations.length} edits ${summary}`
-              ctx.invalidate()
+              if (ctxr.state._pk !== pk) return
+              ctxr.state._pt = `${hdr}  ${operations.length} edits ${summary}`
+              ctxr.invalidate()
             })
         }
       }
 
-      text.setText(ctx.state._pt ?? hdr)
+      text.setText(ctxr.state._pt ?? hdr)
       return text
     },
 
-    renderResult(result: any, opts: any, theme: any, ctx: any) {
-      const text = ctx.lastComponent ?? new TextComponent('', 0, 0)
-      const _expanded = opts?.expanded ?? ctx.expanded ?? false
+    renderResult(result: unknown, opts: unknown, theme: Theme, ctx: unknown) {
+      const res = result as AgentToolResult<unknown>
+      const ctxr = ctx as RenderCtx
+      const opt = opts as { expanded?: boolean } | undefined
+      const text = ctxr.lastComponent ?? new TextComponent('', 0, 0)
+      const _expanded = opt?.expanded ?? ctxr.expanded ?? false
 
-      if (ctx.isError) {
+      if (ctxr.isError) {
         const e =
-          result.content
-            ?.filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text || '')
+          res.content
+            ?.filter((c: TextBlock) => c.type === 'text')
+            .map((c: TextBlock) => c.text || '')
             .join('\n') ?? 'Error'
         text.setText(`\n${theme.fg('error', e)}`)
         return text
       }
 
-      if (result.details?._type === 'editInfo') {
-        const { summary: s, editLine } = result.details
+      const d = res.details as DiffDetails | undefined
+      if (d?._type === 'editInfo') {
+        const { summary: s, editLine } = d
         const loc =
           editLine > 0 ? ` ${theme.fg('muted', `at line ${editLine}`)}` : ''
         text.setText(`  ${s}${loc}`)
         return text
       }
 
-      if (result.details?._type === 'multiEditInfo') {
-        const { summary: s, editCount, diffLineCount } = result.details
+      if (d?._type === 'multiEditInfo') {
+        const { summary: s, editCount, diffLineCount } = d
         const dlInfo =
           typeof diffLineCount === 'number'
             ? ` ${theme.fg('muted', `(${diffLineCount} diff lines)`)}`
@@ -1810,7 +1929,7 @@ export function registerDiffTools(pi: any): void {
       }
 
       // Fallback
-      const fb = fallbackText(result, theme)
+      const fb = fallbackText(res, theme)
       text.setText(fb ? `  ${fb}` : `  ${theme.fg('dim', 'edited')}`)
       return text
     },
