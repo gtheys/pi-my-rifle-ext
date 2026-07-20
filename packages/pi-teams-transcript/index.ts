@@ -7,6 +7,7 @@ import {
   type ExtensionAPI,
   getAgentDir,
 } from '@earendil-works/pi-coding-agent'
+import type { AutocompleteItem } from '@earendil-works/pi-tui'
 import { Type } from 'typebox'
 import { Value } from 'typebox/value'
 
@@ -23,6 +24,12 @@ const TeamsTranscriptConfigSchema = Type.Object({
         'Directory to write downloaded transcripts to. Relative paths resolve from cwd.',
     }),
   ),
+  userId: Type.Optional(
+    Type.String({
+      description:
+        "Default meeting organizer's user ID or UPN, used when a tool/command call omits userId.",
+    }),
+  ),
 })
 
 const GLOBAL_CONFIG_PATH = path.join(
@@ -35,7 +42,9 @@ function projectConfigPath(cwd: string): string {
   return path.join(cwd, CONFIG_DIR_NAME, 'pi-teams-transcript', 'config.json')
 }
 
-async function readConfigFile(file: string): Promise<{ outDir?: string }> {
+async function readConfigFile(
+  file: string,
+): Promise<{ outDir?: string; userId?: string }> {
   try {
     const raw = await fs.readFile(file, 'utf8')
     const parsed: unknown = JSON.parse(raw)
@@ -56,6 +65,16 @@ async function resolveConfiguredOutDir(
   const global = await readConfigFile(GLOBAL_CONFIG_PATH)
   const project = await readConfigFile(projectConfigPath(cwd))
   return project.outDir || global.outDir
+}
+
+// AIDEV-NOTE: precedence is explicit CLI arg > TEAMS_USER_ID env var >
+// project config > global config.
+async function resolveConfiguredUserId(
+  cwd: string,
+): Promise<string | undefined> {
+  const global = await readConfigFile(GLOBAL_CONFIG_PATH)
+  const project = await readConfigFile(projectConfigPath(cwd))
+  return process.env.TEAMS_USER_ID || project.userId || global.userId
 }
 
 // AIDEV-NOTE: app-only (client_credentials) Graph auth. Requires the app registration
@@ -154,6 +173,48 @@ async function listRecentMeetings(userId: string, top: number) {
     }))
 }
 
+export type SyncDay = 'today' | 'yesterday'
+
+// AIDEV-NOTE: day bounds use the local system timezone (Intl resolvedOptions),
+// same as a human reading their own calendar. calendarView expands recurring
+// series into real occurrences, so a daily/weekly standup only shows up on
+// the day it actually falls on. All-day events are skipped (no joinUrl).
+function dayBounds(day: SyncDay): { start: Date; end: Date } {
+  const now = new Date()
+  const offset = day === 'yesterday' ? -1 : 0
+  const start = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + offset,
+  )
+  const end = new Date(start.getTime() + 86_400_000)
+  return { start, end }
+}
+
+async function listMeetingsForDay(userId: string, day: SyncDay) {
+  const { start, end } = dayBounds(day)
+  const res = await graphFetch(
+    `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime asc&$top=100&$select=subject,start,end,isAllDay,isCancelled,onlineMeeting`,
+  )
+  const data = (await res.json()) as {
+    value?: Array<{
+      subject?: string
+      start?: { dateTime?: string }
+      isAllDay?: boolean
+      isCancelled?: boolean
+      onlineMeeting?: { joinUrl?: string }
+    }>
+  }
+  return (data.value || [])
+    .filter((e) => !e.isAllDay && e.onlineMeeting?.joinUrl)
+    .map((e) => ({
+      subject: e.subject,
+      start: e.start?.dateTime,
+      isCancelled: Boolean(e.isCancelled),
+      joinUrl: e.onlineMeeting?.joinUrl,
+    }))
+}
+
 // AIDEV-NOTE: /onlineMeetings (app-only) rejects UPNs — "userId in request URL
 // is not a GUID". Resolve UPN -> AAD object id once and reuse for all
 // onlineMeetings/transcripts calls.
@@ -237,7 +298,7 @@ function extForFormat(format: string): string {
 async function syncTranscripts(opts: {
   userId: string
   outDir: string
-  top: number
+  day: SyncDay
   format: string
   onProgress?: (line: string) => void
 }): Promise<{
@@ -250,14 +311,19 @@ async function syncTranscripts(opts: {
     subject: string
     start: string
     meetingId: string | null
-    status: 'downloaded' | 'already-synced' | 'no-transcript' | 'error'
+    status:
+      | 'downloaded'
+      | 'already-synced'
+      | 'no-transcript'
+      | 'cancelled'
+      | 'error'
   }>
 }> {
-  const { userId, outDir, top, format } = opts
+  const { userId, outDir, day, format } = opts
   const log = opts.onProgress ?? (() => {})
   await fs.mkdir(outDir, { recursive: true })
 
-  const meetings = await listRecentMeetings(userId, top)
+  const meetings = await listMeetingsForDay(userId, day)
   const downloaded: string[] = []
   const skippedExisting: string[] = []
   const skippedNoTranscript: string[] = []
@@ -266,7 +332,12 @@ async function syncTranscripts(opts: {
     subject: string
     start: string
     meetingId: string | null
-    status: 'downloaded' | 'already-synced' | 'no-transcript' | 'error'
+    status:
+      | 'downloaded'
+      | 'already-synced'
+      | 'no-transcript'
+      | 'cancelled'
+      | 'error'
   }> = []
 
   for (const meeting of meetings) {
@@ -275,6 +346,12 @@ async function syncTranscripts(opts: {
     const baseName = `${dateStr}_${slugify(meeting.subject || 'meeting')}`
     const subject = meeting.subject || 'meeting'
     const start = meeting.start || 'unknown-date'
+    // AIDEV-NOTE: a cancelled meeting never had a call, so /transcripts would
+    // just come back empty — skip the two Graph calls entirely.
+    if (meeting.isCancelled) {
+      report.push({ subject, start, meetingId: null, status: 'cancelled' })
+      continue
+    }
     try {
       const meetingId = await resolveMeetingId(userId, meeting.joinUrl)
       const data = (await listTranscripts(userId, meetingId)) as {
@@ -537,28 +614,41 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('teams-transcript-sync', {
     description:
-      'Fetch all Teams meeting transcripts for a user into a folder, skipping already-downloaded ones. Usage: /teams-transcript-sync [userId] [outDir] [top]',
+      "Fetch today's or yesterday's Teams meeting transcripts into a folder, skipping already-downloaded ones. Usage: /teams-transcript-sync [today|yesterday]",
+    getArgumentCompletions: (argumentPrefix) => {
+      const options: AutocompleteItem[] = [
+        {
+          value: 'today',
+          label: 'today',
+          description: "Sync today's meetings",
+        },
+        {
+          value: 'yesterday',
+          label: 'yesterday',
+          description: "Sync yesterday's meetings",
+        },
+      ]
+      return options.filter((o) => o.value.startsWith(argumentPrefix))
+    },
     handler: async (args, ctx) => {
-      const [argUserId, argOutDir, argTop] = args
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-      const userId = argUserId || process.env.TEAMS_USER_ID
+      const argDay = args.trim().split(/\s+/).filter(Boolean)[0]
+      const day: SyncDay = argDay === 'yesterday' ? 'yesterday' : 'today'
+
+      const userId = await resolveConfiguredUserId(ctx.cwd)
       if (!userId) {
         ctx.ui.notify(
-          'Usage: /teams-transcript-sync <userId> [outDir] [top] (or set TEAMS_USER_ID env var)',
+          'No userId configured. Set "userId" in pi-teams-transcript/config.json (global or project), or the TEAMS_USER_ID env var.',
           'warning',
         )
         return
       }
-      const outDir = await resolveTranscriptsDir(ctx.cwd, argOutDir)
-      const top = Number(argTop) || 20
+      const outDir = await resolveTranscriptsDir(ctx.cwd)
 
-      ctx.ui.notify(`Scanning last ${top} meetings for ${userId}...`, 'info')
+      ctx.ui.notify(`Scanning ${day}'s meetings for ${userId}...`, 'info')
       const result = await syncTranscripts({
         userId,
         outDir,
-        top,
+        day,
         format: 'text/vtt',
         onProgress: (line) => ctx.ui.notify(line, 'info'),
       })

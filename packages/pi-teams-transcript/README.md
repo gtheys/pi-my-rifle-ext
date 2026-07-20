@@ -74,11 +74,13 @@ Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `outDir` | `string` | `./teams-transcripts` | Directory to write downloaded transcripts to. Relative paths resolve from cwd. |
+| `userId` | `string` | none | Default meeting organizer's user ID or UPN, used by `/teams-transcript-sync` when not set via the `TEAMS_USER_ID` env var. |
 
 ```json
 {
   "$schema": "./config.schema.json",
-  "outDir": "./teams-transcripts"
+  "outDir": "./teams-transcripts",
+  "userId": "you@example.com"
 }
 ```
 
@@ -104,18 +106,18 @@ You still need the organizer's `userId` — app-only auth has no delegated "me" 
 
 ## Command: `/teams-transcript-sync`
 
-`/teams-transcript-sync [userId] [outDir] [top]`
+`/teams-transcript-sync [today|yesterday]`
 
-Scans the user's last `top` calendar meetings (default 20), and for each one with a transcript, downloads it into `outDir` (default `./teams-transcripts`) as `<date>_<slugified-subject>__<transcriptId>.vtt`. Re-running the command **skips files that already exist on disk** — no manifest, the filename itself is the idempotency key.
+Scans the calendar for the given day (default `today`) via `/calendarView` (so recurring meetings expand into real occurrences), and for each non-all-day meeting with a transcript, downloads it into `outDir` as `<date>_<slugified-subject>__<transcriptId>.vtt`. Re-running the command **skips files that already exist on disk** — no manifest, the filename itself is the idempotency key. Cancelled meetings are reported but skipped (never had a call, so never have a transcript).
 
 ```
-/teams-transcript-sync geert@salary-hero.com
-/teams-transcript-sync geert@salary-hero.com ./notes/transcripts 50
+/teams-transcript-sync
+/teams-transcript-sync yesterday
 ```
 
-`userId` falls back to the `TEAMS_USER_ID` env var if omitted. `outDir` falls back to the config file above, then `./teams-transcripts`.
+Tab-complete on the `today`/`yesterday` argument. `userId` comes from config `userId`, else `TEAMS_USER_ID` env var — required, no positional arg anymore. `outDir` comes from config, else `./teams-transcripts`.
 
-Ends with a report table (subject, start, `meetingId`, status) for every scanned meeting.
+Ends with a report table (subject, start, `meetingId`, status — `downloaded`/`already-synced`/`no-transcript`/`cancelled`/`error`) for every meeting that day.
 
 ## Troubleshooting
 

@@ -4,6 +4,10 @@
     "outDir": {
       "type": "string",
       "description": "Directory to write downloaded transcripts to. Relative paths resolve from cwd."
+    },
+    "userId": {
+      "type": "string",
+      "description": "Default meeting organizer's user ID or UPN, used when a tool/command call omits userId."
     }
   }
 }
