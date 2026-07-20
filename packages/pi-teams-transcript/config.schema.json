@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "outDir": {
+      "type": "string",
+      "description": "Directory to write downloaded transcripts to. Relative paths resolve from cwd."
+    }
+  }
+}

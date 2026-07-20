@@ -61,13 +61,26 @@ Get-CsOnlineUser -Identity <object-id> | Select-Object UserPrincipalName
 
 ## Configuration
 
-Secrets only — set via environment variables (no config file):
+Secrets via environment variables (no config file):
 
 | Env var | Description |
 |---|---|
 | `TEAMS_TENANT_ID` | Azure AD tenant ID |
 | `TEAMS_CLIENT_ID` | App registration client ID |
 | `TEAMS_CLIENT_SECRET` | App registration client secret |
+
+Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `outDir` | `string` | `./teams-transcripts` | Directory to write downloaded transcripts to. Relative paths resolve from cwd. |
+
+```json
+{
+  "$schema": "./config.schema.json",
+  "outDir": "./teams-transcripts"
+}
+```
 
 ## Tool: `teams_transcript`
 
@@ -83,11 +96,26 @@ Secrets only — set via environment variables (no config file):
 
 ### Flow
 
-1. `action: 'listMeetings'` → `GET /users/{userId}/events?$orderby=start/dateTime desc&$top=<top*5>` (app-only calls reject `$filter=isOnlineMeeting eq true` with a 400, so results are filtered client-side for events that have a joinUrl) — returns subject/start/joinUrl to pick from.
+1. `action: 'listMeetings'` → `GET /users/{userId}/calendarView?startDateTime=...&endDateTime=...&$orderby=start/dateTime desc&$top=<top*5>` (app-only calls reject `$filter=isOnlineMeeting eq true` with a 400, so results are filtered client-side for non-all-day events that have a joinUrl; `calendarView` is used instead of `/events` so recurring meetings expand into real per-day occurrences instead of only the series master) — returns subject/start/joinUrl to pick from.
 2. `action: 'list'` with the picked `joinUrl` (resolved via `GET /users/{userId}/onlineMeetings?$filter=JoinWebUrl eq '...'`) or a known `meetingId` → `GET /users/{userId}/onlineMeetings/{meetingId}/transcripts`
 3. `action: 'get'` with a `transcriptId` from step 2 → `GET .../transcripts/{transcriptId}/content?$format=text/vtt`
 
 You still need the organizer's `userId` — app-only auth has no delegated "me" context. UPNs are resolved to Entra object IDs internally and cached, since `/onlineMeetings` rejects UPNs directly.
+
+## Command: `/teams-transcript-sync`
+
+`/teams-transcript-sync [userId] [outDir] [top]`
+
+Scans the user's last `top` calendar meetings (default 20), and for each one with a transcript, downloads it into `outDir` (default `./teams-transcripts`) as `<date>_<slugified-subject>__<transcriptId>.vtt`. Re-running the command **skips files that already exist on disk** — no manifest, the filename itself is the idempotency key.
+
+```
+/teams-transcript-sync geert@salary-hero.com
+/teams-transcript-sync geert@salary-hero.com ./notes/transcripts 50
+```
+
+`userId` falls back to the `TEAMS_USER_ID` env var if omitted. `outDir` falls back to the config file above, then `./teams-transcripts`.
+
+Ends with a report table (subject, start, `meetingId`, status) for every scanned meeting.
 
 ## Troubleshooting
 

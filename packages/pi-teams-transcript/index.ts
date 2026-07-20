@@ -1,7 +1,62 @@
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { createHash } from 'node:crypto'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  CONFIG_DIR_NAME,
+  type ExtensionAPI,
+  getAgentDir,
+} from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+import { Value } from 'typebox/value'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
+
+// AIDEV-NOTE: TypeBox schema is the source of truth for config shape.
+// config.schema.json (checked in) is regenerated from this at startup if
+// missing. Global path: getAgentDir()/pi-teams-transcript/config.json.
+// Project override: <cwd>/CONFIG_DIR_NAME/pi-teams-transcript/config.json.
+const TeamsTranscriptConfigSchema = Type.Object({
+  outDir: Type.Optional(
+    Type.String({
+      description:
+        'Directory to write downloaded transcripts to. Relative paths resolve from cwd.',
+    }),
+  ),
+})
+
+const GLOBAL_CONFIG_PATH = path.join(
+  getAgentDir(),
+  'pi-teams-transcript',
+  'config.json',
+)
+
+function projectConfigPath(cwd: string): string {
+  return path.join(cwd, CONFIG_DIR_NAME, 'pi-teams-transcript', 'config.json')
+}
+
+async function readConfigFile(file: string): Promise<{ outDir?: string }> {
+  try {
+    const raw = await fs.readFile(file, 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (!Value.Check(TeamsTranscriptConfigSchema, parsed)) return {}
+    return parsed
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return {}
+    const msg = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to read pi-teams-transcript config ${file}: ${msg}`)
+  }
+}
+
+// AIDEV-NOTE: precedence is explicit CLI arg > project config > global config
+// > cwd-based default (resolveTranscriptsDir's existing fallback).
+async function resolveConfiguredOutDir(
+  cwd: string,
+): Promise<string | undefined> {
+  const global = await readConfigFile(GLOBAL_CONFIG_PATH)
+  const project = await readConfigFile(projectConfigPath(cwd))
+  return project.outDir || global.outDir
+}
 
 // AIDEV-NOTE: app-only (client_credentials) Graph auth. Requires the app registration
 // to have OnlineMeetingTranscript.Read.All + OnlineMeetings.Read.All application
@@ -68,22 +123,29 @@ async function graphFetch(url: string, accept?: string): Promise<Response> {
 }
 
 async function listRecentMeetings(userId: string, top: number) {
-  // AIDEV-NOTE: Graph /events does not support $filter on isOnlineMeeting for
-  // app-only calls (400 ErrorInvalidProperty). Fetch recent events ordered by
-  // start desc and filter client-side for ones with an onlineMeeting join URL.
-  const fetchCount = Math.max(top * 5, 50)
+  // AIDEV-NOTE: /events?$orderby=start desc only returns each recurring
+  // series' master (its *original* start), not per-day occurrences — misses
+  // daily/weekly standups entirely or hits them at the wrong date. Use
+  // /calendarView over a lookback window instead: it expands recurrence into
+  // real occurrences, same as Outlook's own calendar view. All-day events
+  // never have onlineMeeting.joinUrl so the existing filter already excludes
+  // them; isAllDay is fetched too for safety.
+  const now = new Date()
+  const lookbackDays = 60
+  const start = new Date(now.getTime() - lookbackDays * 86_400_000)
   const res = await graphFetch(
-    `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/events?$orderby=start/dateTime desc&$top=${fetchCount}&$select=subject,start,end,onlineMeeting`,
+    `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${now.toISOString()}&$orderby=start/dateTime desc&$top=${Math.max(top * 5, 50)}&$select=subject,start,end,isAllDay,onlineMeeting`,
   )
   const data = (await res.json()) as {
     value?: Array<{
       subject?: string
       start?: { dateTime?: string }
+      isAllDay?: boolean
       onlineMeeting?: { joinUrl?: string }
     }>
   }
   return (data.value || [])
-    .filter((e) => e.onlineMeeting?.joinUrl)
+    .filter((e) => !e.isAllDay && e.onlineMeeting?.joinUrl)
     .slice(0, top)
     .map((e) => ({
       subject: e.subject,
@@ -147,18 +209,206 @@ async function getTranscriptContent(
   return res.text()
 }
 
+function slugify(s: string): string {
+  return (
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40) || 'meeting'
+  )
+}
+
+// AIDEV-NOTE: transcriptId is a long base64-ish blob that blows past
+// filesystem name limits (ENAMETOOLONG) when embedded raw. Use a short,
+// stable hash instead — same transcriptId always hashes the same, so the
+// idempotency check (file exists on disk) still works across re-runs.
+function shortId(id: string): string {
+  return createHash('sha1').update(id).digest('hex').slice(0, 12)
+}
+
+function extForFormat(format: string): string {
+  if (format === 'text/plain') return 'txt'
+  return 'vtt'
+}
+
+// AIDEV-NOTE: idempotent sync — filename encodes date+subject+transcriptId,
+// so a re-run just skips files that already exist on disk. No manifest/DB.
+async function syncTranscripts(opts: {
+  userId: string
+  outDir: string
+  top: number
+  format: string
+  onProgress?: (line: string) => void
+}): Promise<{
+  scanned: number
+  downloaded: string[]
+  skippedExisting: string[]
+  skippedNoTranscript: string[]
+  errors: string[]
+  meetings: Array<{
+    subject: string
+    start: string
+    meetingId: string | null
+    status: 'downloaded' | 'already-synced' | 'no-transcript' | 'error'
+  }>
+}> {
+  const { userId, outDir, top, format } = opts
+  const log = opts.onProgress ?? (() => {})
+  await fs.mkdir(outDir, { recursive: true })
+
+  const meetings = await listRecentMeetings(userId, top)
+  const downloaded: string[] = []
+  const skippedExisting: string[] = []
+  const skippedNoTranscript: string[] = []
+  const errors: string[] = []
+  const report: Array<{
+    subject: string
+    start: string
+    meetingId: string | null
+    status: 'downloaded' | 'already-synced' | 'no-transcript' | 'error'
+  }> = []
+
+  for (const meeting of meetings) {
+    if (!meeting.joinUrl) continue
+    const dateStr = (meeting.start || '').slice(0, 10) || 'unknown-date'
+    const baseName = `${dateStr}_${slugify(meeting.subject || 'meeting')}`
+    const subject = meeting.subject || 'meeting'
+    const start = meeting.start || 'unknown-date'
+    try {
+      const meetingId = await resolveMeetingId(userId, meeting.joinUrl)
+      const data = (await listTranscripts(userId, meetingId)) as {
+        value?: Array<{ id: string }>
+      }
+      const transcripts = data.value || []
+      if (transcripts.length === 0) {
+        skippedNoTranscript.push(`${baseName} (no transcript)`)
+        report.push({ subject, start, meetingId, status: 'no-transcript' })
+        continue
+      }
+      let anyDownloaded = false
+      for (const t of transcripts) {
+        const fileName = `${baseName}__${shortId(t.id)}.${extForFormat(format)}`
+        const filePath = path.join(outDir, fileName)
+        try {
+          await fs.access(filePath)
+          skippedExisting.push(fileName)
+          continue
+        } catch {
+          // doesn't exist yet, proceed to download
+        }
+        log(`Downloading ${fileName}...`)
+        const content = await getTranscriptContent(
+          userId,
+          meetingId,
+          t.id,
+          format,
+        )
+        await fs.writeFile(filePath, content, 'utf8')
+        downloaded.push(fileName)
+        anyDownloaded = true
+      }
+      report.push({
+        subject,
+        start,
+        meetingId,
+        status: anyDownloaded ? 'downloaded' : 'already-synced',
+      })
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      errors.push(`${baseName}: ${msg.slice(0, 200)}`)
+      report.push({ subject, start, meetingId: null, status: 'error' })
+    }
+  }
+
+  return {
+    scanned: meetings.length,
+    meetings: report,
+    downloaded,
+    skippedExisting,
+    skippedNoTranscript,
+    errors,
+  }
+}
+
+// AIDEV-NOTE: no LLM-calling API is exposed to tool execute() in this SDK —
+// summarization has to happen in the calling agent's own turn. This action
+// only does the filesystem diffing (which .vtt lack a sibling .md); the
+// agent reads/summarizes/writes using its own read+write tools per the
+// format spec returned in the guidance.
+// AIDEV-NOTE: default outDir is 'teams-transcripts' relative to cwd, but if
+// the user already cd'd into ~/teams-transcripts and re-runs without an
+// explicit dir, resolving 'teams-transcripts' again nests a duplicate folder
+// inside itself. Reuse cwd as-is when its basename already matches. Shared by
+// both /teams-transcript-sync and /teams-transcript-summarize.
+async function resolveTranscriptsDir(
+  cwd: string,
+  argDir?: string,
+): Promise<string> {
+  if (argDir) return path.resolve(cwd, argDir)
+  const configuredOutDir = await resolveConfiguredOutDir(cwd)
+  if (configuredOutDir) return path.resolve(cwd, configuredOutDir)
+  return path.basename(cwd) === 'teams-transcripts'
+    ? cwd
+    : path.resolve(cwd, 'teams-transcripts')
+}
+
+async function findPendingSummaries(dir: string): Promise<{
+  dir: string
+  pending: string[]
+  alreadyDone: number
+}> {
+  const entries = await fs.readdir(dir).catch(() => [] as string[])
+  const vttFiles = entries.filter((f) => f.endsWith('.vtt'))
+  const mdSet = new Set(entries.filter((f) => f.endsWith('.md')))
+  const pending = vttFiles.filter((f) => !mdSet.has(f.slice(0, -4) + '.md'))
+  return {
+    dir,
+    pending: pending.map((f) => path.join(dir, f)),
+    alreadyDone: vttFiles.length - pending.length,
+  }
+}
+
+const SUMMARY_FORMAT_GUIDANCE =
+  'For each path in `pending`: read the .vtt, convert cues to "Speaker: text" lines ' +
+  '(drop WEBVTT header + timestamp lines, merge consecutive same-speaker lines), then write ' +
+  'a sibling .md (same basename, .md extension) with sections in this order, omitting any ' +
+  'empty one except Transcript: "## Summary" (bullets), "## Decisions" (- [x] ...), ' +
+  '"## Action Items" (- [ ] @Owner: ...), "## Open Questions" (bullets), "## Commitments" ' +
+  '(@Person: ...), "## Transcript" (the converted speaker lines, full). Base every bullet ' +
+  'only on what is actually said; do not invent decisions/owners/action items.'
+
 export default function (pi: ExtensionAPI) {
+  // Scaffold config.schema.json next to this file when missing.
+  pi.on('session_start', async (event) => {
+    if (event.reason !== 'startup') return
+    const schemaPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'config.schema.json',
+    )
+    try {
+      await fs.access(schemaPath)
+    } catch {
+      await fs.writeFile(
+        schemaPath,
+        JSON.stringify(TeamsTranscriptConfigSchema, null, 2),
+        'utf-8',
+      )
+    }
+  })
+
   pi.registerTool({
     name: 'teams_transcript',
     label: 'Teams Meeting Transcript',
     description:
-      'List calendar meetings, list transcripts, or download transcript content for Microsoft Teams meetings via Microsoft Graph (app-only auth).',
+      'List calendar meetings, list transcripts, or download transcript content for Microsoft Teams meetings via Microsoft Graph (app-only auth); or find synced .vtt transcripts missing a summarized .md sibling.',
     promptSnippet:
-      'List/download Teams meeting transcripts via Microsoft Graph.',
+      'List/download Teams meeting transcripts via Microsoft Graph, or find .vtt files needing summarization.',
     promptGuidelines: [
       'Use action=listMeetings to find recent meetings and their joinUrl when meetingId is unknown.',
       'Use action=list (with meetingId or joinUrl) to discover transcriptId values for a meeting.',
       'Use action=get with a transcriptId to download transcript content (VTT or plain text).',
+      'Use action=pendingSummaries with dir to find .vtt files lacking a same-basename .md, then follow the returned formatGuidance to write each one.',
     ],
     parameters: Type.Object({
       action: Type.Union(
@@ -166,15 +416,25 @@ export default function (pi: ExtensionAPI) {
           Type.Literal('listMeetings'),
           Type.Literal('list'),
           Type.Literal('get'),
+          Type.Literal('pendingSummaries'),
         ],
         {
           description:
-            "'listMeetings' recent calendar meetings for a user, 'list' transcripts for a meeting, or 'get' transcript content",
+            "'listMeetings' recent calendar meetings for a user, 'list' transcripts for a meeting, 'get' transcript content, or 'pendingSummaries' to find synced .vtt files missing a summarized .md",
         },
       ),
-      userId: Type.String({
-        description: "Organizer's user ID or UPN (e.g. user@contoso.com)",
-      }),
+      userId: Type.Optional(
+        Type.String({
+          description:
+            "Organizer's user ID or UPN (e.g. user@contoso.com); required for listMeetings/list/get, not for pendingSummaries",
+        }),
+      ),
+      dir: Type.Optional(
+        Type.String({
+          description:
+            'Directory of synced .vtt transcripts to scan (required for action=pendingSummaries)',
+        }),
+      ),
       meetingId: Type.Optional(
         Type.String({
           description:
@@ -206,6 +466,29 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params) {
+      if (params.action === 'pendingSummaries') {
+        if (!params.dir)
+          throw new Error('dir is required for action=pendingSummaries')
+        const result = await findPendingSummaries(params.dir)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                { ...result, formatGuidance: SUMMARY_FORMAT_GUIDANCE },
+                null,
+                2,
+              ),
+            },
+          ],
+          details: result,
+        }
+      }
+
+      if (!params.userId) {
+        throw new Error('userId is required for listMeetings/list/get')
+      }
+
       if (params.action === 'listMeetings') {
         const meetings = await listRecentMeetings(
           params.userId,
@@ -249,6 +532,91 @@ export default function (pi: ExtensionAPI) {
           transcriptId: params.transcriptId,
         },
       }
+    },
+  })
+
+  pi.registerCommand('teams-transcript-sync', {
+    description:
+      'Fetch all Teams meeting transcripts for a user into a folder, skipping already-downloaded ones. Usage: /teams-transcript-sync [userId] [outDir] [top]',
+    handler: async (args, ctx) => {
+      const [argUserId, argOutDir, argTop] = args
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+      const userId = argUserId || process.env.TEAMS_USER_ID
+      if (!userId) {
+        ctx.ui.notify(
+          'Usage: /teams-transcript-sync <userId> [outDir] [top] (or set TEAMS_USER_ID env var)',
+          'warning',
+        )
+        return
+      }
+      const outDir = await resolveTranscriptsDir(ctx.cwd, argOutDir)
+      const top = Number(argTop) || 20
+
+      ctx.ui.notify(`Scanning last ${top} meetings for ${userId}...`, 'info')
+      const result = await syncTranscripts({
+        userId,
+        outDir,
+        top,
+        format: 'text/vtt',
+        onProgress: (line) => ctx.ui.notify(line, 'info'),
+      })
+
+      const lines = [
+        `# Teams Transcript Sync`,
+        `Meetings scanned: ${result.scanned}`,
+        `Downloaded: ${result.downloaded.length}`,
+        ...result.downloaded.map((f) => `  + ${f}`),
+        `Already present (skipped): ${result.skippedExisting.length}`,
+        `No transcript available: ${result.skippedNoTranscript.length}`,
+        ...(result.errors.length
+          ? [
+              `Errors: ${result.errors.length}`,
+              ...result.errors.map((e) => `  ! ${e}`),
+            ]
+          : []),
+        `Saved to: ${outDir}`,
+        ``,
+        `## Report`,
+        `Subject | Start | meetingId | Status`,
+        `--- | --- | --- | ---`,
+        ...result.meetings.map(
+          (m) =>
+            `${m.subject} | ${m.start} | ${m.meetingId ?? '(unresolved)'} | ${m.status}`,
+        ),
+      ]
+      ctx.ui.notify(lines.join('\n'), 'info')
+    },
+  })
+
+  pi.registerCommand('teams-transcript-summarize', {
+    description:
+      'Find synced .vtt transcripts missing a summarized .md sibling and have the agent write them. Usage: /teams-transcript-summarize [dir]',
+    handler: async (args, ctx) => {
+      const [argDir] = args.trim().split(/\s+/).filter(Boolean)
+      const dir = await resolveTranscriptsDir(ctx.cwd, argDir)
+      const result = await findPendingSummaries(dir)
+
+      if (result.pending.length === 0) {
+        ctx.ui.notify(
+          `No pending transcripts in ${dir} — all ${result.alreadyDone} .vtt file(s) already have a summary .md.`,
+          'info',
+        )
+        return
+      }
+
+      ctx.ui.notify(
+        `Summarizing ${result.pending.length} transcript(s) in ${dir}...`,
+        'info',
+      )
+      // AIDEV-NOTE: no LLM-calling API is exposed to command handlers either —
+      // hand the pending file list + format spec to the running agent via
+      // sendUserMessage, and let it read/summarize/write each one with its
+      // own tools (mirrors the pendingSummaries tool action's approach).
+      pi.sendUserMessage(
+        `Summarize these Teams transcripts. ${SUMMARY_FORMAT_GUIDANCE}\n\nFiles:\n${result.pending.map((p) => `- ${p}`).join('\n')}`,
+      )
     },
   })
 }
