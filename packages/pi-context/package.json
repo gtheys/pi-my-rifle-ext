@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-context",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension that adds a /context command to visualise context-window token usage as a coloured grid",
   "type": "module",
   "keywords": [

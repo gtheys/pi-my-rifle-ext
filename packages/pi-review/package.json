@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-review",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension — /review, /sonarqube, and /pr-quality commands powered by GitHub and SonarCloud",
   "type": "module",
   "keywords": [

@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-tool-pills",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension — coloured pill badges for tool calls and Shiki-powered syntax-highlighted diffs for write/edit",
   "type": "module",
   "keywords": [

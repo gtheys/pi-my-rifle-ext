@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-test-runner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension — non-blocking run_tests tool that discovers and runs JS/TS tests via an isolated subagent",
   "type": "module",
   "keywords": [

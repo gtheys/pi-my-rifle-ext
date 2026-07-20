@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-fastcontext",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension — fast_context_search tool backed by a local Microsoft FastContext llama.cpp server",
   "type": "module",
   "keywords": [

@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-sem",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension — entity-aware semantic code tools (diff, impact, context, blame, log) via the sem CLI",
   "type": "module",
   "keywords": [

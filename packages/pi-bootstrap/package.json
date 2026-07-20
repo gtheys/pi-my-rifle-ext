@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-bootstrap",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension that symlinks agents/AGENTS.md into the Pi agent directory on startup",
   "type": "module",
   "keywords": [

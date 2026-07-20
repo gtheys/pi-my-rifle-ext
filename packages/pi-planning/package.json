@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-planning",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension — typed taskwarrior tools for the create-plan and implement-plan skills",
   "type": "module",
   "keywords": [

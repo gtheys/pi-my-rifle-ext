@@ -1,6 +1,6 @@
 {
   "name": "@gtheys/pi-desktop-notify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension that sends desktop notifications when Pi finishes work after an idle period",
   "type": "module",
   "keywords": [
