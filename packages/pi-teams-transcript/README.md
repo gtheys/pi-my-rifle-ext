@@ -117,7 +117,7 @@ Scans the calendar for the given day (default `today`) via `/calendarView` (so r
 
 Tab-complete on the `today`/`yesterday` argument. `userId` comes from config `userId`, else `TEAMS_USER_ID` env var — required, no positional arg anymore. `outDir` comes from config, else `./teams-transcripts`.
 
-Ends with a report table (subject, start, `meetingId`, status — `downloaded`/`already-synced`/`no-transcript`/`cancelled`/`error`) for every meeting that day.
+The command hands off to the agent (`action="sync"` on the `teams_transcript` tool) instead of running the sync itself, so the report renders themed and colored — same mechanism as built-in tools like `read`/`write` (green=downloaded, dim=no transcript, yellow=cancelled, red=error). A command's own `ctx.ui.notify` has no per-line styling API, only the tool-call rendering pipeline does. One line per meeting: local time, subject, status, truncated `meetingId`.
 
 ## Troubleshooting
 

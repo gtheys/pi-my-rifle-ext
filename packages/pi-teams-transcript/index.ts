@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Theme } from '@earendil-works/pi-coding-agent'
 import {
   CONFIG_DIR_NAME,
   type ExtensionAPI,
   getAgentDir,
 } from '@earendil-works/pi-coding-agent'
 import type { AutocompleteItem } from '@earendil-works/pi-tui'
+import { Text } from '@earendil-works/pi-tui'
 import { Type } from 'typebox'
 import { Value } from 'typebox/value'
 
@@ -326,6 +328,34 @@ function formatReportLine(m: {
   return `${icon} ${time}  ${m.subject.padEnd(40)}  ${m.status.padEnd(14)} ${idShort}`
 }
 
+// AIDEV-NOTE: theme-colored variant of formatReportLine for the `sync` tool
+// action's renderResult — same layout, colored by status so a scan reads at
+// a glance (green=got it, dim=nothing there, yellow=cancelled, red=error),
+// matching how built-in tools (read/write/etc) color their output.
+const STATUS_THEME_COLOR: Record<
+  string,
+  'success' | 'error' | 'warning' | 'dim'
+> = {
+  downloaded: 'success',
+  'already-synced': 'success',
+  'no-transcript': 'dim',
+  cancelled: 'warning',
+  error: 'error',
+}
+
+function themedReportLine(
+  m: {
+    subject: string
+    start: string
+    meetingId: string | null
+    status: string
+  },
+  theme: Theme,
+): string {
+  const color = STATUS_THEME_COLOR[m.status] || 'dim'
+  return theme.fg(color, formatReportLine(m))
+}
+
 function slugify(s: string): string {
   return (
     s
@@ -550,10 +580,11 @@ export default function (pi: ExtensionAPI) {
           Type.Literal('list'),
           Type.Literal('get'),
           Type.Literal('pendingSummaries'),
+          Type.Literal('sync'),
         ],
         {
           description:
-            "'listMeetings' recent calendar meetings for a user, 'list' transcripts for a meeting, 'get' transcript content, or 'pendingSummaries' to find synced .vtt files missing a summarized .md",
+            "'listMeetings' recent calendar meetings for a user, 'list' transcripts for a meeting, 'get' transcript content, 'pendingSummaries' to find synced .vtt files missing a summarized .md, or 'sync' to download today's/yesterday's transcripts",
         },
       ),
       userId: Type.Optional(
@@ -597,8 +628,13 @@ export default function (pi: ExtensionAPI) {
           maximum: 50,
         }),
       ),
+      day: Type.Optional(
+        Type.Union([Type.Literal('today'), Type.Literal('yesterday')], {
+          description: "Day to sync for action=sync, default 'today'",
+        }),
+      ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (params.action === 'pendingSummaries') {
         if (!params.dir)
           throw new Error('dir is required for action=pendingSummaries')
@@ -614,6 +650,45 @@ export default function (pi: ExtensionAPI) {
               ),
             },
           ],
+          details: result,
+        }
+      }
+
+      if (params.action === 'sync') {
+        const userId = params.userId || (await resolveConfiguredUserId(ctx.cwd))
+        if (!userId) {
+          throw new Error(
+            'No userId given and none configured (pi-teams-transcript config.json userId, or TEAMS_USER_ID env var)',
+          )
+        }
+        const outDir = await resolveTranscriptsDir(ctx.cwd)
+        const day: SyncDay = params.day === 'yesterday' ? 'yesterday' : 'today'
+        const result = await syncTranscripts({
+          userId,
+          outDir,
+          day,
+          format: 'text/vtt',
+        })
+        const lines = [
+          `# Teams Transcript Sync (${day})`,
+          `Meetings scanned: ${result.scanned}`,
+          `Downloaded: ${result.downloaded.length}`,
+          ...result.downloaded.map((f) => `  + ${f}`),
+          `Already present (skipped): ${result.skippedExisting.length}`,
+          `No transcript available: ${result.skippedNoTranscript.length}`,
+          ...(result.errors.length
+            ? [
+                `Errors: ${result.errors.length}`,
+                ...result.errors.map((e) => `  ! ${e}`),
+              ]
+            : []),
+          `Saved to: ${outDir}`,
+          ``,
+          `## Report`,
+          ...result.meetings.map((m) => formatReportLine(m)),
+        ]
+        return {
+          content: [{ type: 'text', text: lines.join('\n') }],
           details: result,
         }
       }
@@ -666,6 +741,53 @@ export default function (pi: ExtensionAPI) {
         },
       }
     },
+    // AIDEV-NOTE: renderCall/renderResult give this tool the same colored,
+    // themed look as built-in tools (read/write/etc) instead of the plain
+    // ctx.ui.notify text a command is stuck with (notify has no per-line
+    // styling API). Uses `details` (structured, not the LLM-facing text) so
+    // ANSI/theme codes never leak into the model's context.
+    renderCall(args, theme) {
+      const parts = [theme.fg('accent', args.action)]
+      if (args.action === 'sync')
+        parts.push(theme.fg('dim', args.day || 'today'))
+      if (args.userId) parts.push(theme.fg('dim', args.userId))
+      return new Text(parts.join(' '), 0, 0)
+    },
+    renderResult(result, _options, theme) {
+      const details = result.details as
+        | {
+            scanned?: number
+            downloaded?: string[]
+            skippedExisting?: string[]
+            skippedNoTranscript?: string[]
+            errors?: string[]
+            meetings?: Array<{
+              subject: string
+              start: string
+              meetingId: string | null
+              status: string
+            }>
+          }
+        | undefined
+      if (!details?.meetings) {
+        const text = result.content.find((c) => c.type === 'text')
+        const raw = text?.type === 'text' ? text.text : ''
+        return new Text(`\n${theme.fg('toolOutput', raw)}`, 0, 0)
+      }
+      const lines = [
+        theme.fg('text', `Scanned ${details.scanned ?? 0}`) +
+          theme.fg('dim', ' · ') +
+          theme.fg('success', `${details.downloaded?.length ?? 0} downloaded`) +
+          theme.fg('dim', ' · ') +
+          theme.fg(
+            'dim',
+            `${details.skippedExisting?.length ?? 0} already synced`,
+          ),
+        '',
+        ...details.meetings.map((m) => themedReportLine(m, theme)),
+      ]
+      return new Text(`\n${lines.join('\n')}`, 0, 0)
+    },
   })
 
   pi.registerCommand('teams-transcript-sync', {
@@ -686,10 +808,15 @@ export default function (pi: ExtensionAPI) {
       ]
       return options.filter((o) => o.value.startsWith(argumentPrefix))
     },
+    // AIDEV-NOTE: hands off to the agent via sendUserMessage instead of
+    // running syncTranscripts here directly — the teams_transcript tool's
+    // action=sync has a themed renderCall/renderResult (colored per status,
+    // like read/write), which only kicks in for a real LLM tool call. A
+    // command running the same logic itself is stuck with plain ctx.ui.notify
+    // (no per-line styling API). Mirrors /teams-transcript-summarize's pattern.
     handler: async (args, ctx) => {
       const argDay = args.trim().split(/\s+/).filter(Boolean)[0]
       const day: SyncDay = argDay === 'yesterday' ? 'yesterday' : 'today'
-
       const userId = await resolveConfiguredUserId(ctx.cwd)
       if (!userId) {
         ctx.ui.notify(
@@ -698,36 +825,9 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const outDir = await resolveTranscriptsDir(ctx.cwd)
-
-      ctx.ui.notify(`Scanning ${day}'s meetings for ${userId}...`, 'info')
-      const result = await syncTranscripts({
-        userId,
-        outDir,
-        day,
-        format: 'text/vtt',
-        onProgress: (line) => ctx.ui.notify(line, 'info'),
-      })
-
-      const lines = [
-        `# Teams Transcript Sync`,
-        `Meetings scanned: ${result.scanned}`,
-        `Downloaded: ${result.downloaded.length}`,
-        ...result.downloaded.map((f) => `  + ${f}`),
-        `Already present (skipped): ${result.skippedExisting.length}`,
-        `No transcript available: ${result.skippedNoTranscript.length}`,
-        ...(result.errors.length
-          ? [
-              `Errors: ${result.errors.length}`,
-              ...result.errors.map((e) => `  ! ${e}`),
-            ]
-          : []),
-        `Saved to: ${outDir}`,
-        ``,
-        `## Report`,
-        ...result.meetings.map((m) => formatReportLine(m)),
-      ]
-      ctx.ui.notify(lines.join('\n'), 'info')
+      pi.sendUserMessage(
+        `Call the teams_transcript tool with action="sync", day="${day}".`,
+      )
     },
   })
 
