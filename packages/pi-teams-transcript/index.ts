@@ -844,7 +844,12 @@ export default function (pi: ExtensionAPI) {
         const raw = text?.type === 'text' ? text.text : ''
         return new Text(`\n${theme.fg('toolOutput', raw)}`, 0, 0)
       }
+      // AIDEV-NOTE: print the resolved timezone in the visible header —
+      // otherwise there's no way to tell from the rendered output alone
+      // whether times were actually converted or just happen to already be
+      // in the right zone (both look identical for a UTC+0 misconfiguration).
       const lines = [
+        theme.fg('dim', `tz: ${details.timeZone || '(system default)'}`),
         theme.fg('text', `Scanned ${details.scanned ?? 0}`) +
           theme.fg('dim', ' · ') +
           theme.fg('success', `${details.downloaded?.length ?? 0} downloaded`) +
