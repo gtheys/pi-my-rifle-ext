@@ -605,14 +605,47 @@ async function findPendingSummaries(dir: string): Promise<{
   }
 }
 
+// AIDEV-NOTE: exact section order/style the agent must follow when writing
+// each summary .md — kept as a literal template (not just prose) since
+// prose alone drifted on checkbox style / transcript formatting in practice.
+const SUMMARY_TEMPLATE = `## Summary
+
+- <bullet per topic discussed>
+
+## Decisions
+
+- [x] <decision made>
+
+## Action Items
+
+- [x] @<Owner>: <task> (<status if mentioned>)
+
+## Open Questions
+
+- <unresolved question raised>
+
+## Commitments
+
+- @<Person>: <what they committed to>
+
+## Transcript
+
+[SPEAKER_N M:SS] <utterance>
+[SPEAKER_N M:SS] <utterance>
+`
+
 const SUMMARY_FORMAT_GUIDANCE =
-  'For each path in `pending`: read the .vtt, convert cues to "Speaker: text" lines ' +
-  '(drop WEBVTT header + timestamp lines, merge consecutive same-speaker lines), then write ' +
-  'a sibling .md (same basename, .md extension) with sections in this order, omitting any ' +
-  'empty one except Transcript: "## Summary" (bullets), "## Decisions" (- [x] ...), ' +
-  '"## Action Items" (- [ ] @Owner: ...), "## Open Questions" (bullets), "## Commitments" ' +
-  '(@Person: ...), "## Transcript" (the converted speaker lines, full). Base every bullet ' +
-  'only on what is actually said; do not invent decisions/owners/action items.'
+  'For each path in `pending`: read the .vtt, then write a sibling .md (same basename, ' +
+  '.md extension) following this exact template (omit a section entirely if it has ' +
+  'nothing real to put in it, except Transcript which is always included):\n\n' +
+  `${SUMMARY_TEMPLATE}\n` +
+  'Transcript conversion: keep one line per VTT cue as `[SPEAKER_N M:SS] text` (speaker ' +
+  'label and M:SS timestamp from the cue, e.g. `00:00:01.234` → `0:01`) — do not merge ' +
+  'consecutive same-speaker cues into paragraphs, do not drop timestamps, drop only the ' +
+  'WEBVTT header line. Decisions and Action Items both use `- [x]` (already happened/' +
+  'assigned, not a live todo list). Open Questions and Commitments are plain bullets, no ' +
+  'checkboxes. Base every bullet only on what is actually said; never invent decisions, ' +
+  'owners, or action items not present in the transcript.'
 
 export default function (pi: ExtensionAPI) {
   // Scaffold config.schema.json next to this file when missing.
