@@ -272,7 +272,7 @@ async function listMeetingsForDay(
 ) {
   const { start, end } = dayBounds(day, timeZone)
   const res = await graphFetch(
-    `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime asc&$top=100&$select=subject,start,end,isAllDay,isCancelled,isOnlineMeeting,onlineMeeting`,
+    `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime asc&$top=100&$select=subject,start,end,isAllDay,isCancelled,isOnlineMeeting,onlineMeeting,attendees`,
   )
   const data = (await res.json()) as {
     value?: Array<{
@@ -283,6 +283,7 @@ async function listMeetingsForDay(
       isCancelled?: boolean
       isOnlineMeeting?: boolean
       onlineMeeting?: { joinUrl?: string }
+      attendees?: Array<{ emailAddress?: { name?: string } }>
     }>
   }
   const candidates = (data.value || []).filter(
@@ -300,6 +301,9 @@ async function listMeetingsForDay(
       start: e.start?.dateTime,
       isCancelled: Boolean(e.isCancelled),
       joinUrl,
+      attendees: (e.attendees || [])
+        .map((a) => a.emailAddress?.name)
+        .filter((n): n is string => Boolean(n)),
     })
   }
   return results
@@ -542,6 +546,29 @@ async function syncTranscripts(opts: {
         await fs.writeFile(filePath, content, 'utf8')
         downloaded.push(fileName)
         anyDownloaded = true
+
+        // AIDEV-NOTE: pre-create the sibling .md stub right away, while we
+        // still have real Graph metadata (subject/date/attendees) — the
+        // manually-dropped-.vtt fallback in findPendingSummaries only kicks
+        // in when this never ran. Never overwrite an existing .md (could
+        // already have a filled-in summary).
+        if (format === 'text/vtt') {
+          const mdPath = path.join(outDir, `${baseName}__${shortId(t.id)}.md`)
+          try {
+            await fs.access(mdPath)
+          } catch {
+            const cues = parseVttCues(content)
+            const stub = buildTranscriptStub(
+              {
+                title: subject,
+                date: dateStr,
+                attendees: meeting.attendees || [],
+              },
+              cues,
+            )
+            await fs.writeFile(mdPath, stub, 'utf8')
+          }
+        }
       }
       report.push({
         subject,
@@ -589,6 +616,138 @@ async function resolveTranscriptsDir(
     : path.resolve(cwd, 'teams-transcripts')
 }
 
+// AIDEV-NOTE: VTT → transcript-line conversion is pure parsing, no LLM
+// needed, so it happens in code (both at sync time with fresh Graph
+// metadata, and lazily here for a manually-dropped .vtt with none).
+interface TranscriptCue {
+  speaker: string
+  time: string
+  text: string
+}
+
+function vttTimestampToMSS(ts: string): string {
+  const [h, m, s] = ts.split(':')
+  const totalMin = Number(h) * 60 + Number(m)
+  const sec = Math.floor(Number(s))
+  return `${totalMin}:${String(sec).padStart(2, '0')}`
+}
+
+function parseVttCues(vttContent: string): TranscriptCue[] {
+  const lines = vttContent.split(/\r?\n/)
+  const cues: TranscriptCue[] = []
+  let i = 0
+  while (i < lines.length) {
+    const m = lines[i].match(
+      /^(\d\d:\d\d:\d\d\.\d+)\s*-->\s*(\d\d:\d\d:\d\d\.\d+)/,
+    )
+    if (m) {
+      const time = vttTimestampToMSS(m[1])
+      let j = i + 1
+      const textLines: string[] = []
+      while (j < lines.length && lines[j].trim() !== '') {
+        textLines.push(lines[j])
+        j++
+      }
+      const joined = textLines.join(' ')
+      const vMatch = joined.match(/<v\s+([^>]+)>([\s\S]*?)<\/v>/)
+      if (vMatch) {
+        cues.push({
+          speaker: vMatch[1].trim(),
+          time,
+          text: vMatch[2].replace(/\s+/g, ' ').trim(),
+        })
+      }
+      i = j
+    } else {
+      i++
+    }
+  }
+  return cues
+}
+
+function attendeesFromCues(cues: TranscriptCue[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const c of cues) {
+    if (!seen.has(c.speaker)) {
+      seen.add(c.speaker)
+      result.push(c.speaker)
+    }
+  }
+  return result
+}
+
+// AIDEV-NOTE: de-slugify a filename basename into a human title, for the
+// manually-dropped-.vtt fallback where we have no Graph subject to use.
+function titleFromFilename(basename: string): string {
+  let name = basename.replace(/__[0-9a-f]{8,}$/i, '')
+  name = name.replace(/^\d{4}-\d{2}-\d{2}_/, '')
+  if (name.includes('-') && !name.includes(' ')) {
+    name = name.replace(/-/g, ' ')
+  }
+  name = name.replace(/\s+/g, ' ').trim()
+  return name.replace(/\b\w/g, (c) => c.toUpperCase()) || 'Meeting'
+}
+
+async function dateFromFile(
+  filePath: string,
+  basename: string,
+): Promise<string> {
+  const m = basename.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (m) return m[1]
+  const stat = await fs.stat(filePath)
+  return stat.mtime.toISOString().slice(0, 10)
+}
+
+// AIDEV-NOTE: minimal YAML scalar escaping — quote if it has YAML-special
+// chars or leading/trailing whitespace, otherwise emit bare.
+function yamlScalar(s: string): string {
+  if (/^[\s]|[\s]$|[:#\-[\]{}&*!|>'"%@`]/.test(s)) {
+    return `"${s.replace(/"/g, '\\"')}"`
+  }
+  return s
+}
+
+interface TranscriptMeta {
+  title: string
+  date: string
+  attendees: string[]
+}
+
+// AIDEV-NOTE: builds the full stub — frontmatter (Obsidian properties) +
+// the user-visible "# title / Date / Attendees" header + the already-final
+// Transcript section. Summarization only ever inserts sections *between*
+// the header and Transcript; nothing here should need to change later.
+function buildTranscriptStub(
+  meta: TranscriptMeta,
+  cues: TranscriptCue[],
+): string {
+  const attendeesYaml = meta.attendees.length
+    ? ['attendees:', ...meta.attendees.map((a) => `  - ${yamlScalar(a)}`)].join(
+        '\n',
+      )
+    : 'attendees: []'
+  const frontmatter = [
+    '---',
+    `title: ${yamlScalar(meta.title)}`,
+    `date: ${meta.date}`,
+    attendeesYaml,
+    '---',
+  ].join('\n')
+  const header = [
+    `# ${meta.title}`,
+    '',
+    `- **Date:** ${meta.date}`,
+    `- **Attendees:** ${meta.attendees.join(', ')}`,
+  ].join('\n')
+  const transcript = [
+    '## Transcript',
+    '',
+    cues.map((c) => `[${c.speaker} ${c.time}] ${c.text}`).join('\n'),
+  ].join('\n')
+  return `${frontmatter}\n\n${header}\n\n${transcript}\n`
+}
+
 async function findPendingSummaries(dir: string): Promise<{
   dir: string
   pending: string[]
@@ -596,19 +755,49 @@ async function findPendingSummaries(dir: string): Promise<{
 }> {
   const entries = await fs.readdir(dir).catch(() => [] as string[])
   const vttFiles = entries.filter((f) => f.endsWith('.vtt'))
-  const mdSet = new Set(entries.filter((f) => f.endsWith('.md')))
-  const pending = vttFiles.filter((f) => !mdSet.has(f.slice(0, -4) + '.md'))
-  return {
-    dir,
-    pending: pending.map((f) => path.join(dir, f)),
-    alreadyDone: vttFiles.length - pending.length,
+  const pending: string[] = []
+  let alreadyDone = 0
+  for (const vttFile of vttFiles) {
+    const base = vttFile.slice(0, -4)
+    const vttPath = path.join(dir, vttFile)
+    const mdPath = path.join(dir, `${base}.md`)
+    let mdContent: string | null = null
+    try {
+      mdContent = await fs.readFile(mdPath, 'utf8')
+    } catch {
+      mdContent = null
+    }
+    // AIDEV-NOTE: no .md at all (e.g. a .vtt dropped in manually, or synced
+    // before this feature existed) — bootstrap the stub now, deterministically,
+    // so the agent's job is always the same: fill in an existing stub.
+    if (mdContent === null) {
+      const vttContent = await fs.readFile(vttPath, 'utf8')
+      const cues = parseVttCues(vttContent)
+      const stub = buildTranscriptStub(
+        {
+          title: titleFromFilename(base),
+          date: await dateFromFile(vttPath, base),
+          attendees: attendeesFromCues(cues),
+        },
+        cues,
+      )
+      await fs.writeFile(mdPath, stub, 'utf8')
+      pending.push(mdPath)
+      continue
+    }
+    if (mdContent.includes('## Summary')) {
+      alreadyDone++
+    } else {
+      pending.push(mdPath)
+    }
   }
+  return { dir, pending, alreadyDone }
 }
 
-// AIDEV-NOTE: exact section order/style the agent must follow when writing
-// each summary .md — kept as a literal template (not just prose) since
-// prose alone drifted on checkbox style / transcript formatting in practice.
-const SUMMARY_TEMPLATE = `## Summary
+// AIDEV-NOTE: exact section order/style the agent must follow when filling
+// each stub .md — kept as a literal template (not just prose) since prose
+// alone drifted on checkbox style in practice.
+const SUMMARY_SECTIONS_TEMPLATE = `## Summary
 
 - <bullet per topic discussed>
 
@@ -627,25 +816,19 @@ const SUMMARY_TEMPLATE = `## Summary
 ## Commitments
 
 - @<Person>: <what they committed to>
-
-## Transcript
-
-[SPEAKER_N M:SS] <utterance>
-[SPEAKER_N M:SS] <utterance>
 `
 
 const SUMMARY_FORMAT_GUIDANCE =
-  'For each path in `pending`: read the .vtt, then write a sibling .md (same basename, ' +
-  '.md extension) following this exact template (omit a section entirely if it has ' +
-  'nothing real to put in it, except Transcript which is always included):\n\n' +
-  `${SUMMARY_TEMPLATE}\n` +
-  'Transcript conversion: keep one line per VTT cue as `[SPEAKER_N M:SS] text` (speaker ' +
-  'label and M:SS timestamp from the cue, e.g. `00:00:01.234` → `0:01`) — do not merge ' +
-  'consecutive same-speaker cues into paragraphs, do not drop timestamps, drop only the ' +
-  'WEBVTT header line. Decisions and Action Items both use `- [x]` (already happened/' +
-  'assigned, not a live todo list). Open Questions and Commitments are plain bullets, no ' +
-  'checkboxes. Base every bullet only on what is actually said; never invent decisions, ' +
-  'owners, or action items not present in the transcript.'
+  'Each path in `pending` is a .md file that already has frontmatter (title/date/attendees), ' +
+  'a "# title" header with Date/Attendees bullets, and a full "## Transcript" section at the ' +
+  'bottom — do not touch any of that, do not create a new file. Read it, then insert these ' +
+  'sections between the header and "## Transcript" (omit a section entirely if it has ' +
+  'nothing real to put in it):\n\n' +
+  `${SUMMARY_SECTIONS_TEMPLATE}\n` +
+  'Decisions and Action Items both use `- [x]` (already happened/assigned, not a live todo ' +
+  'list). Open Questions and Commitments are plain bullets, no checkboxes. Base every bullet ' +
+  'only on what is actually said in the Transcript section already in the file; never invent ' +
+  'decisions, owners, or action items not present.'
 
 export default function (pi: ExtensionAPI) {
   // Scaffold config.schema.json next to this file when missing.
@@ -670,14 +853,14 @@ export default function (pi: ExtensionAPI) {
     name: 'teams_transcript',
     label: 'Teams Meeting Transcript',
     description:
-      'List calendar meetings, list transcripts, or download transcript content for Microsoft Teams meetings via Microsoft Graph (app-only auth); or find synced .vtt transcripts missing a summarized .md sibling.',
+      'List calendar meetings, list transcripts, or download transcript content for Microsoft Teams meetings via Microsoft Graph (app-only auth); or find synced transcripts whose .md stub is still missing its summary sections.',
     promptSnippet:
       'List/download Teams meeting transcripts via Microsoft Graph, or find .vtt files needing summarization.',
     promptGuidelines: [
       'Use action=listMeetings to find recent meetings and their joinUrl when meetingId is unknown.',
       'Use action=list (with meetingId or joinUrl) to discover transcriptId values for a meeting.',
       'Use action=get with a transcriptId to download transcript content (VTT or plain text).',
-      'Use action=pendingSummaries with dir to find .vtt files lacking a same-basename .md, then follow the returned formatGuidance to write each one.',
+      'Use action=pendingSummaries with dir to find .md stubs (frontmatter + header + Transcript already filled in) still missing their summary sections, then follow the returned formatGuidance to fill each one in.',
     ],
     parameters: Type.Object({
       action: Type.Union(
@@ -690,7 +873,7 @@ export default function (pi: ExtensionAPI) {
         ],
         {
           description:
-            "'listMeetings' recent calendar meetings for a user, 'list' transcripts for a meeting, 'get' transcript content, 'pendingSummaries' to find synced .vtt files missing a summarized .md, or 'sync' to download today's/yesterday's transcripts",
+            "'listMeetings' recent calendar meetings for a user, 'list' transcripts for a meeting, 'get' transcript content, 'pendingSummaries' to find .md stubs still missing their summary sections, or 'sync' to download today's/yesterday's transcripts",
         },
       ),
       userId: Type.Optional(
@@ -702,7 +885,7 @@ export default function (pi: ExtensionAPI) {
       dir: Type.Optional(
         Type.String({
           description:
-            'Directory of synced .vtt transcripts to scan (required for action=pendingSummaries)',
+            'Directory of synced transcripts to scan for .md stubs still missing their summary (required for action=pendingSummaries)',
         }),
       ),
       meetingId: Type.Optional(
@@ -954,7 +1137,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('teams-transcript-summarize', {
     description:
-      'Find synced .vtt transcripts missing a summarized .md sibling and have the agent write them. Usage: /teams-transcript-summarize [dir]',
+      'Find synced transcripts whose .md stub is still missing its summary sections and have the agent fill them in. Usage: /teams-transcript-summarize [dir]',
     handler: async (args, ctx) => {
       const [argDir] = args.trim().split(/\s+/).filter(Boolean)
       const dir = await resolveTranscriptsDir(ctx.cwd, argDir)
@@ -962,7 +1145,7 @@ export default function (pi: ExtensionAPI) {
 
       if (result.pending.length === 0) {
         ctx.ui.notify(
-          `No pending transcripts in ${dir} — all ${result.alreadyDone} .vtt file(s) already have a summary .md.`,
+          `No pending transcripts in ${dir} — all ${result.alreadyDone} transcript(s) already have a filled-in summary.`,
           'info',
         )
         return
