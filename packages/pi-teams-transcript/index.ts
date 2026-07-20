@@ -299,6 +299,33 @@ async function getTranscriptContent(
   return res.text()
 }
 
+// AIDEV-NOTE: one aligned line per meeting instead of a markdown table —
+// pipe tables wrap badly in a narrow terminal and the full meetingId (a
+// long base64-ish blob) is pure noise here; truncate it, it's not
+// actionable from this report anyway (sync already used it internally).
+const STATUS_ICON: Record<string, string> = {
+  downloaded: '\u2713',
+  'already-synced': '\u2713',
+  'no-transcript': '\u00b7',
+  cancelled: '\u2298',
+  error: '\u2717',
+}
+
+function formatReportLine(m: {
+  subject: string
+  start: string
+  meetingId: string | null
+  status: string
+}): string {
+  const time = new Date(m.start).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+  const icon = STATUS_ICON[m.status] || '?'
+  const idShort = m.meetingId ? `${m.meetingId.slice(0, 12)}\u2026` : '-'
+  return `${icon} ${time}  ${m.subject.padEnd(40)}  ${m.status.padEnd(14)} ${idShort}`
+}
+
 function slugify(s: string): string {
   return (
     s
@@ -698,12 +725,7 @@ export default function (pi: ExtensionAPI) {
         `Saved to: ${outDir}`,
         ``,
         `## Report`,
-        `Subject | Start | meetingId | Status`,
-        `--- | --- | --- | ---`,
-        ...result.meetings.map(
-          (m) =>
-            `${m.subject} | ${m.start} | ${m.meetingId ?? '(unresolved)'} | ${m.status}`,
-        ),
+        ...result.meetings.map((m) => formatReportLine(m)),
       ]
       ctx.ui.notify(lines.join('\n'), 'info')
     },
