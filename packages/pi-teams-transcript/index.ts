@@ -381,11 +381,17 @@ function formatReportLine(
   },
   timeZone: string,
 ): string {
-  const time = new Date(m.start).toLocaleTimeString([], {
-    timeZone,
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  // AIDEV-NOTE: Graph's start.dateTime is a wall-clock string with no 'Z'/
+  // offset (e.g. "2026-07-20T03:00:00.0000000"), always UTC since we never
+  // send a Prefer: outlook.timezone header. `new Date(...)` on a string like
+  // that parses as *local system time*, not UTC — silently reinterpreting
+  // the instant and making the timeZone option below a no-op whenever system
+  // TZ happens to equal the configured one. Force UTC by appending 'Z'.
+  const hasOffset = /[Zz]$|[+-]\d{2}:\d{2}$/.test(m.start)
+  const time = new Date(hasOffset ? m.start : `${m.start}Z`).toLocaleTimeString(
+    [],
+    { timeZone, hour: '2-digit', minute: '2-digit' },
+  )
   const icon = STATUS_ICON[m.status] || '?'
   const idShort = m.meetingId ? `${m.meetingId.slice(0, 12)}\u2026` : '-'
   return `${icon} ${time}  ${m.subject.padEnd(40)}  ${m.status.padEnd(14)} ${idShort}`
