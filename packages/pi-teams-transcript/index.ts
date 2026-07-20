@@ -191,28 +191,57 @@ function dayBounds(day: SyncDay): { start: Date; end: Date } {
   return { start, end }
 }
 
+// AIDEV-NOTE: under app-only auth, /calendarView strips `onlineMeeting` off
+// *expanded* recurring occurrences (confirmed via live testing) even though
+// isOnlineMeeting stays true — a plain /events?$orderby scan of the same
+// meeting does carry onlineMeeting.joinUrl, and so does a per-id /events/{id}
+// fetch. So: use calendarView for correct day-bounded occurrences, then
+// backfill joinUrl with a follow-up single-event fetch wherever it's missing.
+async function backfillJoinUrl(
+  userId: string,
+  eventId: string,
+): Promise<string | undefined> {
+  const res = await graphFetch(
+    `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/events/${encodeURIComponent(eventId)}?$select=onlineMeeting`,
+  )
+  const data = (await res.json()) as { onlineMeeting?: { joinUrl?: string } }
+  return data.onlineMeeting?.joinUrl
+}
+
 async function listMeetingsForDay(userId: string, day: SyncDay) {
   const { start, end } = dayBounds(day)
   const res = await graphFetch(
-    `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime asc&$top=100&$select=subject,start,end,isAllDay,isCancelled,onlineMeeting`,
+    `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime asc&$top=100&$select=subject,start,end,isAllDay,isCancelled,isOnlineMeeting,onlineMeeting`,
   )
   const data = (await res.json()) as {
     value?: Array<{
+      id?: string
       subject?: string
       start?: { dateTime?: string }
       isAllDay?: boolean
       isCancelled?: boolean
+      isOnlineMeeting?: boolean
       onlineMeeting?: { joinUrl?: string }
     }>
   }
-  return (data.value || [])
-    .filter((e) => !e.isAllDay && e.onlineMeeting?.joinUrl)
-    .map((e) => ({
+  const candidates = (data.value || []).filter(
+    (e) => !e.isAllDay && e.isOnlineMeeting,
+  )
+  const results = []
+  for (const e of candidates) {
+    let joinUrl = e.onlineMeeting?.joinUrl
+    if (!joinUrl && e.id) {
+      joinUrl = await backfillJoinUrl(userId, e.id)
+    }
+    if (!joinUrl) continue
+    results.push({
       subject: e.subject,
       start: e.start?.dateTime,
       isCancelled: Boolean(e.isCancelled),
-      joinUrl: e.onlineMeeting?.joinUrl,
-    }))
+      joinUrl,
+    })
+  }
+  return results
 }
 
 // AIDEV-NOTE: /onlineMeetings (app-only) rejects UPNs — "userId in request URL
