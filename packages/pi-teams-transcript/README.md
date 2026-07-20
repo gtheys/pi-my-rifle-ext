@@ -121,6 +121,21 @@ Tab-complete on the `today`/`yesterday` argument. `userId` comes from config `us
 
 The command hands off to the agent (`action="sync"` on the `teams_transcript` tool) instead of running the sync itself, so the report renders themed and colored — same mechanism as built-in tools like `read`/`write` (green=downloaded, dim=no transcript, yellow=cancelled, red=error). A command's own `ctx.ui.notify` has no per-line styling API, only the tool-call rendering pipeline does. One line per meeting: local time, subject, status, truncated `meetingId`.
 
+Sync also writes a sibling `.md` for each downloaded transcript, pre-filled with Obsidian frontmatter (`title`/`date`/`attendees`, from the calendar event), a matching `# title` / Date / Attendees header, and the full `## Transcript` section — all deterministic, no LLM involved. Only the Summary/Decisions/Action Items/Open Questions/Commitments sections are left for `/teams-transcript-summarize` to fill in.
+
+## Command: `/teams-transcript-summarize`
+
+`/teams-transcript-summarize [dir]`
+
+Scans `dir` (default: same as sync's `outDir`) for transcripts whose `.md` stub doesn't have a `## Summary` section yet, then has the agent read each one and insert Summary/Decisions/Action Items/Open Questions/Commitments between the existing header and `## Transcript` — the frontmatter, title/date/attendees header, and transcript itself are never touched or regenerated.
+
+If a `.vtt` has no `.md` at all (dropped in manually, or synced before this existed), a stub is bootstrapped first from the file itself: attendees from the distinct `<v Name>` speakers in the VTT, date from the filename's `YYYY-MM-DD` prefix or file mtime, title de-slugified from the filename.
+
+```
+/teams-transcript-summarize
+/teams-transcript-summarize ./notes/transcripts
+```
+
 ## Troubleshooting
 
 | Error | Cause | Fix |
