@@ -8,6 +8,10 @@
     "userId": {
       "type": "string",
       "description": "Default meeting organizer's user ID or UPN, used when a tool/command call omits userId."
+    },
+    "timezone": {
+      "type": "string",
+      "description": "IANA timezone (e.g. 'Asia/Bangkok') used for day boundaries (today/yesterday) and displayed meeting times in the sync report. Defaults to the system timezone."
     }
   }
 }

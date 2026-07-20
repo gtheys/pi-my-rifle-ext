@@ -75,12 +75,14 @@ Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
 |---|---|---|---|
 | `outDir` | `string` | `./teams-transcripts` | Directory to write downloaded transcripts to. Relative paths resolve from cwd. |
 | `userId` | `string` | none | Default meeting organizer's user ID or UPN, used by `/teams-transcript-sync` when not set via the `TEAMS_USER_ID` env var. |
+| `timezone` | `string` | system timezone | IANA timezone (e.g. `Asia/Bangkok`) used for day boundaries (today/yesterday) and displayed meeting times in the sync report. |
 
 ```json
 {
   "$schema": "./config.schema.json",
   "outDir": "./teams-transcripts",
-  "userId": "you@example.com"
+  "userId": "you@example.com",
+  "timezone": "Asia/Bangkok"
 }
 ```
 

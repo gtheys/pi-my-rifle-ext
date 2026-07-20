@@ -32,6 +32,12 @@ const TeamsTranscriptConfigSchema = Type.Object({
         "Default meeting organizer's user ID or UPN, used when a tool/command call omits userId.",
     }),
   ),
+  timezone: Type.Optional(
+    Type.String({
+      description:
+        "IANA timezone (e.g. 'Asia/Bangkok') used for day boundaries (today/yesterday) and displayed meeting times in the sync report. Defaults to the system timezone.",
+    }),
+  ),
 })
 
 const GLOBAL_CONFIG_PATH = path.join(
@@ -46,7 +52,7 @@ function projectConfigPath(cwd: string): string {
 
 async function readConfigFile(
   file: string,
-): Promise<{ outDir?: string; userId?: string }> {
+): Promise<{ outDir?: string; userId?: string; timezone?: string }> {
   try {
     const raw = await fs.readFile(file, 'utf8')
     const parsed: unknown = JSON.parse(raw)
@@ -77,6 +83,21 @@ async function resolveConfiguredUserId(
   const global = await readConfigFile(GLOBAL_CONFIG_PATH)
   const project = await readConfigFile(projectConfigPath(cwd))
   return process.env.TEAMS_USER_ID || project.userId || global.userId
+}
+
+// AIDEV-NOTE: precedence is project config > global config > system
+// timezone (Intl.DateTimeFormat().resolvedOptions().timeZone). Used for
+// both day-boundary math (today/yesterday) and displayed meeting times, so
+// a user not physically in the system's timezone still sees/gets "today"
+// meaning their own local day.
+async function resolveConfiguredTimezone(cwd: string): Promise<string> {
+  const global = await readConfigFile(GLOBAL_CONFIG_PATH)
+  const project = await readConfigFile(projectConfigPath(cwd))
+  return (
+    project.timezone ||
+    global.timezone ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone
+  )
 }
 
 // AIDEV-NOTE: app-only (client_credentials) Graph auth. Requires the app registration
@@ -177,18 +198,52 @@ async function listRecentMeetings(userId: string, top: number) {
 
 export type SyncDay = 'today' | 'yesterday'
 
-// AIDEV-NOTE: day bounds use the local system timezone (Intl resolvedOptions),
-// same as a human reading their own calendar. calendarView expands recurring
-// series into real occurrences, so a daily/weekly standup only shows up on
-// the day it actually falls on. All-day events are skipped (no joinUrl).
-function dayBounds(day: SyncDay): { start: Date; end: Date } {
-  const now = new Date()
-  const offset = day === 'yesterday' ? -1 : 0
-  const start = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate() + offset,
+// AIDEV-NOTE: no Intl.DateTimeFormat 'today' shortcut works across an
+// arbitrary IANA timezone — have to compute the UTC instant of local
+// midnight ourselves. tzOffsetMinutes(instant, tz) asks "what wall-clock
+// time does this UTC instant show in tz", diffed against the instant
+// itself, giving the zone's offset (e.g. +420 for Asia/Bangkok). One pass
+// is enough here (day boundaries, not a DST-transition instant).
+function tzOffsetMinutes(instant: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(instant)
+  const get = (type: string) =>
+    Number(parts.find((p) => p.type === type)?.value)
+  const asUTC = Date.UTC(
+    get('year'),
+    get('month') - 1,
+    get('day'),
+    get('hour'),
+    get('minute'),
+    get('second'),
   )
+  return (asUTC - instant.getTime()) / 60_000
+}
+
+// AIDEV-NOTE: calendarView expands recurring series into real occurrences,
+// so a daily/weekly standup only shows up on the day it actually falls on
+// in the configured timezone. All-day events are skipped (no joinUrl).
+function dayBounds(day: SyncDay, timeZone: string): { start: Date; end: Date } {
+  const now = new Date()
+  const dayOffset = day === 'yesterday' ? -1 : 0
+  const ymd = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now) // 'YYYY-MM-DD' in the target timezone
+  const [y, m, d] = ymd.split('-').map(Number)
+  const guess = new Date(Date.UTC(y, m - 1, d + dayOffset, 0, 0, 0))
+  const offsetMin = tzOffsetMinutes(guess, timeZone)
+  const start = new Date(guess.getTime() - offsetMin * 60_000)
   const end = new Date(start.getTime() + 86_400_000)
   return { start, end }
 }
@@ -210,8 +265,12 @@ async function backfillJoinUrl(
   return data.onlineMeeting?.joinUrl
 }
 
-async function listMeetingsForDay(userId: string, day: SyncDay) {
-  const { start, end } = dayBounds(day)
+async function listMeetingsForDay(
+  userId: string,
+  day: SyncDay,
+  timeZone: string,
+) {
+  const { start, end } = dayBounds(day, timeZone)
   const res = await graphFetch(
     `${GRAPH_BASE}/users/${encodeURIComponent(userId)}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime asc&$top=100&$select=subject,start,end,isAllDay,isCancelled,isOnlineMeeting,onlineMeeting`,
   )
@@ -313,13 +372,17 @@ const STATUS_ICON: Record<string, string> = {
   error: '\u2717',
 }
 
-function formatReportLine(m: {
-  subject: string
-  start: string
-  meetingId: string | null
-  status: string
-}): string {
+function formatReportLine(
+  m: {
+    subject: string
+    start: string
+    meetingId: string | null
+    status: string
+  },
+  timeZone: string,
+): string {
   const time = new Date(m.start).toLocaleTimeString([], {
+    timeZone,
     hour: '2-digit',
     minute: '2-digit',
   })
@@ -351,9 +414,10 @@ function themedReportLine(
     status: string
   },
   theme: Theme,
+  timeZone: string,
 ): string {
   const color = STATUS_THEME_COLOR[m.status] || 'dim'
-  return theme.fg(color, formatReportLine(m))
+  return theme.fg(color, formatReportLine(m, timeZone))
 }
 
 function slugify(s: string): string {
@@ -385,6 +449,7 @@ async function syncTranscripts(opts: {
   userId: string
   outDir: string
   day: SyncDay
+  timeZone: string
   format: string
   onProgress?: (line: string) => void
 }): Promise<{
@@ -393,6 +458,7 @@ async function syncTranscripts(opts: {
   skippedExisting: string[]
   skippedNoTranscript: string[]
   errors: string[]
+  timeZone: string
   meetings: Array<{
     subject: string
     start: string
@@ -405,11 +471,11 @@ async function syncTranscripts(opts: {
       | 'error'
   }>
 }> {
-  const { userId, outDir, day, format } = opts
+  const { userId, outDir, day, timeZone, format } = opts
   const log = opts.onProgress ?? (() => {})
   await fs.mkdir(outDir, { recursive: true })
 
-  const meetings = await listMeetingsForDay(userId, day)
+  const meetings = await listMeetingsForDay(userId, day, timeZone)
   const downloaded: string[] = []
   const skippedExisting: string[] = []
   const skippedNoTranscript: string[] = []
@@ -491,6 +557,7 @@ async function syncTranscripts(opts: {
     skippedExisting,
     skippedNoTranscript,
     errors,
+    timeZone,
   }
 }
 
@@ -662,15 +729,17 @@ export default function (pi: ExtensionAPI) {
           )
         }
         const outDir = await resolveTranscriptsDir(ctx.cwd)
+        const timeZone = await resolveConfiguredTimezone(ctx.cwd)
         const day: SyncDay = params.day === 'yesterday' ? 'yesterday' : 'today'
         const result = await syncTranscripts({
           userId,
           outDir,
           day,
+          timeZone,
           format: 'text/vtt',
         })
         const lines = [
-          `# Teams Transcript Sync (${day})`,
+          `# Teams Transcript Sync (${day}, ${timeZone})`,
           `Meetings scanned: ${result.scanned}`,
           `Downloaded: ${result.downloaded.length}`,
           ...result.downloaded.map((f) => `  + ${f}`),
@@ -685,7 +754,7 @@ export default function (pi: ExtensionAPI) {
           `Saved to: ${outDir}`,
           ``,
           `## Report`,
-          ...result.meetings.map((m) => formatReportLine(m)),
+          ...result.meetings.map((m) => formatReportLine(m, timeZone)),
         ]
         return {
           content: [{ type: 'text', text: lines.join('\n') }],
@@ -761,6 +830,7 @@ export default function (pi: ExtensionAPI) {
             skippedExisting?: string[]
             skippedNoTranscript?: string[]
             errors?: string[]
+            timeZone?: string
             meetings?: Array<{
               subject: string
               start: string
@@ -784,7 +854,14 @@ export default function (pi: ExtensionAPI) {
             `${details.skippedExisting?.length ?? 0} already synced`,
           ),
         '',
-        ...details.meetings.map((m) => themedReportLine(m, theme)),
+        ...details.meetings.map((m) =>
+          themedReportLine(
+            m,
+            theme,
+            details.timeZone ||
+              Intl.DateTimeFormat().resolvedOptions().timeZone,
+          ),
+        ),
       ]
       return new Text(`\n${lines.join('\n')}`, 0, 0)
     },
