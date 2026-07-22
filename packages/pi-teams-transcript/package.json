@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Pi extension — list and download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth)",
   "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
   "keywords": [
     "pi-package"
   ],

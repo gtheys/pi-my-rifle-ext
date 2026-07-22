@@ -677,6 +677,93 @@ function attendeesFromCues(cues: TranscriptCue[]): string[] {
   return result
 }
 
+// AIDEV-NOTE: attendee name → Obsidian wikilink. Graph display names in Asia
+// often embed a bracketed nickname — "Lam [Liam] Pham". The canonical full
+// name is "Lam Pham" and the nickname is "Liam"; everywhere the person appears
+// we render [[Lam Pham|Liam]] (full-name link target, nickname as the visible
+// alias) so a given person always looks the same. Names without a bracket use
+// the full name directly, aliasing a short mention ([[Geert Theys|Geert]]).
+// Also strips zero-width spaces that sneak into some Graph names
+// ("Natthawarin\u200b [Nut] Kitthanatsakul\u200b"). Used for the Attendees
+// header, transcript speaker labels, and (via the summary guidance) names the
+// agent writes.
+// ponytail: first match wins on ambiguous short names (e.g. two attendees
+// sharing a first name); per-mention disambiguation isn't worth it, surface
+// the ambiguity in the summary if it matters.
+const ZWS = /\u200b/g
+
+export function normalizeName(s: string): string {
+  return s.replace(ZWS, '').trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+export function parseAttendee(raw: string): {
+  full: string
+  nickname: string | null
+} {
+  const clean = raw.replace(ZWS, '')
+  const m = clean.match(/^(.*?)\s*\[([^\]]+)\]\s*(.*)$/)
+  if (!m) {
+    return { full: clean.replace(/\s+/g, ' ').trim(), nickname: null }
+  }
+  const before = m[1].replace(/\s+/g, ' ').trim()
+  const after = m[3].replace(/\s+/g, ' ').trim()
+  const full = `${before} ${after}`.replace(/\s+/g, ' ').trim()
+  const nickname = m[2].replace(/\s+/g, ' ').trim()
+  // ponytail: a name that is only "[Nick]" (no surrounding tokens) — fall back
+  // to the nickname as the full name rather than emitting an empty link target.
+  if (!full) return { full: nickname, nickname: null }
+  return { full, nickname }
+}
+
+export function resolveAttendee(
+  attendees: string[],
+  name: string,
+): { full: string; alias: string | null } {
+  const parsed = attendees.map((raw) => ({ raw, ...parseAttendee(raw) }))
+  const raw = name.trim().replace(ZWS, '')
+  const n = normalizeName(raw)
+  if (!n) return { full: raw, alias: null }
+
+  // Match most-specific first: raw Graph name, de-bracketed full name, then
+  // the bracketed nickname itself. A matched person always renders the same
+  // way — nickname alias if they have one, else alias the short mention.
+  const matched =
+    parsed.find((p) => normalizeName(p.raw) === n) ||
+    parsed.find((p) => normalizeName(p.full) === n) ||
+    parsed.find((p) => p.nickname && normalizeName(p.nickname) === n)
+  if (matched) {
+    if (matched.nickname) return { full: matched.full, alias: matched.nickname }
+    if (normalizeName(matched.full) !== n) {
+      return { full: matched.full, alias: raw }
+    }
+    return { full: matched.full, alias: null }
+  }
+
+  const tokens = n.split(' ')
+  if (tokens.length === 1) {
+    const tok = parsed.find((p) => {
+      const ft = normalizeName(p.full).split(' ')
+      return ft[0] === n || ft[ft.length - 1] === n
+    })
+    if (tok) {
+      if (tok.nickname) return { full: tok.full, alias: tok.nickname }
+      return { full: tok.full, alias: raw }
+    }
+  }
+  const sub = parsed.find((p) => normalizeName(p.full).includes(n))
+  if (sub) {
+    if (sub.nickname) return { full: sub.full, alias: sub.nickname }
+    return { full: sub.full, alias: raw }
+  }
+  return { full: raw, alias: null }
+}
+
+export function attendeeLink(attendees: string[], name: string): string {
+  const { full, alias } = resolveAttendee(attendees, name)
+  if (alias) return `[[${full}|${alias}]]`
+  return `[[${full}]]`
+}
+
 // AIDEV-NOTE: de-slugify a filename basename into a human title, for the
 // manually-dropped-.vtt fallback where we have no Graph subject to use.
 function titleFromFilename(basename: string): string {
@@ -723,9 +810,16 @@ function buildTranscriptStub(
   cues: TranscriptCue[],
 ): string {
   const attendeesYaml = meta.attendees.length
-    ? ['attendees:', ...meta.attendees.map((a) => `  - ${yamlScalar(a)}`)].join(
-        '\n',
-      )
+    ? [
+        'attendees:',
+        // AIDEV-NOTE: de-bracket nicknames so frontmatter holds the canonical
+        // full name (the link target), not the raw Graph display name — e.g.
+        // "Lam [Liam] Pham" is stored as "Lam Pham". The nickname survives as
+        // the visible alias in the header/summary wikilinks.
+        ...meta.attendees.map(
+          (a) => `  - ${yamlScalar(parseAttendee(a).full)}`,
+        ),
+      ].join('\n')
     : 'attendees: []'
   const frontmatter = [
     '---',
@@ -734,16 +828,28 @@ function buildTranscriptStub(
     attendeesYaml,
     '---',
   ].join('\n')
+  // AIDEV-NOTE: attendee names render as Obsidian wikilinks in the visible
+  // header, going through attendeeLink so a bracketed nickname like
+  // "Lam [Liam] Pham" becomes [[Lam Pham|Liam]] here too (same form as the
+  // transcript + summary). Frontmatter stays plain strings — structured
+  // data, not prose.
   const header = [
     `# ${meta.title}`,
     '',
     `- **Date:** ${meta.date}`,
-    `- **Attendees:** ${meta.attendees.join(', ')}`,
+    `- **Attendees:** ${meta.attendees
+      .map((a) => attendeeLink(meta.attendees, a))
+      .join(', ')}`,
   ].join('\n')
   const transcript = [
     '## Transcript',
     '',
-    cues.map((c) => `[${c.speaker} ${c.time}] ${c.text}`).join('\n'),
+    cues
+      .map(
+        (c) =>
+          `${attendeeLink(meta.attendees, c.speaker)} \`${c.time}\` ${c.text}`,
+      )
+      .join('\n'),
   ].join('\n')
   return `${frontmatter}\n\n${header}\n\n${transcript}\n`
 }
@@ -807,7 +913,7 @@ const SUMMARY_SECTIONS_TEMPLATE = `## Summary
 
 ## Action Items
 
-- [x] @<Owner>: <task> (<status if mentioned>)
+- [x] [[<Owner>]]: <task> (<status if mentioned>)
 
 ## Open Questions
 
@@ -815,7 +921,7 @@ const SUMMARY_SECTIONS_TEMPLATE = `## Summary
 
 ## Commitments
 
-- @<Person>: <what they committed to>
+- [[<Person>]]: <what they committed to>
 `
 
 const SUMMARY_FORMAT_GUIDANCE =
@@ -826,9 +932,15 @@ const SUMMARY_FORMAT_GUIDANCE =
   'nothing real to put in it):\n\n' +
   `${SUMMARY_SECTIONS_TEMPLATE}\n` +
   'Decisions and Action Items both use `- [x]` (already happened/assigned, not a live todo ' +
-  'list). Open Questions and Commitments are plain bullets, no checkboxes. Base every bullet ' +
-  'only on what is actually said in the Transcript section already in the file; never invent ' +
-  'decisions, owners, or action items not present.'
+  'list). Open Questions and Commitments are plain bullets, no checkboxes. Render every ' +
+  'person name as an Obsidian wikilink, matching the speaker links already in the Transcript ' +
+  'section. Attendee names often embed a bracketed nickname — `Lam [Liam] Pham` becomes full ' +
+  'name `Lam Pham` with nickname `Liam`, rendered `[[Lam Pham|Liam]]`; apply that exact form ' +
+  'everywhere the person appears (do NOT keep the brackets inside the link). For names without ' +
+  'a bracket, use the full attendee name from the **Attendees** header and alias a short mention ' +
+  '(`[[Geert Theys|Geert]]` for "Geert", `[[Geert Theys]]` for the full name). Base every ' +
+  'bullet only on what is actually said in the Transcript section already in the file; never ' +
+  'invent decisions, owners, or action items not present.'
 
 export default function (pi: ExtensionAPI) {
   // Scaffold config.schema.json next to this file when missing.

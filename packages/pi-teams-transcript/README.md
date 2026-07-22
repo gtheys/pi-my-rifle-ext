@@ -123,11 +123,13 @@ The command hands off to the agent (`action="sync"` on the `teams_transcript` to
 
 Sync also writes a sibling `.md` for each downloaded transcript, pre-filled with Obsidian frontmatter (`title`/`date`/`attendees`, from the calendar event), a matching `# title` / Date / Attendees header, and the full `## Transcript` section — all deterministic, no LLM involved. Only the Summary/Decisions/Action Items/Open Questions/Commitments sections are left for `/teams-transcript-summarize` to fill in.
 
+Attendee names render as Obsidian wikilinks throughout the file: full names as `[[Geert Theys]]`, short mentions (e.g. a transcript speaker labeled `Geert`) as alias links `[[Geert Theys|Geert]]` that target the full attendee name from the header. Asian names that carry a bracketed nickname — `Lam [Liam] Pham` — are normalized to `[[Lam Pham|Liam]]` (brackets dropped from the full name, nickname becomes the visible alias), applied everywhere the person appears. Zero-width spaces that leak into some Graph names are stripped. Frontmatter `attendees` stays plain strings (structured properties); only the visible header and transcript/summary prose use the links.
+
 ## Command: `/teams-transcript-summarize`
 
 `/teams-transcript-summarize [dir]`
 
-Scans `dir` (default: same as sync's `outDir`) for transcripts whose `.md` stub doesn't have a `## Summary` section yet, then has the agent read each one and insert Summary/Decisions/Action Items/Open Questions/Commitments between the existing header and `## Transcript` — the frontmatter, title/date/attendees header, and transcript itself are never touched or regenerated.
+Scans `dir` (default: same as sync's `outDir`) for transcripts whose `.md` stub doesn't have a `## Summary` section yet, then has the agent read each one and insert Summary/Decisions/Action Items/Open Questions/Commitments between the existing header and `## Transcript` — the frontmatter, title/date/attendees header, and transcript itself are never touched or regenerated. Person names in the inserted sections use the same Obsidian wikilink convention as the transcript (short names resolve to the full attendee name via an alias link).
 
 If a `.vtt` has no `.md` at all (dropped in manually, or synced before this existed), a stub is bootstrapped first from the file itself: attendees from the distinct `<v Name>` speakers in the VTT, date from the filename's `YYYY-MM-DD` prefix or file mtime, title de-slugified from the filename.
 
