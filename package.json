@@ -51,6 +51,7 @@
     ]
   },
   "dependencies": {
+    "@earendil-works/pi-server": "0.85.0",
     "@gtheys/pi-per-commit-spend": "^0.2.6",
     "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.85.1",
     "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.85.1",
