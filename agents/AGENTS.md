@@ -48,6 +48,16 @@ You will receive a prompt to execute a task. Once the task is finished provide a
 
 ---
 
+## Memory (epimetheus / Hindsight)
+
+Sessions only flush to long-term memory after extra context is set (flush guard).
+Before session end or when asked to summarize, call `hindsight_set_extra_context`
+with caveats about the session content (or an empty string if none) so the flush
+isn't blocked. Set it earlier when the session involves fiction, articles, or
+other people's writing (prevents third parties being misclassified as the user).
+
+---
+
 ## Domain Glossary (learn these!)
 
 - **Agent**: AI entity with memory, tools, and defined behavior
