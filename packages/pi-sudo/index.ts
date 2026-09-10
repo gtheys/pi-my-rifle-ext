@@ -78,6 +78,12 @@ export function detectAuthFailure(code: number, stderr: string): boolean {
   )
 }
 
+// AIDEV-NOTE: see runWithSudo — the /dev/null stdin redirect is what stops an
+// unconsumed password line (cached sudo creds) leaking into the command.
+export function buildSudoShellCommand(command: string): string {
+  return `exec </dev/null; ${command}`
+}
+
 // ── sudo runner ───────────────────────────────────────────────────────────────
 
 interface SudoResult {
@@ -92,9 +98,20 @@ function runWithSudo(
   signal?: AbortSignal,
 ): Promise<SudoResult> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('sudo', ['-S', '--', 'sh', '-c', command], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+    // AIDEV-NOTE: password and command share one stdin pipe. If sudo skips
+    // its prompt (cached timestamp / NOPASSWD), the unconsumed password line
+    // would be inherited by the command — a prompt like pacman's Y/n would
+    // read (and echo!) it into stdout → tool result → model context. The
+    // redirect gives the command its own stdin so pipe content can never
+    // reach it. No regression: stdin was already EOF for the command (we end
+    // it right after writing the password).
+    const proc = spawn(
+      'sudo',
+      ['-S', '--', 'sh', '-c', buildSudoShellCommand(command)],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    )
     let stdout = ''
     let stderr = ''
     proc.stdout.on('data', (chunk: Buffer) => {

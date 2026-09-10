@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  buildSudoShellCommand,
   detectAuthFailure,
   filterSudoPrompt,
   MAX_OUTPUT_BYTES,
@@ -66,5 +67,16 @@ describe('detectAuthFailure', () => {
 
   test('unrelated non-zero exit is not an auth failure', () => {
     expect(detectAuthFailure(127, 'command not found')).toBe(false)
+  })
+})
+
+describe('buildSudoShellCommand', () => {
+  // Regression: without the stdin redirect, an unconsumed password line
+  // (sudo cached creds → no prompt) is inherited by the command and can be
+  // echoed into stdout → tool result → model context.
+  test('detaches command stdin from the password pipe', () => {
+    expect(buildSudoShellCommand('pacman -Syu')).toBe(
+      'exec </dev/null; pacman -Syu',
+    )
   })
 })
