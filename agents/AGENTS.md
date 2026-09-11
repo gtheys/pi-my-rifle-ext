@@ -87,6 +87,10 @@ When to use which:
 Rule of thumb: Hindsight = automatic session flush; Cognee = explicit
 remember/recall for knowledge you deliberately want to keep or find.
 
+All SalaryHero specs are ingested into Cognee. When planning or speccing
+SalaryHero work, run `cognee_recall` first to surface relevant existing specs
+before writing new ones.
+
 ---
 
 ## Domain Glossary (learn these!)
