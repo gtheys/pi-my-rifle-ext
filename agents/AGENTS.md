@@ -56,6 +56,37 @@ with caveats about the session content (or an empty string if none) so the flush
 isn't blocked. Set it earlier when the session involves fiction, articles, or
 other people's writing (prevents third parties being misclassified as the user).
 
+## Memory (Cognee)
+
+Cognee is graph-based memory, separate from Hindsight. Two storage modes:
+
+- **Session cache** (`cognee_remember` with `session_id`): fast scratch notes for
+  THIS session only. No entity extraction. Use for temporary facts, decisions,
+  intermediate findings you may need later in the same session.
+- **Permanent graph** (`cognee_remember` without `session_id`): runs the full
+  add + cognify pipeline (entity extraction, graph build). Slower. Use for
+  durable knowledge: architectural decisions, project conventions, user
+  preferences, solutions to hard-won bugs.
+
+Recall with `cognee_recall`:
+
+- Ask a natural-language question; auto-routing picks the search strategy.
+- Pass `session_id` to search session cache first.
+- Use at session/task start to recover prior context, and before making
+  decisions that past sessions may have already settled.
+
+When to use which:
+
+| Situation | Tool |
+|---|---|
+| Short-lived working note, same session | `cognee_remember` + `session_id` |
+| Durable fact worth keeping across sessions | `cognee_remember` (no session_id) |
+| Need prior context / past decisions | `cognee_recall` |
+| Bridge session notes into permanent graph afterwards | `cognee_improve` with `session_ids` |
+
+Rule of thumb: Hindsight = automatic session flush; Cognee = explicit
+remember/recall for knowledge you deliberately want to keep or find.
+
 ---
 
 ## Domain Glossary (learn these!)
@@ -95,51 +126,6 @@ other people's writing (prevents third parties being misclassified as the user).
 4. **Keywords or tags**: Adding semantic markers (like `#performance` or `#security`) to certain sections would help me quickly locate relevant guidance.
 
 This principle emphasizes human oversight for critical aspects like architecture, testing, and domain-specific decisions, ensuring AI assists rather than fully dictates development.
-
----
-
-## Files to NOT modify
-
-These files control which files should be ignored by AI tools and indexing systems:
-
-- @.agentignore : Specifies files that should be ignored by the Cursor IDE, including:
-  - Build and distribution directories
-  - Environment and configuration files
-  - Large data files (parquet, arrow, pickle, etc.)
-  - Generated documentation
-  - Package-manager files (lock files)
-  - Logs and cache directories
-  - IDE and editor files
-  - Compiled binaries and media files
-
-- @.agentindexignore : Controls which files are excluded from indexing to improve performance, including:
-  - All files in `.agentignore`
-  - Files that may contain sensitive information
-  - Large JSON data files
-  - Generated TypeSpec outputs
-  - Memory-store migration files
-  - Docker templates and configuration files
-
-**Never modify these ignore files** without explicit permission, as they're carefully configured to optimize IDE performance while ensuring all relevant code is properly indexed.
-
-**When adding new files or directories**, check these ignore patterns to ensure your files will be properly included in the IDE's indexing and AI assistance features.
-
----
-
-## AI Assistant Workflow: Step-by-Step Methodology
-
-When responding to user instructions, the AI assistant (Opencode, Claude, Cursor, GPT, etc.) should follow this process to ensure clarity, correctness, and maintainability:
-
-1. **Consult Relevant Guidance**: When the user gives an instruction, consult the relevant instructions from `AGENTS.md` files (both root and directory-specific) for the request.
-2. **Clarify Ambiguities**: Based on what you could gather, see if there's any need for clarifications. If so, ask the user targeted questions before proceeding.
-3. **Break Down & Plan**: Break down the task at hand and chalk out a rough plan for carrying it out, referencing project conventions and best practices.
-4. **Trivial Tasks**: If the plan/request is trivial, go ahead and get started immediately.
-5. **Non-Trivial Tasks**: Otherwise, present the plan to the user for review and iterate based on their feedback.
-6. **Track Progress**: Use a to-do list (internally, or optionally in a `TODOS.md` file) to keep track of your progress on multi-step or complex tasks.
-7. **If Stuck, Re-plan**: If you get stuck or blocked, return to step 3 to re-evaluate and adjust your plan.
-8. **Update Documentation**: Once the user's request is fulfilled, update relevant anchor comments (`AIDEV-NOTE`, etc.) and `AGENTS.md` files in the files and directories you touched.
-9. **User Review**: After completing the task, ask the user to review what you've done, and repeat the process as needed.
-10. **Session Boundaries**: If the user's request isn't directly related to the current context and can be safely started in a fresh session, suggest starting from scratch to avoid context confusion.
 
 ---
 
