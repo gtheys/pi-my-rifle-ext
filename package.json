@@ -37,7 +37,8 @@
       "./packages/pi-desktop-notify/index.ts",
       "./packages/pi-teams-transcript/index.ts",
       "./packages/pi-pr-digest/index.ts",
-      "./packages/pi-worktree/index.ts",
+      "./packages/pi-aven-context/index.ts",
+    "./packages/pi-worktree/index.ts",
       "./packages/pi-sudo/index.ts"
     ],
     "skills": [
