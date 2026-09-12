@@ -1,0 +1,33 @@
+{
+  "name": "@gtheys/pi-aven-context",
+  "version": "0.1.0",
+  "description": "Pi extension that injects live aven workspace state (open issues, active/ready/blocked tasks) as session-start context",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-aven-context"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

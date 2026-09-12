@@ -45,6 +45,7 @@ pi-my-rifle-ext/
 │   ├── pi-sem/              # pi-sem semantic code tools
 │   ├── pi-tool-pills/       # tool pill badges + Shiki diff rendering
 │   ├── pi-desktop-notify/   # /notify command
+│   ├── pi-aven-context/       # aven workspace state session-start context
 │   ├── pi-teams-transcript/ # teams_transcript tool (MS Graph)
 │   └── pi-pr-digest/        # pr_digest tool + /pr-digest command (gh CLI)
 ├── skills/            # Skills (each in a subdirectory with SKILL.md)
@@ -136,6 +137,7 @@ pi install git:github.com/DietrichGebert/ponytail
 | [`pi-fastcontext`](packages/pi-fastcontext/) | `fast_context_search` tool + `/fastcontext` command — fast read-only codebase search via local Microsoft FastContext (llama.cpp); returns compact `file:line` citations | Code Search |
 | [`pi-planning`](packages/pi-planning/) (plan-tools) | Taskwarrior tools for spec/plan creation (`tw_get_ticket`, `tw_get_spec_task`, `tw_get_phases`, `tw_get_impl_tasks`, `resolve_spec_path`, `resolve_feature_path`, `tw_create_spec_task`, `tw_create_phase`, `tw_create_impl_task`, `jira_create_branch`) | Planning |
 | [`pi-planning`](packages/pi-planning/) (implement-plan) | `/implement` command + taskwarrior tools (`tw_execution_plan` — by Jira ID **or** feature UUID, `tw_advance_task`, `tw_phase_checkpoint`) for driving implementation from a spec or feature tree | Planning |
+| [`pi-aven-context`](packages/pi-aven-context/) | Session-start injection of live aven workspace state (`aven prime` tail: open issues, active/ready/blocked) as hidden custom-message context; non-fatal, idempotent | Context |
 | [`pi-teams-transcript`](packages/pi-teams-transcript/) | `teams_transcript` tool — list/download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth) ⚠️ *work in progress* | Integrations |
 | [`pi-pr-digest`](packages/pi-pr-digest/) | `pr_digest` tool + `/pr-digest` command — outstanding GitHub PRs in an org with human comment/review status (bots filtered) and reviewer-request table | Integrations |
 | [`pi-worktree`](packages/pi-worktree/) | `worktree` tool — create/list/remove Herdr worktree workspaces with branch derivation, lockfile-based dependency bootstrap, `.env` snapshots, and a pi agent state dashboard | Git Workflow |
