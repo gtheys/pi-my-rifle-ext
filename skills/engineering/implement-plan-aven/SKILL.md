@@ -32,12 +32,17 @@ stop: it hasn't been planned — route to `feature-plan-aven`.
 Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>  is_epic=true
   └── Phase task   title="1. Phase: <name>"  labels=[phase,impl]  epic child  status: todo|active|done
         └── Subtask  title="1.1 <title>"     labels=[impl]        epic child, depends_on phase  status: todo|active|done
+  └── Phase task   title="2. Phase: <name>"  labels=[phase,impl]  epic child, depends_on phase 1  status: todo|active|done
+        └── Subtask  title="2.1 <title>"     labels=[impl]        epic child, depends_on phase  status: todo|active|done
 ```
 
 - Grouping: **epic membership** — phases and subtasks are children of the
   feature ticket (`aven epic list <FEATURE_REF> --json` returns the tree;
   the TUI epic view shows it too).
-- Ordering: `N.` / `N.M` title prefixes. **Aven does not sort by them — you
+- Phase ordering: **hard guarantee** — each phase depends on the previous, so
+  `--ready` exposes exactly one phase at a time. The `N.` prefix remains for
+  humans and sorting.
+- Subtask ordering: `N.M` title prefixes. **Aven does not sort by them — you
   do**, when presenting and when resuming.
 - Statuses: `todo`, `active`, `done` (read and written via `aven edit`).
 
@@ -46,6 +51,7 @@ Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>  is_epic=true
 ```bash
 aven epic list <FEATURE_REF> --json     # whole tree, all children
 aven epic list <FEATURE_REF>            # human-readable
+aven list --ready --label phase         # exactly the unblocked phase (dep chain)
 ```
 
 Sort children by the title prefix: phases by `N.`, subtasks by `N.M` (both

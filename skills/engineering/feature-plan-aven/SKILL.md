@@ -29,7 +29,8 @@ flowchart TD
   F --> G["aven edit REF --epic on --status todo --metadata plan-path=ABS"]
   G --> H["aven add 'N. Phase: name' --label phase --label impl"]
   H --> H2["aven epic add PHASE REF"]
-  H2 --> I["aven add 'N.M title' --label impl"]
+  H2 --> H2b["aven dep add PHASE PREV_PHASE<br/>(order guarantee: one phase ready at a time)"]
+  H2b --> I["aven add 'N.M title' --label impl"]
   I --> I2["aven epic add SUB REF (+ dep add SUB PHASE for gating)"]
   I2 --> J["aven epic list REF  (verify)"]
   J --> K["implement-plan-aven: sort by N./N.M prefix,<br/>first non-done = resume pointer"]
@@ -131,6 +132,9 @@ contract. Contract points:
 - Every phase AND subtask is an epic child of `<REF>` — epic membership is
   the grouping key (`aven epic add <CHILD> <REF>`).
 - `N.` / `N.M` title prefixes are REQUIRED — the execution plan sorts by them.
+- **Phases chain via deps** (`aven dep add <phase N> <phase N-1>`) — aven
+  enforces execution order (`--ready` shows exactly one phase at a time); the
+  prefix is for humans and sorting.
 - Capture each phase ref from its `aven add` output (`created PMR-XXXX`) — subtasks don't depend on it unless you want `--ready` gating.
 - **Phases must be testable blocks**: the planner designs each phase so the repo
   is left green at its end — tests pass, then one commit scoped to that phase.
@@ -166,6 +170,13 @@ feature ref; `$PHASE_REF` is captured from each phase's `aven add` output.
 # (use \S+, not \w+ — the dash in refs breaks \w)
 PHASE_REF=$(aven add "N. Phase: <name>" --label phase --label impl 2>&1 | grep -oP 'created \K\S+')
 aven epic add $PHASE_REF <REF>
+
+# Hard order guarantee: phase N blocks on phase N-1. PREV_PHASE_REF starts
+# empty for the first phase.
+if [ -n "$PREV_PHASE_REF" ]; then
+  aven dep add $PHASE_REF $PREV_PHASE_REF
+fi
+PREV_PHASE_REF=$PHASE_REF
 
 # Subtask — epic child of the feature, gated on its phase (hidden from --ready
 # until the phase is done)
