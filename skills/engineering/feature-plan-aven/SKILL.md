@@ -30,6 +30,8 @@ flowchart TD
   H --> I["aven add 'N.M title' --label impl --metadata feature=SUFFIX"]
   I --> J["aven list --metadata feature=SUFFIX --open  (verify)"]
   J --> K["implement-plan-aven: sort by N./N.M prefix,<br/>first non-done = resume pointer"]
+  K -->|per phase| L["run tests -> commit<br/>then aven edit PHASE --status done"]
+  L -->|next phase| K
 ```
 
 ### 1. Pickup (~30s)
@@ -125,6 +127,10 @@ contract. Contract points:
 - `feature=<SUFFIX>` metadata on EVERY phase and subtask — it is the grouping key.
 - `N.` / `N.M` title prefixes are REQUIRED — the execution plan sorts by them.
 - Capture each phase ref from its `aven add` output (`created PMR-XXXX`) — subtasks don't depend on it unless you want `--ready` gating.
+- **Phases must be testable blocks**: the planner designs each phase so the repo
+  is left green at its end — tests pass, then one commit scoped to that phase.
+  A phase that can't end with `tests → commit` is too big or too small; split
+  or merge it.
 - The planner must NOT commit code and must NOT set status beyond `todo`.
 
 ### 7. Verify the hierarchy
@@ -160,6 +166,22 @@ aven dep add <SUBTASK_REF> $PHASE_REF   # optional
 
 Repeat per phase, incrementing `N` (`1.`, `2.`, ...); subtasks `1.1`, `1.2`,
 `2.1`, ...
+
+## Phase discipline (execution)
+
+Every phase ends with the same cycle — this is what makes phases testable
+blocks rather than arbitrary buckets:
+
+```bash
+# 1. Run the project's tests (repo-defined runner, e.g. `bun run check`)
+# 2. Commit with a phase-scoped message (explain the why, conventional subject)
+# 3. Close the phase in aven
+aven edit <PHASE_REF> --status done
+```
+
+Only then does the next phase start. If tests fail, the phase is not done —
+fix forward inside the same phase. The commit is the phase's artifact; the
+aven status is its ledger entry.
 
 ## What We're NOT Doing
 
