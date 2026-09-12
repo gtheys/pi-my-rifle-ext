@@ -7,8 +7,9 @@ description: Plan a local feature tracked as an aven ticket — pickup the ticke
 
 Turn an aven ticket into a plan and an aven hierarchy a worker can execute.
 The ticket already exists in aven — your job is context + interview + plan.md +
-the phase/subtask tree. `implement-plan-aven` (sibling, to be written) resumes
-from the result.
+the phase/subtask tree. `implement-plan-aven` (sibling) resumes from the
+result. Grouping is native aven **epic membership**: the feature ticket
+becomes the epic container, phases and subtasks are its children.
 
 Workspaces: personal projects live in the aven `personal` workspace, work in
 `salaryhero`. Aven infers the workspace from the cwd via its config routes —
@@ -25,10 +26,12 @@ flowchart TD
   C --> D[interview: one round<br/>Goal / Behavior / Done when / Out of scope]
   D --> E["resolve_feature_path tool -> plan.md path"]
   E --> F[interactive planner subagent writes plan.md]
-  F --> G["aven edit REF --status todo --metadata plan-path=ABS"]
-  G --> H["aven add 'N. Phase: name' --label phase --label impl --metadata feature=SUFFIX"]
-  H --> I["aven add 'N.M title' --label impl --metadata feature=SUFFIX"]
-  I --> J["aven list --metadata feature=SUFFIX --open  (verify)"]
+  F --> G["aven edit REF --epic on --status todo --metadata plan-path=ABS"]
+  G --> H["aven add 'N. Phase: name' --label phase --label impl"]
+  H --> H2["aven epic add PHASE REF"]
+  H2 --> I["aven add 'N.M title' --label impl"]
+  I --> I2["aven epic add SUB REF (+ dep add SUB PHASE for gating)"]
+  I2 --> J["aven epic list REF  (verify)"]
   J --> K["implement-plan-aven: sort by N./N.M prefix,<br/>first non-done = resume pointer"]
   K -->|per phase| L["run tests -> commit<br/>then aven edit PHASE --status done"]
   L -->|next phase| K
@@ -86,13 +89,14 @@ Done when: ...
 Out of scope: ...
 EOF
 
-aven edit <REF> --status todo --metadata plan-path=<absolute plan.md path>
+# Feature ticket becomes the epic container for the whole tree
+aven edit <REF> --epic on --status todo --metadata plan-path=<absolute plan.md path>
 ```
 
-`<REF>` is the qualified ref (e.g. `PMR-ZTVG`); `<SUFFIX>` used below is its
-suffix (`ZTVG`). Labels mark task kind (`phase`/`impl`); the `feature=<SUFFIX>`
-metadata groups the tree (labels can't carry the ref, and per-feature labels
-would proliferate).
+`<REF>` is the qualified ref (e.g. `PMR-ZTVG`). Labels mark task kind
+(`phase`/`impl`); **epic membership groups the tree** — every phase and
+subtask is added as a child of `<REF>` (`aven epic list <REF>` returns the
+whole tree, and the TUI epic view shows it).
 
 ### 6. Spawn the interactive planner
 
@@ -124,7 +128,8 @@ The planner runs its own methodology (requirements, approaches, premortem,
 plan) with the user — don't re-specify that. Your job is context + the output
 contract. Contract points:
 
-- `feature=<SUFFIX>` metadata on EVERY phase and subtask — it is the grouping key.
+- Every phase AND subtask is an epic child of `<REF>` — epic membership is
+  the grouping key (`aven epic add <CHILD> <REF>`).
 - `N.` / `N.M` title prefixes are REQUIRED — the execution plan sorts by them.
 - Capture each phase ref from its `aven add` output (`created PMR-XXXX`) — subtasks don't depend on it unless you want `--ready` gating.
 - **Phases must be testable blocks**: the planner designs each phase so the repo
@@ -136,11 +141,12 @@ contract. Contract points:
 ### 7. Verify the hierarchy
 
 ```bash
-aven list --metadata feature=<SUFFIX> --open
+aven epic list <REF> --json
 ```
 
-Present the list to the user and ask them to review both `plan.md` and the
-tree. Fixups go through the planner's contract commands.
+Sort children by the `N.`/`N.M` title prefix client-side. Present the list to
+the user and ask them to review both `plan.md` and the tree. Fixups go
+through the planner's contract commands.
 
 ### 8. Fallback — no `subagent` tool
 
@@ -152,16 +158,20 @@ plan path after writing (skippable on request; tool failure never blocks).
 
 ## Aven output contract
 
-Byte-identical commands for both the planner and the fallback. `$SUFFIX` is
-the feature ref suffix from step 5.
+Byte-identical commands for both the planner and the fallback. `<REF>` is the
+feature ref; `$PHASE_REF` is captured from each phase's `aven add` output.
 
 ```bash
-# Phase — ref is printed inline by aven add; capture it if subtasks gate on it
-PHASE_REF=$(aven add "N. Phase: <name>" --label phase --label impl --metadata feature=$SUFFIX 2>&1 | grep -oP 'created \K\w+')
+# Phase — capture the ref inline; aven prints "created PMR-XXXX"
+# (use \S+, not \w+ — the dash in refs breaks \w)
+PHASE_REF=$(aven add "N. Phase: <name>" --label phase --label impl 2>&1 | grep -oP 'created \K\S+')
+aven epic add $PHASE_REF <REF>
 
-# Subtask under the phase (optional gating so --ready hides blocked work)
-aven add "N.M <title>" --label impl --metadata feature=$SUFFIX
-aven dep add <SUBTASK_REF> $PHASE_REF   # optional
+# Subtask — epic child of the feature, gated on its phase (hidden from --ready
+# until the phase is done)
+SUBTASK_REF=$(aven add "N.M <title>" --label impl 2>&1 | grep -oP 'created \K\S+')
+aven epic add $SUBTASK_REF <REF>
+aven dep add $SUBTASK_REF $PHASE_REF
 ```
 
 Repeat per phase, incrementing `N` (`1.`, `2.`, ...); subtasks `1.1`, `1.2`,
@@ -189,14 +199,14 @@ aven status is its ledger entry.
   skill is the aven sibling of `feature-plan`.
 - No Jira — Jira-linked work routes to `create-plan` (taskwarrior/jira flow).
 - No branch automation.
-- No epics for grouping — epic membership is create-time only, and tickets
-  already exist by the time this flow runs.
+- No extra metadata for grouping — epic membership covers it; `plan-path` is
+  the only metadata this flow writes.
 
 ## Integration with Other Skills
 
 - `/skill:create-plan` — the Jira sibling; delegate there when a Jira ID exists.
 - `/skill:feature-plan` — the taskwarrior sibling; use it only for legacy TW
   feature trees.
-- `implement-plan-aven` (planned) — resumes this hierarchy via
-  `aven list --metadata feature=<SUFFIX>`; resume pointer = first non-done
-  task in N./N.M title order.
+- `implement-plan-aven` — resumes this hierarchy via
+  `aven epic list <REF> --json`; resume pointer = first non-done task in
+  N./N.M title order.

@@ -1,16 +1,16 @@
 ---
 name: implement-plan-aven
-description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (e.g. PMR-ZTVG), pull the phase/subtask tree via the feature=<suffix> metadata, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Use when the user says "implement PMR-ZTVG", "start work on <aven-ref>", "resume the aven feature", or names an aven ticket whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
+description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (e.g. PMR-ZTVG), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Use when the user says "implement PMR-ZTVG", "start work on <aven-ref>", "resume the aven feature", or names an aven ticket whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
 ---
 
 # Implement Plan (Aven)
 
 Aven is the source of truth for *what* to do and *in what order*; `plan.md`
 is the source of truth for *how*. This skill marries the two: it walks the
-aven tree grouped by `feature=<suffix>` metadata, reads plan.md, and executes
-phase by phase. Each phase closes with the test/commit cycle — phases are
-testable blocks (see "Phase discipline" in `feature-plan-aven`; this skill
-enforces it, it does not redefine it).
+feature ticket's **epic children**, reads plan.md, and executes phase by
+phase. Each phase closes with the test/commit cycle — phases are testable
+blocks (see "Phase discipline" in `feature-plan-aven`; this skill enforces
+it, it does not redefine it).
 
 ## Input contract
 
@@ -29,13 +29,14 @@ stop: it hasn't been planned — route to `feature-plan-aven`.
 ## Aven data model — what to expect
 
 ```text
-Feature ticket   labels=[aven,planning]   metadata: plan-path=<abs plan.md>
-  └── Phase task   title="1. Phase: <name>"  labels=[phase,impl]  metadata: feature=<SUFFIX>  status: todo|active|done
-        └── Subtask  title="1.1 <title>"     labels=[impl]        metadata: feature=<SUFFIX>  status: todo|active|done
+Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>  is_epic=true
+  └── Phase task   title="1. Phase: <name>"  labels=[phase,impl]  epic child  status: todo|active|done
+        └── Subtask  title="1.1 <title>"     labels=[impl]        epic child, depends_on phase  status: todo|active|done
 ```
 
-- Grouping: `feature=<SUFFIX>` metadata on every phase and subtask
-  (`<SUFFIX>` = the feature ref suffix, e.g. `ZTVG`).
+- Grouping: **epic membership** — phases and subtasks are children of the
+  feature ticket (`aven epic list <FEATURE_REF> --json` returns the tree;
+  the TUI epic view shows it too).
 - Ordering: `N.` / `N.M` title prefixes. **Aven does not sort by them — you
   do**, when presenting and when resuming.
 - Statuses: `todo`, `active`, `done` (read and written via `aven edit`).
@@ -43,11 +44,12 @@ Feature ticket   labels=[aven,planning]   metadata: plan-path=<abs plan.md>
 ## Step 1 — Pull the execution plan
 
 ```bash
-aven list --json --metadata feature=<SUFFIX>          # full tree (all statuses)
-aven list --metadata feature=<SUFFIX> --open          # human-readable, open only
+aven epic list <FEATURE_REF> --json     # whole tree, all children
+aven epic list <FEATURE_REF>            # human-readable
 ```
 
-Sort the JSON by title prefix: phases by `N.`, subtasks by `N.M`. Compute:
+Sort children by the title prefix: phases by `N.`, subtasks by `N.M` (both
+labels `impl`; phases also carry `phase`). Compute:
 - **currentPhase** — first non-done phase in sorted order
 - **currentSubtask** — first non-done subtask within it
 - progress — `done subtasks / total subtasks`
