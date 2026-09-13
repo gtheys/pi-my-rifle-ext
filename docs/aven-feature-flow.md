@@ -5,8 +5,10 @@ planning (`feature-plan-aven`), to execution (`implement-plan-aven`).
 
 Source skills:
 - `~/.pi/agent/skills/aven/SKILL.md` — CLI primer
+- `skills/engineering/explore/SKILL.md` — pre-ticket exploration
 - `skills/engineering/feature-plan-aven/SKILL.md` — planning
 - `skills/engineering/implement-plan-aven/SKILL.md` — execution
+- `skills/engineering/debug/SKILL.md` — bug flow (step 0a)
 
 ---
 
@@ -54,6 +56,12 @@ Statuses used: `inbox → todo → active → done`. Labels: `phase`, `impl`.
 ## 2. Lifecycle overview
 
 ```text
+(optional) explore — chat Q&A about the codebase BEFORE any ticket exists:
+  quick questions → direct search · broad mapping → scout subagents ·
+  "why" questions → hindsight/cognee memory. No aven state until exit ramp:
+  "create ticket" (oneshot) / "plan it" (→ stage 1, findings as ticket note)
+  / nothing (understanding was the goal).
+
 aven add "Add dark mode"            # ticket lands in inbox (or --status todo)
         │
         ├─ oneshot? (description is a complete spec, single commit) ─┐
