@@ -147,13 +147,19 @@ Every phase and subtask carries its own `plan-path` metadata copy — a worker
 handed only a subtask ref can still locate the plan. Resolve plan-path from
 the subtask first, fall back to the feature ticket.
 
-## Step 3 — Workspace: worktree mode (default) or in-place
+## Step 3 — Workspace: worktree (default) or in-place
 
 Decide **where** this feature executes before touching any branch.
 
-**Worktree mode** — requested explicitly ("in a worktree", "isolate it") or
-when the main checkout is busy/dirty or another feature is in flight. All
-`pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
+**Worktree mode is the default.** Run it unless one of these holds:
+
+- the user explicitly asked for in-place work
+- `herdr` is unavailable / not inside Herdr (`pi-worktree` can't run)
+- the feature is a oneshot (single worker, single commit)
+
+**Never silently fall back to in-place.** If `worktree list`/`create` fails,
+report the error and ask the user before creating a plain branch instead.
+All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
 
 1. Check for an existing open worktree first — resume, don't duplicate:
 
@@ -190,8 +196,9 @@ when the main checkout is busy/dirty or another feature is in flight. All
    `run_tests`, and worker spawn targets the worktree. **The main checkout
    is read-only from here on** — the orchestrator never edits code there.
 
-**In-place mode** — small personal features, no isolation requested, or
-Herdr unavailable. Behaves exactly like the pre-worktree flow:
+**In-place mode** — the exception, not the default: only for oneshots,
+explicit user request, or when `pi-worktree` is unavailable. Behaves exactly
+like the pre-worktree flow:
 
 Check the `jira-key` metadata in the `aven show <FEATURE_REF> --full` output
 from Step 2.
