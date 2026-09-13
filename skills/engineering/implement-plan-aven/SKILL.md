@@ -24,14 +24,16 @@ aven list --has-metadata plan-path --open   # features with plans, not yet execu
 ```
 
 If several match, ask which one. If the ticket has no `plan-path` metadata,
-stop: it hasn't been planned — route to `feature-plan-aven`.
+stop: it hasn't been planned — route to `feature-plan-aven`. If the ticket
+has `plan-state` metadata that is not `approved`, stop: the plan is still in
+draft/review — route back to `feature-plan-aven` to finish or approve it.
 
 ## Aven data model — what to expect
 
 ```text
-Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>  is_epic=true
-  └── Phase task   title="1. Phase: <name>"  labels=[phase,impl]  epic child  status: todo|active|done
-        └── Subtask  title="1.1 <title>"     labels=[impl]        epic child, depends_on phase  status: todo|active|done
+Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>, plan-state=approved  is_epic=true
+  └── Phase task   title="1. Phase: <name>"  labels=[phase,impl]  epic child, plan-path  status: todo|active|done
+        └── Subtask  title="1.1 <title>"     labels=[impl]        epic child, plan-path, depends_on phase  status: todo|active|done
   └── Phase task   title="2. Phase: <name>"  labels=[phase,impl]  epic child, depends_on phase 1  status: todo|active|done
         └── Subtask  title="2.1 <title>"     labels=[impl]        epic child, depends_on phase  status: todo|active|done
 ```
@@ -72,6 +74,10 @@ aven show <FEATURE_REF> --json    # metadata.plan-path
 Read plan.md **completely** before touching code. Note `- [x]` marks; those
 are done. If plan-path metadata is missing, stop and route to
 `feature-plan-aven`.
+
+Every phase and subtask carries its own `plan-path` metadata copy — a worker
+handed only a subtask ref can still locate the plan. Resolve plan-path from
+the subtask first, fall back to the feature ticket.
 
 ## Step 3 — Confirm branch
 

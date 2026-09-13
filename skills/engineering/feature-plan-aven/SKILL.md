@@ -1,15 +1,28 @@
 ---
 name: feature-plan-aven
-description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and an aven phase/subtask hierarchy. Trigger on an aven ref (e.g. PMR-ZTVG) or phrases like "plan this aven ticket", "aven feature plan" for a personal project. Jira-linked work routes to create-plan; taskwarrior-backed local features route to feature-plan.
+description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG) or phrases like "plan this aven ticket", "aven feature plan" for a personal project. Jira-linked work routes to create-plan; taskwarrior-backed local features route to feature-plan.
 ---
 
 # Feature Plan (Aven)
 
-Turn an aven ticket into a plan and an aven hierarchy a worker can execute.
-The ticket already exists in aven — your job is context + interview + plan.md +
-the phase/subtask tree. `implement-plan-aven` (sibling) resumes from the
-result. Grouping is native aven **epic membership**: the feature ticket
-becomes the epic container, phases and subtasks are its children.
+Turn an aven ticket into an approved plan, then into an aven hierarchy a
+worker can execute. Two stages, gated:
+
+- **Stage 1 — author the plan**: context + interview + plan.md. Ends with the
+  ticket in `plan-state=review`. NO aven tree yet.
+- **Stage 2 — create the tree**: only after the user explicitly approves
+  ("approve <REF>"). Runs the output contract: phases/subtasks as epic
+  children, each carrying its own `plan-path` metadata.
+
+Plan lifecycle (metadata on the feature ticket): `draft` (interview done,
+plan.md incomplete — resume to finish), `review` (plan.md complete, awaiting
+user approval), `approved` (tree may be created). The agent sets
+draft → review when the planner finishes; **only the user's explicit approval
+sets review → approved** — the agent runs the `aven edit`, but the word must
+be the user's. `implement-plan-aven` (sibling) executes the resulting tree.
+
+Grouping is native aven **epic membership**: the feature ticket becomes the
+epic container, phases and subtasks are its children.
 
 Workspaces: personal projects live in the aven `personal` workspace, work in
 `salaryhero`. Aven infers the workspace from the cwd via its config routes —
@@ -26,17 +39,20 @@ flowchart TD
   C --> D[interview: one round<br/>Goal / Behavior / Done when / Out of scope]
   D --> E["resolve_feature_path tool -> plan.md path"]
   E --> F[interactive planner subagent writes plan.md]
-  F --> G["aven edit REF --epic on --status todo --metadata plan-path=ABS"]
-  G --> H["aven add 'N. Phase: name' --label phase --label impl"]
+  F --> G["aven edit REF --epic on --status todo<br/>--metadata plan-path=ABS, plan-state=draft→review"]
+  G --> GATE{user approves?<br/>possibly a later session}  GATE -->|iterate| F
+  GATE -->|"approve REF → plan-state=approved"| H["aven add 'N. Phase: name' --label phase --label impl<br/>--metadata plan-path=ABS"]
   H --> H2["aven epic add PHASE REF"]
   H2 --> H2b["aven dep add PHASE PREV_PHASE<br/>(order guarantee: one phase ready at a time)"]
-  H2b --> I["aven add 'N.M title' --label impl"]
+  H2b --> I["aven add 'N.M title' --label impl --metadata plan-path=ABS"]
   I --> I2["aven epic add SUB REF (+ dep add SUB PHASE for gating)"]
   I2 --> J["aven epic list REF  (verify)"]
   J --> K["implement-plan-aven: sort by N./N.M prefix,<br/>first non-done = resume pointer"]
   K -->|per phase| L["run tests -> commit<br/>then aven edit PHASE --status done"]
   L -->|next phase| K
 ```
+
+## Stage 1 — Author the plan
 
 ### 1. Pickup (~30s)
 
@@ -91,7 +107,9 @@ Out of scope: ...
 EOF
 
 # Feature ticket becomes the epic container for the whole tree
-aven edit <REF> --epic on --status todo --metadata plan-path=<absolute plan.md path>
+# plan-state=draft now (plan.md not written yet); flip to review after the planner finishes
+aven edit <REF> --epic on --status todo \
+  --metadata plan-path=<absolute plan.md path> --metadata plan-state=draft
 ```
 
 `<REF>` is the qualified ref (e.g. `PMR-ZTVG`). Labels mark task kind
@@ -119,15 +137,16 @@ subagent({
     "",
     "After writing the plan file, call the open_in_pane tool with that path to open it with glow in a review pane. Skippable if the user declines or the tool is unavailable — never block on it.",
     "",
-    "Aven output contract (use these exact commands):",
-    "<paste the Aven output contract below>",
+    "Write plan.md only. Do NOT create aven phases/subtasks — the tree is",
+    "created in stage 2, only after the user approves the plan.",
   ].join("\n"),
 });
 ```
 
 The planner runs its own methodology (requirements, approaches, premortem,
-plan) with the user — don't re-specify that. Your job is context + the output
-contract. Contract points:
+plan) with the user — don't re-specify that. Your job is context. The planner
+designs the phase breakdown inside plan.md; the aven tree is materialized
+later, in stage 2. Design points the plan must satisfy:
 
 - Every phase AND subtask is an epic child of `<REF>` — epic membership is
   the grouping key (`aven epic add <CHILD> <REF>`).
@@ -140,9 +159,31 @@ contract. Contract points:
   is left green at its end — tests pass, then one commit scoped to that phase.
   A phase that can't end with `tests → commit` is too big or too small; split
   or merge it.
-- The planner must NOT commit code and must NOT set status beyond `todo`.
+- The planner must NOT commit code, must NOT create aven tasks, and must NOT
+  set status beyond `todo`.
 
-### 7. Verify the hierarchy
+When the planner finishes and plan.md is complete, flip the gate:
+
+```bash
+aven edit <REF> --metadata plan-state=review
+```
+
+Stage 1 ends here. Present plan.md to the user and stop — the tree is
+created only after explicit approval, possibly in a later session.
+
+## Stage 2 — Create the tree (after approval)
+
+Precondition: the user has explicitly approved the plan ("approve <REF>").
+Check state first — if `plan-state` is `draft`/`review`, stop: the plan is
+not approved; offer to iterate instead (back to stage 1's planner with the
+existing plan.md). On approval:
+
+```bash
+aven edit <REF> --metadata plan-state=approved
+```
+
+Then materialize the tree by running the **Aven output contract** below
+verbatim, one phase at a time. Finish with verification:
 
 ```bash
 aven epic list <REF> --json
@@ -150,25 +191,43 @@ aven epic list <REF> --json
 
 Sort children by the `N.`/`N.M` title prefix client-side. Present the list to
 the user and ask them to review both `plan.md` and the tree. Fixups go
-through the planner's contract commands.
+through the contract commands.
 
-### 8. Fallback — no `subagent` tool
+### Fallback — no `subagent` tool
 
 Do the scout work in the main session (`fast_context_search` / `grep` /
-`read`), write `plan.md` yourself, and create the hierarchy directly with the
-identical commands from the contract below. Everything else — interview,
-notes, metadata, verification — is unchanged. Call `open_in_pane` with the
+`read`) and write `plan.md` yourself. The two-stage split still applies:
+plan first, tree only after explicit user approval, using the identical
+commands from the contract below. Everything else — interview, notes,
+metadata, verification — is unchanged. Call `open_in_pane` with the
 plan path after writing (skippable on request; tool failure never blocks).
+
+## Resuming a plan in a later session
+
+Given a ref, check state before doing anything:
+
+```bash
+aven show <REF> --json    # metadata.plan-state, metadata.plan-path
+```
+
+- No `plan-path` → start at stage 1, step 1.
+- `plan-state=draft` → read the ticket note (interview answers), finish the
+  plan with the planner, then set `plan-state=review`.
+- `plan-state=review` → read plan.md fully, load it for the user, iterate
+  until they approve or discard.
+- `plan-state=approved` → tree missing → stage 2; tree exists → route to
+  `implement-plan-aven`.
 
 ## Aven output contract
 
-Byte-identical commands for both the planner and the fallback. `<REF>` is the
+Byte-identical commands for stage 2 and the fallback. `<REF>` is the
 feature ref; `$PHASE_REF` is captured from each phase's `aven add` output.
+Every task gets its own `plan-path` copy so any ref is self-contained.
 
 ```bash
 # Phase — capture the ref inline; aven prints "created PMR-XXXX"
 # (use \S+, not \w+ — the dash in refs breaks \w)
-PHASE_REF=$(aven add "N. Phase: <name>" --label phase --label impl 2>&1 | grep -oP 'created \K\S+')
+PHASE_REF=$(aven add "N. Phase: <name>" --label phase --label impl --metadata plan-path=<abs plan.md> 2>&1 | grep -oP 'created \K\S+')
 aven epic add $PHASE_REF <REF>
 
 # Hard order guarantee: phase N blocks on phase N-1. PREV_PHASE_REF starts
@@ -180,7 +239,7 @@ PREV_PHASE_REF=$PHASE_REF
 
 # Subtask — epic child of the feature, gated on its phase (hidden from --ready
 # until the phase is done)
-SUBTASK_REF=$(aven add "N.M <title>" --label impl 2>&1 | grep -oP 'created \K\S+')
+SUBTASK_REF=$(aven add "N.M <title>" --label impl --metadata plan-path=<abs plan.md> 2>&1 | grep -oP 'created \K\S+')
 aven epic add $SUBTASK_REF <REF>
 aven dep add $SUBTASK_REF $PHASE_REF
 ```
