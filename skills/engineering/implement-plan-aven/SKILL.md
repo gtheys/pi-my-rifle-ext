@@ -1,6 +1,6 @@
 ---
 name: implement-plan-aven
-description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (e.g. PMR-ZTVG), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Tickets with a self-sufficient description and no plan can instead be executed directly as oneshots (single worker, single commit). Use when the user says "implement PMR-ZTVG", "start work on <aven-ref>", "resume the aven feature", "oneshot <aven-ref>", or names an aven ticket whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
+description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (aven ref, e.g. PMR-ZTVG, or Jira ID of an aven-synced ticket, e.g. DP-71 — resolved via jira-key metadata), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Tickets with a self-sufficient description and no plan can instead be executed directly as oneshots (single worker, single commit). Use when the user says "implement PMR-ZTVG", "implement DP-71", "start work on <aven-ref>", "resume the aven feature", "oneshot <aven-ref>", or names an aven ticket or synced Jira ID whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
 ---
 
 # Implement Plan (Aven)
@@ -14,8 +14,22 @@ it, it does not redefine it).
 
 ## Input contract
 
-The user provides a **feature ref** (e.g. `PMR-ZTVG`) — the aven ticket that
-carries `plan-path` metadata and heads the phase/subtask tree.
+The user provides a **feature ref** — an aven ref (e.g. `PMR-ZTVG`) or a Jira
+ID (e.g. `DP-71`) of a synced ticket. Resolve Jira IDs to aven refs with the
+two-step detection (shared wording with feature-plan-aven):
+
+```bash
+aven show <INPUT> --json || true                # aven ref? (ref lookup only — JSON omits metadata)
+aven list --metadata jira-key=<INPUT> --json    # Jira ID? → item .ref
+# unknown-ref + empty/`unknown-metadata-field` lookup → not synced → route to implement-plan
+```
+
+`unknown-metadata-field` means no ticket has ever carried `jira-key` (fields
+register lazily) — treat as "not found", not a failure. Wrong workspace also
+yields `unknown-ref`: run `aven doctor`, retry with `--workspace <name>`.
+
+The feature ticket carries `plan-path` metadata and heads the phase/subtask
+tree.
 
 If no ref is given, discover candidates:
 
@@ -36,6 +50,10 @@ For tickets whose description is already a complete spec: small, single-
 commit changes that don't need a plan.md or a tree. Trigger: "oneshot
 <REF>", or "implement <REF>" on a plan-less ticket after the user confirms
 the oneshot route.
+
+Synced tickets (jira-key metadata) can be oneshots too — but their description
+is sync-owned: record clarifications and the outcome via `aven note`, never
+via `--description` edits (sync overwrites them).
 
 1. Sanity-check the description: it must state what to build and done-when.
    Vague → ask targeted questions and record answers via
@@ -99,8 +117,12 @@ Present the tree (✓ done / ▶ active / ○ todo) with the bold resume point:
 ## Step 2 — Read plan.md
 
 ```bash
-aven show <FEATURE_REF> --json    # metadata.plan-path
+aven show <FEATURE_REF> --full    # parse `metadata … key=plan-path` block
 ```
+
+`aven show --json` / `list --json` omit metadata on aven 0.1.39 — never read
+metadata from JSON output (upgrade to JSON when aven gains
+`show --json --metadata`).
 
 Read plan.md **completely** before touching code. Note `- [x]` marks; those
 are done. If plan-path metadata is missing, stop and route to
@@ -228,6 +250,10 @@ After the final phase is committed:
 aven edit <FEATURE_REF> --status done
 ```
 
+On synced tickets the aven status is sync-owned (jira-aven-sync remaps it from
+Jira on every run) — the `aven note` is the durable close record; the status
+edit is best-effort.
+
 Report completion with the plan.md path and the commit list.
 
 ## Resuming
@@ -239,6 +265,7 @@ continuing.
 ## Boundaries — what this skill does NOT do
 
 - **Authoring plans** → `feature-plan-aven`
-- **Jira-linked work** → `implement-plan` (taskwarrior/jira flow)
+- **Jira-linked but NOT aven-synced work** → `implement-plan`
+  (taskwarrior/jira flow); synced tickets (jira-key metadata) are handled here
 - **Debugging** → `/skill:debug`; oneshot execution is for described changes,
   not diagnosis
