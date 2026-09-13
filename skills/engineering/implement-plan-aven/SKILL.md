@@ -21,12 +21,27 @@ two-step detection (shared wording with feature-plan-aven):
 ```bash
 aven show <INPUT> --json || true                # aven ref? (ref lookup only — JSON omits metadata)
 aven list --metadata jira-key=<INPUT> --json    # Jira ID? → item .ref
-# unknown-ref + empty/`unknown-metadata-field` lookup → not synced → route to implement-plan
+# unknown-ref + empty/`unknown-metadata-field` lookup → not aven-managed → Jira-only work; no local execution
 ```
 
 `unknown-metadata-field` means no ticket has ever carried `jira-key` (fields
 register lazily) — treat as "not found", not a failure. Wrong workspace also
 yields `unknown-ref`: run `aven doctor`, retry with `--workspace <name>`.
+
+### Workspace selection — personal vs salaryhero
+
+The ref's workspace decides the flavor of the run, not the mechanics:
+
+| | **personal** | **salaryhero** |
+|---|---|---|
+| Comes from | free-text `/plan` (local feature) | Jira ticket synced via `jira-key` metadata |
+| Source of truth | the aven ticket itself | Jira (aven copy is sync-owned: description edits get overwritten — use `aven note`) |
+| Branch | suggested `feat/<slug>` (no automation) | `jira_create_branch` from the Jira key |
+| PR | optional (pushing to a personal remote directly is fine) | required — PR review is the gate |
+
+Both workspaces run the same execution loop; only branch/PR behavior differs.
+The workspace comes from aven's cwd routing — verify with `aven doctor` if a
+lookup unexpectedly misses.
 
 The feature ticket carries `plan-path` metadata and heads the phase/subtask
 tree.
@@ -358,8 +373,8 @@ it, never create a second worktree for the same feature.
 ## Boundaries — what this skill does NOT do
 
 - **Authoring plans** → `feature-plan-aven`
-- **Jira-linked but NOT aven-synced work** → `implement-plan`
-  (jira flow); synced tickets (jira-key metadata) are handled here
+- **Jira-linked but NOT aven-synced work** → work happens in Jira directly;
+  only aven-managed tickets (synced via jira-key metadata) execute here
 - **Merging PRs** → stays human/manual; this skill pushes and opens the PR,
   never merges
 - **Debugging** → `/skill:debug`; oneshot execution is for described changes,

@@ -69,6 +69,18 @@ aven list --metadata jira-key=<INPUT> --json    # Jira ID? → item .ref
 register lazily) — treat as "not found", not a failure. Wrong workspace also
 yields `unknown-ref`: run `aven doctor`, retry with `--workspace <name>`.
 
+**Workspace → flow mapping.** aven's two workspaces map to the two origins:
+
+- **personal** — local features; free-text `/plan` lands here. The aven
+  ticket is the source of truth; no Jira involvement.
+- **salaryhero** — Jira-synced tickets (`jira-key` metadata). Jira stays the
+  system of record; the synced aven copy drives execution (sync owns the
+  description — record your own context via `aven note`).
+
+The workspace resolves from the cwd route automatically (`aven doctor` to
+verify). Never plan a salaryhero-routed feature into the personal workspace
+or vice versa — the ref lookup is workspace-scoped.
+
 `aven show <REF> --full` + `aven context <REF>`. For a synced ticket (`jira-key`
 metadata present), context = the synced description + `jira-url` metadata —
 parse the `metadata field_id=… key=K` / `value<<EOF … EOF` blocks from
