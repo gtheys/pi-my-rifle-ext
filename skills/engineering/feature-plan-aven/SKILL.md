@@ -163,7 +163,7 @@ subagent({
     "",
     "Write the final plan to: <absolute plan.md path>",
     "",
-    "After writing the plan file, call the open_in_pane tool with that path to open it with glow in a review pane. Skippable if the user declines or the tool is unavailable — never block on it.",
+    "After writing the plan file, call the open_in_pane tool with that path to open it with nvim in a review pane. Skippable if the user declines or the tool is unavailable — never block on it.",
     "",
     "Write plan.md only. Do NOT create aven phases/subtasks — the tree is",
     "created in stage 2, only after the user approves the plan.",

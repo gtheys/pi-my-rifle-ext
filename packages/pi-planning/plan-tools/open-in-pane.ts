@@ -1,5 +1,5 @@
 /**
- * open_in_pane tool — open a file (spec/plan) with glow in a new herdr pane for review.
+ * open_in_pane tool — open a file (spec/plan) with nvim in a new herdr pane for review.
  */
 
 import { existsSync } from 'node:fs'
@@ -15,7 +15,7 @@ type OpenInPaneResult = {
 export async function openFileInPane(
   pi: ExtensionAPI,
   file: string,
-  command = 'glow',
+  command = 'nvim',
 ): Promise<OpenInPaneResult> {
   const absFile = resolve(file)
 
@@ -74,7 +74,7 @@ export async function openFileInPane(
       content: [
         {
           type: 'text',
-          text: `${absFile}\nherdr unavailable — open manually: glow ${absFile}`,
+          text: `${absFile}\nherdr unavailable — open manually: nvim ${absFile}`,
         },
       ],
       details: { ok: false },
@@ -87,16 +87,16 @@ export function registerOpenInPane(pi: ExtensionAPI) {
     name: 'open_in_pane',
     label: 'Open File in Pane',
     description:
-      'Open a file with glow (or another command) in a new herdr pane for review. Non-fatal: returns the path and a manual-open note if herdr is unavailable.',
-    promptSnippet: 'Open a spec/plan file with glow in a herdr review pane',
+      'Open a file with nvim (or another command) in a new herdr pane for review. Non-fatal: returns the path and a manual-open note if herdr is unavailable.',
+    promptSnippet: 'Open a spec/plan file with nvim in a herdr review pane',
     parameters: Type.Object({
       file: Type.String({ description: 'Absolute path to the file to open' }),
       command: Type.Optional(
-        Type.String({ description: 'Command to run (default: glow)' }),
+        Type.String({ description: 'Command to run (default: nvim)' }),
       ),
     }),
     async execute(_id, params) {
-      return openFileInPane(pi, params.file, params.command ?? 'glow')
+      return openFileInPane(pi, params.file, params.command ?? 'nvim')
     },
   })
 }

@@ -94,7 +94,7 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.registerCommand('review-spec', {
-    description: 'Open a spec/plan file with glow in a herdr review pane',
+    description: 'Open a spec/plan file with nvim in a herdr review pane',
     handler: async (args, ctx) => {
       const path = args.trim()
       if (!path) {

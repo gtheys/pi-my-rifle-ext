@@ -72,7 +72,7 @@ subagent({
     "",
     "Write the final plan to: <absolute plan.md path>",
     "",
-    "After writing the plan file, call the open_in_pane tool with that path to open it with glow in a review pane. Skippable if the user declines or the tool is unavailable — never block on it.",
+    "After writing the plan file, call the open_in_pane tool with that path to open it with nvim in a review pane. Skippable if the user declines or the tool is unavailable — never block on it.",
     "",
     "Taskwarrior output contract (use these exact commands):",
     "<paste the Taskwarrior output contract below>",
@@ -102,7 +102,7 @@ tw_execution_plan({ feature_uuid: "<uuid>" })
 
 If the subagent extension isn't loaded, do the scout work in the main session (`fast_context_search` / `grep` / `read`), write `plan.md` yourself, and create the hierarchy directly with the identical commands from the contract below. Everything else — interview, feature task, verification — is unchanged.
 
-After writing `plan.md` in the fallback path, call the `open_in_pane` tool with the plan path (glow review pane). Skippable on user request; tool failure never blocks the flow.
+After writing `plan.md` in the fallback path, call the `open_in_pane` tool with the plan path (nvim review pane). Skippable on user request; tool failure never blocks the flow.
 
 ## Taskwarrior output contract
 

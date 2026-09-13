@@ -145,7 +145,7 @@ Get user confirmation before proceeding.
    - Use `make` commands for automated verification
    - Keep language clear and actionable
 
-4. **Open the updated spec for review** — after saving, call the `open_in_pane` tool with the spec path (glow renders it in a herdr `spec-review` pane). Skippable on user request; if herdr is unavailable the tool returns the path with a manual-open note — continue either way.
+4. **Open the updated spec for review** — after saving, call the `open_in_pane` tool with the spec path (nvim opens it in a herdr `spec-review` pane). Skippable on user request; if herdr is unavailable the tool returns the path with a manual-open note — continue either way.
 
 ### Step 5: Update Taskwarrior (If Applicable)
 

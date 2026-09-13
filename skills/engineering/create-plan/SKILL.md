@@ -201,7 +201,7 @@ After structure approval:
 
 3. **Use the template** at the end of this document.
 
-4. **Open the spec for review** — call the `open_in_pane` tool with the spec path just written. It renders the file with glow in a herdr pane (`spec-review`). Skippable on user request; if the tool reports herdr unavailable, continue anyway — the flow is never blocked by the pane step.
+4. **Open the spec for review** — call the `open_in_pane` tool with the spec path just written. It opens the file with nvim in a herdr pane (`spec-review`). Skippable on user request; if the tool reports herdr unavailable, continue anyway — the flow is never blocked by the pane step.
 
 ## Step 5: Create Taskwarrior Tasks
 

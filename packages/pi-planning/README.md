@@ -30,14 +30,14 @@ Typed tools for the `create-plan` and `iterate-plan` skills.
 | `tw_create_spec_task` | Create spec task in taskwarrior and annotate it with the spec file path |
 | `tw_create_phase` | Create a phase task; returns UUID for use as `depends_uuid` |
 | `tw_create_impl_task` | Create an implementation subtask under a phase |
-| `open_in_pane` | Open a file with glow (or another command) in a new herdr pane for review — non-fatal fallback returns the path |
+| `open_in_pane` | Open a file with nvim (or another command) in a new herdr pane for review — non-fatal fallback returns the path |
 
 ### Command
 
 ```
 /plan <JIRA-ID>              — create or iterate on an implementation plan
 /plan <feature description>  — plan a local feature (feature-plan skill)
-/review-spec <path>          — open a spec/plan file with glow in a herdr pane
+/review-spec <path>          — open a spec/plan file with nvim in a herdr pane
 ```
 
 ---
