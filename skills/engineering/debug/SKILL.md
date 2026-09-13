@@ -1,6 +1,6 @@
 ---
 name: debug
-description: "Structured debugging session: redact secrets, build a tight red-capable feedback loop, reproduce and minimise, rank hypotheses, instrument, fix with a regression test, and clean up. Use when something is broken, unexpected, throwing, failing, or slow. Trigger on 'debug', 'diagnose', 'something's broken', 'help me debug', 'what's wrong', 'investigate issue', or invocation as /engineering:debug JIRA-ID SH. Accepts an optional Jira ID to bootstrap ticket context and branch, and an optional SH flag that additionally loads project-specific database and pod-log investigation commands — omit SH for a generic session with no infra assumptions."
+description: "Structured debugging session: redact secrets, build a tight red-capable feedback loop, reproduce and minimise, rank hypotheses, instrument, fix with a regression test, and clean up. Use when something is broken, unexpected, throwing, failing, or slow. Trigger on 'debug', 'diagnose', 'something's broken', 'help me debug', 'what's wrong', 'investigate issue', invocation as /engineering:debug JIRA-ID SH, or 'debug <aven-ref>' for a bug ticket in aven (e.g. debug PMR-7KQ9). Accepts an optional Jira ID or aven ref to bootstrap ticket context (Jira also gets a branch), and an optional SH flag that additionally loads project-specific database and pod-log investigation commands — omit SH for a generic session with no infra assumptions."
 ---
 
 # Debug Session
@@ -17,12 +17,52 @@ If the redacted output isn't enough to diagnose the bug, say so and ask the user
 
 ## Arguments
 
-`$ARGUMENTS` is optional: `<JIRA-ID> [SH]`
+`$ARGUMENTS` is optional: `<JIRA-ID | AVEN-REF> [SH]`
 
-- **`<JIRA-ID>`** (e.g. `IMP-7070`, `DP-92`, `ENG-1234`) — bootstraps ticket context and a working branch. See Step 0.
+- **`<AVEN-REF>`** (e.g. `PMR-7KQ9`) — a local aven bug ticket. Bootstraps
+  ticket context from aven; status/notes track the session. See Step 0a.
+- **`<JIRA-ID>`** (e.g. `IMP-7070`, `DP-92`, `ENG-1234`) — bootstraps ticket
+  context and a working branch. See Step 0b.
 - **`SH`** — loads `references/sh-environment.md`, which has this project's specific database connection, minikube pod-naming, and cluster-state commands. Only load it when this flag is present — it's project-specific infra detail, not something every debugging session needs. Without it, investigate generically (whatever logs/DB/repro tooling the user has on hand) and ask the user for access if you need something you don't have.
 
-## Step 0: Jira Bootstrap (when a JIRA-ID is given)
+Ref detection: try `aven show <arg> --json` first — if it resolves, it's an
+aven ticket. On `unknown-ref`, treat the arg as a Jira ID.
+
+## Step 0a: Aven Bootstrap (when an aven ref resolves)
+
+No plan gate, no branch automation — bug tickets skip the feature lifecycle.
+
+```bash
+aven show <REF> --json        # title + description = the bug report
+aven edit <REF> --status active
+```
+
+Present the ticket summary and ask what broke (same questions as below).
+During the session, leave durable findings on the ticket — repro command,
+ranked hypotheses, root cause — so a later session can resume:
+
+```bash
+aven note <REF> --stdin <<'EOF'
+Loop: <the red-capable command>
+Hypotheses: <ranked list>
+Root cause: <finding + evidence>
+EOF
+```
+
+Closing (after Phase 5/6 fix, or investigate-only handoff):
+
+```bash
+# Fixed: record root cause + commit, close
+aven note <REF> --stdin <<'EOF'
+Root cause: <...>. Fix commit <hash>. Regression test: <name>.
+EOF
+aven edit <REF> --status done
+
+# Investigate-only: findings note (above), status stays active
+# Root cause reveals a design flaw / big fix → route to feature-plan-aven
+```
+
+## Step 0b: Jira Bootstrap (when a JIRA-ID is given)
 
 **Fetch the ticket:**
 

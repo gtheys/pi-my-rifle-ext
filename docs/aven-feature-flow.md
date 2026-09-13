@@ -160,6 +160,12 @@ with `unknown-ref`, check routing with `aven doctor`.
 active → one worker with the description as spec → tests → commit → note +
 done. No plan.md, no tree. Vague description → clarify or route to planning.
 
+**Bug shortcut**: `--label bug` tickets skip planning too — diagnosis replaces
+it. "debug <REF>" runs the debug skill with an aven wrapper: status active,
+findings/root cause land as ticket notes (durable resume), fix + regression
+test → note with commit hash → done. Root cause reveals a design flaw →
+route to `feature-plan-aven`. Triage queue: `aven list --ready --label bug`.
+
 Trigger: "implement PMR-ZTVG", "resume the aven feature". Discovery when no
 ref given: `aven list --has-metadata plan-path --open`. No `plan-path`
 metadata → not planned → route back to `feature-plan-aven`. `plan-state`
@@ -230,6 +236,7 @@ present but not `approved` → plan still in draft/review → route back to
 | Purpose | Command |
 |---|---|
 | Choose work | `aven list --ready` (excludes blocked + epics) |
+| Bug triage queue | `aven list --ready --label bug` |
 | Inspect before acting | `aven context <REF>` / `aven show <REF> --full` |
 | Find planned features | `aven list --has-metadata plan-path --open` |
 | Plans awaiting approval | `aven list --metadata plan-state=review --open` |
