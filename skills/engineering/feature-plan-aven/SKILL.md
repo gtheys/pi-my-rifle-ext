@@ -1,6 +1,6 @@
 ---
 name: feature-plan-aven
-description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG) or phrases like "plan this aven ticket", "aven feature plan" for a personal project. Jira-linked work routes to create-plan; taskwarrior-backed local features route to feature-plan.
+description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — resolved via jira-key metadata), or phrases like "plan this aven ticket", "aven feature plan" for a personal project. Jira-linked work that is NOT synced to aven routes to create-plan; aven tickets carrying jira-key metadata (from jira-aven-sync) are planned here. Taskwarrior-backed local features route to feature-plan.
 ---
 
 # Feature Plan (Aven)
@@ -56,9 +56,26 @@ flowchart TD
 
 ### 1. Pickup (~30s)
 
-`aven show <REF> --full` + `aven context <REF>`. Skim `README.md`, `AGENTS.md`,
-`package.json`, and the area the feature touches — just enough to brief the
-scout.
+**Ticket lookup and Jira detection.** Input may be an aven ref (`PMR-ZTVG`) or
+a Jira ID (`DP-71`) of a synced ticket. Resolve to an aven ref:
+
+```bash
+aven show <INPUT> --json || true                # aven ref? (ref lookup only — JSON omits metadata)
+aven list --metadata jira-key=<INPUT> --json    # Jira ID? → item .ref
+# unknown-ref + empty/`unknown-metadata-field` lookup → not synced → route to create-plan
+```
+
+`unknown-metadata-field` means no ticket has ever carried `jira-key` (fields
+register lazily) — treat as "not found", not a failure. Wrong workspace also
+yields `unknown-ref`: run `aven doctor`, retry with `--workspace <name>`.
+
+`aven show <REF> --full` + `aven context <REF>`. For a synced ticket (`jira-key`
+metadata present), context = the synced description + `jira-url` metadata —
+parse the `metadata field_id=… key=K` / `value<<EOF … EOF` blocks from
+`show --full` text; `show --json` omits metadata on aven 0.1.39. No acli, no
+live Jira reads — the synced aven copy is the source. Skim `README.md`,
+`AGENTS.md`, `package.json`, and the area the feature touches — just enough to
+brief the scout.
 
 ### 2. Scout
 
@@ -77,9 +94,13 @@ then read the scout context back.
 
 ### 3. Resolve the plan artifact path
 
-Call `resolve_feature_path` with the feature summary (tool from pi-planning —
-taskwarrior-agnostic, reused as-is). Use the returned absolute `plan.md` path
-verbatim everywhere below — never hand-roll it.
+- **Local ticket**: call `resolve_feature_path` with the feature summary (tool
+  from pi-planning — taskwarrior-agnostic, reused as-is).
+- **Synced ticket** (`jira-key` metadata): call `resolve_spec_path` with the
+  Jira ID and summary — the plan lands in the specs dir (`<JIRA>__<slug>.md`).
+
+Use the returned absolute `plan.md` path verbatim everywhere below — never
+hand-roll it, never shorten it, never `mkdir notes/` yourself.
 
 ### 4. Interview — one focused round
 
@@ -116,6 +137,13 @@ aven edit <REF> --epic on --status todo \
 (`phase`/`impl`); **epic membership groups the tree** — every phase and
 subtask is added as a child of `<REF>` (`aven epic list <REF>` returns the
 whole tree, and the TUI epic view shows it).
+
+**Sync-safety (synced tickets):** jira-aven-sync overwrites title, status,
+priority, description, labels, and `jira-status` on every run — planning data
+lives only in `aven note` and `plan-path`/`plan-state` metadata, which survive
+sync (verified on aven 0.1.39 + jira-aven-sync). Never put planning data in
+`--description`. The `--status todo` edit is harmless but sync-owned — the
+gate is `plan-state` metadata only, never aven status.
 
 ### 6. Spawn the interactive planner
 
@@ -207,8 +235,13 @@ plan path after writing (skippable on request; tool failure never blocks).
 Given a ref, check state before doing anything:
 
 ```bash
-aven show <REF> --json    # metadata.plan-state, metadata.plan-path
+aven show <REF> --full    # parse `metadata … key=plan-state` / `key=plan-path` blocks
+# or filter: aven list --metadata plan-state=<state> --open
 ```
+
+`aven show --json` / `list --json` omit metadata on aven 0.1.39 — never read
+metadata from JSON output (upgrade to JSON when aven gains
+`show --json --metadata`).
 
 - No `plan-path` → start at stage 1, step 1.
 - `plan-state=draft` → read the ticket note (interview answers), finish the
@@ -267,14 +300,18 @@ aven status is its ledger entry.
 
 - No taskwarrior — no UUID plumbing, no `work_state` UDA, no `jiraid`. This
   skill is the aven sibling of `feature-plan`.
-- No Jira — Jira-linked work routes to `create-plan` (taskwarrior/jira flow).
+- No live Jira — no acli, no writes/transitions. Synced tickets are read from
+  their aven copy (written by jira-aven-sync); Jira-linked work NOT synced to
+  aven routes to `create-plan` (taskwarrior/jira flow).
 - No branch automation.
 - No extra metadata for grouping — epic membership covers it; `plan-path` is
   the only metadata this flow writes.
 
 ## Integration with Other Skills
 
-- `/skill:create-plan` — the Jira sibling; delegate there when a Jira ID exists.
+- `/skill:create-plan` — the Jira sibling; delegate there when a Jira ID
+  exists that is NOT synced to aven (no `jira-key` metadata). Synced tickets
+  are planned here; `implement-plan-aven` accepts the same Jira-ID inputs.
 - `/skill:feature-plan` — the taskwarrior sibling; use it only for legacy TW
   feature trees.
 - `implement-plan-aven` — resumes this hierarchy via
