@@ -62,15 +62,15 @@ const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url))
 
 const JIRA_ID_RE = /^[A-Z][A-Z0-9]+-\d+\b/
 
-// AIDEV-NOTE: /plan dispatch — Jira-shaped args run the create-plan skill
-// (taskwarrior/spec flow), anything else runs feature-plan. When the repo
-// skills directory is unavailable (standalone npm install, file read fails)
-// the handler falls back to the bundled generic plan-skill.md.
-export function classifyPlanArg(task: string): 'jira' | 'feature' {
-  if (JIRA_ID_RE.test(task)) {
-    return 'jira'
-  }
-  return 'feature'
+// AIDEV-NOTE: /plan dispatch — aven-first. Jira-shaped args and free text
+// both run the feature-plan-aven skill (the aven planner handles aven refs,
+// aven-synced Jira IDs, and local features; the aven workspace is routed by
+// cwd). When the repo skills directory is unavailable (standalone npm
+// install, file read fails) the handler falls back to the bundled generic
+// plan-skill.md.
+export function classifyPlanArg(task: string): 'aven' {
+  void task
+  return 'aven'
 }
 
 export function readPlanSkill(
@@ -2501,12 +2501,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
       }
 
-      // AIDEV-NOTE: dispatch on argument shape — Jira ID injects create-plan,
-      // free text injects feature-plan; both fall back to the bundled
-      // plan-skill.md when the repo skill files cannot be read (standalone
-      // npm install).
-      const skillName =
-        classifyPlanArg(task) === 'jira' ? 'create-plan' : 'feature-plan'
+      // AIDEV-NOTE: aven-first dispatch — everything routes to
+      // feature-plan-aven; it handles aven refs, aven-synced Jira IDs, and
+      // local features, in the aven workspace routed by cwd. Falls back to
+      // the bundled plan-skill.md when the repo skill files cannot be read
+      // (standalone npm install).
+      const skillName = 'feature-plan-aven'
       const skill = readPlanSkill(skillName)
       if (skill) {
         const skillContent = skill.content.replace(/^---\n[\s\S]*?\n---\n*/, '')

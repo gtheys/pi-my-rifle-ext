@@ -2811,24 +2811,18 @@ describe('cmux.ts', () => {
 
 describe('plan dispatch', () => {
   describe('classifyPlanArg', () => {
-    it('classifies uppercase Jira IDs', () => {
-      assert.equal(subagentsModule.classifyPlanArg('IMP-7070'), 'jira')
-      assert.equal(subagentsModule.classifyPlanArg('DP-92 fix login'), 'jira')
-    })
-
-    it('classifies free text as feature', () => {
-      assert.equal(subagentsModule.classifyPlanArg('add dark mode'), 'feature')
-      assert.equal(subagentsModule.classifyPlanArg('implement x'), 'feature')
-    })
-
-    it('treats lowercase ids as feature (regex is uppercase-only)', () => {
-      assert.equal(subagentsModule.classifyPlanArg('imp-7070'), 'feature')
+    it('routes everything to the aven planner (aven-first dispatch)', () => {
+      assert.equal(subagentsModule.classifyPlanArg('IMP-7070'), 'aven')
+      assert.equal(subagentsModule.classifyPlanArg('DP-92 fix login'), 'aven')
+      assert.equal(subagentsModule.classifyPlanArg('add dark mode'), 'aven')
+      assert.equal(subagentsModule.classifyPlanArg('implement x'), 'aven')
+      assert.equal(subagentsModule.classifyPlanArg('imp-7070'), 'aven')
     })
   })
 
   describe('readPlanSkill', () => {
     it('resolves an existing skill file with content', () => {
-      const r = subagentsModule.readPlanSkill('create-plan')
+      const r = subagentsModule.readPlanSkill('feature-plan-aven')
       assert.ok(r)
       assert.ok(existsSync(r.path))
       assert.ok(r.content.startsWith('---'))

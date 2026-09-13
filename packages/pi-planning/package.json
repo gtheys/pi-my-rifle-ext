@@ -1,7 +1,7 @@
 {
   "name": "@gtheys/pi-planning",
-  "version": "0.1.1",
-  "description": "Pi extension — typed taskwarrior tools for the create-plan and implement-plan skills",
+  "version": "0.2.0",
+  "description": "Pi extension — aven-era planning helpers (plan paths, review pane, Jira branch derivation)",
   "type": "module",
   "keywords": [
     "pi-package"
@@ -21,21 +21,11 @@
   "files": [
     "plan-tools/index.ts",
     "plan-tools/helpers.ts",
-    "plan-tools/get-ticket.ts",
-    "plan-tools/get-spec-task.ts",
-    "plan-tools/get-phases-impl.ts",
     "plan-tools/resolve-spec-path.ts",
     "plan-tools/resolve-feature-path.ts",
     "plan-tools/open-in-pane.ts",
-    "plan-tools/create-spec-task.ts",
-    "plan-tools/create-phase.ts",
-    "plan-tools/create-impl-task.ts",
     "implement-plan/index.ts",
-    "implement-plan/execution-plan.ts",
-    "implement-plan/advance-task.ts",
-    "implement-plan/phase-checkpoint.ts",
     "implement-plan/jira-branch-tool.ts",
-    "shared/tw-utils.ts",
     "shared/jira-branch.ts",
     "README.md"
   ],

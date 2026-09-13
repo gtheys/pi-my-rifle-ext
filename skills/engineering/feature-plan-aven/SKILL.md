@@ -1,6 +1,6 @@
 ---
 name: feature-plan-aven
-description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — resolved via jira-key metadata), or phrases like "plan this aven ticket", "aven feature plan" for a personal project. Jira-linked work that is NOT synced to aven routes to create-plan; aven tickets carrying jira-key metadata (from jira-aven-sync) are planned here. Taskwarrior-backed local features route to feature-plan.
+description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — resolved via jira-key metadata), or phrases like "plan this aven ticket", "aven feature plan" for a personal project. Aven tickets carrying jira-key metadata (from jira-aven-sync) are planned here too — always in the aven workspace routed to the current directory (salaryhero / personal).
 ---
 
 # Feature Plan (Aven)
@@ -62,7 +62,7 @@ a Jira ID (`DP-71`) of a synced ticket. Resolve to an aven ref:
 ```bash
 aven show <INPUT> --json || true                # aven ref? (ref lookup only — JSON omits metadata)
 aven list --metadata jira-key=<INPUT> --json    # Jira ID? → item .ref
-# unknown-ref + empty/`unknown-metadata-field` lookup → not synced → route to create-plan
+# unknown-ref + empty/`unknown-metadata-field` lookup → not aven-managed → plan it in Jira directly
 ```
 
 `unknown-metadata-field` means no ticket has ever carried `jira-key` (fields
@@ -302,18 +302,23 @@ aven status is its ledger entry.
   skill is the aven sibling of `feature-plan`.
 - No live Jira — no acli, no writes/transitions. Synced tickets are read from
   their aven copy (written by jira-aven-sync); Jira-linked work NOT synced to
-  aven routes to `create-plan` (taskwarrior/jira flow).
+  aven stays in Jira — there is no local mirror for it anymore.
 - No branch automation.
+- No worktree creation — the planner works in the main checkout; execution
+  isolation is `implement-plan-aven`'s job (its Step 3 creates the worktree
+  when the feature is implemented). If the user asks for the work to happen
+  in a worktree, note that intent in the plan document so implement picks
+  worktree mode.
 - No extra metadata for grouping — epic membership covers it; `plan-path` is
   the only metadata this flow writes.
 
 ## Integration with Other Skills
 
-- `/skill:create-plan` — the Jira sibling; delegate there when a Jira ID
-  exists that is NOT synced to aven (no `jira-key` metadata). Synced tickets
-  are planned here; `implement-plan-aven` accepts the same Jira-ID inputs.
-- `/skill:feature-plan` — the taskwarrior sibling; use it only for legacy TW
-  feature trees.
+- Jira-linked work NOT synced to aven: plan it in Jira directly. aven
+  workspaces (`salaryhero` / `personal`) split the local execution queues —
+  this skill always works in the aven workspace routed to the current
+  directory (`aven doctor` to verify).
 - `implement-plan-aven` — resumes this hierarchy via
   `aven epic list <REF> --json`; resume pointer = first non-done task in
-  N./N.M title order.
+  N./N.M title order. With worktree mode, it also resumes the feature's
+  worktree from the `worktree:` note this flow's contract left on the ticket.
