@@ -134,9 +134,22 @@ the subtask first, fall back to the feature ticket.
 
 ## Step 3 — Confirm branch
 
-No branch automation (personal features). If on `main`/`master` and about to
-edit, suggest one branch name (e.g. `feat/<feature-slug>`) — one sentence, no
-tool call. Otherwise stay put.
+Check the `jira-key` metadata in the `aven show <FEATURE_REF> --full` output
+from Step 2.
+
+**Not synced** (no `jira-key`): no branch automation (personal features). If
+on `main`/`master` and about to edit, suggest one branch name (e.g.
+`feat/<feature-slug>`) — one sentence, no tool call. Otherwise stay put.
+
+**Synced** (`jira-key` present): derive the branch with `jira_create_branch`
+(from the `pi-planning` package), `cwd` set to the target repo root:
+
+1. `jira_create_branch({ jira_id: "<jira-key>", cwd: "<repo root>", dry_run: true })` — `details.branch` is the expected branch (`<prefix>/<JIRA_ID>-<slug>`).
+2. `git rev-parse --abbrev-ref HEAD` to check the current branch.
+3. On the expected branch → continue. Branch exists but not checked out → `git checkout <branch>`. Missing → call `jira_create_branch` without `dry_run` (creates branch, sets git-town parent).
+
+If the tool call fails (acli missing, etc.), report and ask before continuing.
+Do not skip this even when resuming a partially complete feature.
 
 ## Step 4 — Load companion skills
 
