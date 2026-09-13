@@ -1306,6 +1306,13 @@ async function launchSubagent(
   if (denySet.size > 0) {
     envParts.push(`PI_DENY_TOOLS=${shellEscape([...denySet].join(','))}`)
   }
+  // AIDEV-NOTE: epimetheus (Hindsight memory) disabled in subagents — its
+  // pending-queue markers for ephemeral/crashed subagent sessions orphan and
+  // warn on every parent quit ("session file not found"). Subagent work is
+  // retained via the parent session's steering summary instead. Remove to
+  // re-enable subagent memory (then expect orphan queue dirs; backstop:
+  // ~/.local/bin/epimetheus-clean-orphans).
+  envParts.push(`EPIMETHEUS_ENABLED=false`)
   envParts.push(`PI_SUBAGENT_NAME=${shellEscape(params.name)}`)
   if (params.agent) {
     envParts.push(`PI_SUBAGENT_AGENT=${shellEscape(params.agent)}`)
@@ -2104,6 +2111,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             `PI_CODING_AGENT_DIR=${shellEscape(process.env.PI_CODING_AGENT_DIR)}`,
           )
         }
+        // AIDEV-NOTE: EPIMETHEUS_ENABLED=false on resume too — see spawn-site
+        // note above.
+        resumeEnvParts.push(`EPIMETHEUS_ENABLED=false`)
         resumeEnvParts.push(`PI_SUBAGENT_NAME=${shellEscape(name)}`)
         resumeEnvParts.push(
           `PI_SUBAGENT_SESSION=${shellEscape(params.sessionPath)}`,
