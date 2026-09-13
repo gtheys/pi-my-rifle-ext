@@ -35,8 +35,9 @@ Feature ticket  metadata: plan-path=<abs plan.md>, plan-state=draft|review|appro
 feature ticket: `draft` (interview done, plan.md incomplete) → `review`
 (plan.md complete, awaiting user) → `approved` (tree may be created). Only
 the user's explicit word ("approve <REF>") moves review → approved; the
-agent runs the edit. Resume in a new session: `aven show <REF> --json`,
-branch on `plan-state`.
+agent runs the edit. Resume in a new session: `aven show <REF> --full` (parse
+the `metadata … key=plan-state` block — `show --json` omits metadata on aven
+0.1.39), branch on `plan-state`.
 
 Three structural rules:
 
@@ -52,6 +53,24 @@ Three structural rules:
    humans.
 
 Statuses used: `inbox → todo → active → done`. Labels: `phase`, `impl`.
+
+### Jira-synced tickets
+
+Tickets synced from Jira by `jira-aven-sync` carry `jira-key`, `jira-url`,
+and `jira-status` metadata plus the `jira` label. They flow through the same
+gate and tree, with three deltas:
+
+- **Lookup**: an aven ref resolves via `aven show`; a Jira ID via
+  `aven list --metadata jira-key=<KEY> --json`. `unknown-metadata-field`
+  means "never synced" — treat as not found.
+- **Context + path**: context = synced description + `jira-url` (no live
+  acli); plan.md path comes from `resolve_spec_path` (specs dir), not
+  `resolve_feature_path`.
+- **Sync-safety**: sync overwrites title, status, priority, description,
+  labels, and `jira-status` on every run — planning data lives in notes +
+  `plan-path`/`plan-state` metadata, which survive. Never store planning data
+  in `--description`; the gate never relies on aven status. Tree children are
+  created without `jira-key`, so sync never sees them.
 
 ## 2. Lifecycle overview
 
@@ -84,10 +103,12 @@ test → verify gate → commit → done) → close feature                  │
 
 ## 3. Phase A: Planning (`feature-plan-aven`)
 
-Trigger: an aven ref (e.g. `PMR-ZTVG`) or "plan this aven ticket".
+Trigger: an aven ref (e.g. `PMR-ZTVG`), a synced Jira ID (e.g. `DP-71`), or
+"plan this aven ticket".
 Re-triggering on a ref with existing `plan-state` resumes at the right stage
 (draft → finish plan, review → iterate, approved → create tree).
-Routing: Jira ID → `create-plan`; taskwarrior tree → `feature-plan` (legacy).
+Routing: Jira ID synced to aven (jira-key metadata) → planned here; Jira ID
+NOT synced → `create-plan`; taskwarrior tree → `feature-plan` (legacy).
 
 Workspaces: personal projects → `personal` workspace, work → `salaryhero`.
 Run aven from the repo root; workspace is inferred from cwd. If refs fail
@@ -174,7 +195,8 @@ findings/root cause land as ticket notes (durable resume), fix + regression
 test → note with commit hash → done. Root cause reveals a design flaw →
 route to `feature-plan-aven`. Triage queue: `aven list --ready --label bug`.
 
-Trigger: "implement PMR-ZTVG", "resume the aven feature". Discovery when no
+Trigger: "implement PMR-ZTVG", "implement DP-71" (synced Jira ID), "resume
+the aven feature". Discovery when no
 ref given: `aven list --has-metadata plan-path --open`. No `plan-path`
 metadata → not planned → route back to `feature-plan-aven`. `plan-state`
 present but not `approved` → plan still in draft/review → route back to
@@ -192,7 +214,8 @@ present but not `approved` → plan still in draft/review → route back to
    IS the resume mechanism — done work is trusted unless codebase evidence
    contradicts it.
 
-2. **Read plan.md completely** (`plan-path` from `aven show <REF> --json`).
+2. **Read plan.md completely** (`plan-path` from `aven show <REF> --full` —
+   parse the metadata block; `--json` omits metadata on aven 0.1.39).
    `- [x]` items are done.
 
 3. **Branch** — no automation; if on main, suggest `feat/<slug>` in one
@@ -250,6 +273,8 @@ present but not `approved` → plan still in draft/review → route back to
 | Plans awaiting approval | `aven list --metadata plan-state=review --open` |
 | Unfinished plans | `aven list --metadata plan-state=draft --open` |
 | Approved, ready for tree | `aven list --metadata plan-state=approved --open` |
+| Find ticket by Jira key | `aven list --metadata jira-key=<KEY> --json` |
+| All Jira-synced tickets | `aven list --has-metadata jira-key --json` |
 | See the tree | `aven epic list <REF> [--json]` |
 | Next unblocked phase | `aven list --ready --label phase` |
 | Start / finish work | `aven edit <REF> --status active\|done` |
@@ -258,11 +283,19 @@ present but not `approved` → plan still in draft/review → route back to
 | Group into tree | `aven epic add <child> <feature-epic>` |
 | Workspace sanity | `aven doctor` |
 
+`unknown-metadata-field` on a metadata filter means no ticket has ever carried
+that field (fields register lazily) — read it as "not found". `show --json`
+and `list --json` omit metadata on aven 0.1.39 — read metadata via
+`show --full` text or `--metadata` filters.
+
 ## 6. Boundaries
 
-- Aven flow is **personal projects only**. Jira-linked → `create-plan` /
-  `implement-plan` (taskwarrior + Jira). Legacy TW trees → `feature-plan`.
-- No branch automation, no taskwarrior UUID plumbing, no Jira metadata.
+- Aven flow covers **aven tickets** — local (personal projects) or
+  Jira-synced (`jira-key` metadata). Jira-linked but NOT synced →
+  `create-plan` / `implement-plan` (taskwarrior + Jira). Legacy TW trees →
+  `feature-plan`.
+- No branch automation, no taskwarrior UUID plumbing, no live Jira
+  interaction (no acli, no writes/transitions).
 - `implement-plan-aven` never authors plans; ad-hoc bugs without a plan →
   direct fix or `/skill:debug`.
 - Task refs stay local — never in commit messages, PR descriptions, or
