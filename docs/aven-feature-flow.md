@@ -56,19 +56,22 @@ Statuses used: `inbox → todo → active → done`. Labels: `phase`, `impl`.
 ```text
 aven add "Add dark mode"            # ticket lands in inbox (or --status todo)
         │
-        ▼  feature-plan-aven, stage 1 (author)
-pickup → scout → path → interview → planner writes plan.md
-        → plan-state=review         ★ gate: NO tree yet
-        │
-        ▼  user reviews (possibly a later session)
+        ├─ oneshot? (description is a complete spec, single commit) ─┐
+        │   "oneshot REF" → worker → tests → commit → done          │
+        │                                                            │
+        ▼  feature-plan-aven, stage 1 (author)                       │
+pickup → scout → path → interview → planner writes plan.md           │
+        → plan-state=review         ★ gate: NO tree yet              │
+        │                                                            │
+        ▼  user reviews (possibly a later session)                   │
 "iterate plan REF" → load plan.md, iterate   |   "approve REF" → plan-state=approved
-        │
-        ▼  feature-plan-aven, stage 2 (tree)
+        │                                                            │
+        ▼  feature-plan-aven, stage 2 (tree)                         │
 aven output contract → phases/subtasks as epic children, each with plan-path
-        │
-        ▼  implement-plan-aven
+        │                                                            │
+        ▼  implement-plan-aven                                       │
 pull tree → read plan.md → branch → per-phase loop (active → subtasks →
-test → verify gate → commit → done) → close feature
+test → verify gate → commit → done) → close feature                  │
 ```
 
 ## 3. Phase A: Planning (`feature-plan-aven`)
@@ -151,6 +154,11 @@ with `unknown-ref`, check routing with `aven doctor`.
    identical contract commands.
 
 ## 4. Phase B: Implementation (`implement-plan-aven`)
+
+**Oneshot shortcut**: a ticket whose description is already a complete spec
+(small, single-commit) skips planning entirely — "oneshot <REF>": status
+active → one worker with the description as spec → tests → commit → note +
+done. No plan.md, no tree. Vague description → clarify or route to planning.
 
 Trigger: "implement PMR-ZTVG", "resume the aven feature". Discovery when no
 ref given: `aven list --has-metadata plan-path --open`. No `plan-path`

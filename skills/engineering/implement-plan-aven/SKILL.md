@@ -1,6 +1,6 @@
 ---
 name: implement-plan-aven
-description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (e.g. PMR-ZTVG), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Use when the user says "implement PMR-ZTVG", "start work on <aven-ref>", "resume the aven feature", or names an aven ticket whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
+description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (e.g. PMR-ZTVG), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Tickets with a self-sufficient description and no plan can instead be executed directly as oneshots (single worker, single commit). Use when the user says "implement PMR-ZTVG", "start work on <aven-ref>", "resume the aven feature", "oneshot <aven-ref>", or names an aven ticket whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
 ---
 
 # Implement Plan (Aven)
@@ -23,10 +23,41 @@ If no ref is given, discover candidates:
 aven list --has-metadata plan-path --open   # features with plans, not yet executed
 ```
 
-If several match, ask which one. If the ticket has no `plan-path` metadata,
-stop: it hasn't been planned — route to `feature-plan-aven`. If the ticket
-has `plan-state` metadata that is not `approved`, stop: the plan is still in
-draft/review — route back to `feature-plan-aven` to finish or approve it.
+If several match, ask which one. If the ticket has no `plan-path` metadata
+and no epic children, it is either unplanned or a **oneshot** — ask the user
+which, then route to `feature-plan-aven` or follow "Oneshot execution"
+below. If the ticket has `plan-state` metadata that is not `approved`, stop:
+the plan is still in draft/review — route back to `feature-plan-aven` to
+finish or approve it.
+
+## Oneshot execution — ticket without a plan
+
+For tickets whose description is already a complete spec: small, single-
+commit changes that don't need a plan.md or a tree. Trigger: "oneshot
+<REF>", or "implement <REF>" on a plan-less ticket after the user confirms
+the oneshot route.
+
+1. Sanity-check the description: it must state what to build and done-when.
+   Vague → ask targeted questions and record answers via
+   `aven note <REF> --stdin`. Grows legs → route to `feature-plan-aven`.
+2. `aven edit <REF> --status active`
+3. Load `/skill:coding-standards` + `/skill:tdd-workflow`. Spawn one `worker`
+   subagent with the description as the spec (tests first, run them, show
+   output; do NOT commit, do NOT touch aven). No worker tool → implement
+   inline.
+4. Review the diff; `run_tests({})`.
+5. Present a commit message, wait for confirmation, commit.
+6. Leave the outcome on the ticket and close it:
+
+   ```bash
+   aven note <REF> --stdin <<'EOF'
+   Oneshot: <what was done>. Commit <hash>.
+   EOF
+   aven edit <REF> --status done
+   ```
+
+No plan.md, no tree, no phase gates. If the work balloons past one commit,
+stop and route to `feature-plan-aven`.
 
 ## Aven data model — what to expect
 
@@ -209,5 +240,5 @@ continuing.
 
 - **Authoring plans** → `feature-plan-aven`
 - **Jira-linked work** → `implement-plan` (taskwarrior/jira flow)
-- **Ad-hoc bugs with no plan** → handle directly or `/skill:debug`; this
-  skill needs a plan.md + tree to drive from
+- **Debugging** → `/skill:debug`; oneshot execution is for described changes,
+  not diagnosis
