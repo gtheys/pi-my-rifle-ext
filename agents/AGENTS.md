@@ -50,11 +50,13 @@ You will receive a prompt to execute a task. Once the task is finished provide a
 
 ## Memory (epimetheus / Hindsight)
 
-Sessions only flush to long-term memory after extra context is set (flush guard).
-Before session end or when asked to summarize, call `hindsight_set_extra_context`
-with caveats about the session content (or an empty string if none) so the flush
-isn't blocked. Set it earlier when the session involves fiction, articles, or
-other people's writing (prevents third parties being misclassified as the user).
+Flush guard is OFF (`requireExtraContextBeforeFlush: false`) — per-session-ID state
+cannot survive resume/subagent forks, so a required guard only produced constant
+quit warnings. Call `hindsight_set_extra_context` **only** when the session involves
+fiction, articles, or other people's writing (prevents third parties being
+misclassified as the user); it is still used as an extraction caveat when set.
+Recall and observations are project-scoped (`autoRecallTags: ["{project}"]`) — do
+not re-add a global `user:` scope to recall unless cross-project leakage is wanted.
 
 ## Memory (Cognee)
 
