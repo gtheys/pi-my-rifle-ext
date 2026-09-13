@@ -240,7 +240,7 @@ inline; same steps otherwise. When in doubt, spawn the worker.
 
    ```
    Ready to commit:
-     git add -u && git commit -m "feat(<scope>): Phase <N> - <name> ..."
+     git add -u && git commit -m "feat(<scope>): <name> ..."
 
    Confirm to commit, or edit the message.
    ```
