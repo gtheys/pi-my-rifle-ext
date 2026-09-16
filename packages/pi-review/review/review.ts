@@ -145,6 +145,8 @@ export interface PrWorktreeInfo {
   path: string
   workspaceId: string
   branch: string
+  /** Outstanding async jobs (reviewer, ocr scout); worktree removed at 0. */
+  pending: number
 }
 
 const prWorktrees = new Map<number, PrWorktreeInfo>()
@@ -602,6 +604,7 @@ async function preparePrWorktree(
     path: created.path,
     workspaceId: created.workspaceId,
     branch,
+    pending: 0,
   }
   prWorktrees.set(prNumber, info)
   return info
@@ -1258,6 +1261,103 @@ export default function reviewExtension(pi: ExtensionAPI) {
     )
   }
 
+  // AIDEV-NOTE: worktree removal is refcounted. A PR review worktree may
+  // host two async jobs (reviewer subagent + ocr scout); each calls
+  // prWorktreeJobDone on completion and the last one out removes the
+  // worktree + branch. Job count is set BEFORE spawning to close the
+  // fast-finisher race.
+  function prWorktreeJobDone(ctx: ExtensionContext, prNumber: number): void {
+    const info = prWorktrees.get(prNumber)
+    if (!info) return
+    info.pending -= 1
+    if (info.pending <= 0) {
+      void removePrWorktree(pi, ctx, prNumber, info)
+    }
+  }
+
+  // AIDEV-NOTE: ocr (OpenCodeReview) second opinion. When the `ocr` binary
+  // exists, a scout subagent runs `ocr review --from <base> --to <ref>` in
+  // the review cwd and its raw output steers back as an ocr_result message.
+  // Pure runner — the scout must not analyze, just return the output.
+  function deliverOcrResult(prNumber: number, result: SubagentResult) {
+    const failed = result.exitCode !== 0 || !!result.errorMessage
+    const content = failed
+      ? `ocr review failed (PR #${prNumber}): ${result.errorMessage ?? `exit code ${result.exitCode}`}`
+      : `ocr review finished (PR #${prNumber}). Output:
+
+${result.summary}`
+
+    pi.sendMessage(
+      {
+        customType: 'ocr_result',
+        content,
+        display: true,
+        details: { prNumber, failed, sessionFile: result.sessionFile },
+      },
+      { triggerTurn: true, deliverAs: 'steer' },
+    )
+  }
+
+  async function startOcrReview(
+    ctx: ExtensionCommandContext,
+    prNumber: number,
+    baseBranch: string,
+    toRef: string,
+    reviewCwd: string,
+  ): Promise<boolean> {
+    const task = [
+      'Run an OpenCodeReview pass and return its output. You are a pure command runner.',
+      `Run exactly: ocr review --from ${baseBranch} --to ${toRef}`,
+      'If the command fails, still return its full error output.',
+      'Do NOT analyze, summarize, review, or fix anything. Do NOT explore the codebase.',
+      'Your final message must be the command output verbatim (stdout and stderr).',
+    ].join('\n')
+
+    try {
+      const running = await launchSubagent(
+        {
+          agent: 'scout',
+          name: `ocr: PR #${prNumber}`,
+          task,
+          cwd: reviewCwd,
+        },
+        ctx,
+      )
+
+      ctx.ui.notify(
+        `ocr review for PR #${prNumber} running in a scout pane — output arrives here when done.`,
+        'info',
+      )
+
+      watchSubagent(running, new AbortController().signal)
+        .then((result) => {
+          deliverOcrResult(prNumber, result)
+          prWorktreeJobDone(ctx, prNumber)
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err)
+          deliverOcrResult(prNumber, {
+            name: `ocr: PR #${prNumber}`,
+            task,
+            summary: `Watcher error: ${message}`,
+            sessionFile: undefined,
+            exitCode: 1,
+            elapsed: 0,
+            errorMessage: message,
+          })
+          prWorktreeJobDone(ctx, prNumber)
+        })
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      ctx.ui.notify(
+        `ocr scout spawn failed (${message}). Continuing without ocr.`,
+        'warning',
+      )
+      return false
+    }
+  }
+
   async function startSubagentReview(
     ctx: ExtensionCommandContext,
     fullPrompt: string,
@@ -1282,11 +1382,9 @@ export default function reviewExtension(pi: ExtensionAPI) {
       )
 
       watchSubagent(running, new AbortController().signal)
-        .then(async (result) => {
-          if (worktree) {
-            await removePrWorktree(pi, ctx, worktree.prNumber, worktree.info)
-          }
+        .then((result) => {
           deliverSubagentReviewResult(hint, result)
+          if (worktree) prWorktreeJobDone(ctx, worktree.prNumber)
         })
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err)
@@ -1299,16 +1397,18 @@ export default function reviewExtension(pi: ExtensionAPI) {
             elapsed: 0,
             errorMessage: message,
           })
+          if (worktree) prWorktreeJobDone(ctx, worktree.prNumber)
         })
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       // With a PR worktree the legacy in-session fallback would review the
-      // wrong tree (main checkout, not the PR) — clean up and abort instead.
+      // wrong tree (main checkout, not the PR) — count the failed job, which
+      // also removes the worktree if no other job holds it, and abort.
       if (worktree) {
-        await removePrWorktree(pi, ctx, worktree.prNumber, worktree.info)
+        prWorktreeJobDone(ctx, worktree.prNumber)
         ctx.ui.notify(
-          `Subagent spawn failed (${message}). PR review aborted — the worktree was removed; retry with /review pr.`,
+          `Subagent spawn failed (${message}). PR review aborted — the worktree is removed when remaining jobs finish; retry with /review pr.`,
           'error',
         )
         return true
@@ -1356,14 +1456,46 @@ export default function reviewExtension(pi: ExtensionAPI) {
         target.type === 'pullRequest' && target.worktree
           ? { prNumber: target.prNumber, info: target.worktree }
           : undefined
+      const reviewCwd =
+        target.type === 'pullRequest' ? target.worktree?.path : undefined
+      // Reserve both worktree jobs up front (reviewer + ocr scout) so a
+      // fast-finishing reviewer can't tear the worktree out from under ocr.
+      if (prWorktree) prWorktree.info.pending = 2
+
       const spawned = await startSubagentReview(
         ctx,
         fullPrompt,
         hint,
-        target.type === 'pullRequest' ? target.worktree?.path : undefined,
+        reviewCwd,
         prWorktree,
       )
-      if (spawned) return
+
+      if (spawned) {
+        // AIDEV-NOTE: ocr second opinion — scout runs `ocr review` on the
+        // PR diff when the binary exists; skips silently otherwise.
+        let ocrSpawned = false
+        if (target.type === 'pullRequest' && (await commandExists(pi, 'ocr'))) {
+          const toRef = prWorktree ? prWorktree.info.branch : 'HEAD'
+          ocrSpawned = await startOcrReview(
+            ctx,
+            target.prNumber,
+            target.baseBranch,
+            toRef,
+            reviewCwd ?? ctx.cwd,
+          )
+        }
+        if (prWorktree && !ocrSpawned) {
+          prWorktreeJobDone(ctx, prWorktree.prNumber)
+        }
+        return
+      }
+
+      if (prWorktree) {
+        // Reviewer spawn failed and aborted the PR review — release the
+        // never-started ocr reservation so the worktree cleans up.
+        prWorktreeJobDone(ctx, prWorktree.prNumber)
+        return
+      }
     }
 
     // Legacy in-session path (no mux, or subagent spawn failed)
