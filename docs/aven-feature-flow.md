@@ -71,18 +71,22 @@ never planned, edited, or re-parented.
 KEY=DP-71
 # 1) Synced ticket — search the WHOLE workspace (omit --project); synced
 #    tickets live in their Jira project's aven project, not the repo's
-JIRA_REF=$(aven list --metadata jira-key=$KEY --json \
+JIRA_REF=$(aven list --metadata jira-key=$KEY --json 2>/dev/null \
   | jq -r '.[] | select(.is_epic != true) | .ref' | head -1)
 # [] / `unknown-metadata-field` → never synced → not aven-managed
+# (aven errors print on stderr — never merge 2>&1 into the jq pipe)
 
 # 2) Repo's aven project — mapped? (projects infer from path mappings)
 aven project path list --workspace salaryhero
 # repo path unmapped → create + map in one shot (name = repo dir name)
 aven project create "$(basename "$PWD")" --path "$PWD" --workspace salaryhero
 
-# 3) Existing epic for THIS repo + ticket? (`jira-ref` marks pulled-in epics)
-EPIC_REF=$(aven list --metadata jira-ref=$KEY --json \
+# 3) Existing epic for THIS repo + ticket? (`jira-ref` marks pulled-in epics;
+#    <repo-project-key> = the repo project's key from `aven project list`)
+EPIC_REF=$(aven list --metadata jira-ref=$KEY --json 2>/dev/null \
   | jq -r --arg p <repo-project-key> '.[] | select(.project == $p) | .ref' | head -1)
+# empty / `unknown-metadata-field` (lazy registration — no epic ever pulled
+# in yet) → not found → create below
 
 # 4) Missing → create the epic in the repo's project, dep-link the synced ticket
 EPIC_REF=$(aven add "$KEY — <synced summary>" --epic --status todo \
