@@ -57,20 +57,58 @@ Statuses used: `inbox → todo → active → done`. Labels: `phase`, `impl`.
 ### Jira-synced tickets
 
 Tickets synced from Jira by `jira-aven-sync` carry `jira-key`, `jira-url`,
-and `jira-status` metadata plus the `jira` label. They flow through the same
-gate and tree, with three deltas:
+and `jira-status` metadata plus the `jira` label. They live in the Jira
+project's aven project (`dp`, `imp`, `devops` in the `salaryhero` workspace)
+— **not** in the repo the flow runs from. Work on a synced ticket happens
+on a **local epic pulled into the repo's own aven project**, dep-linked to
+the synced ticket. The synced ticket is context + upstream record; it is
+never planned, edited, or re-parented.
 
-- **Lookup**: an aven ref resolves via `aven show`; a Jira ID via
-  `aven list --metadata jira-key=<KEY> --json`. `unknown-metadata-field`
-  means "never synced" — treat as not found.
+**Pull-in (find-or-create)** — run from the repo root before the flow;
+`<REF>` for the whole flow is the local epic:
+
+```bash
+KEY=DP-71
+# 1) Synced ticket — search the WHOLE workspace (omit --project); synced
+#    tickets live in their Jira project's aven project, not the repo's
+JIRA_REF=$(aven list --metadata jira-key=$KEY --json \
+  | jq -r '.[] | select(.is_epic != true) | .ref' | head -1)
+# [] / `unknown-metadata-field` → never synced → not aven-managed
+
+# 2) Repo's aven project — mapped? (projects infer from path mappings)
+aven project path list --workspace salaryhero
+# repo path unmapped → create + map in one shot (name = repo dir name)
+aven project create "$(basename "$PWD")" --path "$PWD" --workspace salaryhero
+
+# 3) Existing epic for THIS repo + ticket? (`jira-ref` marks pulled-in epics)
+EPIC_REF=$(aven list --metadata jira-ref=$KEY --json \
+  | jq -r --arg p <repo-project-key> '.[] | select(.project == $p) | .ref' | head -1)
+
+# 4) Missing → create the epic in the repo's project, dep-link the synced ticket
+EPIC_REF=$(aven add "$KEY — <synced summary>" --epic --status todo \
+  --metadata jira-ref=$KEY \
+  --description "Jira $KEY — source of truth: synced ticket $JIRA_REF." \
+  2>&1 | grep -oP 'created \K\S+')
+aven dep add $EPIC_REF $JIRA_REF   # epic blocked-by synced ticket; deps survive sync
+```
+
+Deltas from the local flow:
+
+- **Lookup**: a Jira ID resolves workspace-wide via `jira-key` (step 1),
+  then to the repo's epic via `jira-ref` (step 3). One epic per repo per
+  ticket — two repos pulling the same ticket get sibling epics, each
+  filtered by its repo's project key.
+- **Feature ticket = local epic**: `plan-path`, `plan-state`, notes, and
+  the whole tree live on the epic. Title format `KEY — summary`.
 - **Context + path**: context = synced description + `jira-url` (no live
   acli); plan.md path comes from `resolve_spec_path` (specs dir), not
   `resolve_feature_path`.
 - **Sync-safety**: sync overwrites title, status, priority, description,
-  labels, and `jira-status` on every run — planning data lives in notes +
-  `plan-path`/`plan-state` metadata, which survive. Never store planning data
-  in `--description`; the gate never relies on aven status. Tree children are
-  created without `jira-key`, so sync never sees them.
+  labels, and `jira-status` on the **synced ticket** every run. The local
+  epic is invisible to sync — everything on it (even `--description`) is
+  durable. The `dep` link survives sync (deps aren't in the overwrite
+  list). Legacy trees planned directly on a synced epic still work — step 1
+  filters `is_epic` out of the synced lookup.
 
 ## 2. Lifecycle overview
 
@@ -82,6 +120,10 @@ gate and tree, with three deltas:
   / nothing (understanding was the goal).
 
 aven add "Add dark mode"            # ticket lands in inbox (or --status todo)
+        │
+Jira ID? pull-in first (§1): find synced ticket (jira-key, workspace-wide) →
+find-or-create local epic in the repo's project (jira-ref) → dep add EPIC JIRA.
+The flow then runs on the EPIC, never on the synced ticket.
         │
         ├─ oneshot? (description is a complete spec, single commit) ─┐
         │   "oneshot REF" → worker → tests → commit → done          │
@@ -116,8 +158,9 @@ with `unknown-ref`, check routing with `aven doctor`.
 
 ### Steps
 
-1. **Pickup** — `aven show <REF> --full` + `aven context <REF>`. Skim
-   README/AGENTS.md/package.json enough to brief the scout.
+1. **Pickup** — Jira ID? Run the pull-in (§1) first; `<REF>` from here on
+   is the local epic. Then `aven show <REF> --full` + `aven context <REF>`.
+   Skim README/AGENTS.md/package.json enough to brief the scout.
 
 2. **Scout** — read-only `scout` subagent maps the affected area (file
    structure, modules, conventions, similar features) into
@@ -195,8 +238,8 @@ findings/root cause land as ticket notes (durable resume), fix + regression
 test → note with commit hash → done. Root cause reveals a design flaw →
 route to `feature-plan-aven`. Triage queue: `aven list --ready --label bug`.
 
-Trigger: "implement PMR-ZTVG", "implement DP-71" (synced Jira ID), "resume
-the aven feature". Discovery when no
+Trigger: "implement PMR-ZTVG", "implement DP-71" (synced Jira ID — pull-in
+first, §1), "resume the aven feature". Discovery when no
 ref given: `aven list --has-metadata plan-path --open`. No `plan-path`
 metadata → not planned → route back to `feature-plan-aven`. `plan-state`
 present but not `approved` → plan still in draft/review → route back to
@@ -274,6 +317,10 @@ present but not `approved` → plan still in draft/review → route back to
 | Unfinished plans | `aven list --metadata plan-state=draft --open` |
 | Approved, ready for tree | `aven list --metadata plan-state=approved --open` |
 | Find ticket by Jira key | `aven list --metadata jira-key=<KEY> --json` |
+| Find pulled-in epic by Jira key | `aven list --metadata jira-ref=<KEY> --json` |
+| Repo ↔ project mappings | `aven project path list --workspace salaryhero` |
+| Create + map a repo project | `aven project create <repo> --path <repo> --workspace salaryhero` |
+| Blockers + dependents of a task | `aven dep list <REF> [--json]` |
 | All Jira-synced tickets | `aven list --has-metadata jira-key --json` |
 | See the tree | `aven epic list <REF> [--json]` |
 | Next unblocked phase | `aven list --ready --label phase` |
@@ -291,9 +338,9 @@ and `list --json` omit metadata on aven 0.1.39 — read metadata via
 ## 6. Boundaries
 
 - Aven flow covers **aven tickets** — local (personal projects) or
-  Jira-synced (`jira-key` metadata). Jira-linked but NOT synced →
-  `create-plan` / `implement-plan` (taskwarrior + Jira). Legacy TW trees →
-  `feature-plan`.
+  Jira-linked (synced ticket + pulled-in epic, §1). Jira-linked but NOT
+  synced → `create-plan` / `implement-plan` (taskwarrior + Jira). Legacy TW
+  trees → `feature-plan`.
 - No branch automation, no taskwarrior UUID plumbing, no live Jira
   interaction (no acli, no writes/transitions).
 - `implement-plan-aven` never authors plans; ad-hoc bugs without a plan →

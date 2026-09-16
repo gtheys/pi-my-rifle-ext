@@ -1,6 +1,6 @@
 ---
 name: implement-plan-aven
-description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (aven ref, e.g. PMR-ZTVG, or Jira ID of an aven-synced ticket, e.g. DP-71 — resolved via jira-key metadata), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Optional worktree mode — the feature executes in an isolated Herdr worktree (worktree create → workers spawn into it → finish/PR → remove). Tickets with a self-sufficient description and no plan can be executed directly as oneshots (single worker, single commit). Use when the user says "implement PMR-ZTVG", "implement DP-71", "start work on <aven-ref>", "resume the aven feature", "implement <REF> in a worktree", "oneshot <aven-ref>", or names an aven ticket or synced Jira ID whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
+description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (aven ref, e.g. PMR-ZTVG, or Jira ID of an aven-synced ticket, e.g. DP-71 — pulled into the repo's aven project as a local epic via the find-or-create pull-in, `jira-ref` metadata, dep-linked to the synced ticket), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Optional worktree mode — the feature executes in an isolated Herdr worktree (worktree create → workers spawn into it → finish/PR → remove). Tickets with a self-sufficient description and no plan can be executed directly as oneshots (single worker, single commit). Use when the user says "implement PMR-ZTVG", "implement DP-71", "start work on <aven-ref>", "resume the aven feature", "implement <REF> in a worktree", "oneshot <aven-ref>", or names an aven ticket or synced Jira ID whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
 ---
 
 # Implement Plan (Aven)
@@ -15,18 +15,44 @@ it, it does not redefine it).
 ## Input contract
 
 The user provides a **feature ref** — an aven ref (e.g. `PMR-ZTVG`) or a Jira
-ID (e.g. `DP-71`) of a synced ticket. Resolve Jira IDs to aven refs with the
-two-step detection (shared wording with feature-plan-aven):
+ID (e.g. `DP-71`) of a synced ticket.
+
+**Aven ref**: `aven show <INPUT> --json` (ref lookup only — JSON omits
+metadata). `unknown-ref` may mean wrong workspace: run `aven doctor`, retry
+with `--workspace <name>`.
+
+**Jira ID**: run the **Jira pull-in (find-or-create epic)** from the repo
+root FIRST — shared wording with feature-plan-aven. The epic is the feature
+ref for the rest of this skill:
 
 ```bash
-aven show <INPUT> --json || true                # aven ref? (ref lookup only — JSON omits metadata)
-aven list --metadata jira-key=<INPUT> --json    # Jira ID? → item .ref
-# unknown-ref + empty/`unknown-metadata-field` lookup → not aven-managed → Jira-only work; no local execution
+KEY=DP-71
+# 1) Synced ticket — search the WHOLE workspace (omit --project); synced
+#    tickets live in their Jira project's aven project (dp/imp/devops),
+#    not the repo's. Filter out legacy epics planned directly on the ticket.
+JIRA_REF=$(aven list --metadata jira-key=$KEY --json \
+  | jq -r '.[] | select(.is_epic != true) | .ref' | head -1)
+# [] / `unknown-metadata-field` → never synced → Jira-only work; no local execution
+
+# 2) Repo's aven project — mapped? (projects infer from path mappings)
+aven project path list --workspace salaryhero
+# repo path unmapped → create + map in one shot (name = repo dir name)
+aven project create "$(basename "$PWD")" --path "$PWD" --workspace salaryhero
+
+# 3) Existing epic for THIS repo + ticket? (`jira-ref` marks pulled-in epics)
+EPIC_REF=$(aven list --metadata jira-ref=$KEY --json \
+  | jq -r --arg p <repo-project-key> '.[] | select(.project == $p) | .ref' | head -1)
+
+# 4) Missing → create the epic in the repo's project, dep-link the synced ticket
+EPIC_REF=$(aven add "$KEY — <synced summary>" --epic --status todo \
+  --metadata jira-ref=$KEY \
+  --description "Jira $KEY — source of truth: synced ticket $JIRA_REF." \
+  2>&1 | grep -oP 'created \K\S+')
+aven dep add $EPIC_REF $JIRA_REF   # epic blocked-by synced ticket; deps survive sync
 ```
 
-`unknown-metadata-field` means no ticket has ever carried `jira-key` (fields
-register lazily) — treat as "not found", not a failure. Wrong workspace also
-yields `unknown-ref`: run `aven doctor`, retry with `--workspace <name>`.
+The epic is a local task — sync never touches it. The synced ticket is
+context + upstream record only.
 
 ### Workspace selection — personal vs salaryhero
 
@@ -34,9 +60,9 @@ The ref's workspace decides the flavor of the run, not the mechanics:
 
 | | **personal** | **salaryhero** |
 |---|---|---|
-| Comes from | free-text `/plan` (local feature) | Jira ticket synced via `jira-key` metadata |
-| Source of truth | the aven ticket itself | Jira (aven copy is sync-owned: description edits get overwritten — use `aven note`) |
-| Branch | suggested `feat/<slug>` (no automation) | `jira_create_branch` from the Jira key |
+| Comes from | free-text `/plan` (local feature) | Jira ticket pulled in as a local epic (`jira-ref` metadata, dep-linked to the synced ticket) |
+| Source of truth | the aven ticket itself | Jira; execution on the local epic (sync never touches it), spec context from the synced ticket |
+| Branch | suggested `feat/<slug>` (no automation) | `jira_create_branch` from the epic's `jira-ref` value |
 | PR | optional (pushing to a personal remote directly is fine) | required — PR review is the gate |
 
 Both workspaces run the same execution loop; only branch/PR behavior differs.
@@ -66,13 +92,15 @@ commit changes that don't need a plan.md or a tree. Trigger: "oneshot
 <REF>", or "implement <REF>" on a plan-less ticket after the user confirms
 the oneshot route.
 
-Synced tickets (jira-key metadata) can be oneshots too — but their description
-is sync-owned: record clarifications and the outcome via `aven note`, never
-via `--description` edits (sync overwrites them).
+Jira-linked epics (`jira-ref` metadata) can be oneshots too — the spec lives
+on the SYNCED ticket's description (read it via the dep link / `$JIRA_REF`);
+record clarifications and the outcome via `aven note` on the epic.
 
 1. Sanity-check the description: it must state what to build and done-when.
-   Vague → ask targeted questions and record answers via
-   `aven note <REF> --stdin`. Grows legs → route to `feature-plan-aven`.
+   For a Jira-linked epic, that check runs against the synced ticket's
+   description (`aven show $JIRA_REF --full`). Vague → ask targeted questions
+   and record answers via `aven note <REF> --stdin`. Grows legs → route to
+   `feature-plan-aven`.
 2. `aven edit <REF> --status active`
 3. Load `/skill:coding-standards` + `/skill:tdd-workflow`. Spawn one `worker`
    subagent with the description as the spec (tests first, run them, show
@@ -175,7 +203,7 @@ All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
    ```bash
    worktree({
      action: 'create',
-     jira_id: '<jira-key>',        // synced tickets: branch derives from Jira
+     jira_id: '<jira-ref value>',  // Jira-linked epics: branch derives from Jira
      name: '<feature-slug>',       // personal features: slug from the epic title
    })
    ```
@@ -200,17 +228,18 @@ All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
 explicit user request, or when `pi-worktree` is unavailable. Behaves exactly
 like the pre-worktree flow:
 
-Check the `jira-key` metadata in the `aven show <FEATURE_REF> --full` output
-from Step 2.
+Check the `jira-ref` metadata in the `aven show <FEATURE_REF> --full` output
+from Step 2 (Jira-linked epic pulled in from a synced ticket).
 
-**Not synced** (no `jira-key`): no branch automation (personal features). If
-on `main`/`master` and about to edit, suggest one branch name (e.g.
+**Not Jira-linked** (no `jira-ref`): no branch automation (personal features).
+If on `main`/`master` and about to edit, suggest one branch name (e.g.
 `feat/<feature-slug>`) — one sentence, no tool call. Otherwise stay put.
 
-**Synced** (`jira-key` present): derive the branch with `jira_create_branch`
-(from the `pi-planning` package), `cwd` set to the target repo root:
+**Jira-linked** (`jira-ref` present): derive the branch with
+`jira_create_branch` (from the `pi-planning` package) using the `jira-ref`
+value as the Jira ID, `cwd` set to the target repo root:
 
-1. `jira_create_branch({ jira_id: "<jira-key>", cwd: "<repo root>", dry_run: true })` — `details.branch` is the expected branch (`<prefix>/<JIRA_ID>-<slug>`).
+1. `jira_create_branch({ jira_id: "<jira-ref value>", cwd: "<repo root>", dry_run: true })` — `details.branch` is the expected branch (`<prefix>/<JIRA_ID>-<slug>`).
 2. `git rev-parse --abbrev-ref HEAD` to check the current branch.
 3. On the expected branch → continue. Branch exists but not checked out → `git checkout <branch>`. Missing → call `jira_create_branch` without `dry_run` (creates branch, sets git-town parent).
 
@@ -363,9 +392,10 @@ In-place mode — after the final phase is committed:
 aven edit <FEATURE_REF> --status done
 ```
 
-On synced tickets the aven status is sync-owned (jira-aven-sync remaps it from
-Jira on every run) — the `aven note` is the durable close record; the status
-edit is best-effort.
+Jira-linked epics are local — `aven edit <FEATURE_REF> --status done` is
+durable. The synced ticket's status stays sync-owned (jira-aven-sync remaps
+it from Jira on every run): never edit it; the epic + its `aven note` are
+the close record.
 
 Report completion with the plan.md path and the commit list.
 
@@ -381,7 +411,8 @@ it, never create a second worktree for the same feature.
 
 - **Authoring plans** → `feature-plan-aven`
 - **Jira-linked but NOT aven-synced work** → work happens in Jira directly;
-  only aven-managed tickets (synced via jira-key metadata) execute here
+  synced Jira tickets execute here only as their pulled-in local epic
+  (`jira-ref`), never as the synced task itself
 - **Merging PRs** → stays human/manual; this skill pushes and opens the PR,
   never merges
 - **Debugging** → `/skill:debug`; oneshot execution is for described changes,

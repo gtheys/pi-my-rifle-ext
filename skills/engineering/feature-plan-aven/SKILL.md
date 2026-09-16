@@ -1,6 +1,6 @@
 ---
 name: feature-plan-aven
-description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — resolved via jira-key metadata), or phrases like "plan this aven ticket", "aven feature plan" for a personal project. Aven tickets carrying jira-key metadata (from jira-aven-sync) are planned here too — always in the aven workspace routed to the current directory (salaryhero / personal).
+description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — pulled into the repo's aven project as a local epic via the find-or-create pull-in, `jira-ref` metadata, dep-linked to the synced ticket), or phrases like "plan this aven ticket", "aven feature plan". Always plan in the aven workspace routed to the current directory (salaryhero / personal).
 ---
 
 # Feature Plan (Aven)
@@ -57,35 +57,67 @@ flowchart TD
 ### 1. Pickup (~30s)
 
 **Ticket lookup and Jira detection.** Input may be an aven ref (`PMR-ZTVG`) or
-a Jira ID (`DP-71`) of a synced ticket. Resolve to an aven ref:
+a Jira ID (`DP-71`) of a synced ticket:
 
 ```bash
-aven show <INPUT> --json || true                # aven ref? (ref lookup only — JSON omits metadata)
-aven list --metadata jira-key=<INPUT> --json    # Jira ID? → item .ref
-# unknown-ref + empty/`unknown-metadata-field` lookup → not aven-managed → plan it in Jira directly
+aven show <INPUT> --json || true   # aven ref? (ref lookup only — JSON omits metadata)
+# Jira ID → run the pull-in below; plan on the LOCAL EPIC, never the synced ticket
+# []/`unknown-metadata-field` on step 1 → not aven-managed → plan it in Jira directly
 ```
 
-`unknown-metadata-field` means no ticket has ever carried `jira-key` (fields
-register lazily) — treat as "not found", not a failure. Wrong workspace also
-yields `unknown-ref`: run `aven doctor`, retry with `--workspace <name>`.
+`unknown-ref` may mean wrong workspace: run `aven doctor`, retry with
+`--workspace <name>`.
 
 **Workspace → flow mapping.** aven's two workspaces map to the two origins:
 
 - **personal** — local features; free-text `/plan` lands here. The aven
   ticket is the source of truth; no Jira involvement.
-- **salaryhero** — Jira-synced tickets (`jira-key` metadata). Jira stays the
-  system of record; the synced aven copy drives execution (sync owns the
-  description — record your own context via `aven note`).
+- **salaryhero** — Jira-synced tickets. Jira stays the system of record;
+  execution happens on a **local epic in the repo's aven project**, pulled
+  in and dep-linked to the synced ticket (below). The synced aven copy is
+  context only.
 
 The workspace resolves from the cwd route automatically (`aven doctor` to
 verify). Never plan a salaryhero-routed feature into the personal workspace
 or vice versa — the ref lookup is workspace-scoped.
 
-`aven show <REF> --full` + `aven context <REF>`. For a synced ticket (`jira-key`
-metadata present), context = the synced description + `jira-url` metadata —
-parse the `metadata field_id=… key=K` / `value<<EOF … EOF` blocks from
-`show --full` text; `show --json` omits metadata on aven 0.1.39. No acli, no
-live Jira reads — the synced aven copy is the source. Skim `README.md`,
+**Jira pull-in (find-or-create epic)** — run from the repo root BEFORE any
+other pickup step; `<REF>` for the rest of this skill is the local epic:
+
+```bash
+KEY=DP-71
+# 1) Synced ticket — search the WHOLE workspace (omit --project); synced
+#    tickets live in their Jira project's aven project (dp/imp/devops),
+#    not the repo's. Filter out legacy epics planned directly on the ticket.
+JIRA_REF=$(aven list --metadata jira-key=$KEY --json \
+  | jq -r '.[] | select(.is_epic != true) | .ref' | head -1)
+
+# 2) Repo's aven project — mapped? (projects infer from path mappings)
+aven project path list --workspace salaryhero
+# repo path unmapped → create + map in one shot (name = repo dir name)
+aven project create "$(basename "$PWD")" --path "$PWD" --workspace salaryhero
+
+# 3) Existing epic for THIS repo + ticket? (`jira-ref` marks pulled-in epics)
+EPIC_REF=$(aven list --metadata jira-ref=$KEY --json \
+  | jq -r --arg p <repo-project-key> '.[] | select(.project == $p) | .ref' | head -1)
+
+# 4) Missing → create the epic in the repo's project, dep-link the synced ticket
+EPIC_REF=$(aven add "$KEY — <synced summary>" --epic --status todo \
+  --metadata jira-ref=$KEY \
+  --description "Jira $KEY — source of truth: synced ticket $JIRA_REF." \
+  2>&1 | grep -oP 'created \K\S+')
+aven dep add $EPIC_REF $JIRA_REF   # epic blocked-by synced ticket; deps survive sync
+```
+
+The epic is a local task — sync never touches it, so everything on it
+(`plan-path`, `plan-state`, notes, even `--description`) is durable.
+
+`aven show <REF> --full` + `aven context <REF>`. For a pulled-in epic, the
+spec context comes from the synced ticket: its description + `jira-url`
+metadata via `aven show $JIRA_REF --full` — parse the
+`metadata field_id=… key=K` / `value<<EOF … EOF` blocks from `show --full`
+text; `show --json` omits metadata on aven 0.1.39. No acli, no live Jira
+reads — the synced aven copy is the source. Skim `README.md`,
 `AGENTS.md`, `package.json`, and the area the feature touches — just enough to
 brief the scout.
 
@@ -108,8 +140,9 @@ then read the scout context back.
 
 - **Local ticket**: call `resolve_feature_path` with the feature summary (tool
   from pi-planning — taskwarrior-agnostic, reused as-is).
-- **Synced ticket** (`jira-key` metadata): call `resolve_spec_path` with the
-  Jira ID and summary — the plan lands in the specs dir (`<JIRA>__<slug>.md`).
+- **Jira-linked ticket** (`jira-ref` metadata on the epic): call
+  `resolve_spec_path` with the Jira ID and summary — the plan lands in the
+  specs dir (`<JIRA>__<slug>.md`).
 
 Use the returned absolute `plan.md` path verbatim everywhere below — never
 hand-roll it, never shorten it, never `mkdir notes/` yourself.
@@ -150,12 +183,14 @@ aven edit <REF> --epic on --status todo \
 subtask is added as a child of `<REF>` (`aven epic list <REF>` returns the
 whole tree, and the TUI epic view shows it).
 
-**Sync-safety (synced tickets):** jira-aven-sync overwrites title, status,
-priority, description, labels, and `jira-status` on every run — planning data
-lives only in `aven note` and `plan-path`/`plan-state` metadata, which survive
-sync (verified on aven 0.1.39 + jira-aven-sync). Never put planning data in
-`--description`. The `--status todo` edit is harmless but sync-owned — the
-gate is `plan-state` metadata only, never aven status.
+**Sync-safety (Jira-linked tickets):** the local epic is invisible to
+jira-aven-sync — `plan-path`/`plan-state` metadata, notes, and the tree are
+durable as-is (this also means `--epic on`/`--status todo` edits on the epic
+are safe). Only the **synced ticket** is sync-owned: sync overwrites its
+title, status, priority, description, labels, and `jira-status` on every
+run — never plan against it or store planning data on it. The `dep` link
+survives sync (deps are not in the overwrite list). The gate is
+`plan-state` metadata only, never aven status.
 
 ### 6. Spawn the interactive planner
 
@@ -329,7 +364,8 @@ aven status is its ledger entry.
 - Jira-linked work NOT synced to aven: plan it in Jira directly. aven
   workspaces (`salaryhero` / `personal`) split the local execution queues —
   this skill always works in the aven workspace routed to the current
-  directory (`aven doctor` to verify).
+  directory (`aven doctor` to verify). Synced tickets execute on their
+  pulled-in local epic, never on the synced task itself.
 - `implement-plan-aven` — resumes this hierarchy via
   `aven epic list <REF> --json`; resume pointer = first non-done task in
   N./N.M title order. With worktree mode, it also resumes the feature's
