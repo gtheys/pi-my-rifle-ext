@@ -176,7 +176,9 @@ are done. If plan-path metadata is missing, stop and route to
 `feature-plan-aven`.
 
 Every phase and subtask carries its own `plan-path` metadata copy — a worker
-handed only a subtask ref can still locate the plan. Resolve plan-path from
+handed only a subtask ref can still locate the plan — and its own
+implementation summary + acceptance criteria in `--description`, so the
+ticket alone is the executable spec. Resolve plan-path from
 the subtask first, fall back to the feature ticket.
 
 ## Step 3 — Workspace: worktree (default) or in-place
@@ -274,8 +276,11 @@ aven edit <PHASE_REF> --status active
 inline; same steps otherwise. When in doubt, spawn the worker.
 
 1. `aven edit <SUBTASK_REF> --status active`
-2. Read the plan.md section for this subtask fully; skim the files it
-   touches — enough to write a precise worker task.
+2. Read the subtask ticket's own description (`aven show <SUBTASK_REF>
+   --full`) — feature-plan-aven wrote the implementation summary +
+   acceptance criteria into it. Read the matching plan.md section only for
+   wider context; skim the files it touches — enough to write a precise
+   worker task.
 3. Reconcile plan with reality. On mismatch, **stop** and report:
 
    ```
@@ -295,12 +300,12 @@ inline; same steps otherwise. When in doubt, spawn the worker.
      cwd: "<WORKTREE_PATH>",   // worktree mode: workers are born in the worktree
      task: [
        "Subtask: <N.M> <title>",
-       "Plan file: <absolute plan.md path> — read the section for this subtask fully before editing.",
+       "Ticket description (the spec — implement to this, verify against its acceptance criteria):",
+       "<subtask ticket description verbatim: summary + acceptance criteria>",
        "",
-       "<Plan excerpt: changes required, constraints, anti-patterns>",
+       "Plan file: <absolute plan.md path> — read the section for this subtask for wider context only.",
        "",
        "Files: <files to create/modify>",
-       "Acceptance criteria: <from the plan>",
        "",
        "Write tests first, then implementation. Run the relevant tests via bash and show real output.",
        "Do NOT commit. Do NOT touch aven. Report changed files and test results in your final message.",
