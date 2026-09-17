@@ -33,6 +33,10 @@ Without a supported multiplexer (or if spawning fails), `/review` falls back to 
 
 When reviewing a pull request, if `tuicr` and `herdr` are on PATH and the session is running inside Herdr (`HERDR_ENV=1`), `/review` also opens a `tuicr pr <n>` TUI in a Herdr pane on the right, and asks the agent to add its findings into that session via `tuicr review add` (see the `tuicr` skill).
 
+PR reviews are worktree-based by default: with Herdr and a mux available, the PR is fetched into a dedicated `review/pr-<n>` branch in its own Herdr worktree, the reviewer subagent runs there, and the worktree (and its branch) is removed automatically once the review finishes. The main checkout is never touched — a dirty working tree is fine. Without Herdr/mux, the legacy in-place `gh pr checkout` flow is used, which requires a clean tree.
+
+If the `ocr` (OpenCodeReview) binary is on PATH, PR reviews also spawn a scout subagent that runs `ocr review --from <base> --to <pr-branch>` in the review worktree and steers the raw output back as an `ocr_result` message — a second opinion alongside the reviewer findings. The worktree stays alive until both jobs finish.
+
 ---
 
 ## /sonarqube

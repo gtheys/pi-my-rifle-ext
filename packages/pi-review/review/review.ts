@@ -51,6 +51,11 @@ import {
   watchSubagent,
 } from '@gtheys/pi-interactive-subagents'
 import {
+  herdrAvailable,
+  worktreeCreate,
+  worktreeRemove,
+} from '@gtheys/pi-worktree/herdr.ts'
+import {
   buildSemReviewGuidance,
   getSemToolAvailability,
 } from './sem-guidance.mjs'
@@ -128,8 +133,25 @@ type ReviewTarget =
       baseBranch: string
       title: string
       tuicrInstructions?: string
+      worktree?: PrWorktreeInfo
     }
   | { type: 'folder'; paths: string[] }
+
+// AIDEV-NOTE: PR reviews under Herdr run in a dedicated worktree (branch
+// review/pr-<n> fetched from pull/<n>/head) instead of hijacking the main
+// checkout — no clean-tree requirement, current branch untouched. Fresh
+// worktrees get `yarn install` up front (see installWorktreeDeps) so the
+// reviewer subagent can run tests. The worktree is auto-removed (with its
+// branch) when the review finishes.
+export interface PrWorktreeInfo {
+  path: string
+  workspaceId: string
+  branch: string
+  /** Outstanding async jobs (reviewer, ocr scout); worktree removed at 0. */
+  pending: number
+}
+
+const prWorktrees = new Map<number, PrWorktreeInfo>()
 
 // Prompts (adapted from Codex)
 const UNCOMMITTED_PROMPT =
@@ -266,32 +288,33 @@ async function loadProjectReviewGuidelines(
 async function getMergeBase(
   pi: ExtensionAPI,
   branch: string,
+  cwd?: string,
 ): Promise<string | null> {
   try {
     // First try to get the upstream tracking branch
-    const { stdout: upstream, code: upstreamCode } = await pi.exec('git', [
-      'rev-parse',
-      '--abbrev-ref',
-      `${branch}@{upstream}`,
-    ])
+    const { stdout: upstream, code: upstreamCode } = await pi.exec(
+      'git',
+      ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`],
+      { cwd },
+    )
 
     if (upstreamCode === 0 && upstream.trim()) {
-      const { stdout: mergeBase, code } = await pi.exec('git', [
-        'merge-base',
-        'HEAD',
-        upstream.trim(),
-      ])
+      const { stdout: mergeBase, code } = await pi.exec(
+        'git',
+        ['merge-base', 'HEAD', upstream.trim()],
+        { cwd },
+      )
       if (code === 0 && mergeBase.trim()) {
         return mergeBase.trim()
       }
     }
 
     // Fall back to using the branch directly
-    const { stdout: mergeBase, code } = await pi.exec('git', [
-      'merge-base',
-      'HEAD',
-      branch,
-    ])
+    const { stdout: mergeBase, code } = await pi.exec(
+      'git',
+      ['merge-base', 'HEAD', branch],
+      { cwd },
+    )
     if (code === 0 && mergeBase.trim()) {
       return mergeBase.trim()
     }
@@ -443,6 +466,188 @@ async function checkoutPr(
   return { success: true }
 }
 
+// AIDEV-NOTE: worktree-backed PR review. Branch review/pr-<n> is fetched
+// from pull/<n>/head so the PR code lands in a dedicated Herdr worktree —
+// the main checkout (and its dirty state) is never touched. Only used when
+// a mux is available (the reviewer subagent must run with cwd in the
+// worktree; the legacy in-session path cannot).
+function prWorktreeBranch(prNumber: number): string {
+  return `review/pr-${prNumber}`
+}
+
+/** First worktree checkout path holding `branch`, via git porcelain. */
+async function findWorktreeForBranch(
+  pi: ExtensionAPI,
+  cwd: string,
+  branch: string,
+): Promise<string | null> {
+  const { stdout, code } = await pi.exec(
+    'git',
+    ['worktree', 'list', '--porcelain'],
+    { cwd },
+  )
+  if (code !== 0) return null
+
+  let currentPath = ''
+  for (const line of stdout.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      currentPath = line.slice('worktree '.length)
+    }
+    if (line === `branch refs/heads/${branch}`) {
+      return currentPath
+    }
+  }
+  return null
+}
+
+async function removePrWorktree(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  prNumber: number,
+  info: PrWorktreeInfo,
+): Promise<void> {
+  const errors: string[] = []
+  if (info.workspaceId) {
+    try {
+      await worktreeRemove(pi, ctx.cwd, info.workspaceId, true)
+    } catch (error) {
+      errors.push((error as Error).message)
+    }
+  } else {
+    const result = await pi.exec(
+      'git',
+      ['worktree', 'remove', '--force', info.path],
+      { cwd: ctx.cwd },
+    )
+    if (result.code !== 0) {
+      errors.push(result.stderr || result.stdout)
+    }
+  }
+
+  // Branch is a fetched copy of the PR head — force delete is safe.
+  const branch = await pi.exec('git', ['branch', '-D', info.branch], {
+    cwd: ctx.cwd,
+  })
+  if (branch.code !== 0) {
+    errors.push(branch.stderr || branch.stdout)
+  }
+
+  if (errors.length === 0) {
+    prWorktrees.delete(prNumber)
+    ctx.ui.notify(`Removed review worktree for PR #${prNumber}`, 'info')
+    return
+  }
+  ctx.ui.notify(
+    `Worktree cleanup for PR #${prNumber} failed: ${errors.join('; ')} — remove manually when done.`,
+    'warning',
+  )
+}
+
+// AIDEV-NOTE: fresh review worktrees get deps installed up front so the
+// reviewer subagent can run tests immediately. GH_TOKEN from `gh auth
+// token` authenticates private GitHub Packages registries (SalaryHero
+// repos); pi.exec has no env option, so the token is injected via bash -c.
+// Gated on yarn.lock — non-yarn repos (e.g. bun monorepos) are skipped.
+// Install failure only warns: the code-reading part of the review still
+// works without node_modules.
+async function installWorktreeDeps(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  worktreePath: string,
+): Promise<void> {
+  try {
+    await fs.access(path.join(worktreePath, 'yarn.lock'))
+  } catch {
+    return
+  }
+  ctx.ui.notify(
+    'Installing dependencies in review worktree (yarn install)...',
+    'info',
+  )
+  const result = await pi.exec(
+    'bash',
+    ['-c', 'GH_TOKEN=$(gh auth token) yarn install'],
+    { cwd: worktreePath, timeout: 10 * 60 * 1000 },
+  )
+  if (result.code !== 0) {
+    ctx.ui.notify(
+      `yarn install in review worktree failed — tests may not run: ${(result.stderr || result.stdout).slice(-300)}`,
+      'warning',
+    )
+  }
+}
+
+async function preparePrWorktree(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  prNumber: number,
+): Promise<PrWorktreeInfo | null> {
+  const preflight = await herdrAvailable(pi, ctx.cwd)
+  if (!preflight.ok) return null
+
+  const branch = prWorktreeBranch(prNumber)
+
+  const existing = prWorktrees.get(prNumber)
+  if (existing) {
+    ctx.ui.notify(`Reusing review worktree for PR #${prNumber}`, 'info')
+    return existing
+  }
+
+  // AIDEV-NOTE: stale detection uses `git worktree list --porcelain`, NOT
+  // `herdr worktree list` — the herdr listing is focus-scoped and may show
+  // another repo's worktrees. A stale worktree from a dead session is
+  // force-removed (with its branch) before recreating.
+  const stale = await findWorktreeForBranch(pi, ctx.cwd, branch)
+  if (stale) {
+    ctx.ui.notify(
+      `Removing stale review worktree for PR #${prNumber}...`,
+      'info',
+    )
+    await pi.exec('git', ['worktree', 'remove', '--force', stale], {
+      cwd: ctx.cwd,
+    })
+    await pi.exec('git', ['branch', '-D', branch], { cwd: ctx.cwd })
+  }
+
+  const fetch = await pi.exec(
+    'git',
+    ['fetch', '--force', 'origin', `pull/${prNumber}/head:${branch}`],
+    { cwd: ctx.cwd },
+  )
+  if (fetch.code !== 0) {
+    ctx.ui.notify(
+      `Failed to fetch PR ref: ${fetch.stderr || fetch.stdout}`,
+      'error',
+    )
+    return null
+  }
+
+  const created = await worktreeCreate(
+    pi,
+    ctx.cwd,
+    branch,
+    `review-pr-${prNumber}`,
+  ).catch(() => null)
+  if (!created || created.path === '') {
+    ctx.ui.notify(
+      `Failed to create review worktree${created ? ` (no path in output: ${JSON.stringify(created)})` : ''}`,
+      'error',
+    )
+    return null
+  }
+
+  await installWorktreeDeps(pi, ctx, created.path)
+
+  const info: PrWorktreeInfo = {
+    path: created.path,
+    workspaceId: created.workspaceId,
+    branch,
+    pending: 0,
+  }
+  prWorktrees.set(prNumber, info)
+  return info
+}
+
 /**
  * Check whether a binary is available on PATH.
  */
@@ -481,6 +686,7 @@ async function maybeOpenTuicrForPr(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   prNumber: number,
+  reviewCwd?: string,
 ): Promise<string | undefined> {
   if (process.env.HERDR_ENV !== '1') return undefined
   if (!(await commandExists(pi, 'tuicr'))) return undefined
@@ -496,7 +702,7 @@ async function maybeOpenTuicrForPr(
     '--direction',
     'right',
     '--cwd',
-    ctx.cwd,
+    reviewCwd ?? ctx.cwd,
     '--focus',
   ])
   if (split.code !== 0) return undefined
@@ -586,7 +792,11 @@ async function buildReviewPrompt(
       return target.instructions
 
     case 'pullRequest': {
-      const mergeBase = await getMergeBase(pi, target.baseBranch)
+      const mergeBase = await getMergeBase(
+        pi,
+        target.baseBranch,
+        target.worktree?.path,
+      )
       if (mergeBase) {
         return PULL_REQUEST_PROMPT.replace(
           /{prNumber}/g,
@@ -1051,20 +1261,11 @@ export default function reviewExtension(pi: ExtensionAPI) {
   }
 
   /**
-   * Show PR input and handle checkout
+   * Show PR input and handle checkout (delegates to handlePrCheckout)
    */
   async function showPrInput(
     ctx: ExtensionContext,
   ): Promise<ReviewTarget | null> {
-    // First check for pending changes that would prevent branch switching
-    if (await hasPendingChanges(pi)) {
-      ctx.ui.notify(
-        'Cannot checkout PR: you have uncommitted changes. Please commit or stash them first.',
-        'error',
-      )
-      return null
-    }
-
     // Get PR reference from user
     const prRef = await ctx.ui.editor(
       'Enter PR number or URL (e.g. 123 or https://github.com/owner/repo/pull/123):',
@@ -1073,56 +1274,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 
     if (!prRef?.trim()) return null
 
-    const prNumber = parsePrReference(prRef)
-    if (!prNumber) {
-      ctx.ui.notify(
-        'Invalid PR reference. Enter a number or GitHub PR URL.',
-        'error',
-      )
-      return null
-    }
-
-    // Get PR info from GitHub
-    ctx.ui.notify(`Fetching PR #${prNumber} info...`, 'info')
-    const prInfo = await getPrInfo(pi, prNumber)
-
-    if (!prInfo) {
-      ctx.ui.notify(
-        `Could not find PR #${prNumber}. Make sure gh is authenticated and the PR exists.`,
-        'error',
-      )
-      return null
-    }
-
-    // Check again for pending changes (in case something changed)
-    if (await hasPendingChanges(pi)) {
-      ctx.ui.notify(
-        'Cannot checkout PR: you have uncommitted changes. Please commit or stash them first.',
-        'error',
-      )
-      return null
-    }
-
-    // Checkout the PR
-    ctx.ui.notify(`Checking out PR #${prNumber}...`, 'info')
-    const checkoutResult = await checkoutPr(pi, prNumber)
-
-    if (!checkoutResult.success) {
-      ctx.ui.notify(`Failed to checkout PR: ${checkoutResult.error}`, 'error')
-      return null
-    }
-
-    ctx.ui.notify(`Checked out PR #${prNumber} (${prInfo.headBranch})`, 'info')
-
-    const tuicrInstructions = await maybeOpenTuicrForPr(pi, ctx, prNumber)
-
-    return {
-      type: 'pullRequest',
-      prNumber,
-      baseBranch: prInfo.baseBranch,
-      title: prInfo.title,
-      tuicrInstructions,
-    }
+    return handlePrCheckout(ctx, prRef)
   }
 
   // AIDEV-NOTE: subagent review path (pi-interactive-subagents). Preferred
@@ -1147,10 +1299,109 @@ export default function reviewExtension(pi: ExtensionAPI) {
     )
   }
 
+  // AIDEV-NOTE: worktree removal is refcounted. A PR review worktree may
+  // host two async jobs (reviewer subagent + ocr scout); each calls
+  // prWorktreeJobDone on completion and the last one out removes the
+  // worktree + branch. Job count is set BEFORE spawning to close the
+  // fast-finisher race.
+  function prWorktreeJobDone(ctx: ExtensionContext, prNumber: number): void {
+    const info = prWorktrees.get(prNumber)
+    if (!info) return
+    info.pending -= 1
+    if (info.pending <= 0) {
+      void removePrWorktree(pi, ctx, prNumber, info)
+    }
+  }
+
+  // AIDEV-NOTE: ocr (OpenCodeReview) second opinion. When the `ocr` binary
+  // exists, a scout subagent runs `ocr review --from <base> --to <ref>` in
+  // the review cwd and its raw output steers back as an ocr_result message.
+  // Pure runner — the scout must not analyze, just return the output.
+  function deliverOcrResult(prNumber: number, result: SubagentResult) {
+    const failed = result.exitCode !== 0 || !!result.errorMessage
+    const content = failed
+      ? `ocr review failed (PR #${prNumber}): ${result.errorMessage ?? `exit code ${result.exitCode}`}`
+      : `ocr review finished (PR #${prNumber}). Output:
+
+${result.summary}`
+
+    pi.sendMessage(
+      {
+        customType: 'ocr_result',
+        content,
+        display: true,
+        details: { prNumber, failed, sessionFile: result.sessionFile },
+      },
+      { triggerTurn: true, deliverAs: 'steer' },
+    )
+  }
+
+  async function startOcrReview(
+    ctx: ExtensionCommandContext,
+    prNumber: number,
+    baseBranch: string,
+    toRef: string,
+    reviewCwd: string,
+  ): Promise<boolean> {
+    const task = [
+      'Run an OpenCodeReview pass and return its output. You are a pure command runner.',
+      `Run exactly: ocr review --from ${baseBranch} --to ${toRef}`,
+      'If the command fails, still return its full error output.',
+      'Do NOT analyze, summarize, review, or fix anything. Do NOT explore the codebase.',
+      'Your final message must be the command output verbatim (stdout and stderr).',
+    ].join('\n')
+
+    try {
+      const running = await launchSubagent(
+        {
+          agent: 'scout',
+          name: `ocr: PR #${prNumber}`,
+          task,
+          cwd: reviewCwd,
+        },
+        ctx,
+      )
+
+      ctx.ui.notify(
+        `ocr review for PR #${prNumber} running in a scout pane — output arrives here when done.`,
+        'info',
+      )
+
+      watchSubagent(running, new AbortController().signal)
+        .then((result) => {
+          deliverOcrResult(prNumber, result)
+          prWorktreeJobDone(ctx, prNumber)
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err)
+          deliverOcrResult(prNumber, {
+            name: `ocr: PR #${prNumber}`,
+            task,
+            summary: `Watcher error: ${message}`,
+            sessionFile: undefined,
+            exitCode: 1,
+            elapsed: 0,
+            errorMessage: message,
+          })
+          prWorktreeJobDone(ctx, prNumber)
+        })
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      ctx.ui.notify(
+        `ocr scout spawn failed (${message}). Continuing without ocr.`,
+        'warning',
+      )
+      return false
+    }
+  }
+
   async function startSubagentReview(
-    ctx: ExtensionContext,
+    ctx: ExtensionCommandContext,
     fullPrompt: string,
     hint: string,
+    reviewCwd?: string,
+    worktree?: { prNumber: number; info: PrWorktreeInfo },
   ): Promise<boolean> {
     try {
       const running = await launchSubagent(
@@ -1158,7 +1409,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
           agent: 'reviewer',
           name: `Review: ${hint}`,
           task: fullPrompt,
-          cwd: ctx.cwd,
+          cwd: reviewCwd ?? ctx.cwd,
         },
         ctx,
       )
@@ -1169,7 +1420,10 @@ export default function reviewExtension(pi: ExtensionAPI) {
       )
 
       watchSubagent(running, new AbortController().signal)
-        .then((result) => deliverSubagentReviewResult(hint, result))
+        .then((result) => {
+          deliverSubagentReviewResult(hint, result)
+          if (worktree) prWorktreeJobDone(ctx, worktree.prNumber)
+        })
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err)
           deliverSubagentReviewResult(hint, {
@@ -1181,10 +1435,22 @@ export default function reviewExtension(pi: ExtensionAPI) {
             elapsed: 0,
             errorMessage: message,
           })
+          if (worktree) prWorktreeJobDone(ctx, worktree.prNumber)
         })
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      // With a PR worktree the legacy in-session fallback would review the
+      // wrong tree (main checkout, not the PR) — count the failed job, which
+      // also removes the worktree if no other job holds it, and abort.
+      if (worktree) {
+        prWorktreeJobDone(ctx, worktree.prNumber)
+        ctx.ui.notify(
+          `Subagent spawn failed (${message}). PR review aborted — the worktree is removed when remaining jobs finish; retry with /review pr.`,
+          'error',
+        )
+        return true
+      }
       ctx.ui.notify(
         `Subagent review unavailable (${message}). Falling back to in-session review.`,
         'warning',
@@ -1224,8 +1490,50 @@ export default function reviewExtension(pi: ExtensionAPI) {
     // Subagent path — preferred whenever a mux is available. Runs before the
     // branch machinery so a mux present means no session-tree branch is created.
     if (isMuxAvailable()) {
-      const spawned = await startSubagentReview(ctx, fullPrompt, hint)
-      if (spawned) return
+      const prWorktree =
+        target.type === 'pullRequest' && target.worktree
+          ? { prNumber: target.prNumber, info: target.worktree }
+          : undefined
+      const reviewCwd =
+        target.type === 'pullRequest' ? target.worktree?.path : undefined
+      // Reserve both worktree jobs up front (reviewer + ocr scout) so a
+      // fast-finishing reviewer can't tear the worktree out from under ocr.
+      if (prWorktree) prWorktree.info.pending = 2
+
+      const spawned = await startSubagentReview(
+        ctx,
+        fullPrompt,
+        hint,
+        reviewCwd,
+        prWorktree,
+      )
+
+      if (spawned) {
+        // AIDEV-NOTE: ocr second opinion — scout runs `ocr review` on the
+        // PR diff when the binary exists; skips silently otherwise.
+        let ocrSpawned = false
+        if (target.type === 'pullRequest' && (await commandExists(pi, 'ocr'))) {
+          const toRef = prWorktree ? prWorktree.info.branch : 'HEAD'
+          ocrSpawned = await startOcrReview(
+            ctx,
+            target.prNumber,
+            target.baseBranch,
+            toRef,
+            reviewCwd ?? ctx.cwd,
+          )
+        }
+        if (prWorktree && !ocrSpawned) {
+          prWorktreeJobDone(ctx, prWorktree.prNumber)
+        }
+        return
+      }
+
+      if (prWorktree) {
+        // Reviewer spawn failed and aborted the PR review — release the
+        // never-started ocr reservation so the worktree cleans up.
+        prWorktreeJobDone(ctx, prWorktree.prNumber)
+        return
+      }
     }
 
     // Legacy in-session path (no mux, or subagent spawn failed)
@@ -1369,21 +1677,18 @@ export default function reviewExtension(pi: ExtensionAPI) {
   }
 
   /**
-   * Handle PR checkout and return a ReviewTarget (or null on failure)
+   * Handle PR checkout and return a ReviewTarget (or null on failure).
+   *
+   * AIDEV-NOTE: worktree-first when Herdr + mux are available — the PR is
+   * fetched into a dedicated review/pr-<n> worktree and the reviewer runs
+   * there; the main checkout stays untouched (no clean-tree requirement).
+   * Fallback (no mux / no Herdr / worktree failure) is the legacy in-place
+   * `gh pr checkout`, which needs a clean tree.
    */
   async function handlePrCheckout(
     ctx: ExtensionContext,
     ref: string,
   ): Promise<ReviewTarget | null> {
-    // First check for pending changes
-    if (await hasPendingChanges(pi)) {
-      ctx.ui.notify(
-        'Cannot checkout PR: you have uncommitted changes. Please commit or stash them first.',
-        'error',
-      )
-      return null
-    }
-
     const prNumber = parsePrReference(ref)
     if (!prNumber) {
       ctx.ui.notify(
@@ -1405,18 +1710,42 @@ export default function reviewExtension(pi: ExtensionAPI) {
       return null
     }
 
-    // Checkout the PR
-    ctx.ui.notify(`Checking out PR #${prNumber}...`, 'info')
-    const checkoutResult = await checkoutPr(pi, prNumber)
-
-    if (!checkoutResult.success) {
-      ctx.ui.notify(`Failed to checkout PR: ${checkoutResult.error}`, 'error')
-      return null
+    let worktree: PrWorktreeInfo | undefined
+    if (isMuxAvailable()) {
+      ctx.ui.notify(`Preparing review worktree for PR #${prNumber}...`, 'info')
+      worktree = (await preparePrWorktree(pi, ctx, prNumber)) ?? undefined
     }
 
-    ctx.ui.notify(`Checked out PR #${prNumber} (${prInfo.headBranch})`, 'info')
+    if (!worktree) {
+      // Legacy in-place checkout — needs a clean tree
+      if (await hasPendingChanges(pi)) {
+        ctx.ui.notify(
+          'Cannot checkout PR: you have uncommitted changes. Please commit or stash them first.',
+          'error',
+        )
+        return null
+      }
 
-    const tuicrInstructions = await maybeOpenTuicrForPr(pi, ctx, prNumber)
+      ctx.ui.notify(`Checking out PR #${prNumber}...`, 'info')
+      const checkoutResult = await checkoutPr(pi, prNumber)
+
+      if (!checkoutResult.success) {
+        ctx.ui.notify(`Failed to checkout PR: ${checkoutResult.error}`, 'error')
+        return null
+      }
+
+      ctx.ui.notify(
+        `Checked out PR #${prNumber} (${prInfo.headBranch})`,
+        'info',
+      )
+    }
+
+    const tuicrInstructions = await maybeOpenTuicrForPr(
+      pi,
+      ctx,
+      prNumber,
+      worktree?.path,
+    )
 
     return {
       type: 'pullRequest',
@@ -1424,6 +1753,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
       baseBranch: prInfo.baseBranch,
       title: prInfo.title,
       tuicrInstructions,
+      worktree,
     }
   }
 
@@ -1442,7 +1772,11 @@ export default function reviewExtension(pi: ExtensionAPI) {
         )
       }
       case 'pullRequest': {
-        const mergeBase = await getMergeBase(pi, target.baseBranch)
+        const mergeBase = await getMergeBase(
+          pi,
+          target.baseBranch,
+          target.worktree?.path,
+        )
         return buildSemReviewGuidance(
           {
             type: 'pullRequest',

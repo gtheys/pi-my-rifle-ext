@@ -5,6 +5,7 @@
       "packages/**",
       "!.pi",
       "!reference",
+      "!**/.aislop",
       "!**/dist",
       "!**/coverage",
       "!**/node_modules"

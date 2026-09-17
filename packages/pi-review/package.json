@@ -39,6 +39,7 @@
     "@earendil-works/pi-tui": "*"
   },
   "dependencies": {
-    "@gtheys/pi-interactive-subagents": "workspace:*"
+    "@gtheys/pi-interactive-subagents": "workspace:*",
+    "@gtheys/pi-worktree": "workspace:*"
   }
 }
