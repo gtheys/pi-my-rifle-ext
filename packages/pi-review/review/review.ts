@@ -139,8 +139,10 @@ type ReviewTarget =
 
 // AIDEV-NOTE: PR reviews under Herdr run in a dedicated worktree (branch
 // review/pr-<n> fetched from pull/<n>/head) instead of hijacking the main
-// checkout — no clean-tree requirement, current branch untouched. The
-// worktree is auto-removed (with its branch) when the review finishes.
+// checkout — no clean-tree requirement, current branch untouched. Fresh
+// worktrees get `yarn install` up front (see installWorktreeDeps) so the
+// reviewer subagent can run tests. The worktree is auto-removed (with its
+// branch) when the review finishes.
 export interface PrWorktreeInfo {
   path: string
   workspaceId: string
@@ -541,6 +543,40 @@ async function removePrWorktree(
   )
 }
 
+// AIDEV-NOTE: fresh review worktrees get deps installed up front so the
+// reviewer subagent can run tests immediately. GH_TOKEN from `gh auth
+// token` authenticates private GitHub Packages registries (SalaryHero
+// repos); pi.exec has no env option, so the token is injected via bash -c.
+// Gated on yarn.lock — non-yarn repos (e.g. bun monorepos) are skipped.
+// Install failure only warns: the code-reading part of the review still
+// works without node_modules.
+async function installWorktreeDeps(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  worktreePath: string,
+): Promise<void> {
+  try {
+    await fs.access(path.join(worktreePath, 'yarn.lock'))
+  } catch {
+    return
+  }
+  ctx.ui.notify(
+    'Installing dependencies in review worktree (yarn install)...',
+    'info',
+  )
+  const result = await pi.exec(
+    'bash',
+    ['-c', 'GH_TOKEN=$(gh auth token) yarn install'],
+    { cwd: worktreePath, timeout: 10 * 60 * 1000 },
+  )
+  if (result.code !== 0) {
+    ctx.ui.notify(
+      `yarn install in review worktree failed — tests may not run: ${(result.stderr || result.stdout).slice(-300)}`,
+      'warning',
+    )
+  }
+}
+
 async function preparePrWorktree(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -599,6 +635,8 @@ async function preparePrWorktree(
     )
     return null
   }
+
+  await installWorktreeDeps(pi, ctx, created.path)
 
   const info: PrWorktreeInfo = {
     path: created.path,
