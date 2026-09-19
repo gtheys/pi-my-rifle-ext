@@ -114,7 +114,18 @@ const POLL_ABORT_KEY = Symbol.for('pi-subagents/poll-abort-controller')
 }
 
 function getModuleAbortSignal(): AbortSignal {
-  return ((globalThis as any)[POLL_ABORT_KEY] as AbortController).signal
+  // AIDEV-NOTE: session_shutdown aborts the controller but never replaces it,
+  // and Bun's module cache means a /reload may not re-run the top-level reset
+  // block. Without this guard every watcher spawned after such a shutdown
+  // aborts instantly with "Aborted while waiting for subagent to finish".
+  let controller = (globalThis as any)[POLL_ABORT_KEY] as
+    | AbortController
+    | undefined
+  if (!controller || controller.signal.aborted) {
+    controller = new AbortController()
+    ;(globalThis as any)[POLL_ABORT_KEY] = controller
+  }
+  return controller.signal
 }
 
 const SubagentParams = Type.Object({
