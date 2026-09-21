@@ -1314,14 +1314,19 @@ export default function reviewExtension(pi: ExtensionAPI) {
   }
 
   // AIDEV-NOTE: ocr (OpenCodeReview) second opinion. When the `ocr` binary
-  // exists, a scout subagent runs `ocr review --from <base> --to <ref>` in
-  // the review cwd and its raw output steers back as an ocr_result message.
-  // Pure runner — the scout must not analyze, just return the output.
-  function deliverOcrResult(prNumber: number, result: SubagentResult) {
+  // exists, a scout subagent runs `ocr review --from <base> --to <ref>
+  // --format json --output <tmpfile>` in the review cwd (PR worktree for
+  // pullRequest targets, ctx.cwd for local baseBranch targets) and the JSON
+  // steers back as an ocr_result message. Pure runner — the scout must not
+  // analyze, just return path + file contents.
+  // AIDEV-QUESTION: ocr delegate mode (ocr delegate preview/rule) could let
+  // the reviewer subagent apply ocr's rule spec itself — no ocr LLM config
+  // needed. Spike pending; see ocr delegate --help.
+  function deliverOcrResult(scope: string, result: SubagentResult) {
     const failed = result.exitCode !== 0 || !!result.errorMessage
     const content = failed
-      ? `ocr review failed (PR #${prNumber}): ${result.errorMessage ?? `exit code ${result.exitCode}`}`
-      : `ocr review finished (PR #${prNumber}). Output:
+      ? `ocr review failed (${scope}): ${result.errorMessage ?? `exit code ${result.exitCode}`}`
+      : `ocr review finished (${scope}). Output:
 
 ${result.summary}`
 
@@ -1330,7 +1335,7 @@ ${result.summary}`
         customType: 'ocr_result',
         content,
         display: true,
-        details: { prNumber, failed, sessionFile: result.sessionFile },
+        details: { scope, failed, sessionFile: result.sessionFile },
       },
       { triggerTurn: true, deliverAs: 'steer' },
     )
@@ -1338,24 +1343,28 @@ ${result.summary}`
 
   async function startOcrReview(
     ctx: ExtensionCommandContext,
-    prNumber: number,
-    baseBranch: string,
+    scope: string,
+    fromRef: string,
     toRef: string,
     reviewCwd: string,
+    jobDone?: () => void,
   ): Promise<boolean> {
     const task = [
-      'Run an OpenCodeReview pass and return its output. You are a pure command runner.',
-      `Run exactly: ocr review --from ${baseBranch} --to ${toRef}`,
-      'If the command fails, still return its full error output.',
+      'Run an OpenCodeReview pass and return its JSON output. You are a pure command runner.',
+      'Run exactly:',
+      'f="$(mktemp -t ocr-review-XXXXXX.json)"',
+      `ocr review --from ${fromRef} --to ${toRef} --format json --output "$f"`,
+      'cat "$f"',
+      'If ocr fails, still return its full error output.',
       'Do NOT analyze, summarize, review, or fix anything. Do NOT explore the codebase.',
-      'Your final message must be the command output verbatim (stdout and stderr).',
+      'Your final message: the output file path on its first line, then the file contents verbatim.',
     ].join('\n')
 
     try {
       const running = await launchSubagent(
         {
           agent: 'scout',
-          name: `ocr: PR #${prNumber}`,
+          name: `ocr: ${scope}`,
           task,
           cwd: reviewCwd,
         },
@@ -1363,19 +1372,19 @@ ${result.summary}`
       )
 
       ctx.ui.notify(
-        `ocr review for PR #${prNumber} running in a scout pane — output arrives here when done.`,
+        `ocr review (${scope}) running in a scout pane — output arrives here when done.`,
         'info',
       )
 
       watchSubagent(running, new AbortController().signal)
         .then((result) => {
-          deliverOcrResult(prNumber, result)
-          prWorktreeJobDone(ctx, prNumber)
+          deliverOcrResult(scope, result)
+          if (jobDone) jobDone()
         })
         .catch((err) => {
           const message = err instanceof Error ? err.message : String(err)
-          deliverOcrResult(prNumber, {
-            name: `ocr: PR #${prNumber}`,
+          deliverOcrResult(scope, {
+            name: `ocr: ${scope}`,
             task,
             summary: `Watcher error: ${message}`,
             sessionFile: undefined,
@@ -1383,7 +1392,7 @@ ${result.summary}`
             elapsed: 0,
             errorMessage: message,
           })
-          prWorktreeJobDone(ctx, prNumber)
+          if (jobDone) jobDone()
         })
       return true
     } catch (err) {
@@ -1510,17 +1519,33 @@ ${result.summary}`
 
       if (spawned) {
         // AIDEV-NOTE: ocr second opinion — scout runs `ocr review` on the
-        // PR diff when the binary exists; skips silently otherwise.
+        // review diff when the binary exists; skips silently otherwise.
+        // pullRequest targets run in the PR worktree; baseBranch targets
+        // (local pre-push review) run in ctx.cwd against the merge base.
         let ocrSpawned = false
-        if (target.type === 'pullRequest' && (await commandExists(pi, 'ocr'))) {
-          const toRef = prWorktree ? prWorktree.info.branch : 'HEAD'
-          ocrSpawned = await startOcrReview(
-            ctx,
-            target.prNumber,
-            target.baseBranch,
-            toRef,
-            reviewCwd ?? ctx.cwd,
-          )
+        if (await commandExists(pi, 'ocr')) {
+          if (target.type === 'pullRequest') {
+            const toRef = prWorktree ? prWorktree.info.branch : 'HEAD'
+            ocrSpawned = await startOcrReview(
+              ctx,
+              `PR #${target.prNumber}`,
+              target.baseBranch,
+              toRef,
+              reviewCwd ?? ctx.cwd,
+              () => prWorktreeJobDone(ctx, target.prNumber),
+            )
+          } else if (target.type === 'baseBranch') {
+            const mergeBase = await getMergeBase(pi, target.branch, ctx.cwd)
+            if (mergeBase) {
+              ocrSpawned = await startOcrReview(
+                ctx,
+                `${target.branch}...HEAD`,
+                mergeBase,
+                'HEAD',
+                ctx.cwd,
+              )
+            }
+          }
         }
         if (prWorktree && !ocrSpawned) {
           prWorktreeJobDone(ctx, prWorktree.prNumber)
