@@ -78,6 +78,8 @@ Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
 | `timezone` | `string` | system timezone | IANA timezone (e.g. `Asia/Bangkok`) used for day boundaries (today/yesterday) and displayed meeting times in the sync report. |
 | `weekly` | `string` | none | Directory to write `/teams-transcript-weekly` reports to. Required for that command — no default, since it's a deliberate separate folder. |
 | `projects` | `string` | none | Directory of one `.md` file per project (e.g. an Obsidian vault `Projects` folder). When set, `/teams-transcript-summarize` and `/teams-transcript-weekly` cross-link meeting/weekly notes with matching project notes. Optional — skipped entirely when unset. |
+| `znServer` | `string` | none | ZenNotes server base URL (e.g. `http://100.108.226.64:8089`) that `/teams-transcript-push` targets for the workspace vault. Env `ZENNOTES_SERVER` overrides. |
+| `znToken` | `string` | none | Auth token for `znServer`, used by `/teams-transcript-push`. Env `ZENNOTES_REMOTE_TOKEN` overrides. |
 
 ```json
 {
@@ -86,7 +88,9 @@ Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
   "userId": "you@example.com",
   "timezone": "Asia/Bangkok",
   "weekly": "./teams-transcripts/weekly",
-  "projects": "/home/you/ZenVault/Projects"
+  "projects": "/home/you/ZenVault/Projects",
+  "znServer": "http://100.108.226.64:8089",
+  "znToken": "your-token"
 }
 ```
 
@@ -165,6 +169,17 @@ Synthesizes the most recently *finished* Mon-Fri work week's meeting notes into 
 Zero recordings for that week is reported directly (no LLM call, no file written) rather than hallucinating a summary. Otherwise it hands off to the agent (same mechanism as sync/summarize) to: fill in any of that week's notes still missing a summary, then write Themes → Decision Arcs (cross-references the last 30 days of notes for the same topic, flags STABLE/VOLATILE/CONFLICTING/NEW) → Action Item Audit (open/completed/overdue — overdue needs a `(due YYYY-MM-DD)` on the action item, see below — /assigned-to-others) → Commitments (from each note's existing `## Commitments` section) → Attention Monday → a short closing reflection.
 
 `/teams-transcript-summarize`'s Action Items now capture an optional due date — `- [ ] [[Owner]]: task (due 2026-08-10)` — only when the transcript actually states one (relative dates like "by Friday" get converted to an absolute date using the note's own date as reference); never invented. This is what lets the weekly Action Item Audit classify overdue vs. open.
+
+## Command: `/teams-transcript-push`
+
+`/teams-transcript-push [dir]`
+
+Pushes synced meeting notes (`.md`) and raw transcripts (`.vtt` from `outDir/vtt/`) into a remote ZenNotes workspace vault via the `zn` CLI (installed from the ZenNotes app, Settings → CLI): notes land in `inbox/Meetings`, transcripts as notes in `inbox/Meetings/vtt`. Idempotent — each file is dedup-checked against the vault by full path, then moved to `outDir/pushed/` so re-runs are no-ops. Requires `znServer`/`znToken` in config or the `ZENNOTES_SERVER`/`ZENNOTES_REMOTE_TOKEN` env vars.
+
+```
+/teams-transcript-sync week
+/teams-transcript-push
+```
 
 ## Troubleshooting
 

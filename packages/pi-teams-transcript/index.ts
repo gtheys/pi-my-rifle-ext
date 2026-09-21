@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -50,6 +51,21 @@ const TeamsTranscriptConfigSchema = Type.Object({
         'Directory of one .md file per project (e.g. an Obsidian vault Projects folder). When set, /teams-transcript-summarize and /teams-transcript-weekly cross-link meeting notes with matching project notes, creating or updating a project note when a discussed project has none yet. Relative paths resolve from cwd. Optional — feature is skipped entirely when unset.',
     }),
   ),
+  // AIDEV-NOTE: znServer/znToken are consumed by push-to-zn.sh (ships next to
+  // the global config), not by the extension itself — schema lives here so
+  // the config file stays single-source and Value.Check accepts the keys.
+  znServer: Type.Optional(
+    Type.String({
+      description:
+        'ZenNotes server base URL (e.g. http://100.108.226.64:8089) that push-to-zn.sh targets for the workspace vault. Env ZENNOTES_SERVER overrides.',
+    }),
+  ),
+  znToken: Type.Optional(
+    Type.String({
+      description:
+        'Auth token for znServer, used by push-to-zn.sh. Env ZENNOTES_REMOTE_TOKEN overrides.',
+    }),
+  ),
 })
 
 const GLOBAL_CONFIG_PATH = path.join(
@@ -68,6 +84,8 @@ async function readConfigFile(file: string): Promise<{
   timezone?: string
   weekly?: string
   projects?: string
+  znServer?: string
+  znToken?: string
 }> {
   try {
     const raw = await fs.readFile(file, 'utf8')
@@ -105,6 +123,20 @@ async function resolveConfiguredProjectsDir(
   const global = await readConfigFile(GLOBAL_CONFIG_PATH)
   const project = await readConfigFile(projectConfigPath(cwd))
   return project.projects || global.projects
+}
+
+// AIDEV-NOTE: zn server/token precedence — ZENNOTES_* env vars > project
+// config > global config. Consumed by /teams-transcript-push.
+async function resolveConfiguredZn(
+  cwd: string,
+): Promise<{ server?: string; token?: string }> {
+  const global = await readConfigFile(GLOBAL_CONFIG_PATH)
+  const project = await readConfigFile(projectConfigPath(cwd))
+  return {
+    server: process.env.ZENNOTES_SERVER || project.znServer || global.znServer,
+    token:
+      process.env.ZENNOTES_REMOTE_TOKEN || project.znToken || global.znToken,
+  }
 }
 
 // AIDEV-NOTE: precedence is explicit CLI arg > TEAMS_USER_ID env var >
@@ -1302,6 +1334,87 @@ function buildProjectCrosslinkGuidance(projectsDir: string): string {
   )
 }
 
+// AIDEV-NOTE: push core — moves synced meeting notes + raw vtt from the
+// staging outDir into the ZenNotes workspace vault via the zn CLI
+// (installed from the ZenNotes app, Settings → CLI). Runs as a package
+// command so deployment needs no per-machine script; server/token come
+// from config/env (see resolveConfiguredZn).
+export type ZnRunner = (args: string[], input?: string) => Promise<string>
+
+export function createZnRunner(server: string, token: string): ZnRunner {
+  return (args, input) =>
+    new Promise((resolve, reject) => {
+      const child = spawn('zn', args, {
+        env: {
+          ...process.env,
+          ZENNOTES_SERVER: server,
+          ZENNOTES_REMOTE_TOKEN: token,
+        },
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout?.on('data', (d) => (stdout += d))
+      child.stderr?.on('data', (d) => (stderr += d))
+      child.on('error', reject)
+      child.on('close', (code) => {
+        if (code === 0) resolve(stdout)
+        else reject(new Error(`zn ${args[0]} exited ${code}: ${stderr.trim()}`))
+      })
+      if (input !== undefined) child.stdin?.end(input)
+    })
+}
+
+export async function pushStagingToZn(
+  staging: string,
+  run: ZnRunner,
+): Promise<string[]> {
+  const lines: string[] = []
+  const groups: Array<{ dir: string; sub: string; ext: string }> = [
+    { dir: staging, sub: 'Meetings', ext: '.md' },
+    { dir: path.join(staging, 'vtt'), sub: 'Meetings/vtt', ext: '.vtt' },
+  ]
+  for (const { dir, sub, ext } of groups) {
+    const entries = await fs.readdir(dir).catch(() => [] as string[])
+    const names = entries.filter((n) => n.endsWith(ext)).sort()
+    for (const name of names) {
+      const file = path.join(dir, name)
+      const title = name.slice(0, -ext.length)
+      const vaultPath = `${sub}/${title}.md`
+      // dedup on full vault path — the .md note and .vtt note share a basename
+      const search = JSON.parse(
+        await run(['search-title', title, '--json']),
+      ) as Array<{
+        path?: string
+      }>
+      if (Array.isArray(search) && search.some((h) => h.path === vaultPath)) {
+        lines.push(`skip (exists): ${vaultPath}`)
+      } else {
+        const body = await fs.readFile(file, 'utf8')
+        await run(
+          [
+            'create',
+            '--folder',
+            'inbox',
+            '--subpath',
+            sub,
+            '--title',
+            title,
+            '--body',
+            '-',
+          ],
+          body,
+        )
+        lines.push(`pushed: ${vaultPath}`)
+      }
+      // move to pushed/ so re-runs are no-ops even without the remote check
+      const dest = path.join(staging, 'pushed', path.relative(staging, file))
+      await fs.mkdir(path.dirname(dest), { recursive: true })
+      await fs.rename(file, dest)
+    }
+  }
+  return lines
+}
+
 export default function (pi: ExtensionAPI) {
   // Scaffold config.schema.json next to this file when missing.
   pi.on('session_start', async (event) => {
@@ -1572,6 +1685,34 @@ export default function (pi: ExtensionAPI) {
         ),
       ]
       return new Text(`\n${lines.join('\n')}`, 0, 0)
+    },
+  })
+
+  pi.registerCommand('teams-transcript-push', {
+    description:
+      'Push synced meeting notes and raw transcripts from outDir into the ZenNotes workspace vault (inbox/Meetings, inbox/Meetings/vtt) via the zn CLI. Requires znServer/znToken in config or ZENNOTES_* env vars. Usage: /teams-transcript-push [dir]',
+    handler: async (args, ctx) => {
+      const [argDir] = args.trim().split(/\s+/).filter(Boolean)
+      const dir = await resolveTranscriptsDir(ctx.cwd, argDir)
+      const { server, token } = await resolveConfiguredZn(ctx.cwd)
+      if (!server || !token) {
+        ctx.ui.notify(
+          'No ZenNotes server configured. Set znServer/znToken in pi-teams-transcript/config.json (global or project), or the ZENNOTES_SERVER / ZENNOTES_REMOTE_TOKEN env vars.',
+          'warning',
+        )
+        return
+      }
+      ctx.ui.notify(`Pushing from ${dir} to ${server}...`, 'info')
+      try {
+        const lines = await pushStagingToZn(dir, createZnRunner(server, token))
+        ctx.ui.notify(
+          lines.length ? lines.join('\n') : `Nothing to push in ${dir}.`,
+          'info',
+        )
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(`push failed: ${msg}`, 'error')
+      }
     },
   })
 

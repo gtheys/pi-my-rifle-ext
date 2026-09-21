@@ -20,6 +20,14 @@
     "projects": {
       "type": "string",
       "description": "Directory of one .md file per project (e.g. an Obsidian vault Projects folder). When set, /teams-transcript-summarize and /teams-transcript-weekly cross-link meeting notes with matching project notes, creating or updating a project note when a discussed project has none yet. Relative paths resolve from cwd. Optional — feature is skipped entirely when unset."
+    },
+    "znServer": {
+      "type": "string",
+      "description": "ZenNotes server base URL (e.g. http://100.108.226.64:8089) that push-to-zn.sh targets for the workspace vault. Env ZENNOTES_SERVER overrides."
+    },
+    "znToken": {
+      "type": "string",
+      "description": "Auth token for znServer, used by push-to-zn.sh. Env ZENNOTES_REMOTE_TOKEN overrides."
     }
   }
 }
