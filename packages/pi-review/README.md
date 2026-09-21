@@ -35,7 +35,9 @@ When reviewing a pull request, if `tuicr` and `herdr` are on PATH and the sessio
 
 PR reviews are worktree-based by default: with Herdr and a mux available, the PR is fetched into a dedicated `review/pr-<n>` branch in its own Herdr worktree, the reviewer subagent runs there, and the worktree (and its branch) is removed automatically once the review finishes. The main checkout is never touched — a dirty working tree is fine. Without Herdr/mux, the legacy in-place `gh pr checkout` flow is used, which requires a clean tree.
 
-If the `ocr` (OpenCodeReview) binary is on PATH, PR reviews and local base-branch reviews (`/review` → base branch) also spawn a scout subagent that runs `ocr review --from <base> --to <ref> --format json` in the review cwd (PR worktree or the repo itself) and steers the JSON findings back as an `ocr_result` message — a machine-readable second opinion alongside the reviewer findings. For PR reviews the worktree stays alive until both jobs finish.
+If the `ocr` (OpenCodeReview) binary is on PATH, diff-based review targets get an OpenCodeReview second opinion: PR reviews run `ocr review --from <base> --to <pr-branch>` in the review worktree, local reviews run `ocr review` (uncommitted), `--from <merge-base> --to HEAD` (base branch), `--commit <sha>` (commit), or `ocr scan --path <paths>` (folder) in the repo cwd. The scout writes JSON via `--format json --output`, so the steered-back `ocr_result` message is machine-parseable. For PR reviews the worktree stays alive until both jobs finish.
+
+Separately, the "Review with ocr delegate rules" preset is host-agent delegation: ocr emits the reviewable-file spec (`ocr delegate preview`) and resolved rules (`ocr delegate rule`) LLM-free, and the reviewer subagent applies those rules itself — no ocr LLM configuration needed.
 
 ---
 

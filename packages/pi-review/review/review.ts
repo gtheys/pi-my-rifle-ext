@@ -125,6 +125,7 @@ function applyReviewState(ctx: ExtensionContext) {
 type ReviewTarget =
   | { type: 'uncommitted' }
   | { type: 'baseBranch'; branch: string }
+  | { type: 'ocrDelegate'; branch: string }
   | { type: 'commit'; sha: string; title?: string }
   | { type: 'custom'; instructions: string }
   | {
@@ -162,6 +163,19 @@ const BASE_BRANCH_PROMPT_WITH_MERGE_BASE =
 
 const BASE_BRANCH_PROMPT_FALLBACK =
   'Review the code changes against the base branch \'{branch}\'. Start by finding the merge diff between the current branch and {branch}\'s upstream e.g. (`git merge-base HEAD "$(git rev-parse --abbrev-ref "{branch}@{upstream}")"`), then run `git diff` against that SHA to see what changes we would merge into the {branch} branch. Provide prioritized, actionable findings.'
+
+// AIDEV-NOTE: ocr delegate mode — the reviewing agent IS the LLM. ocr only
+// emits the reviewable-file spec (delegate preview) and resolved rules
+// (delegate rule); no ocr LLM config required.
+const OCR_DELEGATE_PROMPT = [
+  "Perform a delegated OpenCodeReview (host-agent mode) of the current branch's changes against '{baseBranch}'. The diff base ref is {fromRef}.",
+  "You are the reviewing LLM — do NOT run `ocr review` or `ocr scan` (they call the binary's own LLM).",
+  'Steps:',
+  '1. Run `ocr delegate preview --from {fromRef} --to HEAD --format json` to list the reviewable files.',
+  '2. Run `ocr delegate rule <file...> --from {fromRef} --to HEAD --format json` on those files to resolve the review rules.',
+  '3. Run `git diff {fromRef}` to inspect the changes.',
+  '4. Apply the resolved rules to the changes and provide prioritized, actionable findings. For each finding cite file and line, the rule it maps to, and a suggested fix.',
+].join('\n')
 
 const COMMIT_PROMPT_WITH_TITLE =
   'Review the code changes introduced by commit {sha} ("{title}"). Provide prioritized, actionable findings.'
@@ -779,6 +793,15 @@ async function buildReviewPrompt(
       return BASE_BRANCH_PROMPT_FALLBACK.replace(/{branch}/g, target.branch)
     }
 
+    case 'ocrDelegate': {
+      const mergeBase = await getMergeBase(pi, target.branch)
+      const fromRef = mergeBase ?? target.branch
+      return OCR_DELEGATE_PROMPT.replace(
+        /{baseBranch}/g,
+        target.branch,
+      ).replace(/{fromRef}/g, fromRef)
+    }
+
     case 'commit':
       if (target.title) {
         return COMMIT_PROMPT_WITH_TITLE.replace('{sha}', target.sha).replace(
@@ -828,6 +851,8 @@ function getUserFacingHint(target: ReviewTarget): string {
       return 'current changes'
     case 'baseBranch':
       return `changes against '${target.branch}'`
+    case 'ocrDelegate':
+      return `ocr delegate review against '${target.branch}'`
     case 'commit': {
       const shortSha = target.sha.slice(0, 7)
       if (target.title) {
@@ -885,6 +910,11 @@ const REVIEW_PRESETS = [
     description: '(snapshot, not diff)',
   },
   { value: 'custom', label: 'Custom review instructions', description: '' },
+  {
+    value: 'ocrDelegate',
+    label: 'Review with ocr delegate rules',
+    description: '(agent applies ocr rules; no ocr LLM)',
+  },
 ] as const
 
 export default function reviewExtension(pi: ExtensionAPI) {
@@ -1015,6 +1045,21 @@ export default function reviewExtension(pi: ExtensionAPI) {
         case 'custom': {
           const target = await showCustomInput(ctx)
           if (target) return target
+          break
+        }
+
+        case 'ocrDelegate': {
+          if (!(await commandExists(pi, 'ocr'))) {
+            ctx.ui.notify(
+              'ocr is not on PATH — delegate review unavailable.',
+              'warning',
+            )
+            break
+          }
+          const base = await showBranchSelector(ctx)
+          if (base && base.type === 'baseBranch') {
+            return { type: 'ocrDelegate', branch: base.branch }
+          }
           break
         }
 
@@ -1314,14 +1359,13 @@ export default function reviewExtension(pi: ExtensionAPI) {
   }
 
   // AIDEV-NOTE: ocr (OpenCodeReview) second opinion. When the `ocr` binary
-  // exists, a scout subagent runs `ocr review --from <base> --to <ref>
-  // --format json --output <tmpfile>` in the review cwd (PR worktree for
-  // pullRequest targets, ctx.cwd for local baseBranch targets) and the JSON
-  // steers back as an ocr_result message. Pure runner — the scout must not
-  // analyze, just return path + file contents.
-  // AIDEV-QUESTION: ocr delegate mode (ocr delegate preview/rule) could let
-  // the reviewer subagent apply ocr's rule spec itself — no ocr LLM config
-  // needed. Spike pending; see ocr delegate --help.
+  // exists, a scout subagent runs `ocr <args> --format json --output <tmpfile>`
+  // in the review cwd (PR worktree for pullRequest, ctx.cwd otherwise) and
+  // the JSON steers back as an ocr_result message. Pure runner — the scout
+  // must not analyze, just return path + file contents.
+  // Delegate mode is a separate picker preset (ocrDelegate target): the
+  // reviewer subagent itself applies ocr's delegate preview/rule spec —
+  // no ocr LLM config required.
   function deliverOcrResult(scope: string, result: SubagentResult) {
     const failed = result.exitCode !== 0 || !!result.errorMessage
     const content = failed
@@ -1344,8 +1388,7 @@ ${result.summary}`
   async function startOcrReview(
     ctx: ExtensionCommandContext,
     scope: string,
-    fromRef: string,
-    toRef: string,
+    ocrArgs: string[],
     reviewCwd: string,
     jobDone?: () => void,
   ): Promise<boolean> {
@@ -1353,7 +1396,7 @@ ${result.summary}`
       'Run an OpenCodeReview pass and return its JSON output. You are a pure command runner.',
       'Run exactly:',
       'f="$(mktemp -t ocr-review-XXXXXX.json)"',
-      `ocr review --from ${fromRef} --to ${toRef} --format json --output "$f"`,
+      `ocr ${ocrArgs.join(' ')} --format json --output "$f"`,
       'cat "$f"',
       'If ocr fails, still return its full error output.',
       'Do NOT analyze, summarize, review, or fix anything. Do NOT explore the codebase.',
@@ -1518,33 +1561,52 @@ ${result.summary}`
       )
 
       if (spawned) {
-        // AIDEV-NOTE: ocr second opinion — scout runs `ocr review` on the
-        // review diff when the binary exists; skips silently otherwise.
-        // pullRequest targets run in the PR worktree; baseBranch targets
-        // (local pre-push review) run in ctx.cwd against the merge base.
+        // AIDEV-NOTE: ocr second opinion — scout runs ocr in the review cwd
+        // when the binary exists; skips silently otherwise. Target mapping:
+        // pullRequest → review --from <base> --to <worktree branch> (worktree),
+        // baseBranch → review --from <merge-base> --to HEAD,
+        // uncommitted → review (workspace mode),
+        // commit → review --commit <sha>,
+        // folder → scan --path <paths> (no diff).
+        // ocrDelegate is excluded — the reviewer itself applies the ocr rules.
+        // custom is excluded — no diff equivalent.
         let ocrSpawned = false
         if (await commandExists(pi, 'ocr')) {
+          let scope: string | null = null
+          let ocrArgs: string[] = []
           if (target.type === 'pullRequest') {
             const toRef = prWorktree ? prWorktree.info.branch : 'HEAD'
-            ocrSpawned = await startOcrReview(
-              ctx,
-              `PR #${target.prNumber}`,
-              target.baseBranch,
-              toRef,
-              reviewCwd ?? ctx.cwd,
-              () => prWorktreeJobDone(ctx, target.prNumber),
-            )
+            scope = `PR #${target.prNumber}`
+            ocrArgs = ['review', '--from', target.baseBranch, '--to', toRef]
           } else if (target.type === 'baseBranch') {
             const mergeBase = await getMergeBase(pi, target.branch, ctx.cwd)
             if (mergeBase) {
-              ocrSpawned = await startOcrReview(
-                ctx,
-                `${target.branch}...HEAD`,
-                mergeBase,
-                'HEAD',
-                ctx.cwd,
-              )
+              scope = `${target.branch}...HEAD`
+              ocrArgs = ['review', '--from', mergeBase, '--to', 'HEAD']
             }
+          } else if (target.type === 'uncommitted') {
+            scope = 'uncommitted'
+            ocrArgs = ['review']
+          } else if (target.type === 'commit') {
+            scope = `commit ${target.sha.slice(0, 7)}`
+            ocrArgs = ['review', '--commit', target.sha]
+          } else if (target.type === 'folder') {
+            scope = `scan: ${target.paths.join(', ')}`
+            ocrArgs = ['scan', '--path', target.paths.join(',')]
+          }
+          if (scope && ocrArgs.length > 0) {
+            let jobDone: (() => void) | undefined
+            if (target.type === 'pullRequest') {
+              const prNumber = target.prNumber
+              jobDone = () => prWorktreeJobDone(ctx, prNumber)
+            }
+            ocrSpawned = await startOcrReview(
+              ctx,
+              scope,
+              ocrArgs,
+              reviewCwd ?? ctx.cwd,
+              jobDone,
+            )
           }
         }
         if (prWorktree && !ocrSpawned) {
