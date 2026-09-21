@@ -126,7 +126,7 @@ pi install git:github.com/DietrichGebert/ponytail
 | [`pi-bootstrap`](packages/pi-bootstrap/) | Startup bootstrap — symlinks `agents/AGENTS.md` to `~/.pi/agent/AGENTS.md` | Bootstrap |
 | [`pi-ask-user-question`](packages/pi-ask-user-question/) | `ask_user_question` tool — pauses execution for interactive text / single-select / multi-select questions with an Other free-text escape hatch | Interaction |
 | [`pi-prompt-snippets`](packages/pi-prompt-snippets/) | One-shot prompt snippets — alt+s / `/snippets` toggle menu, bodies prepended/appended to the next message, widget shows active set | Interaction |
-| [`pi-review`](packages/pi-review/) (review) | `/review` command — code review for PRs, branches, uncommitted changes, or specific commits with semantic tool guidance | Code Review |
+| [`pi-review`](packages/pi-review/) (review) | `/review` command — code review for PRs, branches, uncommitted changes, commits, or folders with semantic tool guidance; optional OpenCodeReview second opinion (JSON) and ocr delegate preset (agent applies ocr rules, no ocr LLM) | Code Review |
 | [`pi-review`](packages/pi-review/) (sonarqube) | `/sonarqube` command — fetches SonarCloud coverage gaps and quality issues for a PR, generates actionable report | Code Quality |
 | [`pi-review`](packages/pi-review/) (pr-quality) | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
 | [`pi-tool-pills`](packages/pi-tool-pills/) | Colored pill badges for tool headers + Shiki-powered syntax-highlighted diffs for write/edit | UI Enhancement |
