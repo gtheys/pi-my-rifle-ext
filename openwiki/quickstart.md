@@ -76,7 +76,8 @@ pi-my-rifle-ext/
 ├── packages/       # bun workspace packages — one per pi extension group
 │                   #   (ask-user-question, prompt-snippets, interactive-subagents,
 │                   #    planning, review, test-runner, fastcontext, sem, tool-pills,
-│                   #    desktop-notify, teams-transcript, pr-digest, worktree, bootstrap)
+│                   #    desktop-notify, teams-transcript, pr-digest, worktree,
+│                   #    bootstrap, sudo, aven-context)
 ├── skills/         # SKILL.md-driven agent skills (engineering/tools)
 ├── prompts/        # slash-command prompt templates
 ├── themes/         # theme JSON (tokyo-night)
@@ -96,13 +97,14 @@ pi's own packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, 
 - [Extension reference](architecture/extensions.md) — what each package under
   `packages/` does, its tools/commands, and key implementation notes.
 - [Planning & implementation workflow](workflows/planning-and-implementation.md) —
-  how Jira → taskwarrior → spec → phased implementation works end to end.
+  how an aven ticket → plan.md → epic/dep tree → phased implementation works
+  (canonical flow doc: `docs/aven-feature-flow.md`).
 - [Code review workflow](workflows/code-review.md) — `/review`, `/sonarqube`,
   `/pr-quality`, `/pr-watch`.
 - [Skills & prompts](domain/skills-and-prompts.md) — inventory of `SKILL.md` files and
   when the agent should use them.
-- [Glossary](domain/glossary.md) — project-specific terms (phase, subtask, work_state,
-  spec annotation format, etc).
+- [Glossary](domain/glossary.md) — project-specific terms (plan-state gate, phase,
+  subtask, aven refs, spec annotation format, etc).
 
 ## Conventions to know before touching code
 

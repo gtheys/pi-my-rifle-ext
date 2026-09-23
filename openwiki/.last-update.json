@@ -1,7 +1,7 @@
 {
   "command": "update",
-  "model": "claude-sonnet-4-5",
-  "updatedAt": "2026-09-07T09:53:25.414Z",
-  "gitHead": "ff34c02fee8bb74d9e8038e7aa76115c06225edf",
+  "model": "glm-5.3",
+  "updatedAt": "2026-09-21T10:32:53.359Z",
+  "gitHead": "f9e8dae3a1bb8da0758376e0a46bc31a545a4c21",
   "snapshotHash": "b3Blbndpa2kvYXJj"
 }

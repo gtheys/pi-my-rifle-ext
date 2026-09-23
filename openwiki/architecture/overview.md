@@ -52,16 +52,18 @@ packages/
 ├── pi-test-runner/           run_tests tool, launches a test-runner agent via ↑
 ├── pi-sem/                   sem_* tools, wraps the external `sem` CLI (@ataraxy-labs/sem)
 ├── pi-planning/
-│   ├── shared/               ← shared by both siblings below (tw-utils + jira-branch)
-│   ├── plan-tools/           tw_* tools for spec/plan creation (create-plan/feature-plan skills)
-│   └── implement-plan/       tw_* tools for phased execution (implement-plan skill)
+│   ├── shared/               ← shared by both siblings below (jira-branch)
+│   ├── plan-tools/           resolve_* tools + open_in_pane (aven-era slimmed down)
+│   └── implement-plan/       jira_create_branch + /implement routing to implement-plan-aven
 ├── pi-review/
 │   ├── shared/sonarqube-utils.ts  ← shared by sonarqube.ts and pr-quality
-│   ├── review/review.ts           /review command (spawns a reviewer agent via ↑)
+│   ├── review/review.ts           /review command (reviewer agent + ocr scout via ↑)
 │   ├── sonarqube/sonarqube.ts     /sonarqube command
 │   └── pr-quality/index.ts        /pr-quality + /pr-watch commands
-├── pi-teams-transcript/      teams_transcript tool (MS Graph)
+├── pi-teams-transcript/      teams_transcript tool + sync/summarize/weekly/push commands (MS Graph)
 ├── pi-pr-digest/             pr_digest tool + /pr-digest (gh CLI), standalone
+├── pi-sudo/                  sudo_run tool — confirm dialog + masked password prompt
+├── pi-aven-context/          injects live aven workspace state at session_start
 └── pi-worktree/              worktree tool — Herdr worktree workspaces (create/list/remove)
 ```
 
@@ -76,16 +78,17 @@ by exactly one other file; keep them next to each other like `pi-planning/shared
 `pi-interactive-subagents` was vendored into the monorepo and publishes a
 programmatic API (`launchSubagent`/`watchSubagent` from `@gtheys/pi-interactive-subagents`).
 Two packages import it as a real workspace dependency: `pi-test-runner` (spawns its
-test-runner agent through it) and `pi-review` (spawns its reviewer agent through it).
-Everything else still coordinates without imports:
-- **taskwarrior** as external state (`plan-tools` writes tasks, `implement-plan` reads
-  them) — see `workflows/planning-and-implementation.md`.
+test-runner agent through it) and `pi-review` (spawns its reviewer agent and ocr
+scout through it). Everything else still coordinates without imports:
+- **aven** as external planning state (`feature-plan-aven` / `implement-plan-aven`
+  skills drive the aven CLI; `pi-planning` only resolves paths and branches) —
+  see `workflows/planning-and-implementation.md` and `docs/aven-feature-flow.md`.
 - **git/gh CLI** as external state (`pi-review`'s three commands all shell out to `gh`
   and `git`).
 - **pi's own event bus** (`session_start`, `agent_end`) for cross-cutting concerns like
   desktop notifications and AGENTS.md bootstrapping.
 - **skill files** as the glue between `/plan` (registered by `pi-interactive-subagents`)
-  and the `pi-planning` tools the skills call — see the dependency map in `README.md`.
+  and the aven planning flow — see the dependency map in `README.md`.
 
 Notably `pi-planning`'s `open_in_pane` shells out to the `herdr` CLI directly instead
 of importing pi-interactive-subagents (in-file AIDEV-NOTE: no cross-package dependency
@@ -96,9 +99,11 @@ for 3 exec calls).
 | Package | External binary/API | Why |
 |---|---|---|
 | `pi-bootstrap` | none (fs only) | symlink AGENTS.md |
-| `pi-planning` (both) | `task` (taskwarrior CLI) | ticket/spec/phase/subtask state lives in taskwarrior, not in this repo |
+| `pi-planning` (both) | `aven` (optional), `acli` + `git-town` (jira_create_branch) | planning state lives in aven; branch derivation for Jira tickets |
+| `pi-aven-context` | `aven` (`aven prime`) | inject live workspace state at session start |
+| `pi-sudo` | `sudo -S` | root command execution behind confirm + password overlay |
 | `pi-sem` | `sem` CLI (`@ataraxy-labs/sem`, optional dep) | entity-aware git diff/impact/context/blame |
-| `pi-review/review` | `git`, `gh`, + reviewer agent via `pi-interactive-subagents` | checkout PRs, diff branches/commits, run the review in a subagent pane |
+| `pi-review/review` | `git`, `gh`, optional `ocr`, + reviewer agent & ocr scout via `pi-interactive-subagents` | checkout PRs, diff branches/commits, ocr second opinion |
 | `pi-review/sonarqube` | SonarCloud REST API (`sonarFetch`) | coverage + issues |
 | `pi-review/pr-quality` | `gh api graphql`, SonarCloud API | unresolved review threads + Sonar issues in one pass |
 | `pi-fastcontext` | local FastContext server (llama.cpp, `127.0.0.1:8772`) | fast semantic code search without a full agent turn |
@@ -111,5 +116,6 @@ for 3 exec calls).
 ## Next
 
 - [Extension reference](extensions.md) for a deep dive per package.
-- [Planning workflow](../workflows/planning-and-implementation.md) for the taskwarrior
-  data model shared by `plan-tools` and `implement-plan`.
+- [Planning workflow](../workflows/planning-and-implementation.md) for the aven
+data model behind `feature-plan-aven` / `implement-plan-aven` (canonical flow:
+  `docs/aven-feature-flow.md`).

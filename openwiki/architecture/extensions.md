@@ -30,13 +30,22 @@ non-obvious implementation decisions worth knowing before you touch it.
   as async notifications that trigger a new turn. Fully non-blocking.
 - **Agent resolution order:** project-local `.pi/agents/` → `~/.pi/agent/agents/` →
   the bundled copy under `agents/`.
-- **`/plan <arg>` dispatch** (in-file AIDEV-NOTE): a Jira-shaped argument injects the
-  **create-plan** skill, anything else injects **feature-plan**; if the repo's skill
-  files can't be read (standalone install), it falls back to the bundled generic
-  `plan-skill.md`. Note `pi-planning` also registers `/plan` — first registration wins
-  by load order in the root `package.json` `pi.extensions`, so `pi-planning`'s `/plan`
-  is effectively dead in the monorepo but kept for standalone npm installs of that
-  package (see `README.md` "Rules of the road").
+- **`/plan <arg>` dispatch** (in-file AIDEV-NOTE): **aven-first** — Jira-shaped
+  arguments and free text **both** inject the **feature-plan-aven** skill (the
+  aven planner handles aven refs, aven-synced Jira IDs, and local features;
+  the aven workspace is routed by cwd). If the repo's skill files can't be read
+  (standalone install), it falls back to the bundled generic `plan-skill.md`.
+  Note `pi-planning` also registers `/plan` — first registration wins by load
+  order in the root `package.json` `pi.extensions`, so `pi-planning`'s `/plan`
+  is effectively dead in the monorepo but kept for standalone npm installs of
+  that package (see `README.md` "Rules of the road").
+- **Subagent env:** epimetheus (Hindsight memory) is **disabled** in subagent
+  sessions (`EPIMETHEUS_ENABLED=false`) — its pending-queue markers for
+  ephemeral/crashed subagent sessions orphaned and warned on every parent quit;
+  subagent work is retained via the parent session's steering summary.
+- **`/reload` survival:** module-level timers and poll loops are keyed on
+  `Symbol.for(...)` globals; a fresh module load aborts the previous load's
+  poll controller (`POLL_ABORT_KEY`) so old closures can't keep polling.
 
 ## pi-ask-user-question
 
@@ -169,65 +178,40 @@ non-obvious implementation decisions worth knowing before you touch it.
 
 ## pi-planning (plan-tools + implement-plan)
 
-Two extensions in one package, sharing `packages/pi-planning/shared/`
-(`tw-utils.ts` — `twExport` runs `task <filter> export` and parses the JSON;
-`jira-branch.ts` — shared branch-name derivation for the `jira_create_branch` tool).
-Both halves follow **one-tool-per-file** layout (`f748401`): each tool lives in its
-own file exporting a `register*` function, wired up from the sibling `index.ts`.
+Aven-era slimmed-down package: task management lives in **aven** (see
+`feature-plan-aven` / `implement-plan-aven` skills and
+[the planning workflow](../workflows/planning-and-implementation.md)); every
+`tw_*` taskwarrior tool was deleted. What remains: canonical path resolution,
+nvim-in-pane plan review, and Jira branch derivation. Both siblings follow
+**one-tool-per-file** layout, wired from each `index.ts`.
 
 ### plan-tools — `packages/pi-planning/plan-tools/`
 
-- **Files:** `index.ts`, `helpers.ts`, one file per tool: `get-ticket.ts`,
-  `get-spec-task.ts`, `get-phases-impl.ts`, `create-spec-task.ts`, `create-phase.ts`,
-  `create-impl-task.ts`, `resolve-spec-path.ts`, `resolve-feature-path.ts`,
-  `open-in-pane.ts`.
-- **Tools:** `tw_get_ticket`, `tw_get_spec_task`, `tw_get_phases`, `tw_get_impl_tasks`,
-  `resolve_spec_path`, `resolve_feature_path`, `tw_create_spec_task`,
-  `tw_create_phase`, `tw_create_impl_task`, `jira_create_branch`, `open_in_pane`.
+- **Files:** `index.ts`, `helpers.ts`, `open-in-pane.ts`, `resolve-spec-path.ts`,
+  `resolve-feature-path.ts`.
+- **Tools:** `resolve_spec_path`, `resolve_feature_path`, `open_in_pane`.
 - **Commands:** `/plan <JIRA_ID>` (duplicate registration — see
   pi-interactive-subagents above for who wins) and `/review-spec <path>`.
-- **Routing:** `/plan` checks for an existing spec file: if found → **iterate-plan**
-  skill, otherwise → **create-plan**.
-- **Spec path convention:** `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md`,
-  where slug = first 5 lowercase words of the Jira summary, non-alnum stripped
-  (`resolveSpecPath`). `$LLM_NOTES_ROOT` overrides where specs live,
-  letting a central notes vault span multiple repos.
-- **Feature path convention:** `resolve_feature_path` computes a personal-feature
-  `plan.md` path — `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md` if set, else
-  `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md` — backing the **feature-plan**
-  skill's no-Jira flow.
-- **Spec annotation format:** `Spec(repo=<repo>): <relative-path>` — parsed by
-  `extractSpecPath` in `helpers.ts` via regex. This is the **only** link between a
-  taskwarrior spec task and its file on disk — don't change the format without
-  updating both `plan-tools` and any skill that reads it.
-- **`jira_create_branch`** (shared `shared/jira-branch.ts`): derives a branch name
-  from a Jira issue (type → prefix, summary → slug), creates it, and sets its
-  git-town parent to `develop`. Requires `acli` + `git-town`. Replaced the old
-  `skills/engineering/implement-plan/scripts/jira-branch.sh` shell script (`f748401`).
-- **`open_in_pane`** (`open-in-pane.ts`): opens a spec/plan file with `glow` in a new
-  herdr pane (`spec-review`) for human review. Calls the `herdr` CLI directly —
-  deliberate, no cross-package import of pi-interactive-subagents for 3 exec calls.
-  Non-fatal: returns a manual-open note if herdr is unavailable. The create-plan /
-  iterate-plan / feature-plan skills call it after writing the spec/plan — skippable,
-  never blocks the flow.
+- **Spec path convention:** `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md`
+  (slug = first 5 lowercase words, non-alnum stripped; `$LLM_NOTES_ROOT` overrides
+  for a central notes vault).
+- **Feature path convention:** `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`
+  if set, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md`.
+- **`open_in_pane`** opens a plan/spec with **nvim** (glow was replaced) in a herdr
+  `spec-review` pane — calls the `herdr` CLI directly (deliberate, no cross-package
+  import for 3 exec calls); non-fatal when herdr is missing.
 
 ### implement-plan — `packages/pi-planning/implement-plan/`
 
-- **Files:** `index.ts` (the `/implement` command), one file per tool:
-  `execution-plan.ts`, `advance-task.ts`, `phase-checkpoint.ts`, `jira-branch-tool.ts`.
-- **Tools:** `tw_execution_plan`, `tw_advance_task`, `tw_phase_checkpoint`,
-  `jira_create_branch` (shared tool, registered here too for standalone installs).
-- **Command:** `/implement <JIRA_ID>` — shows the execution plan, routes to the
-  **implement-plan** skill.
-- **`tw_execution_plan`** is the important one: it fetches all `+impl` tasks for a
-  **Jira ID or a local feature UUID** (mutually exclusive params), parses phase numbers
-  out of descriptions matching `^(\d+)\.\s*Phase:` (`parsePhaseNumber`) and subtask
-  numbers matching `^(\d+\.\d+)` (`parseSubtaskNumber`), sorts by numeric prefix, and
-  computes `currentPhase`/`currentSubtask` — the first non-done item — as the **resume
-  target**. This is what lets `/implement` be safely re-run mid-way through a
-  multi-session implementation, for Jira specs and local features alike.
-- See [Planning workflow](../workflows/planning-and-implementation.md) for the full
-  task lifecycle and taskwarrior data model.
+- **Files:** `index.ts` (the `/implement` command), `jira-branch-tool.ts`.
+- **Tools:** `jira_create_branch` (shared `shared/jira-branch.ts`; registered here
+  for standalone installs). Derives a branch from a Jira issue (type → prefix,
+  summary → slug), optional git-town parent to `develop`. Requires `acli` +
+  `git-town`.
+- **Command:** `/implement <AVEN-REF | JIRA-ID>` — routes to the
+  **implement-plan-aven** skill (execution state lives in aven, not here).
+- See [Planning workflow](../workflows/planning-and-implementation.md) for the
+  full aven data model and plan-state gate.
 
 ## pi-review (review + sonarqube + pr-quality)
 
@@ -243,11 +227,26 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
   when the review completes. The legacy in-session path remains as fallback when
   there's no mux or the spawn fails; with a mux available, every mode runs in the
   subagent.
+- **PR reviews are worktree-based by default:** with Herdr + mux, the PR is fetched
+  into a dedicated `review/pr-<n>` branch in its own Herdr worktree; the worktree
+  (and branch) is auto-removed when all jobs finish. Fresh worktrees run
+  `yarn install` with `GH_TOKEN` propagated. Only the legacy no-Herdr path
+  in-place-checks-out the PR and requires a clean tree.
+- **ocr second opinion:** with the `ocr` binary on PATH, every diff-based target
+  also spawns a pure-runner **scout** subagent running
+  `ocr <args> --format json --output <tmpfile>` and catting it back — the JSON
+  steers in as an `ocr_result` message. Target mapping: PR →
+  `review --from <base> --to <worktree-branch>`; base branch →
+  `--from <merge-base> --to HEAD`; uncommitted → workspace `review`; commit →
+  `--commit <sha>`; folder → `scan --path <paths>`. PR worktrees are refcounted
+  (`pending` = reviewer + ocr scout) so a fast reviewer can't tear the worktree
+  out from under a still-running scout.
+- **ocr delegate preset:** "Review with ocr delegate rules" — the reviewer subagent
+  itself runs `ocr delegate preview` + `ocr delegate rule` (LLM-free) and applies
+  the resolved rules to the diff; no ocr LLM configuration needed.
 - Injects semantic-tool guidance (`buildSemReviewGuidance` from `sem-guidance.mjs`)
   so the review prompt tells the agent to prefer `sem_diff`/`sem_impact` when
   `pi-sem` is available.
-- **Constraint:** PR review mode requires a clean working tree (it checks out the PR
-  branch locally) — will refuse if there are uncommitted tracked-file changes.
 - **Session state:** tracks the origin session ID for a "fresh session per review"
   pattern; module-level state (`reviewOriginId`, `endReviewInProgress`) is deliberate
   and assumes a single active review at a time (documented in-file).
@@ -279,6 +278,43 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
   plain `setInterval` loop — replaced an earlier detached-bash+sentinel-file+`fs.watch`
   approach (`202b3de7`) that was flaky. When checks complete, it triggers `/pr-quality`
   automatically. Cleans up its interval on `session_shutdown`.
+
+## pi-teams-transcript
+
+- **Files:** `packages/pi-teams-transcript/index.ts` (+ test), `config.schema.json`
+- **Registers:** `teams_transcript` tool; `/teams-transcript-sync`,
+  `/teams-transcript-summarize`, `/teams-transcript-weekly`, and
+  `/teams-transcript-push` commands.
+- **What:** Microsoft Graph (app-only) access to Teams meeting transcripts:
+  list meetings, list/download transcripts, plus sync/summarize/weekly/push
+  workflows over synced `.vtt` + `.md` stubs. `/teams-transcript-push` pushes
+  notes + raw transcripts into a remote ZenNotes workspace vault via the `zn`
+  CLI (config `znServer`/`znToken` or `ZENNOTES_SERVER`/`ZENNOTES_REMOTE_TOKEN`),
+  dedup-checked per file and moved to `outDir/pushed/` so re-runs are no-ops.
+- Tenant settings gate everything (Graph access master switch, speaker
+  attribution) — see the README troubleshooting table for the exact 403 modes.
+
+## pi-sudo
+
+- **Files:** `packages/pi-sudo/index.ts` (+ test)
+- **Registers:** `sudo_run` tool.
+- **What:** Executes a shell command as root behind a two-stage overlay: an
+  Allow/Deny confirmation showing the command + the AI's stated reason, then an
+  inline masked password field (60s inactivity timeout auto-denies). The password
+  is piped to `sudo -S` on stdin — never written to disk, never in tool results
+  (fixed a leak into command stdin in `484faa8`). Requires TUI mode; every call
+  re-prompts (no PAM caching).
+
+## pi-aven-context
+
+- **Files:** `packages/pi-aven-context/index.ts` (+ test)
+- **Registers:** `session_start` handler only — no commands, no config.
+- **What:** Runs `aven prime` from the session cwd and injects the live portion
+  (local conventions, open issues, active/ready/blocked breakdown) as a hidden
+  custom message at session start. The static CLI primer head is stripped (the
+  `aven` skill already provides it). Non-fatal — a missing/slow `aven` binary
+  silently skips; idempotent across resume/fork/reload via an existing-entry
+  check on the session branch.
 
 ## Next
 

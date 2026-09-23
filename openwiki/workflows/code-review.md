@@ -17,16 +17,33 @@ Three cooperating slash commands under `packages/pi-review/`, sharing
 
 Modes: `/review pr 123`, `/review pr <url>`, `/review uncommitted`,
 `/review branch main`, `/review commit <sha>`, `/review folder src docs` (snapshot, not
-diff), `/review custom "<instructions>"`. No args → interactive selector.
+diff), `/review custom "<instructions>"`. No args → interactive selector (which also
+offers the ocr-delegate preset, below).
 
 - When a supported multiplexer is available, `/review` spawns a **`reviewer`
   subagent** via `pi-interactive-subagents`' programmatic API (`launchSubagent`)
   — the review runs in its own pane and findings steer back into the session when
   done. The legacy in-session path remains as fallback (no mux, or spawn failed);
   with a mux, every mode runs in the subagent.
-- PR-review mode checks the PR out locally via `gh`/`git` and **requires a clean
-  working tree** (refuses if there are uncommitted changes to tracked files) — it
-  can't safely check out a branch over dirty state.
+- PR reviews are **worktree-based by default**: with Herdr and a mux available, the
+  PR is fetched into a dedicated `review/pr-<n>` branch in its own Herdr worktree,
+  the reviewer subagent runs there, and the worktree (+ branch) is auto-removed
+  when the review finishes. Fresh worktrees get `yarn install` with `GH_TOKEN`
+  propagated (private registries). The main checkout is never touched. Without
+  Herdr/mux, the legacy in-place `gh pr checkout` flow requires a clean tree.
+- **ocr second opinion:** if the `ocr` binary (OpenCodeReview) is on PATH, every
+  diff-based target also spawns a pure-runner **scout** subagent running
+  `ocr <args> --format json --output <tmpfile>`: PR → `review --from <base> --to
+  <worktree-branch>` in the worktree; base branch → `--from <merge-base> --to HEAD`;
+  uncommitted → workspace `review`; commit → `--commit <sha>`; folder → `scan
+  --path <paths>` (no diff). The scout cats the file; the JSON steers back as an
+  `ocr_result` message (machine-parseable, first line = tmpfile path). `custom`
+  and `ocrDelegate` targets get no scout. For PR reviews the worktree stays alive
+  until both jobs (reviewer + scout) finish.
+- **ocr delegate preset:** "Review with ocr delegate rules" reuses the branch
+  selector, then the reviewer subagent itself runs `ocr delegate preview` +
+  `ocr delegate rule` (LLM-free spec + resolved rules) and applies the rules to
+  the diff — host-agent delegation, no ocr LLM configuration required.
 - Injects semantic-tool guidance into the review prompt via
   `buildSemReviewGuidance()`/`getSemToolAvailability()` from `sem-guidance.mjs`: if
   `pi-sem` tools are available, the agent is told to prefer `sem_diff`/`sem_impact`
@@ -91,7 +108,8 @@ open PR → /pr-watch (fire and forget) → checks go green →
 
 Or synchronously: `/review pr <n>` for a human-style read-through before merging, and
 `/sonarqube <n>` any time you just want the static report without the agent acting on
-it.
+it. The ocr delegate preset fits between: structured rule coverage without a second
+LLM bill.
 
 ## See also
 

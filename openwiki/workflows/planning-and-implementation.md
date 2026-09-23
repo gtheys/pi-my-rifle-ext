@@ -1,161 +1,138 @@
 # Planning & Implementation Workflow
 
-How a Jira ticket — or a local personal feature — becomes a written spec/plan, then a
-phased, resumable implementation, end to end across the `pi-planning` extensions,
-`pi-interactive-subagents` (the `/plan` dispatcher), taskwarrior, and the
-`create-plan`/`feature-plan`/`iterate-plan`/`implement-plan` skills.
+How a feature — local personal or Jira-linked — becomes a written plan, then a
+phased, resumable implementation across the `feature-plan-aven` /
+`implement-plan-aven` skills and the slim `pi-planning` extension.
 
-## Two entry flows, one dispatcher
+**This page is the map.** The canonical, detailed flow doc is
+[`docs/aven-feature-flow.md`](../../docs/aven-feature-flow.md) (source skills +
+full aven command contracts) — keep that file authoritative for step-level
+detail; this page summarizes and links.
 
-`/plan` is registered by `pi-interactive-subagents` (first registration wins in the
-monorepo; `pi-planning`'s own `/plan` only loads for standalone npm installs of that
-package). It dispatches on argument shape:
+## Aven replaces taskwarrior
 
-- **`/plan <JIRA_ID>`** → injects the **create-plan** skill (or **iterate-plan** if a
-  spec file already exists — `pi-planning`'s routing logic).
-- **`/plan <free text>`** → injects the **feature-plan** skill (local feature, no Jira).
-- Skills unreadable (standalone install) → bundled generic `plan-skill.md` fallback.
+Planning state moved from taskwarrior to **[aven](https://aven.raine.dev)** (a
+local-first task manager; CLI primer lives in the global `aven` skill at
+`~/.pi/agent/skills/aven/`). The aven-era changes dropped every `tw_*` tool and
+the create-plan / feature-plan / iterate-plan / implement-plan taskwarrior
+skills; what remains of `pi-planning` is path resolution + branch derivation +
+`/implement` routing. Legacy taskwarrior trees still work via the legacy
+`feature-plan` skill path documented in aven-feature-flow's boundaries, but all
+new planning goes through aven.
 
-## Why taskwarrior, not a file in the repo
+Two artifacts, two sources of truth:
 
-State for "what's the plan and where are we in it" lives in **taskwarrior**, external
-to any single git repo, because implementation often spans multiple sessions and the
-agent needs a durable, queryable source of truth for resume points. The spec's prose
-lives in a markdown file; taskwarrior tracks structured progress against it.
-
-## The two roles
-
-| Extension | Skill it backs | Responsibility |
+| Artifact | Role | Lives in |
 |---|---|---|
-| `pi-interactive-subagents` | `/plan` dispatch | Route the argument to create-plan / feature-plan (or the bundled fallback) |
-| `pi-planning/plan-tools` | `create-plan`, `feature-plan`, `iterate-plan` | Turn a Jira ticket into a spec file + phase/subtask task tree; resolve plan.md paths for local features |
-| `pi-planning/implement-plan` | `implement-plan` | Walk that task tree, advancing state, checkpointing phases |
+| Aven ticket tree | **What** to do, in **what order**, and progress ledger | aven (local DB) |
+| `plan.md` | **How** to do it — design, constraints, acceptance criteria | filesystem (`resolve_feature_path`) |
 
-Both share `packages/pi-planning/shared/` (`tw-utils.ts`, `jira-branch.ts`) — the only
-code they have in common. Everything else about "how a spec is written" vs "how it's
-executed" is intentionally separate. Research and implementation themselves run in
-**subagents** (scout/worker/planner agents from `pi-interactive-subagents`) when a
-multiplexer is available; every skill documents an in-session fallback when the
-`subagent` tool is missing.
+Aven infers workspace and project from cwd: personal projects → `personal`
+workspace, work repos → `salaryhero`. `aven doctor` when routing looks wrong.
 
-## 1. Spec creation (`/plan <JIRA_ID>`)
+## Entry points
 
-`packages/pi-planning/plan-tools/index.ts`
+- **`/plan <anything>`** — registered by `pi-interactive-subagents`, dispatch
+  aven-first: Jira-shaped args and free text **both** inject the
+  `feature-plan-aven` skill (it handles aven refs, aven-synced Jira IDs, and
+  local features). Standalone installs fall back to the bundled generic
+  `plan-skill.md`.
+- **`/implement <AVEN-REF | JIRA-ID>`** — registered by
+  `pi-planning/implement-plan`, routes to the `implement-plan-aven` skill.
+- **`/skill:explore`** — pre-ticket codebase Q&A; no aven state until an
+  explicit exit ramp ("create ticket" oneshot / "plan it" / nothing).
 
-1. `tw_get_ticket` — fetch the Jira ticket fields from taskwarrior (description,
-   `jiradescription`, `jirasummary`, `jirastatus`, `jiraurl`, `jiraissuetype`,
-   `jiraparent`, tags, project).
-2. `tw_get_spec_task` — check whether a spec task already exists; if so, extract its
-   file path from an annotation matching `Spec(repo=<repo>): <path>`
-   (`extractSpecPath`). **This regex is the single link** between a taskwarrior task
-   and a file on disk — if you ever need to change the annotation format, update the
-   writer (`tw_create_spec_task`) and this parser together, and check nothing else in
-   the repo depends on the old format (grep `Spec(repo=`).
-3. `resolve_spec_path` — compute the canonical path:
-   `<specDir>/notes/specs/<JIRA_ID>__<slug>.md`, where:
-   - `specDir` = `$LLM_NOTES_ROOT/<repoName>` if `LLM_NOTES_ROOT` is set (centralized
-     notes vault spanning multiple repos), else `<repo-root>/notes`.
-   - `repoName` = `git rev-parse --show-toplevel` basename.
-   - `slug` = Jira summary lowercased, non-alnum stripped, first 5 words, dash-joined.
-4. `tw_create_spec_task` — create the taskwarrior spec task, tag `+spec`, set
-   `work_state:approved`, project `SalaryHero.<project>`, and annotate it with
-   `Spec(repo=<repo>): <relative-path>`.
-5. `tw_create_phase` (per phase) — creates a `+impl +phase` task titled like
-   `"N. Phase: <name>"`, `work_state:todo`. Returns a UUID.
-6. `tw_create_impl_task` (per subtask) — creates a `+impl` task titled
-   `"N.M <description>"`, `depends:<phase UUID>`, `work_state:todo`.
-7. `jira_create_branch` — derives and creates the feature branch (type → prefix,
-   summary → slug), sets its git-town parent to `develop`. Requires `acli` +
-   `git-town`; this replaced the old `jira-branch.sh` shell script.
-8. `open_in_pane` — after the spec is written, opens it with `glow` in a herdr
-   `spec-review` pane for human review. Skippable and non-blocking — the flow
-   continues if herdr is unavailable.
+## The plan gate
 
-`/plan <JIRA_ID>` routing (spec file exists?): iterate-plan vs create-plan — the
-routing decision, not the file writing, is what the commands do — actual spec
-authoring is the skill's job (see `skills/engineering/create-plan/SKILL.md`,
-`feature-plan/SKILL.md`, and `iterate-plan/SKILL.md`). Research runs in parallel
-**scout** subagents during spec creation.
+The ticket tree exists **only after approval**. `plan-state` metadata on the
+feature ticket: `draft` (interview done, plan.md incomplete) → `review`
+(plan.md complete, awaiting user) → `approved` (tree may be created). Only the
+user's explicit "approve <REF>" moves review → approved. Re-triggering the
+planning skill on a ref branches on `plan-state`, which is what makes the flow
+resumable across sessions.
 
-## 1b. Local feature flow (`/plan <free text>` → feature-plan skill)
-
-No Jira ticket involved; state lives in taskwarrior under a `+feature` task stamped
-`jirastatus:Local`:
-
-1. **Interview** — flesh the vague idea out with the user.
-2. **Scout** — codebase research in scout subagents (parallel).
-3. **Plan** — an interactive **planner** agent (driven by the user in its own pane)
-   drafts the plan.
-4. `resolve_feature_path` — compute the canonical `plan.md` path:
-   `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md` if `$PERSONAL_FEATURES` is set,
-   else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md`.
-5. **Taskwarrior hierarchy** — created via raw `task` CLI (feature → phases →
-   subtasks, same `N.` / `N.M` description prefixes, `+phase`/`+impl` tags) so
-   `tw_execution_plan` can walk it later via `feature_uuid`.
-6. `open_in_pane` — open `plan.md` with glow for review (skippable, same as specs).
-
-The **feature-ticket** skill is the lighter sibling: interview → a single taskwarrior
-ticket, no plan file, no phases.
-
-## 2. Task numbering convention (must match exactly)
-
-- Phase task title: `"<N>. Phase: <Phase Name>"` — parsed by
-  `parsePhaseNumber` (regex `^(\d+)\.\s*Phase:`) and `parsePhaseName`.
-- Subtask title: `"<N>.<M> <description>"` — parsed by `parseSubtaskNumber`
-  (regex `^(\d+\.\d+)`) and `parseSubtaskName`.
-- Subtasks `depends:` their parent phase's UUID; sorting is purely by the numeric
-  prefix in the title (`sortByPrefix` in `implement-plan/index.ts`), **not** by
-  taskwarrior's own ordering or creation time. If you hand-edit a task title and break
-  this pattern, `tw_execution_plan` will fail to place it correctly.
-
-## 3. Execution (`/implement <JIRA_ID>` or `/implement feature <uuid>`)
-
-`packages/pi-planning/implement-plan/index.ts`
-
-1. **`tw_execution_plan`** — fetches all `+impl` tasks for a **Jira ID or a local
-   feature UUID** (`feature_uuid`, mutually exclusive with `jira_id`; local feature
-   hierarchies are found via the `+feature` task's UUID), groups them into phases with
-   nested subtasks, sorted by numeric prefix, and computes:
-   - `currentPhase` / `currentSubtask` — the **first non-done item**, i.e. the resume
-     point. This is what makes `/implement` idempotent/resumable across sessions —
-     call it again any time and it picks up exactly where it left off.
-   - `totalSubtasks` / `doneSubtasks` for progress reporting.
-2. **`tw_advance_task`** — transitions a task's `work_state` through
-   `todo → inprogress → done`. When set to `done`, it also runs `task done` to close
-   the taskwarrior task (`status:completed`) — `work_state` and taskwarrior `status`
-   are two separate fields that must be kept in sync, and this tool is the only place
-   that does both.
-3. **`tw_phase_checkpoint`** — call *after* tests pass and the user has confirmed a
-   phase is complete. Marks the phase task done and returns a ready-made git commit
-   message template. It does **not** run tests or commit for you — that's a deliberate
-   separation: tests are run via `run_tests`/`/run-tests`, and the actual `git commit`
-   is a manual step the human confirms (see root `AGENTS.md` commit discipline: "wait
-   for input before doing anything else").
-
-Each subtask is implemented by a sequential **worker** subagent when the `subagent`
-tool is available; otherwise the main session does the work itself (skill fallback).
-
-## State machine per task
+## Tree shape (structural rules)
 
 ```
-todo ──(tw_advance_task state=inprogress)──> inprogress ──(state=done)──> done (+ task done)
+Feature ticket  metadata: plan-path=<abs plan.md>, plan-state=...  is_epic=true
+  └── Phase   title="1. Phase: <name>"  labels=[phase,impl]  epic child, plan-path
+        └── Subtask  title="1.1 <title>"  labels=[impl]  epic child, plan-path, depends_on phase
+  └── Phase 2  ...  depends_on phase 1
 ```
 
-Applies uniformly to phase tasks and subtasks — same tool, same three states.
+1. **Grouping = epic membership** — feature ticket becomes an epic; phases and
+   subtasks are all epic children (`aven epic add`). `plan-path` is the only
+   metadata written per node.
+2. **Ordering = dependency chain** — phase N depends on phase N−1
+   (`aven dep add`), so `aven list --ready` exposes exactly one phase at a
+   time; subtasks depend on their phase.
+3. **Naming = `N.` / `N.M` title prefixes** — aven doesn't sort by prefix;
+   the skills sort client-side. Prefixes are for humans.
 
-## Golden rule tie-in
+Statuses: `inbox → todo → active → done` (labels `phase`, `impl`).
 
-Per root `agents/AGENTS.md`: never refactor task numbering, annotation formats, or
-taskwarrior filters without checking every consumer (`plan-tools`, `implement-plan`,
-and the skills that call these tools) — they all assume the exact same title/annotation
-conventions described above.
+## Planning (`feature-plan-aven`) — stage 1 author, stage 2 tree
+
+1. **Pickup** — `aven show <REF> --full` + `aven context <REF>`; Jira ID →
+   pull-in first (below); promote to `--epic on --status todo`.
+2. **Scout** — read-only scout subagent maps the affected area into
+   `scout-context.md`; main session ends turn, waits for the steer.
+3. **`resolve_feature_path(summary)`** — canonical absolute plan.md path
+   (`$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else
+   `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md`). Use verbatim.
+4. **Interview** — one focused round (Goal / Behavior / Done when / Out of
+   scope); contract recorded as an aven note; `plan-state=review`.
+5. **Interactive planner subagent** — its own methodology (requirements,
+   approaches, premortem, plan), writes plan.md; must NOT create aven tasks
+   or commit.
+6. **Stage 2, after "approve REF"** — `plan-state=approved`, then create the
+   tree per the aven output contract (one phase at a time, dep-chained).
+
+## Execution (`implement-plan-aven`)
+
+Discovery (`aven list --has-metadata plan-path --open`) → pull tree
+(`aven epic list <REF> --json`, sort by prefix) → **currentPhase /
+currentSubtask = first non-done item** (the resume mechanism — re-running
+picks up exactly where it left off) → read plan.md fully → per-subtask worker
+subagents (sequential, never two in one repo; ≤2-line changes go inline) →
+test → verification gate (wait for human) → phase-scoped commit message
+(wait again) → commit → phase `done` → finally feature `done`.
+
+Shortcuts:
+
+- **Oneshot** — a ticket whose description is already a complete spec skips
+  planning: worker → tests → commit → done. No plan.md, no tree.
+- **Bug flow** — `--label bug` tickets skip planning; "debug <REF>" runs the
+  `debug` skill wrapped in aven state (findings land as ticket notes; fix +
+  regression test → done). Root-cause reveals design flaw → route to
+  `feature-plan-aven`.
+
+## Jira-synced tickets (pull-in)
+
+Tickets synced from Jira by `jira-aven-sync` carry `jira-key` metadata and
+live in the Jira project's aven project — never worked on directly. Before
+the flow: find the synced ticket (workspace-wide `jira-key` filter) →
+find-or-create a **local epic** in the repo's aven project (`jira-ref`
+metadata) → `aven dep add <EPIC> <SYNCED>`. The whole flow then runs on the
+epic; specs use `resolve_spec_path` instead of `resolve_feature_path`. The
+synced ticket is context + upstream record only.
+
+## `pi-planning` today (what's left)
+
+| Piece | What |
+|---|---|
+| `resolve_spec_path` | `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md` (`$LLM_NOTES_ROOT` aware) |
+| `resolve_feature_path` | `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md` or `.pi/plans/…` fallback |
+| `open_in_pane` | opens a plan file with **nvim** in a herdr review pane (glow was replaced) |
+| `jira_create_branch` | branch from Jira issue (type → prefix, summary → slug); optional git-town parent. Requires `acli` + `git-town` |
+| `/implement` | routes to the `implement-plan-aven` skill |
+| `/review-spec <path>` | open a spec/plan in a herdr review pane |
 
 ## See also
 
-- `skills/engineering/create-plan/SKILL.md`, `feature-plan/SKILL.md`,
-  `iterate-plan/SKILL.md`, `implement-plan/SKILL.md` — the prose workflows these tools
-  back.
-- `README.md` "How Extensions and Skills Fit Together" — the full dependency map
-  (commands → skills → tools → subagents) and the rules of the road.
+- `docs/aven-feature-flow.md` — the authoritative step-level flow + quick
+  command reference (`aven list --ready`, metadata filters, plan-state gates).
+- `skills/engineering/feature-plan-aven/SKILL.md`,
+  `implement-plan-aven/SKILL.md`, `explore/SKILL.md` — the prose workflows.
 - [Extension reference](../architecture/extensions.md#pi-planning-plan-tools--implement-plan)
-  for source-line pointers.
+  for source pointers.
