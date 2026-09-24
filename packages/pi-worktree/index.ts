@@ -151,18 +151,6 @@ async function createFlow(
   report('Copying env files...')
   const envCopied = await copyEnvFiles(pi, main, path)
 
-  // AIDEV-NOTE: git-town set-parent is best-effort, jira flow only —
-  // non-zero exit is noted in the response but never fails creation.
-  let gitTownNote = ''
-  if (derived.source === 'jira') {
-    const town = await pi.exec('git', ['town', 'set-parent', 'develop'], {
-      cwd: path,
-    })
-    if (town.code !== 0) {
-      gitTownNote = `\ngit town set-parent develop failed (non-fatal): ${town.stderr || town.stdout}`
-    }
-  }
-
   const bootstrapLines = bootstrap
     .map((step) => {
       let line = `FAIL ${step.label} — ${step.output}`
@@ -183,11 +171,8 @@ async function createFlow(
     `Workspace: ${workspaceId || '(unknown)'}`,
     `Bootstrap:\n${bootstrapLines}`,
     `Env files copied: ${envLine}`,
-    gitTownNote,
     `Next: cd ${path} && pi -c  (or spawn a subagent with cwd ${path})`,
-  ]
-    .filter((line) => line !== '')
-    .join('\n')
+  ].join('\n')
 
   return textResult(text, {
     branch: derived.branch,
@@ -448,7 +433,7 @@ export default function (pi: ExtensionAPI) {
     name: 'worktree',
     label: 'Worktree',
     description:
-      'Create, list, or remove git worktrees managed as Herdr workspaces. Create derives a branch (from a Jira issue, a conventional name+type, or a literal), creates the Herdr worktree, bootstraps dependencies from the detected lockfile, copies missing .env* files from the main checkout, and (jira flow) best-effort sets the git-town parent. List shows a worktree/agent dashboard; remove guards against dirty worktrees.',
+      'Create, list, or remove git worktrees managed as Herdr workspaces. Create derives a branch (from a Jira issue, a conventional name+type, or a literal), creates the Herdr worktree, bootstraps dependencies from the detected lockfile, copies missing .env* files from the main checkout. List shows a worktree/agent dashboard; remove guards against dirty worktrees.',
     promptSnippet:
       'Create/list/remove git worktrees as Herdr workspaces for parallel work',
     promptGuidelines: [
