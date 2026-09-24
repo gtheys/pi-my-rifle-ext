@@ -94,6 +94,15 @@ export function readPlanSkill(
 const WIDGET_INTERVAL_KEY = Symbol.for('pi-subagents/widget-interval')
 const STATUS_INTERVAL_KEY = Symbol.for('pi-subagents/status-interval')
 const POLL_ABORT_KEY = Symbol.for('pi-subagents/poll-abort-controller')
+const RUNNING_KEY = Symbol.for('pi-subagents/running')
+const RELOAD_SENTINEL = 'pi-subagents/module-reload'
+
+// AIDEV-NOTE: shared via globalThis so an extension /reload (module
+// re-import) keeps running entries + panes alive; the new module instance
+// re-attaches watchers in subagentsExtension().
+const runningSubagents: Map<string, RunningSubagent> = ((globalThis as any)[
+  RUNNING_KEY
+] ??= new Map<string, RunningSubagent>())
 
 {
   const prevInterval = (globalThis as any)[WIDGET_INTERVAL_KEY]
@@ -109,7 +118,12 @@ const POLL_ABORT_KEY = Symbol.for('pi-subagents/poll-abort-controller')
   const prevAbort = (globalThis as any)[POLL_ABORT_KEY] as
     | AbortController
     | undefined
-  if (prevAbort) prevAbort.abort()
+  if (prevAbort) {
+    prevAbort.abort()
+    // Orphan live watchers; subagentsExtension() re-attaches them with the
+    // fresh pi/ctx from this module load.
+    for (const r of runningSubagents.values()) r.watching = false
+  }
   ;(globalThis as any)[POLL_ABORT_KEY] = new AbortController()
 }
 
@@ -602,10 +616,13 @@ export interface RunningSubagent {
    * subagent's pane (e.g. planner).
    */
   interactive: boolean
+  /** True while a watcher from the current module load is polling this entry. */
+  watching?: boolean
+  /** Resume flow: entry count in sessionFile before resume — new-only summary extraction. */
+  resumeEntryCount?: number
 }
 
-/** All currently running subagents, keyed by id. */
-const runningSubagents = new Map<string, RunningSubagent>()
+/** All currently running subagents, keyed by id — shared via globalThis (see RUNNING_KEY). */
 
 // ── Widget management ──
 
@@ -718,7 +735,15 @@ function renderSubagentWidgetLines(
 
 function updateWidget() {
   if (!latestCtx?.hasUI) return
+  // AIDEV-NOTE: latestCtx goes stale after session replacement/reload — pi
+  // throws on stale ctx; a dead widget render must never crash the host.
+  try {
+    renderWidget()
+  } catch {}
+}
 
+function renderWidget() {
+  if (!latestCtx) return
   if (runningSubagents.size === 0) {
     latestCtx.ui.setWidget('subagent-status', undefined)
     if (widgetInterval) {
@@ -1017,18 +1042,22 @@ function startStatusRefresh(pi: ExtensionAPI) {
 
     if (transitionLines.length > 0) {
       const capped = capStatusLines(transitionLines, statusConfig.lineLimit)
-      pi.sendMessage(
-        {
-          customType: 'subagent_status',
-          content: formatStatusAggregate(
-            transitionLines,
-            statusConfig.lineLimit,
-          ),
-          display: true,
-          details: { lines: capped.visibleLines, overflow: capped.overflow },
-        },
-        { triggerTurn: true, deliverAs: 'steer' },
-      )
+      // AIDEV-NOTE: pi can be stale after session replacement — swallow, the
+      // new module load recreates this interval with a fresh pi.
+      try {
+        pi.sendMessage(
+          {
+            customType: 'subagent_status',
+            content: formatStatusAggregate(
+              transitionLines,
+              statusConfig.lineLimit,
+            ),
+            display: true,
+            details: { lines: capped.visibleLines, overflow: capped.overflow },
+          },
+          { triggerTurn: true, deliverAs: 'steer' },
+        )
+      } catch {}
     }
   }, 1000)
 
@@ -1555,6 +1584,19 @@ async function watchSubagent(
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
     }
   } catch (err: any) {
+    if (!signal.aborted && getModuleAbortSignal().aborted) {
+      // AIDEV-NOTE: extension /reload aborted the poll loop — keep the pane
+      // and Map entry alive; the new module re-attaches via runWatcher.
+      return {
+        name,
+        task,
+        summary: '',
+        sessionFile,
+        exitCode: 1,
+        elapsed: Math.floor((Date.now() - startTime) / 1000),
+        error: RELOAD_SENTINEL,
+      }
+    }
     try {
       closeSurface(surface)
     } catch {}
@@ -1582,9 +1624,126 @@ async function watchSubagent(
   }
 }
 
+/**
+ * Single fire-and-forget watcher + result delivery path. Used at launch and
+ * when re-attaching watchers orphaned by an extension /reload (old module
+ * aborted its poll loops but kept entries + panes alive on globalThis).
+ */
+function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
+  running.watching = true
+  const watcherAbort = new AbortController()
+  running.abortController = watcherAbort
+  watchSubagent(running, watcherAbort.signal)
+    .then((result) => {
+      if (result.error === RELOAD_SENTINEL) return // new module delivers
+      // AIDEV-NOTE: pi/latestCtx can be stale after session replacement —
+      // delivery must never crash the host.
+      try {
+        updateWidget() // reflect removal from Map immediately
+
+        if (result.ping) {
+          // Subagent is requesting help — steer a ping with session path for resume
+          const sessionRef = result.sessionFile
+            ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
+            : ''
+          pi.sendMessage(
+            {
+              customType: 'subagent_ping',
+              content: `Sub-agent "${result.ping.name}" needs help (${formatElapsed(result.elapsed)}):\n\n${result.ping.message}${sessionRef}`,
+              display: true,
+              details: {
+                name: result.ping.name,
+                message: result.ping.message,
+                agent: running.agent,
+                sessionFile: result.sessionFile,
+              },
+            },
+            { triggerTurn: true, deliverAs: 'steer' },
+          )
+          return
+        }
+
+        // Resume flow: re-extract only entries written after the resume.
+        if (
+          running.resumeEntryCount != null &&
+          result.sessionFile &&
+          !result.errorMessage
+        ) {
+          const newEntries = getNewEntries(
+            result.sessionFile,
+            running.resumeEntryCount,
+          )
+          const summary =
+            findLastAssistantMessage(newEntries) ??
+            (result.exitCode !== 0
+              ? `Resumed session exited with code ${result.exitCode}`
+              : 'Resumed session exited without new output')
+          result = { ...result, summary }
+        }
+
+        const presentation = resolveResultPresentation(result, running.name)
+
+        pi.sendMessage(
+          {
+            customType: 'subagent_result',
+            content: presentation,
+            display: true,
+            details: {
+              name: running.name,
+              task: running.task,
+              agent: running.agent,
+              exitCode: result.exitCode,
+              elapsed: result.elapsed,
+              sessionFile: result.sessionFile,
+              ...(result.errorMessage
+                ? { errorMessage: result.errorMessage }
+                : {}),
+              ...(result.claudeSessionId
+                ? { claudeSessionId: result.claudeSessionId }
+                : {}),
+            },
+          },
+          { triggerTurn: true, deliverAs: 'steer' },
+        )
+      } catch {}
+    })
+    .catch((err) => {
+      try {
+        updateWidget()
+        pi.sendMessage(
+          {
+            customType: 'subagent_result',
+            content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
+            display: true,
+            details: {
+              name: running.name,
+              task: running.task,
+              error: err?.message,
+            },
+          },
+          { triggerTurn: true, deliverAs: 'steer' },
+        )
+      } catch {}
+    })
+}
+
 export default function subagentsExtension(pi: ExtensionAPI) {
   // Capture the UI context for widget updates
   latestPi = pi
+
+  // Re-attach watchers orphaned by an extension /reload. The previous module
+  // load aborted its poll loops (POLL_ABORT_KEY reset above) and cleared each
+  // entry's watching flag; entries survive via the globalThis Map.
+  let reattached = 0
+  for (const running of runningSubagents.values()) {
+    if (running.watching) continue
+    runWatcher(pi, running)
+    reattached++
+  }
+  if (reattached > 0) {
+    startWidgetRefresh()
+    startStatusRefresh(pi)
+  }
   pi.on('session_start', (_event, ctx) => {
     latestCtx = ctx
   })
@@ -1607,6 +1766,14 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     if (moduleAbort) moduleAbort.abort()
     for (const [_id, agent] of runningSubagents) {
       agent.abortController?.abort()
+      // AIDEV-NOTE: parent is quitting — kill orphaned panes, else the child
+      // pi keeps running forever with nobody to deliver its result to.
+      // Interactive agents are user-driven: their pane survives on purpose.
+      if (!agent.interactive) {
+        try {
+          closeSurface(agent.surface)
+        } catch {}
+      }
     }
     runningSubagents.clear()
   })
@@ -1683,81 +1850,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         // Launch the subagent (creates pane, sends command)
         const running = await launchSubagent(params, ctx)
 
-        // Create a separate AbortController for the watcher
-        // (the tool's signal completes when we return)
-        const watcherAbort = new AbortController()
-        running.abortController = watcherAbort
-
         // Start widget refresh and status supervision when the first agent launches
         startWidgetRefresh()
         startStatusRefresh(pi)
 
         // Fire-and-forget: start watching in background
-        watchSubagent(running, watcherAbort.signal)
-          .then((result) => {
-            updateWidget() // reflect removal from Map immediately
-
-            if (result.ping) {
-              // Subagent is requesting help — steer a ping message with session path for resume
-              const sessionRef = `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
-              pi.sendMessage(
-                {
-                  customType: 'subagent_ping',
-                  content: `Sub-agent "${result.ping.name}" needs help (${formatElapsed(result.elapsed)}):\n\n${result.ping.message}${sessionRef}`,
-                  display: true,
-                  details: {
-                    name: result.ping.name,
-                    message: result.ping.message,
-                    agent: running.agent,
-                    sessionFile: result.sessionFile,
-                  },
-                },
-                { triggerTurn: true, deliverAs: 'steer' },
-              )
-              return
-            }
-
-            const presentation = resolveResultPresentation(result, running.name)
-
-            pi.sendMessage(
-              {
-                customType: 'subagent_result',
-                content: presentation,
-                display: true,
-                details: {
-                  name: running.name,
-                  task: running.task,
-                  agent: running.agent,
-                  exitCode: result.exitCode,
-                  elapsed: result.elapsed,
-                  sessionFile: result.sessionFile,
-                  ...(result.errorMessage
-                    ? { errorMessage: result.errorMessage }
-                    : {}),
-                  ...(result.claudeSessionId
-                    ? { claudeSessionId: result.claudeSessionId }
-                    : {}),
-                },
-              },
-              { triggerTurn: true, deliverAs: 'steer' },
-            )
-          })
-          .catch((err) => {
-            updateWidget()
-            pi.sendMessage(
-              {
-                customType: 'subagent_result',
-                content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
-                display: true,
-                details: {
-                  name: running.name,
-                  task: running.task,
-                  error: err?.message,
-                },
-              },
-              { triggerTurn: true, deliverAs: 'steer' },
-            )
-          })
+        runWatcher(pi, running)
 
         // Return immediately
         return {
@@ -2175,6 +2273,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           launchScriptFile,
           activityFile,
           interactive,
+          resumeEntryCount: entryCountBefore,
           statusState: createStatusState({
             source: 'pi',
             startTimeMs: startTime,
@@ -2185,78 +2284,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         startStatusRefresh(pi)
 
         // Fire-and-forget watcher
-        const watcherAbort = new AbortController()
-        running.abortController = watcherAbort
-
-        watchSubagent(running, watcherAbort.signal)
-          .then((result) => {
-            updateWidget()
-
-            if (result.ping) {
-              const sessionRef = `\n\nSession: ${params.sessionPath}\nResume: pi --session ${params.sessionPath}`
-              pi.sendMessage(
-                {
-                  customType: 'subagent_ping',
-                  content: `Sub-agent "${result.ping.name}" needs help (${formatElapsed(result.elapsed)}):\n\n${result.ping.message}${sessionRef}`,
-                  display: true,
-                  details: {
-                    name: result.ping.name,
-                    message: result.ping.message,
-                    sessionFile: params.sessionPath,
-                  },
-                },
-                { triggerTurn: true, deliverAs: 'steer' },
-              )
-              return
-            }
-
-            const allEntries = getNewEntries(
-              params.sessionPath,
-              entryCountBefore,
-            )
-            const summary =
-              findLastAssistantMessage(allEntries) ??
-              (result.errorMessage
-                ? `Subagent error: ${result.errorMessage}`
-                : result.exitCode !== 0
-                  ? `Resumed session exited with code ${result.exitCode}`
-                  : 'Resumed session exited without new output')
-            const presentation = resolveResultPresentation(
-              { ...result, summary, sessionFile: params.sessionPath },
-              name,
-            )
-
-            pi.sendMessage(
-              {
-                customType: 'subagent_result',
-                content: presentation,
-                display: true,
-                details: {
-                  name,
-                  task: params.message ?? 'resumed session',
-                  exitCode: result.exitCode,
-                  elapsed: result.elapsed,
-                  sessionFile: params.sessionPath,
-                  ...(result.errorMessage
-                    ? { errorMessage: result.errorMessage }
-                    : {}),
-                },
-              },
-              { triggerTurn: true, deliverAs: 'steer' },
-            )
-          })
-          .catch((err) => {
-            updateWidget()
-            pi.sendMessage(
-              {
-                customType: 'subagent_result',
-                content: `Resume error: ${err?.message ?? String(err)}`,
-                display: true,
-                details: { name, error: err?.message },
-              },
-              { triggerTurn: true, deliverAs: 'steer' },
-            )
-          })
+        runWatcher(pi, running)
 
         return {
           content: [{ type: 'text', text: `Session "${name}" resumed.` }],
