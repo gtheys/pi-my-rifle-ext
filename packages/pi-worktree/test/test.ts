@@ -204,13 +204,25 @@ import { detectBootstrapPlan, selectEnvFiles } from '../bootstrap.ts'
 
 test('detectBootstrapPlan: bun.lock', () => {
   assert.deepEqual(detectBootstrapPlan(['bun.lock', 'package.json']), {
-    steps: [{ label: 'bun install', command: 'bun install', shell: false }],
+    steps: [
+      {
+        label: 'bun install',
+        command: 'GH_TOKEN="$(gh auth token)" bun install',
+        shell: true,
+      },
+    ],
   })
 })
 
 test('detectBootstrapPlan: bun.lockb variant', () => {
   assert.deepEqual(detectBootstrapPlan(['bun.lockb']), {
-    steps: [{ label: 'bun install', command: 'bun install', shell: false }],
+    steps: [
+      {
+        label: 'bun install',
+        command: 'GH_TOKEN="$(gh auth token)" bun install',
+        shell: true,
+      },
+    ],
   })
 })
 
@@ -225,7 +237,13 @@ test('detectBootstrapPlan: yarn uses shell command with GH_TOKEN', () => {
 
 test('detectBootstrapPlan: package-lock.json → npm ci', () => {
   assert.deepEqual(detectBootstrapPlan(['package-lock.json']), {
-    steps: [{ label: 'npm ci', command: 'npm ci', shell: false }],
+    steps: [
+      {
+        label: 'npm ci',
+        command: 'GH_TOKEN="$(gh auth token)" npm ci',
+        shell: true,
+      },
+    ],
   })
 })
 
@@ -234,8 +252,8 @@ test('detectBootstrapPlan: pnpm-lock.yaml', () => {
     steps: [
       {
         label: 'pnpm install',
-        command: 'pnpm install --frozen-lockfile',
-        shell: false,
+        command: 'GH_TOKEN="$(gh auth token)" pnpm install --frozen-lockfile',
+        shell: true,
       },
     ],
   })

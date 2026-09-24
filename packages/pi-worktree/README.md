@@ -29,10 +29,10 @@ Parallel feature work in one repo, via [Herdr](https://github.com/pi-edubot/herd
 
 | Lockfile | Command |
 | -------- | ------- |
-| `bun.lock` / `bun.lockb` | `bun install` |
+| `bun.lock` / `bun.lockb` | `GH_TOKEN="$(gh auth token)" bun install` |
 | `yarn.lock` | `GH_TOKEN="$(gh auth token)" yarn install` |
-| `package-lock.json` | `npm ci` |
-| `pnpm-lock.yaml` | `pnpm install --frozen-lockfile` |
+| `package-lock.json` | `GH_TOKEN="$(gh auth token)" npm ci` |
+| `pnpm-lock.yaml` | `GH_TOKEN="$(gh auth token)" pnpm install --frozen-lockfile` |
 | `Cargo.toml` | `cargo fetch` |
 | `go.mod` | nothing (global caches) |
 | none | nothing |

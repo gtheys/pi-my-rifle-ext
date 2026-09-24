@@ -20,6 +20,11 @@ export interface BootstrapPlan {
 const GO_NOTE = 'go: global module cache, nothing to install'
 const NONE_NOTE = 'no recognized lockfile — nothing to bootstrap'
 
+// AIDEV-NOTE: all JS installs run as a single bash -c string so GH_TOKEN
+// is expanded inside the shell and never appears in process argv (ISC-5).
+// gh-auth fallback (plain command) happens in runStep.
+const GH_PREFIX = 'GH_TOKEN="$(gh auth token)" '
+
 const JS_LOCKFILES = [
   'bun.lock',
   'bun.lockb',
@@ -45,23 +50,28 @@ export function detectBootstrapPlan(filesPresent: string[]): BootstrapPlan {
   }
 
   if (present.has('bun.lock') || present.has('bun.lockb')) {
-    steps.push({ label: 'bun install', command: 'bun install', shell: false })
+    steps.push({
+      label: 'bun install',
+      command: `${GH_PREFIX}bun install`,
+      shell: true,
+    })
   } else if (present.has('yarn.lock')) {
-    // AIDEV-NOTE: yarn runs as a single bash -c string so GH_TOKEN is
-    // expanded inside the shell and never appears in process argv
-    // (ISC-5). gh-auth fallback happens in runBootstrap.
     steps.push({
       label: 'yarn install',
-      command: 'GH_TOKEN="$(gh auth token)" yarn install',
+      command: `${GH_PREFIX}yarn install`,
       shell: true,
     })
   } else if (present.has('package-lock.json')) {
-    steps.push({ label: 'npm ci', command: 'npm ci', shell: false })
+    steps.push({
+      label: 'npm ci',
+      command: `${GH_PREFIX}npm ci`,
+      shell: true,
+    })
   } else if (present.has('pnpm-lock.yaml')) {
     steps.push({
       label: 'pnpm install',
-      command: 'pnpm install --frozen-lockfile',
-      shell: false,
+      command: `${GH_PREFIX}pnpm install --frozen-lockfile`,
+      shell: true,
     })
   }
 
@@ -117,10 +127,10 @@ async function runStep(
   let command = step.command
   let args: string[]
   if (step.shell) {
-    // Verify gh auth first; fall back to plain yarn if gh missing.
+    // Verify gh auth first; fall back to plain command if gh missing.
     const gh = await pi.exec('gh', ['auth', 'token'], { cwd })
     if (gh.code !== 0) {
-      command = 'yarn install'
+      command = command.replace(GH_PREFIX, '')
       const result = await pi.exec('bash', ['-c', command], {
         cwd,
         signal,
@@ -129,7 +139,7 @@ async function runStep(
       return {
         label: step.label,
         ok: result.code === 0,
-        output: `warning: gh auth token failed, running plain yarn install\n${tail(result.stdout + result.stderr)}`,
+        output: `warning: gh auth token failed, running plain ${command}\n${tail(result.stdout + result.stderr)}`,
       }
     }
     args = ['-c', command]
