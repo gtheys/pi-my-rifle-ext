@@ -21,6 +21,13 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { Text } from '@earendil-works/pi-tui'
 import { registerDiffTools } from './diff-renderer.ts'
+import {
+  buildGlobPattern,
+  FffService,
+  fffFormatGrepText,
+  isLikelyGlobPattern,
+} from './fff.ts'
+import { iconizePaths, renderTree } from './icons.ts'
 import { pill } from './pill.ts'
 
 /** Max lines shown in collapsed (non-expanded) result view */
@@ -53,14 +60,20 @@ function renderTextResult(
   expanded: boolean,
   theme: Theme,
   mode: 'head' | 'tail' = 'head',
+  transform?: (text: string, theme: Theme) => string,
 ): Text {
   if (!text?.trim()) return new Text('', 0, 0)
 
   const lines = text.split('\n')
+  // AIDEV-NOTE: transformed lines carry their own colors (icons/tree) with
+  // 39m/22m resets so pi's Box background survives — don't re-wrap them.
+  const decorate = (ls: string[]) => {
+    if (transform) return transform(ls.join('\n'), theme)
+    return ls.map((l) => theme.fg('toolOutput', l)).join('\n')
+  }
 
   if (expanded || lines.length <= COLLAPSED_MAX_LINES) {
-    const output = lines.map((l) => theme.fg('toolOutput', l)).join('\n')
-    return new Text(`\n${output}`, 0, 0)
+    return new Text(`\n${decorate(lines)}`, 0, 0)
   }
 
   const hidden = lines.length - COLLAPSED_MAX_LINES
@@ -71,13 +84,11 @@ function renderTextResult(
 
   if (mode === 'tail') {
     const visible = lines.slice(-COLLAPSED_MAX_LINES)
-    const output = visible.map((l) => theme.fg('toolOutput', l)).join('\n')
-    return new Text(`\n${hint}\n${output}`, 0, 0)
+    return new Text(`\n${hint}\n${decorate(visible)}`, 0, 0)
   }
 
   const visible = lines.slice(0, COLLAPSED_MAX_LINES)
-  const output = visible.map((l) => theme.fg('toolOutput', l)).join('\n')
-  return new Text(`\n${output}\n${hint}`, 0, 0)
+  return new Text(`\n${decorate(visible)}\n${hint}`, 0, 0)
 }
 
 /** Helper to register a basic tool (ls, read, find, grep) with pill + collapsed output. */
@@ -88,6 +99,7 @@ function wrapBasicTool(
   name: string,
   mkCallText: (args: BasicToolArgs, theme: Theme) => string,
   mode: 'head' | 'tail' = 'head',
+  transform?: (text: string, theme: Theme) => string,
 ) {
   pi.registerTool({
     ...orig,
@@ -102,7 +114,7 @@ function wrapBasicTool(
       theme: Theme,
       _ctx: unknown,
     ) {
-      return renderTextResult(getText(result), expanded, theme, mode)
+      return renderTextResult(getText(result), expanded, theme, mode, transform)
     },
   })
 }
@@ -110,9 +122,26 @@ function wrapBasicTool(
 export default function (pi: ExtensionAPI) {
   const cwd = process.cwd()
 
-  // ls
-  wrapBasicTool(pi, createLsToolDefinition(cwd), 'ls', (args, theme) =>
-    theme.fg('accent', args.path || '.'),
+  // AIDEV-NOTE: FFF accelerates find/grep; on any failure tools fall back to SDK execute.
+  const fff = new FffService()
+  pi.on('session_start', async (_event, ctx) => {
+    await fff.init(ctx.cwd)
+    if (fff.partialIndex) {
+      ctx.ui?.notify?.('FFF: scan timed out — using partial index', 'warning')
+    }
+  })
+  pi.on('session_shutdown', async () => {
+    fff.destroy()
+  })
+
+  // ls — icons + tree rendering
+  wrapBasicTool(
+    pi,
+    createLsToolDefinition(cwd),
+    'ls',
+    (args, theme) => theme.fg('accent', args.path || '.'),
+    'head',
+    (text, theme) => renderTree(text, (s) => theme.fg('toolOutput', s)),
   )
 
   // read
@@ -127,20 +156,139 @@ export default function (pi: ExtensionAPI) {
     return t
   })
 
-  // find
-  wrapBasicTool(pi, createFindToolDefinition(cwd), 'find', (args, theme) => {
-    let t = theme.fg('accent', `"${args.pattern}"`)
-    if (args.path) t += theme.fg('dim', ` in ${args.path}`)
-    return t
-  })
+  // find — FFF glob with SDK fallback, icons on paths
+  const origFind = createFindToolDefinition(cwd)
+  wrapBasicTool(
+    pi,
+    {
+      ...origFind,
+      async execute(
+        tid: string,
+        params: BasicToolArgs & { limit?: number },
+        sig: AbortSignal | undefined,
+        _upd: unknown,
+        ctx: unknown,
+      ) {
+        const pattern = String(params.pattern ?? '')
+        if (fff.isAvailable && fff.finder) {
+          try {
+            const limit = Math.max(
+              1,
+              typeof params.limit === 'number' ? params.limit : 100,
+            )
+            const basePathResult = fff.finder.getBasePath()
+            const basePath = basePathResult.ok ? basePathResult.value : null
+            const search = fff.finder.glob(
+              buildGlobPattern(pattern, params.path, basePath),
+              { pageSize: limit },
+            )
+            if (search.ok) {
+              const items = search.value.items.slice(0, limit)
+              // Glob-ish pattern with empty FFF result: suspicious, retry via SDK (fd)
+              if (items.length > 0 || !isLikelyGlobPattern(pattern)) {
+                const paths = items.map((i) => i.relativePath).join('\n')
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: paths || 'No files found matching pattern',
+                    },
+                  ],
+                }
+              }
+            }
+          } catch {
+            // fall through to SDK
+          }
+        }
+        return origFind.execute(
+          tid,
+          params as never,
+          sig,
+          undefined,
+          ctx as never,
+        )
+      },
+    },
+    'find',
+    (args, theme) => {
+      let t = theme.fg('accent', `"${args.pattern}"`)
+      if (args.path) t += theme.fg('dim', ` in ${args.path}`)
+      return t
+    },
+    'head',
+    (text, theme) => iconizePaths(text, (s) => theme.fg('toolOutput', s)),
+  )
 
-  // grep
-  wrapBasicTool(pi, createGrepToolDefinition(cwd), 'grep', (args, theme) => {
-    let t = theme.fg('accent', `"${args.pattern}"`)
-    if (args.path) t += theme.fg('dim', ` in ${args.path}`)
-    if (args.glob) t += theme.fg('dim', ` ${args.glob}`)
-    return t
-  })
+  // grep — FFF grep with SDK fallback (FFF has smart-case only, no path/glob scoping)
+  const origGrep = createGrepToolDefinition(cwd)
+  wrapBasicTool(
+    pi,
+    {
+      ...origGrep,
+      async execute(
+        tid: string,
+        params: BasicToolArgs & {
+          context?: number
+          limit?: number
+          literal?: boolean
+          ignoreCase?: boolean
+        },
+        sig: AbortSignal | undefined,
+        _upd: unknown,
+        ctx: unknown,
+      ) {
+        const pattern = String(params.pattern ?? '')
+        if (
+          fff.isAvailable &&
+          fff.finder &&
+          !params.path &&
+          !params.glob &&
+          params.ignoreCase !== true
+        ) {
+          try {
+            const limit = Math.max(
+              1,
+              typeof params.limit === 'number' ? params.limit : 200,
+            )
+            const context =
+              typeof params.context === 'number' ? params.context : 0
+            const grepResult = fff.finder.grep(pattern, {
+              pageSize: limit,
+              mode: params.literal === true ? 'plain' : 'regex',
+              smartCase: false,
+              beforeContext: context,
+              afterContext: context,
+            })
+            if (grepResult.ok) {
+              const items = grepResult.value.items.slice(0, limit)
+              let text = fffFormatGrepText(items, limit)
+              if (grepResult.value.regexFallbackError) {
+                text += `\n\n[Regex failed: ${grepResult.value.regexFallbackError}, used literal match]`
+              }
+              return { content: [{ type: 'text' as const, text }] }
+            }
+          } catch {
+            // fall through to SDK
+          }
+        }
+        return origGrep.execute(
+          tid,
+          params as never,
+          sig,
+          undefined,
+          ctx as never,
+        )
+      },
+    },
+    'grep',
+    (args, theme) => {
+      let t = theme.fg('accent', `"${args.pattern}"`)
+      if (args.path) t += theme.fg('dim', ` in ${args.path}`)
+      if (args.glob) t += theme.fg('dim', ` ${args.glob}`)
+      return t
+    },
+  )
 
   // bash — special: syntax-highlighted command, tail mode
   const origBash = createBashToolDefinition(cwd)

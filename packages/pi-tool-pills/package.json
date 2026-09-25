@@ -18,6 +18,8 @@
   "files": [
     "index.ts",
     "diff-renderer.ts",
+    "fff.ts",
+    "icons.ts",
     "pill.ts",
     "README.md"
   ],
@@ -27,8 +29,9 @@
     ]
   },
   "dependencies": {
-    "diff": "^9.0.0",
+    "@ff-labs/fff-node": "^0.11.0",
     "@shikijs/cli": "^4.3.1",
+    "diff": "^9.0.0",
     "shiki": "^4.3.1"
   },
   "devDependencies": {
