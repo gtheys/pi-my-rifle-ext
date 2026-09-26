@@ -1,354 +1,280 @@
 # Aven feature flow: plan → implement
 
-How personal-project features move through aven: from ticket, through
-planning (`feature-plan-aven`), to execution (`implement-plan-aven`).
+How to take work from "I want something built" to "done" with aven + pi.
+Pick your situation below — each section says **what you type** and **what
+happens next**.
 
-Source skills:
-- `~/.pi/agent/skills/aven/SKILL.md` — CLI primer
-- `skills/engineering/explore/SKILL.md` — pre-ticket exploration
-- `skills/engineering/feature-plan-aven/SKILL.md` — planning
-- `skills/engineering/implement-plan-aven/SKILL.md` — execution
-- `skills/engineering/debug/SKILL.md` — bug flow (step 0a)
+- [I have no ticket yet](#1-no-ticket-yet)
+- [Ticket exists, it's small — just do it](#2-oneshot--the-ticket-is-the-spec)
+- [Ticket exists, needs a codebase look first](#3-investigate--mini-plan-as-an-aven-note)
+- [Ticket exists, needs a real plan](#4-planned--spec--tree--phased-execution)
+- [Resuming later](#5-resuming)
+- [Where things live](#6-where-things-live)
+- [States and gates](#7-states-and-gates)
+- [Worktree sessions](#8-worktree-sessions-push-handoff)
+- [Tool reference](#9-tool-reference)
+- [Jira-linked work](#10-jira-linked-work)
+
+Source skills: `skills/engineering/feature-plan-aven/SKILL.md` (planning),
+`skills/engineering/implement-plan-aven/SKILL.md` (execution). The mechanics
+live in tools (`pi-planning` aven-tools, `pi-worktree`); the skills carry the
+judgment.
 
 ---
 
-## 1. Mental model
-
-Two artifacts, two sources of truth:
-
-| Artifact | Role | Lives in |
-|---|---|---|
-| Aven ticket tree | **What** to do, in **what order**, and progress ledger | aven (local DB) |
-| `plan.md` | **How** to do it — design, constraints, acceptance criteria | filesystem (`resolve_feature_path`) |
-
-Data model of a planned feature:
-
-```text
-Feature ticket  metadata: plan-path=<abs plan.md>, plan-state=draft|review|approved  is_epic=true
-  └── Phase   title="1. Phase: <name>"  labels=[phase,impl]  epic child, plan-path
-        └── Subtask  title="1.1 <title>"  labels=[impl]  epic child, plan-path, depends_on phase
-  └── Phase   title="2. Phase: <name>"  labels=[phase,impl]  epic child, plan-path, depends_on phase 1
-        └── Subtask  title="2.1 <title>"  labels=[impl]  epic child, plan-path, depends_on phase
-```
-
-**Plan gate**: the tree exists only after approval. `plan-state` on the
-feature ticket: `draft` (interview done, plan.md incomplete) → `review`
-(plan.md complete, awaiting user) → `approved` (tree may be created). Only
-the user's explicit word ("approve <REF>") moves review → approved; the
-agent runs the edit. Resume in a new session: `aven show <REF> --full` (parse
-the `metadata … key=plan-state` block — `show --json` omits metadata on aven
-0.1.39), branch on `plan-state`.
-
-Three structural rules:
-
-1. **Grouping = epic membership.** The feature ticket becomes an epic; every
-   phase AND subtask is an epic child (`aven epic add <child> <feature>`).
-   No extra metadata for grouping — `plan-path` is the only metadata written.
-2. **Ordering = dependency chain.** Phase N depends on phase N−1
-   (`aven dep add`), so `aven list --ready` exposes exactly one phase at a
-   time. Subtasks depend on their phase (hidden from `--ready` until it
-   finishes).
-3. **Naming = `N.` / `N.M` title prefixes.** Aven does NOT sort by prefix —
-   the skills sort client-side for presentation and resume. Prefixes are for
-   humans.
-
-Statuses used: `inbox → todo → active → done`. Labels: `phase`, `impl`.
-
-### Jira-synced tickets
-
-Tickets synced from Jira by `jira-aven-sync` carry `jira-key`, `jira-url`,
-and `jira-status` metadata plus the `jira` label. They live in the Jira
-project's aven project (`dp`, `imp`, `devops` in the `salaryhero` workspace)
-— **not** in the repo the flow runs from. Work on a synced ticket happens
-on a **local epic pulled into the repo's own aven project**, dep-linked to
-the synced ticket. The synced ticket is context + upstream record; it is
-never planned, edited, or re-parented.
-
-**Pull-in (find-or-create)** — run from the repo root before the flow;
-`<REF>` for the whole flow is the local epic:
+## 1. No ticket yet
 
 ```bash
-KEY=DP-71
-# 1) Synced ticket — search the WHOLE workspace (omit --project); synced
-#    tickets live in their Jira project's aven project, not the repo's
-JIRA_REF=$(aven list --metadata jira-key=$KEY --json 2>/dev/null \
-  | jq -r '.[] | select(.is_epic != true) | .ref' | head -1)
-# [] / `unknown-metadata-field` → never synced → not aven-managed
-# (aven errors print on stderr — never merge 2>&1 into the jq pipe)
-
-# 2) Repo's aven project — mapped? (projects infer from path mappings)
-aven project path list --workspace salaryhero
-# repo path unmapped → create + map in one shot (name = repo dir name)
-aven project create "$(basename "$PWD")" --path "$PWD" --workspace salaryhero
-
-# 3) Existing epic for THIS repo + ticket? (`jira-ref` marks pulled-in epics;
-#    <repo-project-key> = the repo project's key from `aven project list`)
-EPIC_REF=$(aven list --metadata jira-ref=$KEY --json 2>/dev/null \
-  | jq -r --arg p <repo-project-key> '.[] | select(.project == $p) | .ref' | head -1)
-# empty / `unknown-metadata-field` (lazy registration — no epic ever pulled
-# in yet) → not found → create below
-
-# 4) Missing → create the epic in the repo's project, dep-link the synced ticket
-EPIC_REF=$(aven add "$KEY — <synced summary>" --epic --status todo \
-  --metadata jira-ref=$KEY \
-  --description "Jira $KEY — source of truth: synced ticket $JIRA_REF." \
-  2>&1 | grep -oP 'created \K\S+')
-aven dep add $EPIC_REF $JIRA_REF   # epic blocked-by synced ticket; deps survive sync
+aven add "Add dark mode to settings page"     # lands in inbox
 ```
 
-Deltas from the local flow:
+Or just tell pi: *"ticket: add dark mode to settings page"* — the agent
+creates it. For a Jira ticket instead, see [§10](#10-jira-linked-work).
 
-- **Lookup**: a Jira ID resolves workspace-wide via `jira-key` (step 1),
-  then to the repo's epic via `jira-ref` (step 3). One epic per repo per
-  ticket — two repos pulling the same ticket get sibling epics, each
-  filtered by its repo's project key.
-- **Feature ticket = local epic**: `plan-path`, `plan-state`, notes, and
-  the whole tree live on the epic. Title format `KEY — summary`.
-- **Context + path**: context = synced description + `jira-url` (no live
-  acli); plan.md path comes from `resolve_spec_path` (specs dir), not
-  `resolve_feature_path`.
-- **Sync-safety**: sync overwrites title, status, priority, description,
-  labels, and `jira-status` on the **synced ticket** every run. The local
-  epic is invisible to sync — everything on it (even `--description`) is
-  durable. The `dep` link survives sync (deps aren't in the overwrite
-  list). Legacy trees planned directly on a synced epic still work — step 1
-  filters `is_epic` out of the synced lookup.
+Not sure the ticket is even worth creating? `/skill:explore` first — chat
+Q&A about the codebase, no aven state until you say "ticket it" or "plan it".
 
-## 2. Lifecycle overview
+Then decide the tier (next three sections). Rule of thumb:
 
 ```text
-(optional) explore — chat Q&A about the codebase BEFORE any ticket exists:
-  quick questions → direct search · broad mapping → scout subagents ·
-  "why" questions → hindsight/cognee memory. No aven state until exit ramp:
-  "create ticket" (oneshot) / "plan it" (→ stage 1, findings as ticket note)
-  / nothing (understanding was the goal).
-
-aven add "Add dark mode"            # ticket lands in inbox (or --status todo)
-        │
-Jira ID? pull-in first (§1): find synced ticket (jira-key, workspace-wide) →
-find-or-create local epic in the repo's project (jira-ref) → dep add EPIC JIRA.
-The flow then runs on the EPIC, never on the synced ticket.
-        │
-        ├─ oneshot? (description is a complete spec, single commit) ─┐
-        │   "oneshot REF" → worker → tests → commit → done          │
-        │                                                            │
-        ▼  feature-plan-aven, stage 1 (author)                       │
-pickup → scout → path → interview → planner writes plan.md           │
-        → plan-state=review         ★ gate: NO tree yet              │
-        │                                                            │
-        ▼  user reviews (possibly a later session)                   │
-"iterate plan REF" → load plan.md, iterate   |   "approve REF" → plan-state=approved
-        │                                                            │
-        ▼  feature-plan-aven, stage 2 (tree)                         │
-aven output contract → phases/subtasks as epic children, each with plan-path
-        │                                                            │
-        ▼  implement-plan-aven                                       │
-pull tree → read plan.md → branch → per-phase loop (active → subtasks →
-test → verify gate → commit → done) → close feature                  │
+Description already says WHAT + DONE-WHEN?      → oneshot
+Clear WHAT, unclear WHERE/HOW deep?             → investigate
+Multi-step, design choices, >1 commit?          → planned
 ```
 
-## 3. Phase A: Planning (`feature-plan-aven`)
+## 2. Oneshot — the ticket is the spec
 
-Trigger: an aven ref (e.g. `PMR-ZTVG`), a synced Jira ID (e.g. `DP-71`), or
-"plan this aven ticket".
-Re-triggering on a ref with existing `plan-state` resumes at the right stage
-(draft → finish plan, review → iterate, approved → create tree).
-Routing: Jira ID synced to aven (jira-key metadata) → planned here; Jira ID
-NOT synced → `create-plan`; taskwarrior tree → `feature-plan` (legacy).
+**Trigger:** `oneshot PMR-XXXX` (or `/implement PMR-XXXX` on a plan-less
+ticket and confirm the oneshot route).
 
-Workspaces: personal projects → `personal` workspace, work → `salaryhero`.
-Run aven from the repo root; workspace is inferred from cwd. If refs fail
-with `unknown-ref`, check routing with `aven doctor`.
+**Flow:**
 
-### Steps
+```mermaid
+flowchart LR
+  A["you: oneshot PMR-XXXX"] --> B["sanity-check description<br/>(states what + done-when?)"]
+  B -->|vague| C["agent asks,<br/>answers → aven note"]
+  B -->|clear| D["status → active"]
+  C --> D
+  D --> E["1 worker subagent:<br/>tests first → implement"]
+  E --> F["review diff + run tests"]
+  F --> G["you confirm commit msg"]
+  G --> H["commit → aven note → done"]
+```
 
-1. **Pickup** — Jira ID? Run the pull-in (§1) first; `<REF>` from here on
-   is the local epic. Then `aven show <REF> --full` + `aven context <REF>`.
-   Skim README/AGENTS.md/package.json enough to brief the scout.
+No plan.md, no tree, no extra tickets. If the work balloons past one commit,
+the agent stops and routes to [§4](#4-planned--spec--tree--phased-execution).
 
-2. **Scout** — read-only `scout` subagent maps the affected area (file
-   structure, modules, conventions, similar features) into
-   `scout-context.md`. Parallel scouts OK. Main session ends turn and waits
-   for the `subagent_result` steer.
+## 3. Investigate — mini-plan as an aven note
 
-3. **Resolve plan path** — `resolve_feature_path(summary)` returns the
-   canonical absolute `plan.md` path
-   (`$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else
-   `.pi/plans/<date>-<slug>/plan.md`). Use verbatim; never hand-roll.
+**Trigger:** `/plan PMR-XXXX` and during triage pick **investigate** — or
+say *"spike PMR-XXXX"* / *"investigate then do PMR-XXXX"*. The ticket gets
+`delivery-mode=investigate`.
 
-4. **Interview** — one focused round, 3–6 questions (Goal / Behavior / Done
-   when / Out of scope). Always offer "use your judgment" → defaults marked
-   as assumptions.
+**Flow:**
 
-5. **Contract on the ticket** — record the interview and promote the ticket
-   (`plan-state=review` when plan.md is complete, `draft` if interrupted):
+```mermaid
+flowchart LR
+  A["you: investigate PMR-XXXX"] --> B["delivery_mode set:<br/>investigate"]
+  B --> C["investigate: direct search<br/>or scout subagent"]
+  C --> D["aven note:<br/>findings + mini-plan<br/>+ done-when"]
+  D --> E["note shown to you"]
+  E -->|"no gate — proceeds<br/>unless you interrupt"| F["execute like oneshot"]
+  F --> G["commit → note → done"]
+  D -.->|"findings show legs"| H["escalate to planned (§4),<br/>note feeds interview"]
+```
 
-   ```bash
-   aven label create phase 2>/dev/null || true
-   aven label create impl  2>/dev/null || true
-   aven note <REF> --stdin <<'EOF'
-   Goal: ...
-   Behavior: ...
-   Done when: ...
-   Out of scope: ...
-   EOF
-   aven edit <REF> --epic on --status todo \
-     --metadata plan-path=<abs path> --metadata plan-state=review
-   ```
+The note is the spec — durable, resumable, visible in the aven TUI. Still
+no plan.md, no extra tickets.
 
-6. **Interactive planner subagent** — runs its own methodology
-   (requirements, approaches, premortem, plan) with the user, writes
-   `plan.md`. It does NOT create aven tasks — the tree is stage 2.
-   Stage 1 ends here: present plan.md, wait for the user.
+## 4. Planned — spec + tree + phased execution
 
-   ```bash
-   # Phase (capture ref from "created PMR-XXXX"; \S+ not \w+ — dash breaks \w)
-   PHASE_REF=$(aven add "N. Phase: <name>" --label phase --label impl --metadata plan-path=<abs> 2>&1 | grep -oP 'created \K\S+')
-   aven epic add $PHASE_REF <REF>
-   if [ -n "$PREV_PHASE_REF" ]; then aven dep add $PHASE_REF $PREV_PHASE_REF; fi
-   PREV_PHASE_REF=$PHASE_REF
+**Trigger:** `/plan PMR-XXXX` (or `/plan DP-71` for Jira), then pick
+**planned** at triage. Ticket gets `delivery-mode=planned`.
 
-   # Subtask (epic child, gated on its phase)
-   SUBTASK_REF=$(aven add "N.M <title>" --label impl --metadata plan-path=<abs> 2>&1 | grep -oP 'created \K\S+')
-   aven epic add $SUBTASK_REF <REF>
-   aven dep add $SUBTASK_REF $PHASE_REF
-   ```
+Two stages, gated:
 
-   Planner constraints:
-   - Phases must be **testable blocks** — repo left green at phase end, one
-     commit per phase. Too big/small → split/merge.
-   - Planner must NOT commit code, create aven tasks, or set status beyond
-     `todo`.
+### Stage 1 — author the plan
 
-7. **Stage 2 — create the tree (after approval)** — user says
-   "approve <REF>" → `aven edit <REF> --metadata plan-state=approved`, then
-   run the contract verbatim, one phase at a time: `aven epic list <REF> --json`, sort by prefix, present tree
-   + plan.md to the user for review. Fixups via the contract commands.
+```mermaid
+flowchart TD
+  A["/plan PMR-XXXX"] --> B["pickup: aven show + context<br/>(Jira ID → find_or_create_epic)"]
+  B --> C["scout subagent maps<br/>the affected area"]
+  C --> D["interview: one round<br/>Goal / Behavior / Done-when / Scope"]
+  D --> E["plan path resolved<br/>(resolve_feature_path)"]
+  E --> F["contract on ticket:<br/>aven note + plan-path<br/>+ plan-state=draft"]
+  F --> G["interactive planner<br/>writes plan.md WITH you"]
+  G --> H["plan-state=review<br/>★ NO tree yet"]
+```
 
-8. **Fallback (no subagent tool)** — do scout work in-session
-   (`fast_context_search`/`grep`/`read`), write plan.md yourself, run the
-   identical contract commands.
+You review plan.md (opens in a review pane), iterate with the planner if
+needed. When satisfied: **`approve PMR-XXXX`** — your word, only yours,
+flips `plan-state=approved`.
 
-## 4. Phase B: Implementation (`implement-plan-aven`)
+### Stage 2 — create the tree
 
-**Oneshot shortcut**: a ticket whose description is already a complete spec
-(small, single-commit) skips planning entirely — "oneshot <REF>": status
-active → one worker with the description as spec → tests → commit → note +
-done. No plan.md, no tree. Vague description → clarify or route to planning.
+`create_feature_tree` turns plan.md into aven tickets — and **refuses**
+unless `plan-state=approved` (gate enforced in code, zero writes otherwise):
 
-**Bug shortcut**: `--label bug` tickets skip planning too — diagnosis replaces
-it. "debug <REF>" runs the debug skill with an aven wrapper: status active,
-findings/root cause land as ticket notes (durable resume), fix + regression
-test → note with commit hash → done. Root cause reveals a design flaw →
-route to `feature-plan-aven`. Triage queue: `aven list --ready --label bug`.
+```text
+PMR-XXXX  (epic)  metadata: plan-path, plan-state=approved, delivery-mode=planned
+  ├── "1. Phase: …"   labels=[phase,impl]  ← dep: none
+  │     └── "1.1 …"   labels=[impl]        ← dep: phase 1
+  └── "2. Phase: …"   labels=[phase,impl]  ← dep: phase 1 (order guarantee)
+        └── "2.1 …"   labels=[impl]        ← dep: phase 2
+```
 
-Trigger: "implement PMR-ZTVG", "implement DP-71" (synced Jira ID — pull-in
-first, §1), "resume the aven feature". Discovery when no
-ref given: `aven list --has-metadata plan-path --open`. No `plan-path`
-metadata → not planned → route back to `feature-plan-aven`. `plan-state`
-present but not `approved` → plan still in draft/review → route back to
-`feature-plan-aven`.
+Every ticket carries its own `plan-path` + a self-contained description
+(implementation summary + acceptance criteria lifted from plan.md), so a
+worker never needs to open plan.md. Phase deps mean
+`aven list --ready` shows exactly one phase at a time.
 
-### Steps
+### Execution
 
-1. **Pull execution plan** — `aven epic list <REF> --json`; sort by
-   `N.`/`N.M`; compute:
-   - currentPhase = first non-done phase
-   - currentSubtask = first non-done subtask in it
-   - progress = done subtasks / total
+**Trigger:** `/implement PMR-XXXX`.
 
-   Present tree with ✓/▶/○ and the resume point. This first-non-done logic
-   IS the resume mechanism — done work is trusted unless codebase evidence
-   contradicts it.
+```mermaid
+flowchart TD
+  A["/implement PMR-XXXX"] --> B["delivery_mode classify → planned"]
+  B --> C["get_feature_tree:<br/>sorted tree + resume pointer"]
+  C --> D["read plan.md fully"]
+  D --> E["worktree create"]
+  E --> F["worktree open → pi agent<br/>in worktree pane = the worker"]
+  F --> G["handoff — main session free"]
+  G --> H["per subtask: worker → tests → tick"]
+  H --> I["phase close: full check →<br/>verify gate (you confirm) →<br/>commit msg (you confirm) →<br/>commit → close_phase"]
+  I -->|next phase| H
+  I -->|all done| J["push (asks first) → note →<br/>feature done → worktree cleanup?"]
+```
 
-2. **Read plan.md completely** (`plan-path` from `aven show <REF> --full` —
-   parse the metadata block; `--json` omits metadata on aven 0.1.39).
-   `- [x]` items are done.
+## 5. Resuming
 
-3. **Branch** — no automation; if on main, suggest `feat/<slug>` in one
-   sentence.
+Everything needed lives on the tickets — any later session picks up:
 
-4. **Load companion skills** — `coding-standards` + `tdd-workflow` before
-   first edit. Surface failure if either won't load.
-
-5. **Execution loop**, per phase from currentPhase:
-
-   ```
-   aven edit <PHASE_REF> --status active
-   ```
-
-   Per subtask (from currentSubtask):
-   - ≤2 lines, no logic change → implement inline (trivial escape hatch).
-   - Otherwise:
-     1. `aven edit <SUBTASK_REF> --status active`
-     2. Read plan section fully; skim touched files.
-     3. Plan/reality mismatch → **stop**, report `Plan assumes / Codebase
-        shows / Options`, ask user.
-     4. Spawn `worker` subagent: plan path, excerpt, files, acceptance
-        criteria; "tests first, run them, show output; do NOT commit, do
-        NOT touch aven".
-     5. **Workers sequential — never two in the same repo.** End turn, wait
-        for `subagent_result`.
-     6. Review diff, `run_tests({})`.
-     7. Tick plan.md `- [ ]` → `- [x]`.
-     8. `aven edit <SUBTASK_REF> --status done`
-
-   **Phase close — the test/commit cycle** (this is what makes phases
-   testable blocks, not buckets):
-   1. Full project check once more.
-   2. Post verification gate (automated checks + manual verification items
-      from the plan) — **wait for human confirmation**.
-   3. Present phase-scoped conventional commit message — **wait again**.
-   4. Commit, then `aven edit <PHASE_REF> --status done`.
-
-   "Implement all phases" / "run end-to-end" skips inter-phase pauses.
-
-6. **Close feature** — after final commit:
-
-   ```bash
-   aven edit <FEATURE_REF> --status done
-   ```
-
-## 5. Quick command reference
-
-| Purpose | Command |
+| You say | What happens |
 |---|---|
-| Choose work | `aven list --ready` (excludes blocked + epics) |
-| Bug triage queue | `aven list --ready --label bug` |
-| Inspect before acting | `aven context <REF>` / `aven show <REF> --full` |
-| Find planned features | `aven list --has-metadata plan-path --open` |
-| Plans awaiting approval | `aven list --metadata plan-state=review --open` |
-| Unfinished plans | `aven list --metadata plan-state=draft --open` |
-| Approved, ready for tree | `aven list --metadata plan-state=approved --open` |
-| Find ticket by Jira key | `aven list --metadata jira-key=<KEY> --json` |
-| Find pulled-in epic by Jira key | `aven list --metadata jira-ref=<KEY> --json` |
-| Repo ↔ project mappings | `aven project path list --workspace salaryhero` |
-| Create + map a repo project | `aven project create <repo> --path <repo> --workspace salaryhero` |
-| Blockers + dependents of a task | `aven dep list <REF> [--json]` |
-| All Jira-synced tickets | `aven list --has-metadata jira-key --json` |
-| See the tree | `aven epic list <REF> [--json]` |
-| Next unblocked phase | `aven list --ready --label phase` |
-| Start / finish work | `aven edit <REF> --status active\|done` |
-| Durable handoff context | `aven note <REF> --stdin` |
-| Order guarantee | `aven dep add <blocked> <blocker>` |
-| Group into tree | `aven epic add <child> <feature-epic>` |
-| Workspace sanity | `aven doctor` |
+| `/plan PMR-XXXX` again | branches on `plan-state`: draft → finish plan; review → iterate; approved → create tree |
+| `/implement PMR-XXXX` again | `get_feature_tree` → first non-done item = resume pointer; `worktree:` note locates the workspace |
+| nothing | `aven list --metadata plan-state=review --open` = plans awaiting you; `aven list --has-metadata plan-path --open` = executable features |
 
-`unknown-metadata-field` on a metadata filter means no ticket has ever carried
-that field (fields register lazily) — read it as "not found". `show --json`
-and `list --json` omit metadata on aven 0.1.39 — read metadata via
-`show --full` text or `--metadata` filters.
+Done work is trusted unless codebase evidence contradicts it.
 
-## 6. Boundaries
+## 6. Where things live
 
-- Aven flow covers **aven tickets** — local (personal projects) or
-  Jira-linked (synced ticket + pulled-in epic, §1). Jira-linked but NOT
-  synced → `create-plan` / `implement-plan` (taskwarrior + Jira). Legacy TW
-  trees → `feature-plan`.
-- No branch automation, no taskwarrior UUID plumbing, no live Jira
-  interaction (no acli, no writes/transitions).
-- `implement-plan-aven` never authors plans; ad-hoc bugs without a plan →
-  direct fix or `/skill:debug`.
-- Task refs stay local — never in commit messages, PR descriptions, or
-  external systems.
-- Titles: sentence case (first word + proper nouns capitalized).
+| What | Where | Written by |
+|---|---|---|
+| Tickets, tree, statuses, notes | aven's local SQLite DB (workspace-scoped; `aven doctor` shows the path) | tools + skills |
+| **plan.md** (local feature) | `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else `<repo>/.pi/plans/<date>-<slug>/plan.md` | `resolve_feature_path` picks; planner writes |
+| **plan.md** (Jira-linked) | `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md` (`$LLM_NOTES_ROOT` aware) | `resolve_spec_path` picks; planner writes |
+| Findings + mini-plans (tier 2) | aven notes on the ticket itself | investigate step |
+| Worktree location + agent identity | `worktree:` note on the feature ticket | implement session |
+
+Every ticket in a planned tree carries the absolute `plan-path` in metadata —
+any ref is self-contained: `aven show <REF> --full` tells you where the plan
+file is. The plan file is the **how**; the aven tree is the **what/order/
+progress**.
+
+**Telling local and Jira-linked apart:**
+
+- **By path shape** — local: `<date>-<slug>/plan.md` (dated directory, file
+  inside); Jira: `<JIRA_ID>__<slug>.md` (single file, Jira key prefix).
+- **By ticket** — Jira-linked epics carry `jira-ref=<KEY>` metadata; local
+  features have no `jira-*` metadata.
+- **By query** — `aven list --has-metadata jira-ref --open` = Jira-linked;
+  `aven list --has-metadata plan-path --open` minus those = local.
+
+## 7. States and gates
+
+**Ticket status** (aven-native): `inbox` is the unsorted landing zone
+(`aven add` default) — triage out of it. The work pipeline is
+`backlog → todo → active → done` (`canceled` aside).
+
+**plan-state** (metadata, planned tier):
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> draft : interview done
+  draft --> review : planner finished
+  review --> approved : "approve REF" — your word only
+  review --> review : iterate
+  approved --> [*] : create_feature_tree unlocked
+```
+
+**delivery-mode** (metadata, all tiers): `oneshot | investigate | planned`.
+Metadata wins over inference; `investigate` is never auto-inferred.
+Escalation one-way up, always recorded with a note.
+
+**Gates that wait for YOU:**
+1. plan approval (`approve REF`) — unlocks tree creation
+2. phase verification — before each phase commit
+3. commit message confirmation — per phase
+4. push/PR — never pushed without asking
+
+Tier 2 deliberately has **no** gate after the mini-plan note.
+
+## 8. Worktree sessions (push handoff)
+
+Planned features default to **push**: when you run `/implement`, the driving
+session creates the worktree and launches a *real pi session* inside the
+worktree's Herdr pane (planning sessions never touch worktrees — stages 1/2
+only author plan + tree):
+
+```mermaid
+sequenceDiagram
+  participant M as driving session (/implement)
+  participant H as Herdr
+  participant W as worktree pi
+  M->>H: worktree create (branch, deps, .env)
+  M->>H: worktree open → pane + agent start --kind pi
+  H-->>M: { path, workspaceId, paneId, agentName }
+  M->>W: prompt: /skill:implement-plan-aven REF
+  Note over M: free — handoff done
+  W->>W: detects born-in-worktree → runs in place
+  M->>M: aven note: worktree + agent identity
+```
+
+Watch/steer the worker session by focusing its workspace in Herdr, or from
+anywhere: `herdr agent prompt <name> "..."`. Three modes exist — push
+(default), orchestrated-pull (main session drives workers, pre-extension
+behavior), born-in-worktree (you're already in the worktree → in-place,
+no create/branch).
+
+## 9. Tool reference
+
+Called by the skills, not by you directly:
+
+| Tool | When | What it does |
+|---|---|---|
+| `find_or_create_epic` | pickup, Jira ID | resolve ref / pull in synced ticket as local epic (idempotent) |
+| `delivery_mode` | pickup + triage | classify (metadata wins) or set the tier |
+| `advance_plan_state` | stage 1 end, approval | write plan-state (+ plan-path) |
+| `create_feature_tree` | stage 2 | build the whole tree in one call — **gate: approved or zero writes** |
+| `get_feature_tree` | implement start + resume | sorted tree + resume pointer |
+| `close_phase` | phase end | mark done, return next phase ref |
+| `worktree open` | push handoff | pi agent session in the worktree pane |
+
+Still raw aven (single commands): `aven note <REF> --stdin` (handoff
+context), `aven edit <REF> --status active|done` (subtask/oneshot flips),
+`aven show <REF> --full` (metadata reads — `--json` omits metadata on aven
+0.1.39).
+
+## 10. Jira-linked work
+
+Synced Jira tickets live in the Jira project's aven project and are **never
+worked on directly** (sync overwrites them). The flow runs on a **local
+epic** in the repo's aven project, pulled in and dep-linked by
+`find_or_create_epic` at pickup — from then on, identical to a local ticket
+(all three tiers apply). The synced ticket is context + upstream record
+only; the epic is sync-invisible, so plans/notes/trees on it are durable.
+Jira-linked but not synced → plan in Jira directly.
+
+---
+
+## Boundaries
+
+- No live Jira (no acli, no writes/transitions). No branch automation for
+  personal features (suggested name only). No PR merges — push asks first.
+- `implement-plan-aven` never authors plans; bugs → `/skill:debug`.
+- Task refs stay local — never in commit messages or PR descriptions.
+- Workers run sequentially — never two in the same repo at once.
+- Titles: sentence case.
