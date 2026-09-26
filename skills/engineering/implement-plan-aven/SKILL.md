@@ -291,11 +291,15 @@ session to drive workers directly, or `worktree open` isn't available:
    worktree({
      action: 'create',
      jira_id: '<jira-ref value>',  // Jira-linked epics: branch derives from Jira
-     name: '<feature-slug>',       // personal features: slug from the epic title
+     base: 'develop',              // Jira flow: always base on develop (fetched first)
+     name: '<feature-slug>',       // personal features: slug from the epic title,
+                                   // no base — rides current checkout HEAD (pulled first)
    })
    ```
 
-   The create action derives the branch, bootstraps dependencies by lockfile,
+   The create action syncs the base ref first (fetch for `base`,
+   `git pull --ff-only` when riding the current branch), derives the branch,
+   bootstraps dependencies by lockfile,
    and copies `.env*` from the main checkout — it returns only after the
    install finishes, so tests can run immediately.
 

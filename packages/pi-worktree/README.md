@@ -21,7 +21,7 @@ Parallel feature work in one repo, via [Herdr](https://github.com/pi-edubot/herd
 
 | Action | Parameters | Behavior |
 | ------ | ---------- | -------- |
-| `create` | `jira_id` **or** `name` (+ optional `type`) **or** `branch`; optional `label` | Creates a Herdr worktree workspace on the derived branch, bootstraps dependencies, copies missing `.env*` files |
+| `create` | `jira_id` **or** `name` (+ optional `type`) **or** `branch`; optional `label`, `base` | Syncs the base ref first (fetch for `base`, `git pull --ff-only` on the current branch), creates a Herdr worktree workspace on the derived branch, bootstraps dependencies, copies missing `.env*` files |
 | `list` | — | Text table of worktrees joined with pi agent states and pane ids |
 | `remove` | `cwd` (required); `force`, `delete_branch` (optional) | Refuses dirty worktrees without `force`; `delete_branch` only deletes GitHub-MERGED branches |
 | `open` | `path` **or** `cwd` (matches an existing worktree by path/prefix); optional `name`, `prompt` | Splits a pane in the worktree's Herdr workspace, starts a pi agent in it (`herdr agent start --kind pi`), and optionally sends it a first prompt |

@@ -75,6 +75,54 @@ async function mainCheckout(pi: ExtensionAPI, cwd: string): Promise<string> {
   throw new Error('git worktree list returned no worktree entries')
 }
 
+/**
+ * AIDEV-NOTE: base sync policy — the worktree base must be up to date
+ * before create. Jira flow passes base=develop (fetch + origin/develop,
+ * working tree untouched); personal flow omits base and rides the current
+ * checkout HEAD (git pull --ff-only first). A missing upstream (local-only
+ * repo) degrades to a note instead of an error.
+ */
+async function syncBaseRef(
+  pi: ExtensionAPI,
+  cwd: string,
+  base: string | undefined,
+): Promise<{ baseRef: string | undefined; note: string }> {
+  const current = await pi.exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+    cwd,
+  })
+  if (current.code !== 0) {
+    throw new Error(
+      `git rev-parse HEAD failed: ${current.stderr || current.stdout}`,
+    )
+  }
+  const currentBranch = current.stdout.trim()
+
+  if (base === undefined || base === currentBranch) {
+    const pull = await pi.exec('git', ['pull', '--ff-only'], { cwd })
+    if (pull.code !== 0) {
+      const combined = `${pull.stderr}\n${pull.stdout}`
+      if (/no tracking information|no upstream/i.test(combined)) {
+        return {
+          baseRef: undefined,
+          note: `no upstream for ${currentBranch} — using local HEAD`,
+        }
+      }
+      throw new Error(
+        `git pull --ff-only failed on ${currentBranch}: ${pull.stderr || pull.stdout}`,
+      )
+    }
+    return { baseRef: undefined, note: `${currentBranch} up to date` }
+  }
+
+  const fetch = await pi.exec('git', ['fetch', 'origin', base], { cwd })
+  if (fetch.code !== 0) {
+    throw new Error(
+      `git fetch origin ${base} failed: ${fetch.stderr || fetch.stdout}`,
+    )
+  }
+  return { baseRef: `origin/${base}`, note: `fetched origin/${base}` }
+}
+
 async function createFlow(
   pi: ExtensionAPI,
   cwd: string,
@@ -84,6 +132,7 @@ async function createFlow(
     type?: string
     branch?: string
     label?: string
+    base?: string
   },
   signal: AbortSignal | undefined,
   onUpdate: OnUpdate,
@@ -133,10 +182,20 @@ async function createFlow(
     label = slugify(derived.branch)
   }
 
+  report('Syncing base ref...')
+  let baseRef: string | undefined
+  try {
+    const synced = await syncBaseRef(pi, cwd, params.base)
+    baseRef = synced.baseRef
+    report(synced.note)
+  } catch (error) {
+    return errorResult((error as Error).message)
+  }
+
   report(`Creating worktree ${derived.branch}...`)
   let created: { path: string; workspaceId: string }
   try {
-    created = await worktreeCreate(pi, cwd, derived.branch, label)
+    created = await worktreeCreate(pi, cwd, derived.branch, label, baseRef)
   } catch (error) {
     return errorResult((error as Error).message)
   }
@@ -589,6 +648,12 @@ export default function (pi: ExtensionAPI) {
       label: Type.Optional(
         Type.String({
           description: 'Herdr workspace label (default: branch slug)',
+        }),
+      ),
+      base: Type.Optional(
+        Type.String({
+          description:
+            'create: base ref for the worktree branch (Jira flow: develop). Synced (fetch/pull --ff-only) before create; defaults to current checkout HEAD.',
         }),
       ),
       cwd: Type.Optional(

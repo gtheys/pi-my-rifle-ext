@@ -189,12 +189,22 @@ export async function worktreeCreate(
   cwd: string,
   branch: string,
   label: string,
+  base?: string,
 ): Promise<{ path: string; workspaceId: string }> {
-  const result = await pi.exec(
-    'herdr',
-    ['worktree', 'create', '--cwd', cwd, '--branch', branch, '--label', label],
-    { cwd },
-  )
+  const args = [
+    'worktree',
+    'create',
+    '--cwd',
+    cwd,
+    '--branch',
+    branch,
+    '--label',
+    label,
+  ]
+  if (base !== undefined) {
+    args.push('--base', base)
+  }
+  const result = await pi.exec('herdr', args, { cwd })
   if (result.code !== 0) {
     throw new Error(
       `herdr worktree create failed: ${result.stderr || result.stdout}`,
