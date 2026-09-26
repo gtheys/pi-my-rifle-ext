@@ -24,6 +24,18 @@ Parallel feature work in one repo, via [Herdr](https://github.com/pi-edubot/herd
 | `create` | `jira_id` **or** `name` (+ optional `type`) **or** `branch`; optional `label` | Creates a Herdr worktree workspace on the derived branch, bootstraps dependencies, copies missing `.env*` files |
 | `list` | — | Text table of worktrees joined with pi agent states and pane ids |
 | `remove` | `cwd` (required); `force`, `delete_branch` (optional) | Refuses dirty worktrees without `force`; `delete_branch` only deletes GitHub-MERGED branches |
+| `open` | `path` **or** `cwd` (matches an existing worktree by path/prefix); optional `name`, `prompt` | Splits a pane in the worktree's Herdr workspace, starts a pi agent in it (`herdr agent start --kind pi`), and optionally sends it a first prompt |
+
+`open` finds the target worktree the same way `list` sees it, opens a new
+pane there, and starts an agent — the pane it hands back is the worker.
+`name` defaults to a slug derived from the worktree path (herdr agent names
+are `[a-z][a-z0-9_-]{0,31}`); `prompt`, if given, is sent to the agent right
+after it starts. Returns `{ path, workspaceId, paneId, agentName }` — record
+these on the feature ticket so a later session can resume the same pane.
+
+Errors: herdr unavailable / not on `PATH` (same preflight as the other
+actions); no worktree matches `path`/`cwd` (lists the available worktrees);
+zero panes in the target workspace (nothing to split).
 
 ## Dependency Bootstrap
 

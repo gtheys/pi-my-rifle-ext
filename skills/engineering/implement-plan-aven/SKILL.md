@@ -17,46 +17,38 @@ it, it does not redefine it).
 The user provides a **feature ref** — an aven ref (e.g. `PMR-ZTVG`) or a Jira
 ID (e.g. `DP-71`) of a synced ticket.
 
-**Aven ref**: `aven show <INPUT> --json` (ref lookup only — JSON omits
-metadata). `unknown-ref` may mean wrong workspace: run `aven doctor`, retry
-with `--workspace <name>`.
-
-**Jira ID**: run the **Jira pull-in (find-or-create epic)** from the repo
-root FIRST — shared wording with feature-plan-aven. The epic is the feature
-ref for the rest of this skill:
-
-```bash
-KEY=DP-71
-# 1) Synced ticket — search the WHOLE workspace (omit --project); synced
-#    tickets live in their Jira project's aven project (dp/imp/devops),
-#    not the repo's. Filter out legacy epics planned directly on the ticket.
-JIRA_REF=$(aven list --metadata jira-key=$KEY --json 2>/dev/null \
-  | jq -r '.[] | select(.is_epic != true) | .ref' | head -1)
-# [] / `unknown-metadata-field` → never synced → Jira-only work; no local execution
-# (aven errors print on stderr — never merge 2>&1 into the jq pipe)
-
-# 2) Repo's aven project — mapped? (projects infer from path mappings)
-aven project path list --workspace salaryhero
-# repo path unmapped → create + map in one shot (name = repo dir name)
-aven project create "$(basename "$PWD")" --path "$PWD" --workspace salaryhero
-
-# 3) Existing epic for THIS repo + ticket? (`jira-ref` marks pulled-in epics;
-#    <repo-project-key> = the repo project's key from `aven project list`;
-#    empty / `unknown-metadata-field` (lazy registration — no epic ever
-#    pulled in) → not found → create below)
-EPIC_REF=$(aven list --metadata jira-ref=$KEY --json 2>/dev/null \
-  | jq -r --arg p <repo-project-key> '.[] | select(.project == $p) | .ref' | head -1)
-
-# 4) Missing → create the epic in the repo's project, dep-link the synced ticket
-EPIC_REF=$(aven add "$KEY — <synced summary>" --epic --status todo \
-  --metadata jira-ref=$KEY \
-  --description "Jira $KEY — source of truth: synced ticket $JIRA_REF." \
-  2>&1 | grep -oP 'created \K\S+')
-aven dep add $EPIC_REF $JIRA_REF   # epic blocked-by synced ticket; deps survive sync
-```
+**Pickup**: call `find_or_create_epic` with the input ref/key FIRST, before
+anything else — same tool `feature-plan-aven` uses. Aven ref or existing
+local epic → returned unchanged (`created: false`). Jira key with no local
+epic yet → the tool finds the synced ticket, creates a local epic in the
+repo's aven project tagged `jira-ref=<KEY>`, dep-links it to the synced
+ticket. Jira key with no synced ticket at all → tool throws — not
+aven-managed, work happens in Jira directly. `<REF>` for the rest of this
+skill is the returned `epicRef`. `unknown-ref` may mean wrong workspace: run
+`aven doctor`, retry with `--workspace <name>`.
 
 The epic is a local task — sync never touches it. The synced ticket is
 context + upstream record only.
+
+## Classify — delivery mode dispatch
+
+Immediately after pickup, **before any other step**, read the delivery mode
+that `feature-plan-aven` set on the ticket (`delivery_mode` tool,
+`action=get`, or the `delivery-mode` metadata from `aven show <REF> --full`).
+This is the first branch point — everything below forks on it:
+
+| Mode | Route | What's on the ticket |
+|---|---|---|
+| **planned** | "Planned execution" below | tree of phases/subtasks + `plan-path` metadata |
+| **oneshot** | "Oneshot execution" below | self-contained description, no tree |
+| **investigate** | "Investigate execution" below | findings + mini-plan as an `aven note`, no tree |
+
+No `delivery-mode` metadata at all (ticket predates the tool, or was never
+run through `feature-plan-aven`): fall back to structural detection — epic
+children present → planned; none, and the description is a complete spec →
+ask the user whether to oneshot it; neither → route to `feature-plan-aven`.
+If `plan-state` metadata is present and not `approved`, stop regardless of
+mode: the plan is still in draft/review — route back to `feature-plan-aven`.
 
 ### Workspace selection — personal vs salaryhero
 
@@ -82,12 +74,7 @@ If no ref is given, discover candidates:
 aven list --has-metadata plan-path --open   # features with plans, not yet executed
 ```
 
-If several match, ask which one. If the ticket has no `plan-path` metadata
-and no epic children, it is either unplanned or a **oneshot** — ask the user
-which, then route to `feature-plan-aven` or follow "Oneshot execution"
-below. If the ticket has `plan-state` metadata that is not `approved`, stop:
-the plan is still in draft/review — route back to `feature-plan-aven` to
-finish or approve it.
+If several match, ask which one.
 
 ## Oneshot execution — ticket without a plan
 
@@ -124,6 +111,36 @@ record clarifications and the outcome via `aven note` on the epic.
 No plan.md, no tree, no phase gates. If the work balloons past one commit,
 stop and route to `feature-plan-aven`.
 
+## Investigate execution — mini-plan already on the ticket
+
+For tickets classified `investigate` by `feature-plan-aven` tier 2: the ask
+was a diagnostic/exploration, not a build. Findings + a short mini-plan are
+already posted as an `aven note` on the ticket — no plan.md, no tree, no
+approval gate. Treat it as a short planned run without a tree:
+
+1. `aven show <REF> --full` to read the note (findings + mini-plan) in full.
+2. `aven edit <REF> --status active`.
+3. Load `/skill:coding-standards` + `/skill:tdd-workflow`. Execute the
+   mini-plan — spawn one `worker` subagent with the note's mini-plan as the
+   spec (tests first, run them, show output; do NOT commit, do NOT touch
+   aven), or implement inline if the change is trivial or the worker tool
+   is unavailable.
+4. Review the diff; `run_tests({})`.
+5. Present a commit message, wait for confirmation, commit.
+6. Leave the outcome on the ticket and close it:
+
+   ```bash
+   aven note <REF> --stdin <<'EOF'
+   Investigate: <what was found/done>. Commit <hash>.
+   EOF
+   aven edit <REF> --status done
+   ```
+
+If the mini-plan turns out to need multiple phases after all, stop and route
+to `feature-plan-aven` to author a full plan instead.
+
+## Planned execution — tree walk
+
 ## Aven data model — what to expect
 
 ```text
@@ -146,20 +163,20 @@ Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>, plan-state=appr
 
 ## Step 1 — Pull the execution plan
 
-```bash
-aven epic list <FEATURE_REF> --json     # whole tree, all children
-aven epic list <FEATURE_REF>            # human-readable
-aven list --ready --label phase         # exactly the unblocked phase (dep chain)
+```
+get_feature_tree({ feature_ref: "<FEATURE_REF>" })
 ```
 
-Sort children by the title prefix: phases by `N.`, subtasks by `N.M` (both
-labels `impl`; phases also carry `phase`). Compute:
-- **currentPhase** — first non-done phase in sorted order
-- **currentSubtask** — first non-done subtask within it
+Returns the whole tree (phases + subtasks, sorted by `N.`/`N.M` title
+prefix) plus `resumeRef` — the first non-done phase. Compute from the
+returned tree:
+- **currentPhase** — `resumeRef` (or the phase containing it)
+- **currentSubtask** — first non-done subtask within currentPhase
 - progress — `done subtasks / total subtasks`
 
 Present the tree (✓ done / ▶ active / ○ todo) with the bold resume point:
-"Resuming at Phase N, subtask N.M <name>".
+"Resuming at Phase N, subtask N.M <name>". `resumeRef: null` means every
+phase is done — go straight to Step 6.
 
 ## Step 2 — Read plan.md
 
@@ -181,19 +198,83 @@ implementation summary + acceptance criteria in `--description`, so the
 ticket alone is the executable spec. Resolve plan-path from
 the subtask first, fall back to the feature ticket.
 
-## Step 3 — Workspace: worktree (default) or in-place
+## Step 3 — Workspace: push (default), orchestrated-pull, or born-in-worktree
 
-Decide **where** this feature executes before touching any branch.
+Decide **where** this feature executes before touching any branch. Three
+modes, checked in this order:
 
-**Worktree mode is the default.** Run it unless one of these holds:
+1. **Born-in-worktree / in-place** — this session's own cwd is already
+   inside a linked worktree. Run the whole loop right there; skip worktree
+   creation and branch setup entirely.
+2. **Push (default)** — the planning/main session hands the feature off to
+   a fresh pi session opened in the worktree via `worktree open`; that
+   session runs this skill in-place. The main session's job ends at
+   handoff.
+3. **Orchestrated-pull** — the main session keeps the worktree path and
+   spawns `worker` subagents into it (`cwd: <WORKTREE_PATH>`) itself, one
+   subtask at a time. Previous default; still used when the user explicitly
+   wants the orchestrator to drive workers instead of handing off to a
+   worktree session, or when `worktree open` isn't available/desired.
 
-- the user explicitly asked for in-place work
-- `herdr` is unavailable / not inside Herdr (`pi-worktree` can't run)
-- the feature is a oneshot (single worker, single commit)
+**Never silently fall back to in-place** for reasons other than #1 above. If
+`worktree list`/`create`/`open` fails, report the error and ask the user
+before creating a plain branch instead. All `pi-worktree` requirements apply
+(inside Herdr, `herdr` on PATH):
 
-**Never silently fall back to in-place.** If `worktree list`/`create` fails,
-report the error and ask the user before creating a plain branch instead.
-All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
+### Born-in-worktree detection (checked first)
+
+Before creating anything, check whether this session is already running
+inside a linked worktree:
+
+```bash
+worktree({ action: 'list' })
+```
+
+Match the current session's cwd against the returned worktree paths by
+prefix (`cwd.startsWith(wt.path)`). A match → this session **is** the
+worker: set `WORKTREE_PATH` to that path, skip worktree creation, skip the
+Jira-branch / `git checkout` dance in "In-place mode" below entirely (the
+worktree was created on the right branch already), and go straight to Step
+4. The ticket's `worktree:` note matching cwd is a secondary confirmation
+signal, not required to make the call.
+
+### Push orchestration (default, when not already born-in-worktree)
+
+The planning/main session opens a worker session in the worktree and hands
+off — it does not spawn subagents into the worktree itself:
+
+1. Create or reuse the worktree same as before (steps 1-2 below).
+2. Hand off with `worktree open`:
+
+   ```
+   worktree({
+     action: 'open',
+     path: '<WORKTREE_PATH>',   // or omit and pass cwd
+     name: '<feature-slug>',
+     prompt: '/skill:implement-plan-aven <FEATURE_REF> — you are the worktree session, run in-place',
+   })
+   ```
+
+   Returns `{ path, workspaceId, paneId, agentName }` — the launched pi
+   session in that pane **is** the worker; it detects born-in-worktree mode
+   on its own next run of this skill and continues the loop in-place.
+3. Record the full handoff (not just `path`/`branch`) on the feature ticket
+   so any session can resume:
+
+   ```bash
+   aven note <FEATURE_REF> --stdin <<'EOF'
+   worktree: <path> branch: <branch>
+   workspaceId: <workspaceId> paneId: <paneId> agentName: <agentName>
+   EOF
+   ```
+
+4. **End the main session's turn here.** The worktree pane session owns the
+   rest of the loop (Steps 4-6); the planning session's job is the handoff.
+
+### Orchestrated-pull mode (previous default)
+
+Run this instead of push handoff when the user explicitly wants the main
+session to drive workers directly, or `worktree open` isn't available:
 
 1. Check for an existing open worktree first — resume, don't duplicate:
 
@@ -230,9 +311,13 @@ All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
    `run_tests`, and worker spawn targets the worktree. **The main checkout
    is read-only from here on** — the orchestrator never edits code there.
 
-**In-place mode** — the exception, not the default: only for oneshots,
-explicit user request, or when `pi-worktree` is unavailable. Behaves exactly
-like the pre-worktree flow:
+**In-place mode** — the exception, not a worktree-spawned default: oneshots,
+explicit user request, `pi-worktree` unavailable, or a worker session that
+was handed off via push orchestration (that session's cwd is already the
+worktree — no branch setup needed, it's on the right branch already). If
+born-in-worktree detection above already matched, **skip this whole
+subsection** — `WORKTREE_PATH` is set and the branch is already correct.
+Otherwise behaves exactly like the pre-worktree flow:
 
 Check the `jira-ref` metadata in the `aven show <FEATURE_REF> --full` output
 from Step 2 (Jira-linked epic pulled in from a synced ticket).
@@ -359,11 +444,15 @@ inline; same steps otherwise. When in doubt, spawn the worker.
    Conventional subject with the repo's scope; explain the why in the body.
    Worktree mode: every git command carries `-C <WORKTREE_PATH>` (or runs
    with the worktree as cwd). In-place mode: plain git in the repo root.
-4. Commit, then close the phase in aven:
+4. Commit, then close the phase:
 
-   ```bash
-   aven edit <PHASE_REF> --status done
    ```
+   close_phase({ phase_ref: "<PHASE_REF>", feature_ref: "<FEATURE_REF>" })
+   ```
+
+   Marks the phase done and returns the next open phase ref (or `null` when
+   all phases are done) — that return value is the next loop iteration's
+   `currentPhase`, no need to re-call `get_feature_tree`.
 
 Only then start the next phase. If the user said "implement all phases" /
 "run end-to-end", skip inter-phase pauses and stop only at the end.
