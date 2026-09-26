@@ -1,6 +1,6 @@
 ---
 name: feature-plan-aven
-description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — pulled into the repo's aven project as a local epic via the find-or-create pull-in, `jira-ref` metadata, dep-linked to the synced ticket), or phrases like "plan this aven ticket", "aven feature plan". Always plan in the aven workspace routed to the current directory (salaryhero / personal).
+description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — pulled into the repo's aven project as a local epic via the find-or-create pull-in, `jira-ref` metadata, dep-linked to the synced ticket), or phrases like "plan this aven ticket", "aven feature plan". Always plan in the aven workspace routed to the current directory (salaryhero / projects).
 ---
 
 # Feature Plan (Aven)
@@ -25,7 +25,7 @@ tree.
 Grouping is native aven **epic membership**: the feature ticket becomes the
 epic container, phases and subtasks are its children.
 
-Workspaces: personal projects live in the aven `personal` workspace, work in
+Workspaces: personal projects live in the aven `projects` workspace, work in
 `salaryhero`. Aven infers the workspace from the cwd via its config routes —
 run aven commands from the repo root; pass `--workspace <name>` only when
 targeting another workspace. Verify routing with `aven doctor` if refs fail
@@ -83,7 +83,7 @@ The epic is a local task — sync never touches it, so everything on it
   context only.
 
 The workspace resolves from the cwd route automatically (`aven doctor` to
-verify). Never plan a salaryhero-routed feature into the personal workspace
+verify). Never plan a salaryhero-routed feature into the projects workspace
 or vice versa — the ref lookup is workspace-scoped. `unknown-ref` may mean
 wrong workspace: run `aven doctor`, retry with `--workspace <name>`.
 
@@ -326,7 +326,7 @@ aven status (via `close_phase`) is its ledger entry.
 ## Integration with Other Skills
 
 - Jira-linked work NOT synced to aven: plan it in Jira directly. aven
-  workspaces (`salaryhero` / `personal`) split the local execution queues —
+  workspaces (`salaryhero` / `projects`) split the local execution queues —
   this skill always works in the aven workspace routed to the current
   directory (`aven doctor` to verify). Synced tickets execute on their
   pulled-in local epic, never on the synced task itself.

@@ -50,7 +50,7 @@ ask the user whether to oneshot it; neither → route to `feature-plan-aven`.
 If `plan-state` metadata is present and not `approved`, stop regardless of
 mode: the plan is still in draft/review — route back to `feature-plan-aven`.
 
-### Workspace selection — personal vs salaryhero
+### Workspace selection — projects vs salaryhero
 
 The ref's workspace decides the flavor of the run, not the mechanics:
 
