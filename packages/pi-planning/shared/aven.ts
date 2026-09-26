@@ -290,6 +290,15 @@ export async function avenEpicList(
     if (Array.isArray(parsed)) {
       return parsed
     }
+    // AIDEV-NOTE: real `aven epic list --json` wraps children in an object
+    // ({children: [...], epic: {...}}); the bare-array branch covers older
+    // fixtures/tests. Children omit is_epic — classifiers must not rely on it.
+    if (typeof parsed === 'object' && parsed !== null) {
+      const children = (parsed as Record<string, unknown>).children
+      if (Array.isArray(children)) {
+        return children
+      }
+    }
     return []
   } catch {
     return []

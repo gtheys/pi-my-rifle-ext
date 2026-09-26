@@ -41,27 +41,17 @@ function pickString(record: unknown, field: string): string {
   return ''
 }
 
-function pickBool(record: unknown, field: string): boolean {
-  if (typeof record !== 'object' || record === null) {
-    return false
-  }
-  return (record as Record<string, unknown>)[field] === true
-}
-
 /**
- * AIDEV-NOTE: classification is title-regex-first (numeric prefix), with
- * is_epic as the phase/subtask discriminator — subtask titles ("N.M ...")
- * never carry is_epic:true in practice, but the flag is checked defensively
- * in case a subtask is mistakenly epic-flagged upstream.
+ * AIDEV-NOTE: classification is title-only. Real `aven epic list --json`
+ * children carry no is_epic flag, so the numeric prefixes are the sole
+ * discriminator — the patterns are mutually exclusive ("1. " vs "1.1 ").
  */
 function isPhase(item: unknown): boolean {
-  const title = pickString(item, 'title')
-  return PHASE_TITLE_PATTERN.test(title) && pickBool(item, 'is_epic')
+  return PHASE_TITLE_PATTERN.test(pickString(item, 'title'))
 }
 
 function isSubtask(item: unknown): boolean {
-  const title = pickString(item, 'title')
-  return SUBTASK_TITLE_PATTERN.test(title) && !pickBool(item, 'is_epic')
+  return SUBTASK_TITLE_PATTERN.test(pickString(item, 'title'))
 }
 
 /** Leading "N" from a phase title, or Infinity if unparseable (sorts last). */
