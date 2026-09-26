@@ -7,7 +7,7 @@
     "pi-package"
   ],
   "scripts": {
-    "test": "node --test test/test.ts"
+    "test": "node --test test/test.ts test/*.test.ts"
   },
   "license": "MIT",
   "repository": {
@@ -27,6 +27,7 @@
     "implement-plan/index.ts",
     "implement-plan/jira-branch-tool.ts",
     "shared/jira-branch.ts",
+    "shared/aven.ts",
     "README.md"
   ],
   "pi": {
