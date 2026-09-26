@@ -5,9 +5,11 @@ import {
   avenAdd,
   avenDepAdd,
   avenEdit,
+  avenEpicAdd,
   avenEpicList,
   avenExec,
   avenLabelCreate,
+  avenShowFull,
   parseCreatedRef,
   parseShowFull,
 } from '../shared/aven.ts'
@@ -211,6 +213,42 @@ test('avenLabelCreate: other errors still throw', async () => {
   const recorded: Recorded[] = []
   const pi = fakePi({ code: 1, stdout: '', stderr: 'boom' }, recorded)
   await assert.rejects(() => avenLabelCreate(pi, 'bug', '/cwd'), /boom/)
+})
+
+test('avenEpicAdd: builds exact argv', async () => {
+  const recorded: Recorded[] = []
+  const pi = fakePi({ code: 0, stdout: '', stderr: '' }, recorded)
+  await avenEpicAdd(pi, 'PMR-AB12', 'PMR-FEAT1', '/cwd')
+  assert.deepEqual(recorded, [
+    {
+      command: 'aven',
+      args: ['epic', 'add', 'PMR-AB12', 'PMR-FEAT1'],
+      cwd: '/cwd',
+    },
+  ])
+})
+
+test('avenEpicAdd: non-zero exit throws with stderr detail', async () => {
+  const recorded: Recorded[] = []
+  const pi = fakePi({ code: 1, stdout: '', stderr: 'boom' }, recorded)
+  await assert.rejects(
+    () => avenEpicAdd(pi, 'PMR-AB12', 'PMR-FEAT1', '/cwd'),
+    /boom/,
+  )
+})
+
+test('avenShowFull: passes --full argv and parses stdout', async () => {
+  const recorded: Recorded[] = []
+  const pi = fakePi(
+    { code: 0, stdout: 'PMR-AB12 status=active title="Feature"', stderr: '' },
+    recorded,
+  )
+  const ticket = await avenShowFull(pi, 'PMR-AB12', '/cwd')
+  assert.deepEqual(recorded, [
+    { command: 'aven', args: ['show', 'PMR-AB12', '--full'], cwd: '/cwd' },
+  ])
+  assert.equal(ticket.ref, 'PMR-AB12')
+  assert.equal(ticket.title, 'Feature')
 })
 
 const FULL_TICKET_FIXTURE = `PMR-HNW9 status=active priority=none labels=impl blocked_by=1 title="1.1 Client core + mutating commands"

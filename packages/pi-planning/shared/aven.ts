@@ -296,6 +296,77 @@ export async function avenEpicList(
   }
 }
 
+/**
+ * `aven show <ref> --json` — existence + basic title check. AIDEV-NOTE:
+ * unlike parseShowFull, this JSON mode omits metadata/notes (aven 0.1.39),
+ * so it is only used for existence checks and title lookups, never for
+ * metadata reads.
+ */
+export async function avenShowJson(
+  pi: ExtensionAPI,
+  ref: string,
+  cwd: string,
+): Promise<unknown | null> {
+  const result = await avenExec(pi, ['show', ref, '--json'], cwd)
+  if (result.code !== 0) {
+    return null
+  }
+  try {
+    return JSON.parse(result.stdout) as unknown
+  } catch {
+    return null
+  }
+}
+
+/** `aven list --metadata <key>=<value> --json` — returns [] on failure or unparsable output. */
+export async function avenListByMetadata(
+  pi: ExtensionAPI,
+  key: string,
+  value: string,
+  cwd: string,
+): Promise<unknown[]> {
+  const result = await avenExec(
+    pi,
+    ['list', '--metadata', `${key}=${value}`, '--json'],
+    cwd,
+  )
+  if (result.code !== 0) {
+    return []
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as unknown
+    if (Array.isArray(parsed)) {
+      return parsed
+    }
+    return []
+  } catch {
+    return []
+  }
+}
+
+/** `aven show <ref> --full` — parsed via parseShowFull (metadata/notes/description). */
+export async function avenShowFull(
+  pi: ExtensionAPI,
+  ref: string,
+  cwd: string,
+): Promise<AvenTicket> {
+  const result = await avenExec(pi, ['show', ref, '--full'], cwd)
+  return parseShowFull(result.stdout)
+}
+
+/** `aven epic add <child> <parent>` — attach child ticket under parent epic. */
+export async function avenEpicAdd(
+  pi: ExtensionAPI,
+  child: string,
+  parent: string,
+  cwd: string,
+): Promise<void> {
+  const result = await avenExec(pi, ['epic', 'add', child, parent], cwd)
+  if (result.code !== 0) {
+    throw new Error(`aven epic add failed: ${result.stderr || result.stdout}`)
+  }
+}
+
 export async function avenDepAdd(
   pi: ExtensionAPI,
   blocked: string,

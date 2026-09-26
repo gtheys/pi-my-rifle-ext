@@ -26,6 +26,10 @@
     "plan-tools/open-in-pane.ts",
     "implement-plan/index.ts",
     "implement-plan/jira-branch-tool.ts",
+    "aven-tools/index.ts",
+    "aven-tools/find-or-create-epic.ts",
+    "aven-tools/advance-plan-state.ts",
+    "aven-tools/create-feature-tree.ts",
     "shared/jira-branch.ts",
     "shared/aven.ts",
     "README.md"
@@ -33,7 +37,8 @@
   "pi": {
     "extensions": [
       "./plan-tools/index.ts",
-      "./implement-plan/index.ts"
+      "./implement-plan/index.ts",
+      "./aven-tools/index.ts"
     ]
   },
   "peerDependencies": {
