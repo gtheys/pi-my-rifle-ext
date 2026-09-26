@@ -668,3 +668,366 @@ test('parseCreateResult: non-JSON returns empty fields, never throws', () => {
     workspaceId: '',
   })
 })
+
+// --- herdr.ts: paneList / paneSplit / agentStart / agentPrompt ---
+
+import { agentPrompt, agentStart, paneList, paneSplit } from '../herdr.ts'
+
+interface ExecCall {
+  command: string
+  args: string[]
+}
+
+/** Minimal fake ExtensionAPI — scripted exec, records argv. */
+function fakePi(script: { code: number; stdout?: string; stderr?: string }) {
+  const calls: ExecCall[] = []
+  const pi = {
+    exec: async (command: string, args: string[]) => {
+      calls.push({ command, args })
+      return {
+        code: script.code,
+        stdout: script.stdout ?? '',
+        stderr: script.stderr ?? '',
+      }
+    },
+    // biome-ignore lint/suspicious/noExplicitAny: fake only needs `exec`
+  } as any
+  return { pi, calls }
+}
+
+test('paneList: argv and herdr 0.8.2 pane field names', async () => {
+  const { pi, calls } = fakePi({
+    code: 0,
+    stdout: JSON.stringify({
+      result: {
+        panes: [{ pane_id: 'w1:p2', cwd: '/repo', process: 'pi' }],
+      },
+    }),
+  })
+  const panes = await paneList(pi, 'w1', '/repo')
+  assert.deepEqual(calls[0], {
+    command: 'herdr',
+    args: ['pane', 'list', '--workspace', 'w1'],
+  })
+  assert.deepEqual(panes, [{ paneId: 'w1:p2', cwd: '/repo', process: 'pi' }])
+})
+
+test('paneList: variant field names (id / working_dir / cmd)', async () => {
+  const { pi } = fakePi({
+    code: 0,
+    stdout: JSON.stringify({
+      result: {
+        panes: [{ id: 'p3', working_dir: '/wt', cmd: 'bash' }],
+      },
+    }),
+  })
+  const panes = await paneList(pi, 'w1', '/repo')
+  assert.deepEqual(panes, [{ paneId: 'p3', cwd: '/wt', process: 'bash' }])
+})
+
+test('paneList: exec failure throws with stderr verbatim', async () => {
+  const { pi } = fakePi({ code: 1, stderr: 'workspace not found' })
+  await assert.rejects(paneList(pi, 'w1', '/repo'), /workspace not found/)
+})
+
+test('paneSplit: argv includes direction when given', async () => {
+  const { pi, calls } = fakePi({
+    code: 0,
+    stdout: JSON.stringify({ result: { pane: { pane_id: 'w1:p9' } } }),
+  })
+  const paneId = await paneSplit(pi, {
+    paneId: 'w1:p2',
+    cwd: '/repo',
+    direction: 'right',
+  })
+  assert.deepEqual(calls[0], {
+    command: 'herdr',
+    args: ['pane', 'split', 'w1:p2', '--cwd', '/repo', '--direction', 'right'],
+  })
+  assert.equal(paneId, 'w1:p9')
+})
+
+test('paneSplit: omits --direction when not given', async () => {
+  const { pi, calls } = fakePi({
+    code: 0,
+    stdout: JSON.stringify({ result: { pane: { pane_id: 'w1:p9' } } }),
+  })
+  await paneSplit(pi, { paneId: 'w1:p2', cwd: '/repo' })
+  assert.deepEqual(calls[0].args, ['pane', 'split', 'w1:p2', '--cwd', '/repo'])
+})
+
+test('paneSplit: variant pane-id shapes (flat pane_id, flat id)', async () => {
+  const { pi: pi1 } = fakePi({
+    code: 0,
+    stdout: JSON.stringify({ result: { pane_id: 'w1:p5' } }),
+  })
+  assert.equal(await paneSplit(pi1, { paneId: 'w1:p2', cwd: '/repo' }), 'w1:p5')
+  const { pi: pi2 } = fakePi({
+    code: 0,
+    stdout: JSON.stringify({ result: { id: 'w1:p6' } }),
+  })
+  assert.equal(await paneSplit(pi2, { paneId: 'w1:p2', cwd: '/repo' }), 'w1:p6')
+})
+
+test('paneSplit: exec failure throws with stderr verbatim', async () => {
+  const { pi } = fakePi({ code: 1, stderr: 'pane not found' })
+  await assert.rejects(
+    paneSplit(pi, { paneId: 'w1:p2', cwd: '/repo' }),
+    /pane not found/,
+  )
+})
+
+test('agentStart: argv is correct', async () => {
+  const { pi, calls } = fakePi({ code: 0 })
+  await agentStart(pi, { name: 'reviewer', paneId: 'w1:p2' })
+  assert.deepEqual(calls[0], {
+    command: 'herdr',
+    args: ['agent', 'start', 'reviewer', '--kind', 'pi', '--pane', 'w1:p2'],
+  })
+})
+
+test('agentStart: failure throws with stderr verbatim (agent_not_ready)', async () => {
+  const { pi } = fakePi({ code: 1, stderr: 'agent_not_ready' })
+  await assert.rejects(
+    agentStart(pi, { name: 'reviewer', paneId: 'w1:p2' }),
+    /agent_not_ready/,
+  )
+})
+
+test('agentPrompt: argv is correct', async () => {
+  const { pi, calls } = fakePi({ code: 0 })
+  await agentPrompt(pi, { name: 'reviewer', text: 'do the thing' })
+  assert.deepEqual(calls[0], {
+    command: 'herdr',
+    args: ['agent', 'prompt', 'reviewer', 'do the thing', '--wait'],
+  })
+})
+
+test('agentPrompt: failure throws with stderr verbatim (timeout)', async () => {
+  const { pi } = fakePi({ code: 1, stderr: 'timeout' })
+  await assert.rejects(
+    agentPrompt(pi, { name: 'reviewer', text: 'do the thing' }),
+    /timeout/,
+  )
+})
+
+// --- index.ts: openFlow ---
+
+import { openFlow } from '../index.ts'
+
+/** Routed fake ExtensionAPI — scripts exec by matching command+args prefix. */
+function routedFakePi(
+  routes: Array<{
+    match: (command: string, args: string[]) => boolean
+    code: number
+    stdout?: string
+    stderr?: string
+  }>,
+) {
+  const calls: ExecCall[] = []
+  const pi = {
+    exec: async (command: string, args: string[]) => {
+      calls.push({ command, args })
+      const route = routes.find((r) => r.match(command, args))
+      if (!route) {
+        throw new Error(
+          `routedFakePi: no route for ${command} ${args.join(' ')}`,
+        )
+      }
+      return {
+        code: route.code,
+        stdout: route.stdout ?? '',
+        stderr: route.stderr ?? '',
+      }
+    },
+    // biome-ignore lint/suspicious/noExplicitAny: fake only needs `exec`
+  } as any
+  return { pi, calls }
+}
+
+function has(args: string[], ...tokens: string[]): boolean {
+  return tokens.every((t) => args.includes(t))
+}
+
+test('openFlow: happy path — argv order pane list, split, agent start, agent prompt', async () => {
+  const { pi, calls } = routedFakePi([
+    {
+      match: (_c, args) => has(args, 'worktree', 'list'),
+      code: 0,
+      stdout: JSON.stringify({
+        result: {
+          worktrees: [
+            {
+              path: '/repo/wt/feat-thing',
+              branch: 'feat/thing',
+              label: 'thing',
+              open_workspace_id: 'w1',
+              is_linked_worktree: true,
+            },
+          ],
+        },
+      }),
+    },
+    {
+      match: (_c, args) => has(args, 'pane', 'list'),
+      code: 0,
+      stdout: JSON.stringify({
+        result: { panes: [{ pane_id: 'w1:p1', cwd: '/repo', process: 'pi' }] },
+      }),
+    },
+    {
+      match: (_c, args) => has(args, 'pane', 'split'),
+      code: 0,
+      stdout: JSON.stringify({ result: { pane: { pane_id: 'w1:p2' } } }),
+    },
+    {
+      match: (_c, args) => has(args, 'agent', 'start'),
+      code: 0,
+    },
+    {
+      match: (_c, args) => has(args, 'agent', 'prompt'),
+      code: 0,
+    },
+  ])
+
+  const result = await openFlow(pi, '/repo', {
+    path: '/repo/wt/feat-thing',
+    prompt: 'do the thing',
+  })
+
+  const steps = calls.map((c) => `${c.args[0]} ${c.args[1]}`)
+  assert.deepEqual(steps, [
+    'worktree list',
+    'worktree list',
+    'pane list',
+    'pane split',
+    'agent start',
+    'agent prompt',
+  ])
+  const splitCall = calls.find((c) => c.args[0] === 'pane')
+  assert.deepEqual(calls[3].args, [
+    'pane',
+    'split',
+    'w1:p1',
+    '--cwd',
+    '/repo/wt/feat-thing',
+    '--direction',
+    'right',
+  ])
+  void splitCall
+  assert.deepEqual(calls[4].args, [
+    'agent',
+    'start',
+    'feat-thing',
+    '--kind',
+    'pi',
+    '--pane',
+    'w1:p2',
+  ])
+  assert.deepEqual(calls[5].args, [
+    'agent',
+    'prompt',
+    'feat-thing',
+    'do the thing',
+    '--wait',
+  ])
+  assert.deepEqual(result.details, {
+    path: '/repo/wt/feat-thing',
+    workspaceId: 'w1',
+    paneId: 'w1:p2',
+    agentName: 'feat-thing',
+  })
+})
+
+test('openFlow: prompt omitted when empty — no agent prompt call', async () => {
+  const { pi, calls } = routedFakePi([
+    {
+      match: (_c, args) => has(args, 'worktree', 'list'),
+      code: 0,
+      stdout: JSON.stringify({
+        result: {
+          worktrees: [
+            {
+              path: '/repo/wt/feat-thing',
+              branch: 'feat/thing',
+              open_workspace_id: 'w1',
+              is_linked_worktree: true,
+            },
+          ],
+        },
+      }),
+    },
+    {
+      match: (_c, args) => has(args, 'pane', 'list'),
+      code: 0,
+      stdout: JSON.stringify({
+        result: { panes: [{ pane_id: 'w1:p1', cwd: '/repo', process: 'pi' }] },
+      }),
+    },
+    {
+      match: (_c, args) => has(args, 'pane', 'split'),
+      code: 0,
+      stdout: JSON.stringify({ result: { pane: { pane_id: 'w1:p2' } } }),
+    },
+    {
+      match: (_c, args) => has(args, 'agent', 'start'),
+      code: 0,
+    },
+  ])
+
+  await openFlow(pi, '/repo', { path: '/repo/wt/feat-thing' })
+  const steps = calls.map((c) => `${c.args[0]} ${c.args[1]}`)
+  assert.deepEqual(steps, [
+    'worktree list',
+    'worktree list',
+    'pane list',
+    'pane split',
+    'agent start',
+  ])
+})
+
+test('openFlow: no panes in workspace errors, naming the workspace', async () => {
+  const { pi } = routedFakePi([
+    {
+      match: (_c, args) => has(args, 'worktree', 'list'),
+      code: 0,
+      stdout: JSON.stringify({
+        result: {
+          worktrees: [
+            {
+              path: '/repo/wt/feat-thing',
+              branch: 'feat/thing',
+              open_workspace_id: 'w7',
+              is_linked_worktree: true,
+            },
+          ],
+        },
+      }),
+    },
+    {
+      match: (_c, args) => has(args, 'pane', 'list'),
+      code: 0,
+      stdout: JSON.stringify({ result: { panes: [] } }),
+    },
+  ])
+
+  const result = await openFlow(pi, '/repo', { path: '/repo/wt/feat-thing' })
+  assert.equal(result.details, undefined)
+  assert.match(result.content[0].text, /No panes found in workspace w7/)
+  assert.match(result.content[0].text, /feat\/thing/)
+})
+
+test('openFlow: herdr unavailable errors before any worktree/pane calls', async () => {
+  const { pi, calls } = routedFakePi([
+    {
+      match: (_c, args) => has(args, 'worktree', 'list'),
+      code: 1,
+      stderr: 'herdr: command not found',
+    },
+  ])
+
+  const result = await openFlow(pi, '/repo', { path: '/repo/wt/feat-thing' })
+  assert.match(result.content[0].text, /herdr preflight failed/)
+  assert.match(result.content[0].text, /command not found/)
+  assert.equal(calls.length, 1)
+})

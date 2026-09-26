@@ -221,6 +221,103 @@ export async function worktreeRemove(
   }
 }
 
+export interface HerdrPane {
+  paneId: string
+  cwd: string
+  process: string
+}
+
+/** Map a parsed `herdr pane list` payload onto HerdrPane[]. */
+export function parsePanes(root: unknown): HerdrPane[] {
+  // AIDEV-NOTE: pane-id extraction — herdr 0.8.2 emits {result:{panes:
+  // [{pane_id,cwd,process,...}]}}. Variants tolerated: id, working_dir, cmd.
+  return pickArray(root, 'panes').map((entry) => ({
+    paneId: pickString(entry, ['pane_id', 'id']),
+    cwd: pickString(entry, ['cwd', 'working_dir']),
+    process: pickString(entry, ['process', 'cmd']),
+  }))
+}
+
+export async function paneList(
+  pi: ExtensionAPI,
+  workspaceId: string,
+  cwd: string,
+): Promise<HerdrPane[]> {
+  const result = await pi.exec(
+    'herdr',
+    ['pane', 'list', '--workspace', workspaceId],
+    { cwd },
+  )
+  if (result.code !== 0) {
+    throw new Error(`herdr pane list failed: ${result.stderr || result.stdout}`)
+  }
+  const parsed = parseJson(result.stdout)
+  if (parsed === null) {
+    throw new Error(
+      `herdr pane list returned non-JSON: ${result.stdout.slice(-200)}`,
+    )
+  }
+  return parsePanes(parsed)
+}
+
+export async function paneSplit(
+  pi: ExtensionAPI,
+  options: { paneId: string; cwd: string; direction?: 'right' | 'down' },
+): Promise<string> {
+  const args = ['pane', 'split', options.paneId, '--cwd', options.cwd]
+  if (options.direction !== undefined) {
+    args.push('--direction', options.direction)
+  }
+  const result = await pi.exec('herdr', args, { cwd: options.cwd })
+  if (result.code !== 0) {
+    throw new Error(
+      `herdr pane split failed: ${result.stderr || result.stdout}`,
+    )
+  }
+  const parsed = parseJson(result.stdout)
+  // AIDEV-NOTE: pane-id extraction — herdr 0.8.2 nests the new pane's id at
+  // result.pane.pane_id; tolerate flat pane_id / id as fallbacks.
+  return pickString(extractResult(parsed), ['pane.pane_id', 'pane_id', 'id'])
+}
+
+export async function agentStart(
+  pi: ExtensionAPI,
+  options: { name: string; paneId: string },
+): Promise<void> {
+  const result = await pi.exec('herdr', [
+    'agent',
+    'start',
+    options.name,
+    '--kind',
+    'pi',
+    '--pane',
+    options.paneId,
+  ])
+  if (result.code !== 0) {
+    throw new Error(
+      `herdr agent start failed: ${result.stderr || result.stdout}`,
+    )
+  }
+}
+
+export async function agentPrompt(
+  pi: ExtensionAPI,
+  options: { name: string; text: string },
+): Promise<void> {
+  const result = await pi.exec('herdr', [
+    'agent',
+    'prompt',
+    options.name,
+    options.text,
+    '--wait',
+  ])
+  if (result.code !== 0) {
+    throw new Error(
+      `herdr agent prompt failed: ${result.stderr || result.stdout}`,
+    )
+  }
+}
+
 export async function agentList(
   pi: ExtensionAPI,
   cwd: string,

@@ -1,6 +1,6 @@
 /**
  * Worktree Extension — `worktree` tool wrapping Herdr worktree workspaces.
- * Actions: create / list / remove. See plan 2026-09-07-pi-worktree-extension.
+ * Actions: create / list / remove / open. See plan 2026-09-07-pi-worktree-extension.
  */
 
 import type {
@@ -12,10 +12,14 @@ import { copyEnvFiles, runBootstrap } from './bootstrap.ts'
 import { deriveBranch, parseBranchInput, slugify } from './branch.ts'
 import {
   agentList,
+  agentPrompt,
+  agentStart,
   filterLinked,
   type HerdrAgent,
   type HerdrWorktree,
   herdrAvailable,
+  paneList,
+  paneSplit,
   parseJson,
   pickString,
   worktreeCreate,
@@ -269,6 +273,109 @@ async function listFlow(pi: ExtensionAPI, cwd: string): Promise<ToolResult> {
   return textResult(lines.join('\n'), { worktrees, agentsDegraded: degraded })
 }
 
+// AIDEV-NOTE: herdr agent name rule is [a-z][a-z0-9_-]{0,31} — derive from
+// the worktree's last path segment (not the raw branch, which may contain
+// slashes) so a default open name always satisfies herdr's pattern.
+function branchSlugToAgentName(worktreePath: string): string {
+  const segment = worktreePath.split('/').filter(Boolean).pop() ?? 'agent'
+  let slug = segment.toLowerCase().replace(/[^a-z0-9_-]/g, '-')
+  if (!/^[a-z]/.test(slug)) {
+    slug = `a-${slug}`
+  }
+  return slug.slice(0, 32)
+}
+
+export async function openFlow(
+  pi: ExtensionAPI,
+  cwd: string,
+  params: {
+    path?: string
+    cwd?: string
+    name?: string
+    prompt?: string
+  },
+): Promise<ToolResult> {
+  const preflight = await herdrAvailable(pi, cwd)
+  if (!preflight.ok) {
+    return errorResult(
+      `${preflight.error}\nThe worktree tool must run inside a Herdr session with herdr on PATH.`,
+    )
+  }
+
+  let worktrees: HerdrWorktree[]
+  try {
+    worktrees = await worktreeList(pi, cwd)
+  } catch (error) {
+    return errorResult((error as Error).message)
+  }
+  const linked = filterLinked(worktrees)
+
+  let target: HerdrWorktree | undefined
+  if (params.path) {
+    target = linked.find((wt) => wt.path === params.path)
+  } else if (params.cwd) {
+    target = linked.find((wt) => params.cwd?.startsWith(wt.path))
+  }
+  if (!target) {
+    const available = linked.map((wt) => wt.path).join(', ') || '(none)'
+    return errorResult(
+      `No worktree found matching ${params.path ?? params.cwd ?? '(no path given)'} — available worktrees: ${available}`,
+    )
+  }
+
+  let panes: Awaited<ReturnType<typeof paneList>>
+  try {
+    panes = await paneList(pi, target.workspaceId, cwd)
+  } catch (error) {
+    return errorResult((error as Error).message)
+  }
+  const firstPane = panes[0]
+  if (!firstPane) {
+    return errorResult(
+      `No panes found in workspace ${target.workspaceId} (${target.branch}) — cannot open an agent pane`,
+    )
+  }
+
+  let paneId: string
+  try {
+    paneId = await paneSplit(pi, {
+      paneId: firstPane.paneId,
+      cwd: target.path,
+      direction: 'right',
+    })
+  } catch (error) {
+    return errorResult((error as Error).message)
+  }
+
+  let agentName = params.name
+  if (!agentName) {
+    agentName = branchSlugToAgentName(target.path)
+  }
+  try {
+    await agentStart(pi, { name: agentName, paneId })
+  } catch (error) {
+    return errorResult((error as Error).message)
+  }
+
+  if (params.prompt) {
+    try {
+      await agentPrompt(pi, { name: agentName, text: params.prompt })
+    } catch (error) {
+      return errorResult((error as Error).message)
+    }
+  }
+
+  return textResult(
+    `Opened agent ${agentName} in pane ${paneId} for worktree ${target.path}`,
+    {
+      path: target.path,
+      workspaceId: target.workspaceId,
+      paneId,
+      agentName,
+    },
+  )
+}
+
 // AIDEV-NOTE: remove guards order per spec — branch captured BEFORE
 // removal (branch ref only exists while the worktree checkout does);
 // PR merge state via gh checked BEFORE herdr removal so a refused branch
@@ -443,7 +550,12 @@ export default function (pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       action: Type.Union(
-        [Type.Literal('create'), Type.Literal('list'), Type.Literal('remove')],
+        [
+          Type.Literal('create'),
+          Type.Literal('list'),
+          Type.Literal('remove'),
+          Type.Literal('open'),
+        ],
         { description: 'Action to perform' },
       ),
       jira_id: Type.Optional(
@@ -454,7 +566,7 @@ export default function (pi: ExtensionAPI) {
       name: Type.Optional(
         Type.String({
           description:
-            'Create mode 2: feature name, slugified into <type>/<slug>',
+            'create mode 2: feature name, slugified into <type>/<slug>. open: agent name (default: slug of the worktree path)',
         }),
       ),
       type: Type.Optional(
@@ -494,11 +606,22 @@ export default function (pi: ExtensionAPI) {
           description: 'remove: delete branch after removal (merge-checked)',
         }),
       ),
+      path: Type.Optional(
+        Type.String({
+          description: 'open: worktree path to open (matched exactly)',
+        }),
+      ),
+      prompt: Type.Optional(
+        Type.String({
+          description:
+            'open: initial prompt sent to the agent (skipped if empty)',
+        }),
+      ),
     }),
     async execute(
       _toolCallId: string,
       params: {
-        action: 'create' | 'list' | 'remove'
+        action: 'create' | 'list' | 'remove' | 'open'
         jira_id?: string
         name?: string
         type?: 'feat' | 'fix' | 'chore' | 'docs' | 'refactor'
@@ -507,6 +630,8 @@ export default function (pi: ExtensionAPI) {
         cwd?: string
         force?: boolean
         delete_branch?: boolean
+        path?: string
+        prompt?: string
       },
       signal: AbortSignal | undefined,
       onUpdate: OnUpdate,
@@ -519,6 +644,9 @@ export default function (pi: ExtensionAPI) {
       }
       if (params.action === 'list') {
         return listFlow(pi, cwd)
+      }
+      if (params.action === 'open') {
+        return openFlow(pi, cwd, params)
       }
       return removeFlow(pi, cwd, params)
     },
