@@ -18,8 +18,9 @@ Plan lifecycle (metadata on the feature ticket): `draft` (interview done,
 plan.md incomplete — resume to finish), `review` (plan.md complete, awaiting
 user approval), `approved` (tree may be created). The agent sets
 draft → review when the planner finishes; **only the user's explicit approval
-sets review → approved** — the agent runs the `aven edit`, but the word must
-be the user's. `implement-plan-aven` (sibling) executes the resulting tree.
+sets review → approved** — the agent calls `advance_plan_state`, but the word
+must be the user's. `implement-plan-aven` (sibling) executes the resulting
+tree.
 
 Grouping is native aven **epic membership**: the feature ticket becomes the
 epic container, phases and subtasks are its children.
@@ -34,22 +35,21 @@ with `unknown-ref`.
 
 ```mermaid
 flowchart TD
-  A[Ticket in aven inbox/todo] --> B["aven show REF --full + aven context REF"]
-  B --> C[scout subagent -> scout-context.md]
+  A[Ticket in aven inbox/todo] --> B["find_or_create_epic tool<br/>(Jira key -> local epic, or ref passthrough)"]
+  B --> B2["aven show REF --full + aven context REF"]
+  B2 --> C[scout subagent -> scout-context.md]
   C --> D[interview: one round<br/>Goal / Behavior / Done when / Out of scope]
   D --> E["resolve_feature_path tool -> plan.md path"]
-  E --> F[interactive planner subagent writes plan.md]
-  F --> G["aven edit REF --epic on --status todo<br/>--metadata plan-path=ABS, plan-state=draft→review"]
-  G --> GATE{user approves?<br/>possibly a later session}  GATE -->|iterate| F
-  GATE -->|"approve REF → plan-state=approved"| H["aven add 'N. Phase: name' --label phase --label impl<br/>--metadata plan-path=ABS --description 'summary + AC'"]
-  H --> H2["aven epic add PHASE REF"]
-  H2 --> H2b["aven dep add PHASE PREV_PHASE<br/>(order guarantee: one phase ready at a time)"]
-  H2b --> I["aven add 'N.M title' --label impl<br/>--metadata plan-path=ABS --description 'summary + AC'"]
-  I --> I2["aven epic add SUB REF (+ dep add SUB PHASE for gating)"]
-  I2 --> J["aven epic list REF  (verify)"]
-  J --> K["implement-plan-aven: sort by N./N.M prefix,<br/>first non-done = resume pointer"]
-  K -->|per phase| L["run tests -> commit<br/>then aven edit PHASE --status done"]
-  L -->|next phase| K
+  E --> F["aven note REF --stdin (interview answers)<br/>delivery_mode tool (action=set, user choice)"]
+  F --> G[interactive planner subagent writes plan.md]
+  G --> H["advance_plan_state tool: draft -> review"]
+  H --> GATE{user approves?<br/>possibly a later session}  GATE -->|iterate| G
+  GATE -->|"approve REF"| I["advance_plan_state tool: review -> approved"]
+  I --> J["create_feature_tree tool<br/>(gated on plan-state=approved; writes phases+subtasks)"]
+  J --> K["get_feature_tree tool  (verify)"]
+  K --> L["implement-plan-aven: get_feature_tree resume pointer<br/>(first non-done phase)"]
+  L -->|per phase| M["run tests -> commit<br/>then close_phase tool"]
+  M -->|next phase| L
 ```
 
 ## Stage 1 — Author the plan
@@ -57,16 +57,21 @@ flowchart TD
 ### 1. Pickup (~30s)
 
 **Ticket lookup and Jira detection.** Input may be an aven ref (`PMR-ZTVG`) or
-a Jira ID (`DP-71`) of a synced ticket:
+a Jira ID (`DP-71`) of a synced ticket. Call `find_or_create_epic` with the
+input ref/key first, before any other pickup step — `<REF>` for the rest of
+this skill is the returned `epicRef`:
 
-```bash
-aven show <INPUT> --json || true   # aven ref? (ref lookup only — JSON omits metadata)
-# Jira ID → run the pull-in below; plan on the LOCAL EPIC, never the synced ticket
-# []/`unknown-metadata-field` on step 1 → not aven-managed → plan it in Jira directly
-```
+- Existing local epic or plain aven ref → returned unchanged, `created: false`.
+- Jira key with no local epic yet → the tool finds the synced ticket
+  (searches the whole workspace by `jira-key` metadata), creates a local
+  epic in the repo's aven project tagged `jira-ref=<KEY>`, and dep-links it
+  to the synced ticket (deps survive sync). `created: true`.
+- Jira key with no synced ticket found at all → tool throws
+  `no synced ticket found for Jira key` → not aven-managed → plan it in Jira
+  directly.
 
-`unknown-ref` may mean wrong workspace: run `aven doctor`, retry with
-`--workspace <name>`.
+The epic is a local task — sync never touches it, so everything on it
+(`plan-path`, `plan-state`, notes, even `--description`) is durable.
 
 **Workspace → flow mapping.** aven's two workspaces map to the two origins:
 
@@ -74,47 +79,13 @@ aven show <INPUT> --json || true   # aven ref? (ref lookup only — JSON omits m
   ticket is the source of truth; no Jira involvement.
 - **salaryhero** — Jira-synced tickets. Jira stays the system of record;
   execution happens on a **local epic in the repo's aven project**, pulled
-  in and dep-linked to the synced ticket (below). The synced aven copy is
+  in and dep-linked to the synced ticket (above). The synced aven copy is
   context only.
 
 The workspace resolves from the cwd route automatically (`aven doctor` to
 verify). Never plan a salaryhero-routed feature into the personal workspace
-or vice versa — the ref lookup is workspace-scoped.
-
-**Jira pull-in (find-or-create epic)** — run from the repo root BEFORE any
-other pickup step; `<REF>` for the rest of this skill is the local epic:
-
-```bash
-KEY=DP-71
-# 1) Synced ticket — search the WHOLE workspace (omit --project); synced
-#    tickets live in their Jira project's aven project (dp/imp/devops),
-#    not the repo's. Filter out legacy epics planned directly on the ticket.
-JIRA_REF=$(aven list --metadata jira-key=$KEY --json 2>/dev/null \
-  | jq -r '.[] | select(.is_epic != true) | .ref' | head -1)
-
-# 2) Repo's aven project — mapped? (projects infer from path mappings)
-aven project path list --workspace salaryhero
-# repo path unmapped → create + map in one shot (name = repo dir name)
-aven project create "$(basename "$PWD")" --path "$PWD" --workspace salaryhero
-
-# 3) Existing epic for THIS repo + ticket? (`jira-ref` marks pulled-in epics;
-#    <repo-project-key> = the repo project's key from `aven project list`;
-#    empty / `unknown-metadata-field` (lazy registration — no epic ever
-#    pulled in) → not found → create below. aven errors print on stderr —
-#    never merge 2>&1 into the jq pipe)
-EPIC_REF=$(aven list --metadata jira-ref=$KEY --json 2>/dev/null \
-  | jq -r --arg p <repo-project-key> '.[] | select(.project == $p) | .ref' | head -1)
-
-# 4) Missing → create the epic in the repo's project, dep-link the synced ticket
-EPIC_REF=$(aven add "$KEY — <synced summary>" --epic --status todo \
-  --metadata jira-ref=$KEY \
-  --description "Jira $KEY — source of truth: synced ticket $JIRA_REF." \
-  2>&1 | grep -oP 'created \K\S+')
-aven dep add $EPIC_REF $JIRA_REF   # epic blocked-by synced ticket; deps survive sync
-```
-
-The epic is a local task — sync never touches it, so everything on it
-(`plan-path`, `plan-state`, notes, even `--description`) is durable.
+or vice versa — the ref lookup is workspace-scoped. `unknown-ref` may mean
+wrong workspace: run `aven doctor`, retry with `--workspace <name>`.
 
 `aven show <REF> --full` + `aven context <REF>`. For a pulled-in epic, the
 spec context comes from the synced ticket: its description + `jira-url`
@@ -159,38 +130,46 @@ boundaries). Always offer the out: "...or say 'use your judgment' and I'll pick
 sensible defaults." If the user defers, pick defaults and mark them as
 assumptions.
 
+**Delivery-mode tier check (tier 2 — investigate).** If the interview reveals
+the ask is really a diagnostic/exploration ("why is X happening", "look into
+Y") rather than a build, don't run the full plan → tree pipeline. Call
+`delivery_mode` with `action=set, mode=investigate`, post findings + a short
+mini-plan as an `aven note` on the ticket, then proceed with the
+investigation unless the user interrupts — no plan.md, no tree, no approval
+gate. Document this choice in the note itself so a later resume sees why the
+ticket skipped stage 1/2.
+
 ### 5. Contract on the feature ticket
 
 Aven tickets already carry a title + description, so no task creation. Record
-the interview + plan location:
+the interview + plan location, then set the delivery mode:
 
 ```bash
-# Labels must exist before use (repeat-safe: ignore "already exists" errors)
-aven label create phase 2>/dev/null || true
-aven label create impl 2>/dev/null || true
-
 aven note <REF> --stdin <<'EOF'
 Goal: ...
 Behavior: ...
 Done when: ...
 Out of scope: ...
 EOF
-
-# Feature ticket becomes the epic container for the whole tree
-# plan-state=draft now (plan.md not written yet); flip to review after the planner finishes
-aven edit <REF> --epic on --status todo \
-  --metadata plan-path=<absolute plan.md path> --metadata plan-state=draft
 ```
 
-`<REF>` is the qualified ref (e.g. `PMR-ZTVG`). Labels mark task kind
-(`phase`/`impl`); **epic membership groups the tree** — every phase and
-subtask is added as a child of `<REF>` (`aven epic list <REF>` returns the
-whole tree, and the TUI epic view shows it).
+`plan-state` is not set yet — it stays unset/`draft` until the planner
+finishes and `advance_plan_state` is called with `state=review` in step 6
+(that call also records `plan-path`). Nothing to write here beyond the note.
+
+Call `delivery_mode` with `feature_ref=<REF>`, `action=set`. Ask the user
+which mode applies (`oneshot`, `investigate`, `planned`) when it isn't
+already obvious from the interview; default to `planned` whenever a tree
+will be requested (the common case for this skill).
+
+`<REF>` is the qualified ref (e.g. `PMR-ZTVG`). Epic membership groups the
+tree — every phase and subtask becomes a child of `<REF>` via
+`create_feature_tree` in stage 2 (`get_feature_tree` returns the whole tree
+back).
 
 **Sync-safety (Jira-linked tickets):** the local epic is invisible to
 jira-aven-sync — `plan-path`/`plan-state` metadata, notes, and the tree are
-durable as-is (this also means `--epic on`/`--status todo` edits on the epic
-are safe). Only the **synced ticket** is sync-owned: sync overwrites its
+durable as-is. Only the **synced ticket** is sync-owned: sync overwrites its
 title, status, priority, description, labels, and `jira-status` on every
 run — never plan against it or store planning data on it. The `dep` link
 survives sync (deps are not in the overwrite list). The gate is
@@ -225,20 +204,24 @@ subagent({
 The planner runs its own methodology (requirements, approaches, premortem,
 plan) with the user — don't re-specify that. Your job is context. The planner
 designs the phase breakdown inside plan.md; the aven tree is materialized
-later, in stage 2. Design points the plan must satisfy:
+later, in stage 2, by `create_feature_tree`. Design points the plan must
+satisfy:
 
-- Every phase AND subtask is an epic child of `<REF>` — epic membership is
-  the grouping key (`aven epic add <CHILD> <REF>`).
-- `N.` / `N.M` title prefixes are REQUIRED — the execution plan sorts by them.
-- **Phases chain via deps** (`aven dep add <phase N> <phase N-1>`) — aven
-  enforces execution order (`--ready` shows exactly one phase at a time); the
-  prefix is for humans and sorting.
-- Capture each phase ref from its `aven add` output (`created PMR-XXXX`) — subtasks don't depend on it unless you want `--ready` gating.
+- Every phase AND subtask becomes an epic child of `<REF>` when the tree is
+  created — epic membership is the grouping key.
+- `N.` / `N.M` title prefixes are REQUIRED — `create_feature_tree` numbers
+  them from array order, and `get_feature_tree` sorts/resumes by them.
+- **Phases chain via deps automatically** — `create_feature_tree` adds
+  `phase N depends on phase N-1` for every phase after the first, so
+  `--ready` shows exactly one phase at a time. The plan only needs to list
+  phases in execution order.
 - Every phase AND subtask section in plan.md carries a self-contained ticket
   body: 1–3 sentences of implementation detail (what to change, where, how)
-  plus an explicit **Acceptance criteria** checklist. Stage 2 copies this
-  text into the ticket `--description` verbatim — write it so a worker who
-  never opens plan.md still knows exactly what to build and when it's done.
+  plus an explicit **Acceptance criteria** checklist. Stage 2 passes this
+  text verbatim as each phase/subtask's `summary`/`body` param to
+  `create_feature_tree`, which becomes the ticket `--description`.
+  Self-contained — a worker who never opens plan.md still knows exactly
+  what to build and when it's done.
 - **Phases must be testable blocks**: the planner designs each phase so the repo
   is left green at its end — tests pass, then one commit scoped to that phase.
   A phase that can't end with `tests → commit` is too big or too small; split
@@ -248,9 +231,8 @@ later, in stage 2. Design points the plan must satisfy:
 
 When the planner finishes and plan.md is complete, flip the gate:
 
-```bash
-aven edit <REF> --metadata plan-state=review
-```
+Call `advance_plan_state` with `feature_ref=<REF>`, `state=review`,
+`plan_path=<absolute plan.md path>`.
 
 Stage 1 ends here. Present plan.md to the user and stop — the tree is
 created only after explicit approval, possibly in a later session.
@@ -262,29 +244,32 @@ Check state first — if `plan-state` is `draft`/`review`, stop: the plan is
 not approved; offer to iterate instead (back to stage 1's planner with the
 existing plan.md). On approval:
 
-```bash
-aven edit <REF> --metadata plan-state=approved
-```
+Call `advance_plan_state` with `feature_ref=<REF>`, `state=approved`.
 
-Then materialize the tree by running the **Aven output contract** below
-verbatim, one phase at a time. Finish with verification:
+Then call `create_feature_tree` with `feature_ref=<REF>`, `plan_path=<abs
+plan.md path>`, and `phases` built from plan.md — one entry per phase in
+plan order, each with `title`, `summary` (verbatim implementation summary +
+acceptance criteria from that phase's plan.md section), and `subtasks`
+(same shape: `title`, `body`). The tool re-checks `plan-state=approved`
+itself and rejects (zero writes) if it isn't — this is the enforcement
+point, not a courtesy check. On success it creates every phase/subtask as an
+epic child of `<REF>`, numbers titles `N.`/`N.M`, and chains phase
+dependencies.
 
-```bash
-aven epic list <REF> --json
-```
-
-Sort children by the `N.`/`N.M` title prefix client-side. Present the list to
-the user and ask them to review both `plan.md` and the tree. Fixups go
-through the contract commands.
+Finish with verification: call `get_feature_tree` with `feature_ref=<REF>`.
+Present the returned phase/subtask list to the user and ask them to review
+both `plan.md` and the tree. Fixups go through `aven edit`/`aven dep`
+directly (no tool wraps ad-hoc corrections).
 
 ### Fallback — no `subagent` tool
 
 Do the scout work in the main session (`fast_context_search` / `grep` /
 `read`) and write `plan.md` yourself. The two-stage split still applies:
 plan first, tree only after explicit user approval, using the identical
-commands from the contract below. Everything else — interview, notes,
-metadata, verification — is unchanged. Call `open_in_pane` with the
-plan path after writing (skippable on request; tool failure never blocks).
+`advance_plan_state` / `create_feature_tree` / `get_feature_tree` tool calls
+above. Everything else — interview, notes, metadata, verification — is
+unchanged. Call `open_in_pane` with the plan path after writing (skippable
+on request; tool failure never blocks).
 
 ## Resuming a plan in a later session
 
@@ -301,78 +286,26 @@ metadata from JSON output (upgrade to JSON when aven gains
 
 - No `plan-path` → start at stage 1, step 1.
 - `plan-state=draft` → read the ticket note (interview answers), finish the
-  plan with the planner, then set `plan-state=review`.
+  plan with the planner, then call `advance_plan_state` with `state=review`.
 - `plan-state=review` → read plan.md fully, load it for the user, iterate
   until they approve or discard.
-- `plan-state=approved` → tree missing → stage 2; tree exists → route to
-  `implement-plan-aven`.
-
-## Aven output contract
-
-Byte-identical commands for stage 2 and the fallback. `<REF>` is the
-feature ref; `$PHASE_REF` is captured from each phase's `aven add` output.
-Every task gets its own `plan-path` copy so any ref is self-contained, and
-its own `--description` (implementation summary + acceptance criteria, lifted
-verbatim from plan.md) so the ticket stands alone — `plan-path` points at the
-full context, the description carries what execution actually needs.
-
-```bash
-# Phase — capture the ref inline; aven prints "created PMR-XXXX"
-# (use \S+, not \w+ — the dash in refs breaks \w)
-# --description is lifted VERBATIM from that phase's section in plan.md:
-# implementation summary + Acceptance criteria checklist. Self-contained —
-# a worker must not need plan.md to implement or verify the ticket.
-PHASE_REF=$(aven add "N. Phase: <name>" --label phase --label impl --metadata plan-path=<abs plan.md> \
-  --description "$(cat <<'EOF'
-<1–3 sentences: what to change, where, how — from plan.md>
-
-Acceptance criteria:
-- [ ] <criterion>
-- [ ] <criterion>
-EOF
-)" 2>&1 | grep -oP 'created \K\S+')
-aven epic add $PHASE_REF <REF>
-
-# Hard order guarantee: phase N blocks on phase N-1. PREV_PHASE_REF starts
-# empty for the first phase.
-if [ -n "$PREV_PHASE_REF" ]; then
-  aven dep add $PHASE_REF $PREV_PHASE_REF
-fi
-PREV_PHASE_REF=$PHASE_REF
-
-# Subtask — epic child of the feature, gated on its phase (hidden from --ready
-# until the phase is done). Same description rule: verbatim from its plan.md
-# section, summary + acceptance criteria, self-contained.
-SUBTASK_REF=$(aven add "N.M <title>" --label impl --metadata plan-path=<abs plan.md> \
-  --description "$(cat <<'EOF'
-<1–3 sentences: what to change, where, how — from plan.md>
-
-Acceptance criteria:
-- [ ] <criterion>
-EOF
-)" 2>&1 | grep -oP 'created \K\S+')
-aven epic add $SUBTASK_REF <REF>
-aven dep add $SUBTASK_REF $PHASE_REF
-```
-
-Repeat per phase, incrementing `N` (`1.`, `2.`, ...); subtasks `1.1`, `1.2`,
-`2.1`, ...
+- `plan-state=approved` → call `get_feature_tree`: empty tree → stage 2
+  (`create_feature_tree`); non-empty tree → route to `implement-plan-aven`.
 
 ## Phase discipline (execution)
 
 Every phase ends with the same cycle — this is what makes phases testable
 blocks rather than arbitrary buckets:
 
-```bash
-# 1. Run the project's tests (repo-defined runner, e.g. `bun run check`)
-# 2. Commit with a phase-scoped message (explain the why, conventional subject)
-# 3. Close the phase in aven
-aven edit <PHASE_REF> --status done
-```
+1. Run the project's tests (repo-defined runner, e.g. `bun run check`).
+2. Commit with a phase-scoped message (explain the why, conventional subject).
+3. Call `close_phase` with `phase_ref=<PHASE_REF>`, `feature_ref=<REF>` — marks
+   the phase done and returns the next open phase ref (or `null` when all
+   phases are done).
 
 Only then does the next phase start. If tests fail, the phase is not done —
 fix forward inside the same phase. The commit is the phase's artifact; the
-aven status is its ledger entry.
+aven status (via `close_phase`) is its ledger entry.
 
 ## What We're NOT Doing
 
@@ -388,7 +321,7 @@ aven status is its ledger entry.
   feature should run in-place instead (oneshot, no Herdr) so implement's
   default doesn't surprise anyone.
 - No extra metadata for grouping — epic membership covers it; `plan-path` is
-  the only metadata this flow writes.
+  the only metadata this flow writes beyond `plan-state`/`delivery-mode`.
 
 ## Integration with Other Skills
 
@@ -397,7 +330,7 @@ aven status is its ledger entry.
   this skill always works in the aven workspace routed to the current
   directory (`aven doctor` to verify). Synced tickets execute on their
   pulled-in local epic, never on the synced task itself.
-- `implement-plan-aven` — resumes this hierarchy via
-  `aven epic list <REF> --json`; resume pointer = first non-done task in
-  N./N.M title order. With worktree mode, it also resumes the feature's
-  worktree from the `worktree:` note this flow's contract left on the ticket.
+- `implement-plan-aven` — resumes this hierarchy via `get_feature_tree`
+  (`resumeRef` = first non-done phase). With worktree mode, it also resumes
+  the feature's worktree from the `worktree:` note this flow's contract left
+  on the ticket.
