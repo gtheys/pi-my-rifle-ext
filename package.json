@@ -32,6 +32,7 @@
       "./packages/pi-fastcontext/index.ts",
       "./packages/pi-planning/plan-tools/index.ts",
       "./packages/pi-planning/implement-plan/index.ts",
+      "./packages/pi-planning/aven-tools/index.ts",
       "./packages/pi-sem/index.ts",
       "./packages/pi-tool-pills/index.ts",
       "./packages/pi-desktop-notify/index.ts",
