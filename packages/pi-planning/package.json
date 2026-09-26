@@ -30,6 +30,9 @@
     "aven-tools/find-or-create-epic.ts",
     "aven-tools/advance-plan-state.ts",
     "aven-tools/create-feature-tree.ts",
+    "aven-tools/get-feature-tree.ts",
+    "aven-tools/close-phase.ts",
+    "aven-tools/delivery-mode.ts",
     "shared/jira-branch.ts",
     "shared/aven.ts",
     "README.md"

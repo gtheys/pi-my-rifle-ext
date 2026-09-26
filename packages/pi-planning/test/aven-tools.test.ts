@@ -2,8 +2,14 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { advancePlanState } from '../aven-tools/advance-plan-state.ts'
+import { closePhase } from '../aven-tools/close-phase.ts'
 import { createFeatureTree } from '../aven-tools/create-feature-tree.ts'
+import {
+  classifyDeliveryMode,
+  deliveryMode,
+} from '../aven-tools/delivery-mode.ts'
 import { findOrCreateEpic } from '../aven-tools/find-or-create-epic.ts'
+import { getFeatureTree } from '../aven-tools/get-feature-tree.ts'
 
 interface Recorded {
   command: string
@@ -414,4 +420,296 @@ test('create_feature_tree: happy path builds phase/subtask tree with argv order'
       },
     ],
   })
+})
+
+test('get_feature_tree: unsorted input sorts phases and subtasks numerically', async () => {
+  const recorded: Recorded[] = []
+  const unsorted = [
+    {
+      ref: 'PMR-N4',
+      title: '2. Phase: Tool registration',
+      status: 'todo',
+      is_epic: true,
+      labels: ['phase', 'impl'],
+    },
+    {
+      ref: 'PMR-N5',
+      title: '2.1 Register tools',
+      status: 'todo',
+      is_epic: false,
+      labels: ['impl'],
+    },
+    {
+      ref: 'PMR-N1',
+      title: '1. Phase: Aven client module',
+      status: 'done',
+      is_epic: true,
+      labels: ['phase', 'impl'],
+    },
+    {
+      ref: 'PMR-N3',
+      title: '1.2 Mutating commands',
+      status: 'done',
+      is_epic: false,
+      labels: ['impl'],
+    },
+    {
+      ref: 'PMR-N2',
+      title: '1.1 Client core',
+      status: 'done',
+      is_epic: false,
+      labels: ['impl'],
+    },
+  ]
+  const scripts = new Map<string, Scripted>([
+    ['epic list', { code: 0, stdout: JSON.stringify(unsorted), stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await getFeatureTree(pi, 'PMR-FEAT1', '/cwd')
+
+  assert.deepEqual(result, {
+    phases: [
+      {
+        ref: 'PMR-N1',
+        title: '1. Phase: Aven client module',
+        status: 'done',
+        subtasks: [
+          { ref: 'PMR-N2', title: '1.1 Client core', status: 'done' },
+          { ref: 'PMR-N3', title: '1.2 Mutating commands', status: 'done' },
+        ],
+      },
+      {
+        ref: 'PMR-N4',
+        title: '2. Phase: Tool registration',
+        status: 'todo',
+        subtasks: [
+          { ref: 'PMR-N5', title: '2.1 Register tools', status: 'todo' },
+        ],
+      },
+    ],
+    resumeRef: 'PMR-N4',
+  })
+})
+
+test('get_feature_tree: all phases done returns resumeRef null', async () => {
+  const recorded: Recorded[] = []
+  const allDone = [
+    {
+      ref: 'PMR-N1',
+      title: '1. Phase: Aven client module',
+      status: 'done',
+      is_epic: true,
+      labels: ['phase', 'impl'],
+    },
+    {
+      ref: 'PMR-N4',
+      title: '2. Phase: Tool registration',
+      status: 'done',
+      is_epic: true,
+      labels: ['phase', 'impl'],
+    },
+  ]
+  const scripts = new Map<string, Scripted>([
+    ['epic list', { code: 0, stdout: JSON.stringify(allDone), stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await getFeatureTree(pi, 'PMR-FEAT1', '/cwd')
+
+  assert.equal(result.resumeRef, null)
+})
+
+test('close_phase: closes phase and returns next open phase ref', async () => {
+  const recorded: Recorded[] = []
+  const remaining = [
+    {
+      ref: 'PMR-N1',
+      title: '1. Phase: Aven client module',
+      status: 'done',
+      is_epic: true,
+      labels: ['phase'],
+    },
+    {
+      ref: 'PMR-N4',
+      title: '2. Phase: Tool registration',
+      status: 'todo',
+      is_epic: true,
+      labels: ['phase'],
+    },
+  ]
+  const scripts = new Map<string, Scripted>([
+    ['edit PMR-N1', { code: 0, stdout: '', stderr: '' }],
+    ['epic list', { code: 0, stdout: JSON.stringify(remaining), stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await closePhase(pi, 'PMR-N1', 'PMR-FEAT1', '/cwd')
+
+  assert.deepEqual(result, { nextPhaseRef: 'PMR-N4' })
+  assert.deepEqual(recorded[0], {
+    command: 'aven',
+    args: ['edit', 'PMR-N1', '--status', 'done'],
+    cwd: '/cwd',
+  })
+})
+
+test('close_phase: closing last phase returns nextPhaseRef null', async () => {
+  const recorded: Recorded[] = []
+  const allDone = [
+    {
+      ref: 'PMR-N1',
+      title: '1. Phase: Aven client module',
+      status: 'done',
+      is_epic: true,
+      labels: ['phase'],
+    },
+  ]
+  const scripts = new Map<string, Scripted>([
+    ['edit PMR-N1', { code: 0, stdout: '', stderr: '' }],
+    ['epic list', { code: 0, stdout: JSON.stringify(allDone), stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await closePhase(pi, 'PMR-N1', 'PMR-FEAT1', '/cwd')
+
+  assert.deepEqual(result, { nextPhaseRef: null })
+})
+
+test('delivery_mode: classify precedence — metadata wins over inference', async () => {
+  const recorded: Recorded[] = []
+  const showFullOutput = [
+    'PMR-FEAT1 status=todo title="Feature" epic=yes labels=feature',
+    'metadata field_id=1 key=delivery-mode',
+    'value<<EOF',
+    'investigate',
+    'EOF',
+    'metadata field_id=2 key=plan-state',
+    'value<<EOF',
+    'approved',
+    'EOF',
+  ].join('\n')
+  const scripts = new Map<string, Scripted>([
+    ['show PMR-FEAT1', { code: 0, stdout: showFullOutput, stderr: '' }],
+    ['epic list', { code: 0, stdout: '[{"ref":"PMR-N1"}]', stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await deliveryMode(
+    pi,
+    'PMR-FEAT1',
+    '/cwd',
+    'classify',
+    undefined,
+  )
+
+  // metadata says 'investigate' even though plan-state present would infer 'planned'
+  assert.deepEqual(result, { mode: 'investigate' })
+})
+
+test('delivery_mode: classify infers planned from non-empty epic list', async () => {
+  const recorded: Recorded[] = []
+  const showFullOutput =
+    'PMR-FEAT1 status=todo title="Feature" epic=yes labels=feature'
+  const scripts = new Map<string, Scripted>([
+    ['show PMR-FEAT1', { code: 0, stdout: showFullOutput, stderr: '' }],
+    ['epic list', { code: 0, stdout: '[{"ref":"PMR-N1"}]', stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await deliveryMode(
+    pi,
+    'PMR-FEAT1',
+    '/cwd',
+    'classify',
+    undefined,
+  )
+
+  assert.deepEqual(result, { mode: 'planned' })
+})
+
+test('delivery_mode: classify infers planned from plan-state metadata', async () => {
+  const recorded: Recorded[] = []
+  const showFullOutput = [
+    'PMR-FEAT1 status=todo title="Feature" epic=no labels=feature',
+    'metadata field_id=1 key=plan-state',
+    'value<<EOF',
+    'review',
+    'EOF',
+  ].join('\n')
+  const scripts = new Map<string, Scripted>([
+    ['show PMR-FEAT1', { code: 0, stdout: showFullOutput, stderr: '' }],
+    ['epic list', { code: 0, stdout: '[]', stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await deliveryMode(
+    pi,
+    'PMR-FEAT1',
+    '/cwd',
+    'classify',
+    undefined,
+  )
+
+  assert.deepEqual(result, { mode: 'planned' })
+})
+
+test('delivery_mode: classify defaults to oneshot with no signals', async () => {
+  const recorded: Recorded[] = []
+  const showFullOutput =
+    'PMR-FEAT1 status=todo title="Feature" epic=no labels=feature'
+  const scripts = new Map<string, Scripted>([
+    ['show PMR-FEAT1', { code: 0, stdout: showFullOutput, stderr: '' }],
+    ['epic list', { code: 0, stdout: '[]', stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await deliveryMode(
+    pi,
+    'PMR-FEAT1',
+    '/cwd',
+    'classify',
+    undefined,
+  )
+
+  assert.deepEqual(result, { mode: 'oneshot' })
+})
+
+test('delivery_mode: set writes metadata and returns mode', async () => {
+  const recorded: Recorded[] = []
+  const scripts = new Map<string, Scripted>([
+    ['edit PMR-FEAT1', { code: 0, stdout: '', stderr: '' }],
+  ])
+  const pi = fakePi(scripts, recorded)
+
+  const result = await deliveryMode(
+    pi,
+    'PMR-FEAT1',
+    '/cwd',
+    'set',
+    'investigate',
+  )
+
+  assert.deepEqual(result, { mode: 'investigate' })
+  assert.deepEqual(recorded[0], {
+    command: 'aven',
+    args: ['edit', 'PMR-FEAT1', '--metadata', 'delivery-mode=investigate'],
+    cwd: '/cwd',
+  })
+})
+
+test('delivery_mode: classifyDeliveryMode precedence unit test', () => {
+  assert.equal(
+    classifyDeliveryMode(
+      { 'delivery-mode': 'oneshot', 'plan-state': 'approved' },
+      true,
+    ),
+    'oneshot',
+  )
+  assert.equal(classifyDeliveryMode({}, true), 'planned')
+  assert.equal(
+    classifyDeliveryMode({ 'plan-state': 'review' }, false),
+    'planned',
+  )
+  assert.equal(classifyDeliveryMode({}, false), 'oneshot')
 })
