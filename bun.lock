@@ -7,8 +7,6 @@
       "dependencies": {
         "@earendil-works/pi-server": "0.85.0",
         "@gtheys/pi-per-commit-spend": "^0.2.6",
-        "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.85.1",
-        "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.85.1",
         "@shikijs/cli": "^4.4.3",
         "@sting8k/pi-vcc": "^0.7.2",
         "@tomooshi/caveman-milk-pi": "^0.2.0",
@@ -24,10 +22,16 @@
         "@earendil-works/pi-agent-core": "^0.85.1",
         "@earendil-works/pi-coding-agent": "^0.85.1",
         "@earendil-works/pi-tui": "^0.85.1",
+        "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.85.1",
+        "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.85.1",
         "@types/diff": "^8.0.0",
         "bun-types": "^1.4.2",
         "lefthook": "2.1.12",
         "typescript": "7.0.2",
+      },
+      "peerDependencies": {
+        "@mariozechner/pi-coding-agent": "*",
+        "@mariozechner/pi-tui": "*",
       },
     },
     "packages/pi-ask-user-question": {
@@ -66,6 +70,13 @@
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "typebox": "*",
+      },
+    },
+    "packages/pi-herdr-title": {
+      "name": "@gtheys/pi-herdr-title",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": "*",
       },
     },
     "packages/pi-interactive-subagents": {
@@ -365,6 +376,8 @@
     "@gtheys/pi-desktop-notify": ["@gtheys/pi-desktop-notify@workspace:packages/pi-desktop-notify"],
 
     "@gtheys/pi-fastcontext": ["@gtheys/pi-fastcontext@workspace:packages/pi-fastcontext"],
+
+    "@gtheys/pi-herdr-title": ["@gtheys/pi-herdr-title@workspace:packages/pi-herdr-title"],
 
     "@gtheys/pi-interactive-subagents": ["@gtheys/pi-interactive-subagents@workspace:packages/pi-interactive-subagents"],
 
