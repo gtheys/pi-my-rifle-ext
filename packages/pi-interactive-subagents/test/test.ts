@@ -56,6 +56,7 @@ import {
   parseStatusConfig,
 } from '../pi-extension/subagents/status.ts'
 import {
+  exitSidecarPayload,
   findLatestAssistantError,
   shouldAutoExitOnAgentEnd,
   shouldMarkUserTookOver,
@@ -1530,6 +1531,30 @@ describe('subagent-done.ts', () => {
     it('returns null when messages is undefined or empty', () => {
       assert.equal(findLatestAssistantError(undefined), null)
       assert.equal(findLatestAssistantError([]), null)
+    })
+  })
+
+  describe('exitSidecarPayload', () => {
+    // Regression: clean auto-exits must write a {type:'done'} sidecar.
+    // Previously only errors wrote one, so completion detection relied on
+    // scraping the pane's last 5 visible rows — the post-exit prompt pushed
+    // the __SUBAGENT_DONE_ sentinel out of that window and the parent was
+    // never woken.
+    it('writes done for a clean completion', () => {
+      assert.deepEqual(
+        exitSidecarPayload([{ role: 'assistant', stopReason: 'stop' }]),
+        { type: 'done' },
+      )
+      assert.deepEqual(exitSidecarPayload(undefined), { type: 'done' })
+    })
+
+    it('writes error detail for stopReason=error turns', () => {
+      assert.deepEqual(
+        exitSidecarPayload([
+          { role: 'assistant', stopReason: 'error', errorMessage: '529' },
+        ]),
+        { type: 'error', errorMessage: '529', stopReason: 'error' },
+      )
     })
   })
 })

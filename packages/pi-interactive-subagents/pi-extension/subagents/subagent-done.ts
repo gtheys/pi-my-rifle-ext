@@ -4,7 +4,7 @@
  * - Provides a `subagent_done` tool for autonomous agents to self-terminate
  */
 
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent'
 import { Box, Text } from '@mariozechner/pi-tui'
 import { Type } from '@sinclair/typebox'
@@ -41,6 +41,26 @@ export function shouldAutoExitOnAgentEnd(
 export interface SubagentErrorInfo {
   errorMessage: string
   stopReason: 'error'
+}
+
+/**
+ * Payload the auto-exit path should write to the `.exit` sidecar: `{type:'error'}`
+ * when the turn ended with stopReason=error, `{type:'done'}` otherwise.
+ *
+ * AIDEV-NOTE: clean auto-exits previously wrote NO sidecar, so the parent's
+ * only completion signal was scraping the pane's last 5 visible rows for the
+ * `__SUBAGENT_DONE_` sentinel. The post-exit shell prompt (time report +
+ * multi-line prompt, more when lines wrap) pushes the sentinel out of that
+ * window and the parent never wakes. Always write the sidecar.
+ */
+export function exitSidecarPayload(
+  messages: any[] | undefined,
+):
+  | { type: 'error'; errorMessage: string; stopReason: 'error' }
+  | { type: 'done' } {
+  const errorInfo = findLatestAssistantError(messages)
+  if (errorInfo) return { type: 'error', ...errorInfo }
+  return { type: 'done' }
 }
 
 /**
@@ -190,23 +210,20 @@ export default function (pi: ExtensionAPI) {
       autoExit && shouldAutoExitOnAgentEnd(userTookOver, messages)
 
     if (shouldExit) {
-      // Surface stopReason: "error" turns (auto-retry exhausted, provider
-      // overload, etc.) to the parent via the .exit sidecar so the watcher
-      // can report a clear failure with the underlying error message.
-      // Without this the parent would only see exit code 0 and a stale
-      // assistant message, mistaking the crash for a successful completion.
-      const errorInfo = findLatestAssistantError(messages)
+      // Surface the exit via the `.exit` sidecar so the parent's pollForExit
+      // fast path fires for clean completions too — not just errors or explicit
+      // subagent_done calls. Without this the parent depends on the fragile
+      // screen-sentinel scrape (see exitSidecarPayload note).
       const sessionFile = process.env.PI_SUBAGENT_SESSION
-      if (errorInfo && sessionFile) {
+      if (sessionFile) {
         try {
-          writeFileSync(
-            `${sessionFile}.exit`,
-            JSON.stringify({
-              type: 'error',
-              errorMessage: errorInfo.errorMessage,
-              stopReason: errorInfo.stopReason,
-            }),
-          )
+          const payload = exitSidecarPayload(messages)
+          // Never overwrite an existing sidecar — subagent_done/caller_ping may
+          // have already written their own payload before shutdown.
+          const exitFile = `${sessionFile}.exit`
+          if (payload.type === 'error' || !existsSync(exitFile)) {
+            writeFileSync(exitFile, JSON.stringify(payload))
+          }
         } catch {
           // Best effort — even without the sidecar, watcher's session-file
           // fallback can still recover the errorMessage.

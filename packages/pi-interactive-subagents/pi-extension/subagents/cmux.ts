@@ -1640,7 +1640,10 @@ export async function pollForExit(
 
     // Slow path: read terminal screen for sentinel (crash detection)
     try {
-      const screen = await readScreenAsync(surface, 5)
+      // ponytail: 30-row window — 5 was too tight; post-exit shell prompt
+      // (time report + multi-line prompt + wraps) can push the sentinel past 5
+      // rows and the watcher never fires. Sidecar is the primary path now.
+      const screen = await readScreenAsync(surface, 30)
       const match = screen.match(/__SUBAGENT_DONE_(\d+)__/)
       if (match) {
         return { reason: 'sentinel', exitCode: parseInt(match[1], 10) }
