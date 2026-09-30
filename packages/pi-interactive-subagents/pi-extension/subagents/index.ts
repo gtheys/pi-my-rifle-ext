@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -1110,6 +1111,17 @@ function startWidgetRefresh() {
  *
  * Call watchSubagent() on the returned object to observe completion.
  */
+/**
+ * Wrapper suffix appended to every subagent launch command. Captures the
+ * process exit code, keeps the legacy screen sentinel echo (last-resort
+ * fallback when even the wrapper's redirect is unreachable), and mirrors the
+ * exit code into `<sessionFile>.code` so the parent detects hard crashes
+ * (SIGKILL/OOM) that never write the in-process `.exit` sidecar.
+ */
+export function crashCodeSuffix(codeFile: string): string {
+  return `; __rc=$?; echo "__SUBAGENT_DONE_\${__rc}__"; echo "\$__rc" > ${shellEscape(codeFile)}`
+}
+
 async function launchSubagent(
   params: SubagentInput,
   ctx: ExtensionContext,
@@ -1233,7 +1245,9 @@ async function launchSubagent(
     cmdParts.push(shellEscape(params.task))
 
     const cdPrefix = effectiveCwd ? `cd ${shellEscape(effectiveCwd)} && ` : ''
-    const command = `${cdPrefix}${cmdParts.join(' ')}; echo '__SUBAGENT_DONE_'$?'__'`
+    const command = `${cdPrefix}${cmdParts.join(' ')}${crashCodeSuffix(
+      `${subagentSessionFile}.code`,
+    )}`
 
     const launchScriptName = `${
       (params.name || 'subagent')
@@ -1404,7 +1418,7 @@ async function launchSubagent(
   const cdPrefix = effectiveCwd ? `cd ${shellEscape(effectiveCwd)} && ` : ''
 
   const piCommand = cdPrefix + envPrefix + parts.join(' ')
-  const command = `${piCommand}; echo '__SUBAGENT_DONE_'$?'__'`
+  const command = piCommand + crashCodeSuffix(`${subagentSessionFile}.code`)
   const launchScriptName = `${
     (params.name || 'subagent')
       .toLowerCase()
@@ -2236,7 +2250,14 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
         const resumeEnvPrefix = `${resumeEnvParts.join(' ')} `
 
-        const command = `${resumeEnvPrefix}${parts.join(' ')}; echo '__SUBAGENT_DONE_'$?'__'`
+        // Resume reuses the original session file path — clear stale completion
+        // markers from the previous run so the watcher doesn't fire instantly.
+        rmSync(`${params.sessionPath}.exit`, { force: true })
+        rmSync(`${params.sessionPath}.code`, { force: true })
+
+        const command = `${resumeEnvPrefix}${parts.join(' ')}${crashCodeSuffix(
+          `${params.sessionPath}.code`,
+        )}`
         const launchScriptFile = join(
           artifactDir,
           'subagent-scripts',

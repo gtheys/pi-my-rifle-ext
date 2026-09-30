@@ -33,6 +33,9 @@ import {
   shellEscape,
 } from '../pi-extension/subagents/cmux.ts'
 import * as subagentsModule from '../pi-extension/subagents/index.ts'
+
+const { crashCodeSuffix } = subagentsModule
+
 import {
   appendBranchSummary,
   copySessionFile,
@@ -1556,6 +1559,44 @@ describe('subagent-done.ts', () => {
         { type: 'error', errorMessage: '529', stopReason: 'error' },
       )
     })
+  })
+})
+
+describe('crashCodeSuffix', () => {
+  // The wrapper shell runs after the subagent process dies; this suffix is
+  // what turns that into a filesystem-based crash signal for the parent.
+  it('captures rc once, echoes sentinel, and redirects rc to the code file', () => {
+    const suffix = crashCodeSuffix('/tmp/x/agent.code')
+    assert.ok(suffix.includes('__rc=$?'))
+    assert.ok(suffix.includes('"__SUBAGENT_DONE_${__rc}__"'))
+    assert.ok(suffix.includes("> '/tmp/x/agent.code'"))
+  })
+
+  it('reuses the captured rc — $? after the first echo would be 0', () => {
+    const suffix = crashCodeSuffix('/tmp/x/agent.code')
+    const captureIdx = suffix.indexOf('__rc=$?')
+    const sentinelIdx = suffix.indexOf('__SUBAGENT_DONE_')
+    const redirectVarIdx = suffix.indexOf('"$__rc"')
+    const fileIdx = suffix.indexOf("> '/tmp/x/agent.code'")
+    assert.ok(
+      captureIdx < sentinelIdx &&
+        sentinelIdx < redirectVarIdx &&
+        redirectVarIdx < fileIdx,
+      `unexpected suffix: ${suffix}`,
+    )
+  })
+})
+
+describe('parseExitCodeFile', () => {
+  const { parseExitCodeFile } = __pollForExitTest__
+  it('parses a valid exit code', () => {
+    assert.equal(parseExitCodeFile('137'), 137)
+    assert.equal(parseExitCodeFile(' 0\n'), 0)
+  })
+
+  it('treats garbage as a crash (1), never success', () => {
+    assert.equal(parseExitCodeFile('garbage'), 1)
+    assert.equal(parseExitCodeFile(''), 1)
   })
 })
 

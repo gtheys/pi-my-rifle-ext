@@ -1593,7 +1593,18 @@ function interpretExitSidecar(data: any): PollResult {
   return { reason: 'done', exitCode: 0 }
 }
 
-export const __pollForExitTest__ = { interpretExitSidecar }
+export const __pollForExitTest__ = { interpretExitSidecar, parseExitCodeFile }
+
+/**
+ * Parse the raw contents of a `<sessionFile>.code` file (written by the
+ * wrapper shell after the subagent process dies). Returns 1 for garbage so a
+ * corrupted write still reads as a crash, never as success.
+ */
+export function parseExitCodeFile(raw: string): number {
+  const parsed = parseInt(raw.trim(), 10)
+  if (Number.isNaN(parsed)) return 1
+  return parsed
+}
 
 /**
  * Poll until the subagent exits. Checks for a `.exit` sidecar file first
@@ -1634,6 +1645,21 @@ export async function pollForExit(
       try {
         if (existsSync(options.sentinelFile)) {
           return { reason: 'sentinel', exitCode: 0 }
+        }
+      } catch {}
+    }
+
+    // Fast path 2: wrapper shell writes `<sessionFile>.code` after the
+    // subagent process dies — catches hard crashes (SIGKILL/OOM) where the
+    // in-process `.exit` sidecar never gets written. Replaces dependence on
+    // screen-scraping the sentinel out of the pane viewport.
+    if (options.sessionFile) {
+      try {
+        const codeFile = `${options.sessionFile}.code`
+        if (existsSync(codeFile)) {
+          const exitCode = parseExitCodeFile(readFileSync(codeFile, 'utf8'))
+          rmSync(codeFile, { force: true })
+          return { reason: 'sentinel', exitCode }
         }
       } catch {}
     }
