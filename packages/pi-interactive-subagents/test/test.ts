@@ -1816,6 +1816,102 @@ describe('intercom bridge env', () => {
   })
 })
 
+describe('intercom result delivery', () => {
+  function fakeBus(
+    autoAck?:
+      | ((payload: any) => { requestId?: string; delivered?: boolean } | null)
+      | null,
+  ) {
+    const handlers = new Map<string, Array<(payload: unknown) => void>>()
+    return {
+      on(event: string, handler: (payload: unknown) => void) {
+        const list = handlers.get(event) ?? []
+        list.push(handler)
+        handlers.set(event, list)
+        return () => {
+          const current = handlers.get(event) ?? []
+          handlers.set(
+            event,
+            current.filter((h) => h !== handler),
+          )
+        }
+      },
+      emit(event: string, payload: unknown) {
+        for (const handler of [...(handlers.get(event) ?? [])]) handler(payload)
+        if (event === 'subagent:result-intercom' && autoAck) {
+          const ack = autoAck(payload as any)
+          if (ack) {
+            queueMicrotask(() => {
+              for (const handler of [
+                ...(handlers.get('subagent:result-intercom-delivery') ?? []),
+              ])
+                handler(ack)
+            })
+          }
+        }
+      },
+    }
+  }
+
+  it('returns false without an event bus or target', async () => {
+    assert.equal(
+      await subagentsModule.deliverResultViaIntercom(undefined, 't', 'm'),
+      false,
+    )
+    assert.equal(
+      await subagentsModule.deliverResultViaIntercom(null, 't', 'm'),
+      false,
+    )
+    const bus = fakeBus()
+    assert.equal(
+      await subagentsModule.deliverResultViaIntercom(bus, null, 'm'),
+      false,
+    )
+  })
+
+  it('resolves true when pi-intercom acks delivery', async () => {
+    const bus = fakeBus((payload) => ({
+      requestId: payload.requestId,
+      delivered: true,
+    }))
+    assert.equal(
+      await subagentsModule.deliverResultViaIntercom(
+        bus,
+        'subagent-chat-x',
+        'result text',
+      ),
+      true,
+    )
+  })
+
+  it('resolves false when pi-intercom acks failure', async () => {
+    const bus = fakeBus((payload) => ({
+      requestId: payload.requestId,
+      delivered: false,
+    }))
+    assert.equal(
+      await subagentsModule.deliverResultViaIntercom(
+        bus,
+        'subagent-chat-x',
+        'result text',
+      ),
+      false,
+    )
+  })
+
+  it('times out (false) when nobody listens — intercom absent', async () => {
+    const bus = fakeBus(null)
+    assert.equal(
+      await subagentsModule.deliverResultViaIntercom(
+        bus,
+        'subagent-chat-x',
+        'result text',
+      ),
+      false,
+    )
+  })
+})
+
 describe('commands', () => {
   it('/iterate always emits a full-context fork tool call', () => {
     const { api, registeredCommands, sentUserMessages } =

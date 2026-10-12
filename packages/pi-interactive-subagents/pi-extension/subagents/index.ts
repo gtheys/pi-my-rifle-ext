@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import {
   copyFileSync,
   existsSync,
@@ -685,6 +686,70 @@ export function buildIntercomBridgeEnv(params: {
     `PI_SUBAGENT_INTERCOM_SESSION_NAME=${shellEscape(params.name)}`,
   ]
   return parts
+}
+
+// AIDEV-NOTE: event names coupled to pi-intercom's subagent bridge
+// (index.ts SUBAGENT_RESULT_INTERCOM_EVENT / _DELIVERY_EVENT). If pi-intercom
+// renames them, delivery silently falls back to the steer path — benign, but
+// the formatted injection is lost. Pattern lifted from pi-subagents'
+// deliverSubagentIntercomMessageEvent (500ms ack timeout).
+const INTERCOM_RESULT_EVENT = 'subagent:result-intercom'
+const INTERCOM_RESULT_DELIVERY_EVENT = 'subagent:result-intercom-delivery'
+const INTERCOM_DELIVERY_ACK_MS = 500
+
+interface EventBusLike {
+  on(event: string, handler: (payload: unknown) => void): () => void
+  emit(event: string, payload: unknown): void
+}
+
+/**
+ * Deliver a subagent result via pi-intercom's parent-local injection: we emit
+ * `subagent:result-intercom` on OUR OWN session event bus with `to` set to this
+ * session's intercom target. pi-intercom (same session) sees the target is the
+ * current session and injects the message with its idle-wake-safe turn trigger
+ * — avoiding pi#5581 (sendMessage+triggerTurn drops before_agent_start
+ * sections) and racing the shared idle-wake reservation. Returns true when
+ * pi-intercom acknowledged delivery; false means "not installed / not ready /
+ * delivery failed" and the caller must fall back to its own steer message.
+ */
+export async function deliverResultViaIntercom(
+  events: EventBusLike | undefined | null,
+  to: string | null,
+  message: string,
+): Promise<boolean> {
+  if (
+    !events ||
+    typeof events.on !== 'function' ||
+    typeof events.emit !== 'function'
+  ) {
+    return false
+  }
+  if (!to) return false
+  const requestId = randomUUID()
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    let unsubscribe: (() => void) | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (delivered: boolean) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      unsubscribe?.()
+      resolve(delivered)
+    }
+    unsubscribe = events.on(INTERCOM_RESULT_DELIVERY_EVENT, (data) => {
+      if (!data || typeof data !== 'object') return
+      const delivery = data as { requestId?: unknown; delivered?: unknown }
+      if (delivery.requestId !== requestId) return
+      finish(delivery.delivered === true)
+    })
+    timer = setTimeout(() => finish(false), INTERCOM_DELIVERY_ACK_MS)
+    try {
+      events.emit(INTERCOM_RESULT_EVENT, { to, message, requestId })
+    } catch {
+      finish(false)
+    }
+  })
 }
 
 /** Interval timer for widget re-renders. */
@@ -1746,7 +1811,7 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
   const watcherAbort = new AbortController()
   running.abortController = watcherAbort
   watchSubagent(running, watcherAbort.signal)
-    .then((result) => {
+    .then(async (result) => {
       if (result.error === RELOAD_SENTINEL) return // new module delivers
       // AIDEV-NOTE: pi/latestCtx can be stale after session replacement —
       // delivery must never crash the host.
@@ -1795,10 +1860,29 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
 
         const presentation = resolveResultPresentation(result, running.name)
 
+        // AIDEV-NOTE: intercom-first delivery. pi-intercom (same session)
+        // injects the result with its idle-wake-safe turn trigger; our own
+        // subagent_result message then must NOT trigger a second turn — it
+        // stays in history/transcript with the structured details. On ack
+        // failure (not installed / broker down) fall back to the old
+        // steer-triggered delivery so behavior is unchanged without intercom.
+        // Receipt pattern (compact content once intercom carries the full
+        // text) mirrors pi-subagents' formatSubagentResultReceipt. Wake relies
+        // on pi-intercom's default inboundTrigger — disabling it in intercom
+        // config also disables subagent-result wake.
+        const intercomEvents = (pi as { events?: EventBusLike }).events
+        const intercomDelivered = await deliverResultViaIntercom(
+          intercomEvents,
+          parentIntercomTarget(),
+          presentation,
+        )
+
         pi.sendMessage(
           {
             customType: 'subagent_result',
-            content: presentation,
+            content: intercomDelivered
+              ? `Sub-agent "${running.name}" result delivered via pi-intercom injection (full text in the intercom message above).`
+              : presentation,
             display: true,
             details: {
               name: running.name,
@@ -1813,9 +1897,13 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
               ...(result.claudeSessionId
                 ? { claudeSessionId: result.claudeSessionId }
                 : {}),
+              ...(intercomDelivered ? { intercomDelivered: true } : {}),
             },
           },
-          { triggerTurn: true, deliverAs: 'steer' },
+          {
+            triggerTurn: !intercomDelivered,
+            deliverAs: 'steer',
+          },
         )
       } catch {}
     })

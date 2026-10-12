@@ -161,7 +161,11 @@ Every exit signal in this extension (the `.exit` sidecar, the wrapper exit-code 
 
 #### pi-intercom bridge (optional)
 
-If [pi-intercom](https://github.com/nicobailon/pi-intercom) is installed in the same agent dir, spawned subagents additionally get its child-only `contact_supervisor` tool (blocking `need_decision`, structured `interview_request`, and non-blocking `progress_update`) routed back to the parent session. This extension sets the bridge environment variables at spawn and resume time; without pi-intercom they are inert and nothing changes. Exit detection is never routed through intercom — completion stays on the sidecar/sentinel chain (the same architecture [pi-subagents](https://github.com/nicobailon/pi-subagents) settled on).
+If [pi-intercom](https://github.com/nicobailon/pi-intercom) is installed in the same agent dir, spawned subagents additionally get its child-only `contact_supervisor` tool (blocking `need_decision`, structured `interview_request`, and non-blocking `progress_update`) routed back to the parent session. This extension sets the bridge environment variables at spawn and resume time; without pi-intercom they are inert and nothing changes.
+
+Subagent results are also delivered through pi-intercom's parent-local injection when present: the full result text arrives as an intercom message with intercom's idle-wake-safe turn trigger, and the transcript keeps a compact receipt with the structured details. If delivery is not acknowledged within 500ms (pi-intercom absent, broker down), the previous steer-triggered delivery runs unchanged. Wake on completion relies on pi-intercom's default `inboundTrigger` — turning that off also turns off subagent-result wake.
+
+Exit detection is never routed through intercom — completion stays on the sidecar/sentinel chain (the same architecture [pi-subagents](https://github.com/nicobailon/pi-subagents) settled on).
 
 ---
 
