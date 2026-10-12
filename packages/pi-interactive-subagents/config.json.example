@@ -1,5 +1,8 @@
 {
   "status": {
     "enabled": true
+  },
+  "watchdog": {
+    "stallTimeoutMinutes": 15
   }
 }

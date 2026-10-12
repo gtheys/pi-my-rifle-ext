@@ -32,6 +32,13 @@ export interface StatusConfig {
   lineLimit: number
 }
 
+export interface WatchdogConfig {
+  /** Kill stalled subagents after this many minutes. 0 disables the watchdog. */
+  stallTimeoutMinutes: number
+}
+
+export const DEFAULT_WATCHDOG_STALL_TIMEOUT_MINUTES = 15
+
 export type StatusObservation =
   | {
       snapshot: 'present'
@@ -179,6 +186,27 @@ export function parseStatusConfig(
   }
 }
 
+export function parseWatchdogConfig(
+  rawConfig: unknown,
+  source = 'config.json',
+): WatchdogConfig {
+  const config = requireObject(rawConfig, source, 'root')
+  // Optional section — absent means defaults.
+  if (config.watchdog == null) {
+    return { stallTimeoutMinutes: DEFAULT_WATCHDOG_STALL_TIMEOUT_MINUTES }
+  }
+  const watchdog = requireObject(config.watchdog, source, 'watchdog')
+  rejectUnsupportedKeys(watchdog, ['stallTimeoutMinutes'], source, 'watchdog')
+  const raw = watchdog.stallTimeoutMinutes
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+    invalidStatusConfig(
+      source,
+      'watchdog.stallTimeoutMinutes must be a number >= 0',
+    )
+  }
+  return { stallTimeoutMinutes: raw }
+}
+
 function readStatusConfigFile(
   configPath: string,
   examplePath: string,
@@ -227,6 +255,26 @@ export function loadStatusConfig(
   }
 
   return parseStatusConfig(parsed, sourcePath)
+}
+
+export function loadWatchdogConfig(
+  configPath = DEFAULT_STATUS_CONFIG_PATH,
+  examplePath = STATUS_CONFIG_EXAMPLE_PATH,
+): WatchdogConfig {
+  const { sourcePath, rawConfig } = readStatusConfigFile(
+    configPath,
+    examplePath,
+  )
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawConfig) as unknown
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`Invalid JSON in subagent config ${sourcePath}: ${detail}`)
+  }
+
+  return parseWatchdogConfig(parsed, sourcePath)
 }
 
 export function formatElapsedDuration(ms: number): string {

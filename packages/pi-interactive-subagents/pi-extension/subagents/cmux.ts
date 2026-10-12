@@ -1561,13 +1561,15 @@ export function closeSurface(surface: string): void {
 
 export interface PollResult {
   /** How the subagent exited */
-  reason: 'done' | 'ping' | 'sentinel' | 'error'
+  reason: 'done' | 'ping' | 'sentinel' | 'error' | 'timeout'
   /** Shell exit code (from sentinel). 0 for file-based exits. */
   exitCode: number
   /** Ping data if reason is "ping" */
   ping?: { name: string; message: string }
   /** Error message if reason is "error" (auto-retry exhausted, provider overload, etc.) */
   errorMessage?: string
+  /** How long the subagent was stalled when the watchdog killed it (reason "timeout") */
+  stalledForMs?: number
 }
 
 /**
@@ -1610,6 +1612,15 @@ export function parseExitCodeFile(raw: string): number {
  * Poll until the subagent exits. Checks for a `.exit` sidecar file first
  * (written by subagent_done / caller_ping), falling back to the terminal
  * sentinel for crash detection.
+ *
+ * AIDEV-NOTE: watchdog — the exit-signal chain (sidecar, wrapper .code file,
+ * screen sentinel) all depend on the child either exiting or writing files.
+ * A wedged child (provider stall, failed ctx.shutdown, extension not loaded)
+ * produces NO signal at all and this loop previously spun forever. The
+ * watchdog arms only after the child's activity file exists (proof the child
+ * reports liveness), then kills the run when its mtime goes stale beyond
+ * stallTimeoutMs. Children that never write an activity file (claude CLI,
+ * broken extension load) keep the old behavior — no false kills.
  */
 export async function pollForExit(
   surface: string,
@@ -1618,10 +1629,16 @@ export async function pollForExit(
     interval: number
     sessionFile?: string
     sentinelFile?: string
+    /** Activity liveness file written by the child's recorder. */
+    activityFile?: string
+    /** Kill the run after this many ms without activity-file updates. 0 disables. */
+    stallTimeoutMs?: number
     onTick?: (elapsed: number) => void
   },
 ): Promise<PollResult> {
   const start = Date.now()
+  let activitySeen = false
+  let lastActivityAt = 0
 
   for (;;) {
     if (signal.aborted) {
@@ -1685,6 +1702,37 @@ export async function pollForExit(
             return interpretExitSidecar(data)
           }
         } catch {}
+      }
+    }
+
+    // Watchdog: arm once the child has proven it reports liveness, then kill
+    // the run when the activity file goes stale. See AIDEV-NOTE above.
+    if (
+      options.activityFile &&
+      options.stallTimeoutMs &&
+      options.stallTimeoutMs > 0
+    ) {
+      try {
+        const stat = statSync(options.activityFile)
+        if (!activitySeen) {
+          activitySeen = true
+          lastActivityAt = stat.mtimeMs
+        } else {
+          lastActivityAt = Math.max(lastActivityAt, stat.mtimeMs)
+        }
+      } catch {
+        // ENOENT while already armed: keep the last known mtime. ENOENT before
+        // arming: child never reported — watchdog stays disarmed.
+      }
+      if (
+        activitySeen &&
+        Date.now() - lastActivityAt > options.stallTimeoutMs
+      ) {
+        return {
+          reason: 'timeout',
+          exitCode: 1,
+          stalledForMs: Date.now() - lastActivityAt,
+        }
       }
     }
 

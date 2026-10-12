@@ -5,10 +5,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { visibleWidth } from '@mariozechner/pi-tui'
@@ -27,6 +28,7 @@ import {
   parseCmuxJson,
   parseCmuxPaneRefForSurface,
   parseCmuxPaneRefForSurfaceFromJson,
+  pollForExit,
   predictZellijSplitDirection,
   selectZellijPlacement,
   selectZellijStackPlacement,
@@ -50,13 +52,16 @@ import {
   capStatusLines,
   classifyStatus,
   createStatusState,
+  DEFAULT_WATCHDOG_STALL_TIMEOUT_MINUTES,
   forceStatusAfterInterrupt,
   formatStatusAggregate,
   formatStatusLine,
   formatTransitionLine,
   loadStatusConfig,
+  loadWatchdogConfig,
   observeStatus,
   parseStatusConfig,
+  parseWatchdogConfig,
 } from '../pi-extension/subagents/status.ts'
 import {
   exitSidecarPayload,
@@ -1266,7 +1271,7 @@ describe('subagent discovery', () => {
   it('buildSubagentToolAllowlist preserves requested tools and adds child control tools', () => {
     assert.equal(
       testApi.buildSubagentToolAllowlist('read,bash,web_search'),
-      'read,bash,web_search,caller_ping,subagent_done',
+      'read,bash,web_search,caller_ping,subagent_done,contact_supervisor,intercom',
     )
   })
 
@@ -1655,6 +1660,162 @@ describe('cmux.ts interpretExitSidecar', () => {
     })
   })
 })
+describe('cmux.ts pollForExit watchdog', () => {
+  it('times out when the activity file goes stale beyond stallTimeoutMs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'watchdog-'))
+    const activityFile = join(dir, 'activity.json')
+    writeFileSync(activityFile, '{}')
+    const stale = new Date(Date.now() - 120_000)
+    utimesSync(activityFile, stale, stale)
+
+    const result = await pollForExit(
+      'watchdog-test-surface',
+      new AbortController().signal,
+      {
+        interval: 10,
+        activityFile,
+        stallTimeoutMs: 60_000,
+      },
+    )
+
+    assert.equal(result.reason, 'timeout')
+    assert.equal(result.exitCode, 1)
+    assert.ok((result.stalledForMs ?? 0) >= 60_000)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('stays disarmed when the child never wrote an activity file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'watchdog-'))
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 150)
+
+    await assert.rejects(
+      pollForExit('watchdog-test-surface', controller.signal, {
+        interval: 10,
+        activityFile: join(dir, 'never-created.json'),
+        stallTimeoutMs: 1,
+      }),
+      /Abort/,
+    )
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('does not fire while activity is fresh', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'watchdog-'))
+    const activityFile = join(dir, 'activity.json')
+    writeFileSync(activityFile, '{}')
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 150)
+
+    await assert.rejects(
+      pollForExit('watchdog-test-surface', controller.signal, {
+        interval: 10,
+        activityFile,
+        stallTimeoutMs: 60_000,
+      }),
+      /Abort/,
+    )
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('still returns exit signals ahead of the watchdog', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'watchdog-'))
+    const sessionFile = join(dir, 'session.jsonl')
+    const activityFile = join(dir, 'activity.json')
+    writeFileSync(activityFile, '{}')
+    const stale = new Date(Date.now() - 120_000)
+    utimesSync(activityFile, stale, stale)
+    writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: 'done' }))
+
+    const result = await pollForExit(
+      'watchdog-test-surface',
+      new AbortController().signal,
+      {
+        interval: 10,
+        sessionFile,
+        activityFile,
+        stallTimeoutMs: 60_000,
+      },
+    )
+
+    assert.equal(result.reason, 'done')
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('status.ts watchdog config', () => {
+  it('defaults when the watchdog section is absent', () => {
+    assert.deepEqual(parseWatchdogConfig({ status: { enabled: true } }), {
+      stallTimeoutMinutes: DEFAULT_WATCHDOG_STALL_TIMEOUT_MINUTES,
+    })
+  })
+
+  it('parses stallTimeoutMinutes', () => {
+    assert.deepEqual(
+      parseWatchdogConfig({
+        status: { enabled: true },
+        watchdog: { stallTimeoutMinutes: 5 },
+      }),
+      { stallTimeoutMinutes: 5 },
+    )
+  })
+
+  it('accepts 0 (disabled)', () => {
+    assert.deepEqual(
+      parseWatchdogConfig({ watchdog: { stallTimeoutMinutes: 0 } }),
+      { stallTimeoutMinutes: 0 },
+    )
+  })
+
+  it('rejects invalid values', () => {
+    assert.throws(() =>
+      parseWatchdogConfig({ watchdog: { stallTimeoutMinutes: -1 } }),
+    )
+    assert.throws(() =>
+      parseWatchdogConfig({ watchdog: { stallTimeoutMinutes: 'ten' } }),
+    )
+    assert.throws(() => parseWatchdogConfig({ watchdog: { bogus: 1 } }))
+  })
+
+  it('loads from the checked-in example config', () => {
+    const examplePath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      '../config.json.example',
+    )
+    const config = loadWatchdogConfig(examplePath)
+    assert.equal(config.stallTimeoutMinutes, 15)
+  })
+})
+
+describe('intercom bridge env', () => {
+  it('returns no env parts without an orchestrator target', () => {
+    assert.deepEqual(
+      subagentsModule.buildIntercomBridgeEnv({
+        orchestratorTarget: null,
+        runId: 'abc',
+        name: 'Worker',
+      }),
+      [],
+    )
+  })
+
+  it('emits all contact_supervisor bridge variables', () => {
+    const parts = subagentsModule.buildIntercomBridgeEnv({
+      orchestratorTarget: 'subagent-chat-1a2b3c4d-5e6f-7a9b',
+      runId: 'run-42',
+      agent: 'worker',
+      name: 'My Worker',
+    })
+    assert.deepEqual(parts, [
+      "PI_SUBAGENT_ORCHESTRATOR_TARGET='subagent-chat-1a2b3c4d-5e6f-7a9b'",
+      "PI_SUBAGENT_RUN_ID='run-42'",
+      "PI_SUBAGENT_CHILD_AGENT='worker'",
+      'PI_SUBAGENT_CHILD_INDEX=0',
+      "PI_SUBAGENT_INTERCOM_SESSION_NAME='My Worker'",
+    ])
+  })
+})
+
 describe('commands', () => {
   it('/iterate always emits a full-context fork tool call', () => {
     const { api, registeredCommands, sentUserMessages } =

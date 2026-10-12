@@ -142,11 +142,26 @@ cp config.json.example config.json
 {
   "status": {
     "enabled": true
+  },
+  "watchdog": {
+    "stallTimeoutMinutes": 15
   }
 }
 ```
 
 `config.json` is gitignored so local overrides don't get committed.
+
+#### Stall watchdog
+
+Every exit signal in this extension (the `.exit` sidecar, the wrapper exit-code file, the screen sentinel) depends on the child either exiting or writing something. A child that is alive but wedged — provider stall, a failed shutdown, an extension that never loaded — produces no signal at all, and the parent would previously wait forever. The watchdog closes that gap:
+
+- After a subagent's activity file has appeared at least once (proof the child reports liveness), the parent kills the pane when its activity goes stale beyond `watchdog.stallTimeoutMinutes` (default 15, `0` disables).
+- The result delivered to the parent is marked as a watchdog timeout with the best-effort last output; resume with `subagent_resume` if the work matters.
+- Interactive (user-driven) subagents and Claude CLI subagents are exempt — they have no activity recorder or are driven by a human in the pane.
+
+#### pi-intercom bridge (optional)
+
+If [pi-intercom](https://github.com/nicobailon/pi-intercom) is installed in the same agent dir, spawned subagents additionally get its child-only `contact_supervisor` tool (blocking `need_decision`, structured `interview_request`, and non-blocking `progress_update`) routed back to the parent session. This extension sets the bridge environment variables at spawn and resume time; without pi-intercom they are inert and nothing changes. Exit detection is never routed through intercom — completion stays on the sidecar/sentinel chain (the same architecture [pi-subagents](https://github.com/nicobailon/pi-subagents) settled on).
 
 ---
 

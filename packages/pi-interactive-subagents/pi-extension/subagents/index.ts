@@ -49,10 +49,12 @@ import {
   capStatusLines,
   classifyStatus,
   createStatusState,
+  DEFAULT_WATCHDOG_STALL_TIMEOUT_MINUTES,
   forceStatusAfterInterrupt,
   formatStatusAggregate,
   formatTransitionLine,
   loadStatusConfig,
+  loadWatchdogConfig,
   observeStatus,
   type StatusSnapshot,
   type SubagentStatusState,
@@ -514,6 +516,18 @@ function getArtifactDir(sessionDir: string, sessionId: string): string {
 }
 
 const statusConfig = loadStatusConfig()
+// AIDEV-NOTE: watchdog — kills pi subagents whose activity file goes stale
+// beyond this threshold, closing the "wedged child never signals" hang that
+// no exit-chain fallback (sidecar / .code / screen sentinel) can catch.
+// Interactive subagents and claude CLI children are exempt (no activity
+// recorder / user-driven). See pollForExit in cmux.ts.
+const watchdogConfig = (() => {
+  try {
+    return loadWatchdogConfig()
+  } catch {
+    return { stallTimeoutMinutes: DEFAULT_WATCHDOG_STALL_TIMEOUT_MINUTES }
+  }
+})()
 
 function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
   if (snapshot.kind === 'starting') return ' starting… '
@@ -630,6 +644,48 @@ export interface RunningSubagent {
 /** Latest ExtensionContext from session_start, used for widget updates. */
 let latestCtx: ExtensionContext | null = null
 let latestPi: ExtensionAPI | null = null
+/** Parent session id captured at session_start — intercom bridge targeting. */
+let latestParentSessionId: string | null = null
+
+/**
+ * Intercom target for THIS (parent) session, as seen by pi-intercom peers.
+ * AIDEV-NOTE: mirrors pi-intercom's unnamed-session fallback alias
+ * (DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX + sessionId.slice(0, 18) — see
+ * pi-intercom resolveIntercomPresenceName). If the slice length or prefix
+ * drifts between repos, contact_supervisor in children fails with
+ * "Session not found". Lesson from nicobailon/pi-subagents intercom-bridge.ts.
+ */
+export function parentIntercomTarget(): string | null {
+  const sessionId = latestParentSessionId
+  if (!sessionId) return null
+  const normalized = sessionId.startsWith('session-')
+    ? sessionId.slice('session-'.length)
+    : sessionId
+  return `subagent-chat-${normalized.slice(0, 18)}`
+}
+
+/**
+ * Env vars that let a child's pi-intercom (if installed) register the
+ * child-only `contact_supervisor` tool pointed at this parent session.
+ * Returns [] when the parent target is unknown (pre-session_start) — the
+ * bridge is best-effort and never blocks spawning.
+ */
+export function buildIntercomBridgeEnv(params: {
+  orchestratorTarget: string | null
+  runId: string
+  agent?: string
+  name: string
+}): string[] {
+  if (!params.orchestratorTarget) return []
+  const parts = [
+    `PI_SUBAGENT_ORCHESTRATOR_TARGET=${shellEscape(params.orchestratorTarget)}`,
+    `PI_SUBAGENT_RUN_ID=${shellEscape(params.runId)}`,
+    `PI_SUBAGENT_CHILD_AGENT=${shellEscape(params.agent ?? 'subagent')}`,
+    'PI_SUBAGENT_CHILD_INDEX=0',
+    `PI_SUBAGENT_INTERCOM_SESSION_NAME=${shellEscape(params.name)}`,
+  ]
+  return parts
+}
 
 /** Interval timer for widget re-renders. */
 let widgetInterval: ReturnType<typeof setInterval> | null = null
@@ -784,7 +840,16 @@ function renderWidget() {
  * first positional message so that /skill: args land in messages[1..] and arrive
  * as standalone prompts in the child session.
  */
-const SUBAGENT_CONTROL_TOOLS = ['caller_ping', 'subagent_done'] as const
+// AIDEV-NOTE: contact_supervisor + intercom are pi-intercom's child-side
+// tools. With the --tools allowlist they'd be filtered out of children whose
+// agent frontmatter restricts tools; allowing them is inert when pi-intercom
+// is not installed (the tools simply never register).
+const SUBAGENT_CONTROL_TOOLS = [
+  'caller_ping',
+  'subagent_done',
+  'contact_supervisor',
+  'intercom',
+] as const
 
 /**
  * Build the child --tools allowlist.
@@ -1378,6 +1443,21 @@ async function launchSubagent(
   envParts.push(`PI_SUBAGENT_ID=${shellEscape(id)}`)
   envParts.push(`PI_SUBAGENT_ACTIVITY_FILE=${shellEscape(activityFile)}`)
   envParts.push(`PI_SUBAGENT_SURFACE=${shellEscape(surface)}`)
+
+  // AIDEV-NOTE: pi-intercom bridge — when pi-intercom is installed in the
+  // child's agent dir, these env vars register the child-only `contact_supervisor`
+  // tool (need_decision / interview_request / progress_update → parent via
+  // broker). Without pi-intercom the vars are inert. Learned from
+  // nicobailon/pi-subagents: intercom is the control channel, NEVER the exit
+  // detector — completion detection stays on the sidecar/sentinel chain.
+  for (const part of buildIntercomBridgeEnv({
+    orchestratorTarget: parentIntercomTarget(),
+    runId: id,
+    agent: params.agent,
+    name: params.name,
+  })) {
+    envParts.push(part)
+  }
   const envPrefix = `${envParts.join(' ')} `
 
   // Pass task and skill prompts to the sub-agent.
@@ -1509,11 +1589,29 @@ async function watchSubagent(
         interval: 1000,
         sessionFile,
         sentinelFile: running.sentinelFile,
+        // Watchdog: only for autonomous pi subagents that report activity.
+        // Interactive (user-driven) and claude CLI children are exempt.
+        activityFile: running.activityFile,
+        stallTimeoutMs: running.interactive
+          ? 0
+          : watchdogConfig.stallTimeoutMinutes * 60_000,
         onTick() {
           observeRunningSubagent(running)
         },
       },
     )
+
+    // Watchdog kill — treat as an error result, not a clean completion. The
+    // summary below is best-effort (extracted from the session file) and may
+    // be stale; the errorMessage tells the orchestrator the pane was killed.
+    if (result.reason === 'timeout') {
+      result.errorMessage =
+        `Watchdog timeout: no activity for ${Math.round(
+          (result.stalledForMs ?? 0) / 1000,
+        )}s — pane killed. ` +
+        'The summary below is the last known output and may be incomplete/stale. ' +
+        'Resume with subagent_resume if the work matters.'
+    }
 
     const elapsed = Math.floor((Date.now() - startTime) / 1000)
 
@@ -1760,6 +1858,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   }
   pi.on('session_start', (_event, ctx) => {
     latestCtx = ctx
+    latestParentSessionId = ctx.sessionManager.getSessionId()
   })
 
   // Clean up on session shutdown
@@ -2247,6 +2346,14 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         )
         if (autoExit) {
           resumeEnvParts.push(`PI_SUBAGENT_AUTO_EXIT=1`)
+        }
+        // AIDEV-NOTE: pi-intercom bridge on resume too — see spawn-site note.
+        for (const part of buildIntercomBridgeEnv({
+          orchestratorTarget: parentIntercomTarget(),
+          runId: id,
+          name,
+        })) {
+          resumeEnvParts.push(part)
         }
         const resumeEnvPrefix = `${resumeEnvParts.join(' ')} `
 
