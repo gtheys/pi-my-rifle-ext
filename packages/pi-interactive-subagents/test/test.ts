@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { Worker } from 'node:worker_threads'
 import { visibleWidth } from '@mariozechner/pi-tui'
 import {
   createSubagentActivityRecorder,
@@ -34,6 +35,17 @@ import {
   shellEscape,
 } from '../pi-extension/subagents/cmux.ts'
 import * as subagentsModule from '../pi-extension/subagents/index.ts'
+import {
+  __storeInternals__,
+  allocateSemanticRef,
+  MAX_RESULT_RECORD_BYTES,
+  parseSemanticRef,
+  type ResultRefBinding,
+  readResultRecord,
+  resolveResultRef,
+  resultRecordPath,
+  writeResultRecord,
+} from '../pi-extension/subagents/store.ts'
 
 const { crashCodeSuffix } = subagentsModule
 
@@ -3085,5 +3097,143 @@ describe('lock.ts', () => {
     assert.equal(a, b)
     assert.notEqual(a, c)
     assert.ok(a.startsWith(join(tmpdir(), 'pi-subagents', 'locks', 'lock-')))
+  })
+})
+
+describe('store.ts durable result store', () => {
+  let storeRoot: string
+
+  before(() => {
+    storeRoot = join(mkdtempSync(join(tmpdir(), 'store-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(storeRoot, { recursive: true, force: true })
+  })
+
+  it('writes and reads a result record atomically at the canonical path', () => {
+    const written = writeResultRecord(
+      {
+        childId: 'child-1',
+        name: 'scout',
+        summary: 'found three files',
+        sessionFile: '/tmp/child.jsonl',
+      },
+      storeRoot,
+    )
+    assert.ok(existsSync(written.path))
+    assert.equal(written.path, resultRecordPath(written.canonicalId, storeRoot))
+    assert.ok(written.path.startsWith(join(storeRoot, 'results', '')))
+    const record = readResultRecord(written.path)
+    assert.equal(record.canonicalId, written.canonicalId)
+    assert.equal(record.name, 'scout')
+    assert.equal(record.summary, 'found three files')
+    assert.deepEqual(record.artifactPaths, [])
+    assert.ok(record.createdAt)
+    // no tmp sibling left behind
+    assert.ok(
+      !existsSync(join(storeRoot, 'results', `.tmp-${written.canonicalId}`)),
+    )
+  })
+
+  it('rejects records above the byte ceiling (fail closed)', () => {
+    assert.throws(
+      () =>
+        writeResultRecord(
+          {
+            childId: 'child-2',
+            name: 'scout',
+            summary: 'x'.repeat(MAX_RESULT_RECORD_BYTES + 1),
+            sessionFile: null,
+          },
+          storeRoot,
+        ),
+      (err: unknown) =>
+        (err as { code?: string }).code === 'RESULT_RECORD_TOO_LARGE',
+    )
+  })
+
+  it('parses semantic refs strictly', () => {
+    assert.deepEqual(parseSemanticRef('result:scout#3'), {
+      name: 'scout',
+      n: 3,
+    })
+    assert.equal(parseSemanticRef('result:scout'), null)
+    assert.equal(parseSemanticRef('result:scout#0'), null)
+    assert.equal(parseSemanticRef('result:scout#abc'), null)
+    assert.equal(parseSemanticRef('result:sc out#1'), null)
+  })
+
+  it('sanitizes names for filesystem paths', () => {
+    assert.equal(__storeInternals__.sanitizeName('my agent'), 'my_agent')
+    assert.equal(__storeInternals__.sanitizeName('..'), '_')
+    assert.equal(__storeInternals__.sanitizeName(''), '_')
+  })
+
+  it('allocates monotonic, never-reused semantic refs per name', () => {
+    const a = allocateSemanticRef('monotonic', storeRoot)
+    const b = allocateSemanticRef('monotonic', storeRoot)
+    const other = allocateSemanticRef('other-name', storeRoot)
+    assert.match(a, /^result:monotonic#(\d+)$/)
+    assert.match(b, /^result:monotonic#(\d+)$/)
+    const nA = Number(a.split('#')[1])
+    const nB = Number(b.split('#')[1])
+    assert.ok(nB > nA)
+    assert.match(other, /^result:other-name#1$/)
+  })
+
+  it('covers concurrent allocation: two allocators get distinct n', async () => {
+    const storeUrl = new URL(
+      '../pi-extension/subagents/store.ts',
+      import.meta.url,
+    ).href
+    const workerSrc = `
+      const { parentPort, workerData } = require('node:worker_threads')
+      import(workerData.storeUrl).then((m) => {
+        const ref = m.allocateSemanticRef(workerData.name, workerData.root)
+        parentPort.postMessage(ref)
+      })
+    `
+    const refs: string[] = await Promise.all(
+      [0, 1].map(
+        (i) =>
+          new Promise<string>((resolve, reject) => {
+            const worker = new Worker(workerSrc, {
+              eval: true,
+              workerData: { name: 'racy', root: storeRoot, storeUrl },
+            })
+            worker.on('message', resolve)
+            worker.on('error', reject)
+            void i
+          }),
+      ),
+    )
+    const n1 = Number(refs[0].split('#')[1])
+    const n2 = Number(refs[1].split('#')[1])
+    assert.notEqual(n1, n2)
+    const highest = Number(allocateSemanticRef('racy', storeRoot).split('#')[1])
+    assert.ok(highest > n1 && highest > n2)
+  })
+
+  it('resolves a semantic ref to the canonical record path (hidden binding round trip)', () => {
+    const written = writeResultRecord(
+      {
+        childId: 'child-3',
+        name: 'worker',
+        summary: 'done',
+        sessionFile: null,
+      },
+      storeRoot,
+    )
+    const ref = allocateSemanticRef('worker', storeRoot, written.canonicalId)
+    const binding: ResultRefBinding = { ref, canonicalId: written.canonicalId }
+    const resolved = resolveResultRef(binding.ref, storeRoot)
+    assert.equal(resolved, written.path)
+    const record = readResultRecord(resolved as string)
+    assert.equal(record.canonicalId, binding.canonicalId)
+  })
+
+  it('fails closed on unknown or malformed ref resolution', () => {
+    assert.equal(resolveResultRef('result:never#99999', storeRoot), null)
+    assert.equal(resolveResultRef('garbage', storeRoot), null)
   })
 })

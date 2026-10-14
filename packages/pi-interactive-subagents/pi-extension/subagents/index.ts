@@ -59,6 +59,11 @@ import {
   type StatusSnapshot,
   type SubagentStatusState,
 } from './status.ts'
+import {
+  allocateSemanticRef,
+  type ResultRefBinding,
+  writeResultRecord,
+} from './store.ts'
 
 /** Absolute path to `pi-extension/subagents`. https://github.com/nodejs/node/issues/37845 */
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url))
@@ -1725,6 +1730,29 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
 
         const presentation = resolveResultPresentation(result, running.name)
 
+        // AIDEV-NOTE: persist result + reserve a semantic ref, but delivery
+        // never depends on the store — if it fails we fall back to exactly
+        // today's inline-only message (at-least-once semantics preserved).
+        let resultRef: string | undefined
+        let resultPath: string | undefined
+        let resultBinding: ResultRefBinding | undefined
+        try {
+          const written = writeResultRecord({
+            childId: running.id,
+            name: running.name,
+            summary: result.summary,
+            sessionFile: result.sessionFile ?? null,
+          })
+          const ref = allocateSemanticRef(
+            running.name,
+            undefined,
+            written.canonicalId,
+          )
+          resultRef = ref
+          resultPath = written.path
+          resultBinding = { ref, canonicalId: written.canonicalId }
+        } catch {}
+
         pi.sendMessage(
           {
             customType: 'subagent_result',
@@ -1742,6 +1770,13 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
                 : {}),
               ...(result.claudeSessionId
                 ? { claudeSessionId: result.claudeSessionId }
+                : {}),
+              ...(resultRef && resultPath && resultBinding
+                ? {
+                    resultRef,
+                    resultPath,
+                    resultBinding,
+                  }
                 : {}),
             },
           },
