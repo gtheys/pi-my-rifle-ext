@@ -30,8 +30,10 @@ import {
   askIdentityMatches,
   readAskRecord,
   readAskSidecar,
+  removeAskRecord,
   removeAskRecordsForSession,
   removeAskSidecar,
+  removeReplyRecord,
   writeReplyRecord,
 } from './asks.ts'
 import { loadSubagentsConfig, type SubagentsConfig } from './config.ts'
@@ -91,7 +93,6 @@ import {
   pollForExit,
   readScreen,
   sendEscape,
-  sendLongCommand,
   shellEscape,
 } from './surface.ts'
 
@@ -1255,27 +1256,39 @@ function startStatusRefresh(pi: ExtensionAPI) {
       }
       running.statusState = nextState
 
-      // Request→ack observation (PMR-DNPZ): poll the child `.ack` sidecar for
-      // the pending control request. Ack applies only on requestId+childId+
-      // sessionFile correlation; anything else is ignored until the bounded
-      // timeout expires the request back to legacy fire-and-forget with an
-      // explicit warning. Ack/timeout lines push even for interactive children
-      // — they are one-shot outcomes, not a stall cadence.
+      // Request→ack observation (PMR-DNPZ / WXG0 phase 5): poll the child
+      // `.ack` sidecar for the pending control request (interrupt or answer).
+      // Interrupt acks correlate on requestId + childId + sessionFile via the
+      // control record; answer acks correlate on the askId directly (no control
+      // record — the sidecar path binds the session identity). Anything else is
+      // ignored until the bounded timeout expires the request with an explicit
+      // warning. Ack/timeout lines push even for interactive children — they
+      // are one-shot outcomes, not a stall cadence.
       const pending = running.statusState.pendingRequest
       if (pending && running.cli !== 'claude') {
         const ack = defaultInterruptControlIo.readAckSidecar(
           running.sessionFile,
         )
         if (ack) {
-          const record = defaultInterruptControlIo.readControlRecord(running.id)
-          const matched =
-            record &&
-            ackMatches({
-              record,
-              ack,
-              childId: running.id,
-              sessionFile: running.sessionFile,
-            })
+          let matched = false
+          if (pending.kind === 'answer') {
+            // AIDEV-NOTE: the child writes this ack only after the answer was
+            // ingested via its own session (mailbox pump), keyed on the askId.
+            matched = ack.accepted && ack.requestId === pending.requestId
+          } else {
+            const record = defaultInterruptControlIo.readControlRecord(
+              running.id,
+            )
+            matched = !!(
+              record &&
+              ackMatches({
+                record,
+                ack,
+                childId: running.id,
+                sessionFile: running.sessionFile,
+              })
+            )
+          }
           if (matched) {
             const applied = applyPendingAck(running.statusState, ack.requestId)
             running.statusState = applied.state
@@ -1285,9 +1298,21 @@ function startStatusRefresh(pi: ExtensionAPI) {
                 running.id,
               )
               shouldRefreshWidget = true
-              transitionLines.push(
-                `${running.name} interrupt acknowledged by child.`,
-              )
+              if (pending.kind === 'answer') {
+                // AIDEV-NOTE: child confirmed ingestion — drop the durable
+                // ask/reply records (idempotent: the child's pump deletes them
+                // too) and re-arm the ask steer dedupe.
+                removeAskRecord(running.id)
+                removeReplyRecord(running.id)
+                running.notifiedAskId = undefined
+                transitionLines.push(
+                  `${running.name} answer ingested — it continues its session.`,
+                )
+              } else {
+                transitionLines.push(
+                  `${running.name} interrupt acknowledged by child.`,
+                )
+              }
             }
           }
         }
@@ -1302,10 +1327,20 @@ function startStatusRefresh(pi: ExtensionAPI) {
               running.sessionFile,
               running.id,
             )
-            transitionLines.push(
-              `${running.name} interrupt not acknowledged within ` +
-                `${Math.round(INTERRUPT_ACK_TIMEOUT_MS / 1000)}s — escape was sent; assuming applied (legacy fire-and-forget).`,
-            )
+            if (pending.kind === 'answer') {
+              // AIDEV-NOTE: on answer timeout the reply record REMAINS — the
+              // child may still ingest it late (at-least-once); only the stale
+              // ack sidecar is removed.
+              transitionLines.push(
+                `${running.name} answer ingestion not confirmed within ` +
+                  `${Math.round(INTERRUPT_ACK_TIMEOUT_MS / 1000)}s — reply remains queued; the child will pick it up on its next pump tick.`,
+              )
+            } else {
+              transitionLines.push(
+                `${running.name} interrupt not acknowledged within ` +
+                  `${Math.round(INTERRUPT_ACK_TIMEOUT_MS / 1000)}s — escape was sent; assuming applied (legacy fire-and-forget).`,
+              )
+            }
           }
         }
       }
@@ -2672,7 +2707,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     label: 'Answer Subagent',
     description:
       'Reply to a blocked sub-agent that asked you a question via ask_owner. ' +
-      'Delivers your message into the live sub-agent pane; the sub-agent continues its SAME session with your answer. ' +
+      'Queues your message for delivery into the sub-agent\u2019s SAME session (it arrives as its next user message); the sub-agent continues afterwards. ' +
       'Use the askId from the subagent_ask message when available. Do not use this for completed sub-agents — use subagent_resume for follow-up work instead.',
     parameters: Type.Object({
       id: Type.Optional(
@@ -2698,12 +2733,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     },
     renderResult(result, _opts, theme) {
       const details = result.details as any
-      if (details?.status === 'answered') {
+      if (details?.status === 'queued') {
         return new Text(
           theme.fg('success', '✓') +
             ' ' +
             theme.fg('toolTitle', theme.bold(details.name ?? 'subagent')) +
-            theme.fg('dim', ' — answer delivered'),
+            theme.fg('dim', ' — answer queued for delivery'),
           0,
           0,
         )
@@ -2763,55 +2798,41 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
       }
 
-      // AIDEV-NOTE: at-least-once reply delivery (PMR-WXG0). The reply record
-      // is durable BEFORE delivery; the `.ask` sidecar (the "still pending"
-      // marker) is deleted only after sendLongCommand succeeds. If delivery
-      // fails the tool returns an error and a retry re-delivers the message —
-      // worst case the child sees the answer twice.
+      // AIDEV-NOTE: at-least-once reply delivery via the mailbox pump
+      // (PMR-WXG0 phase 5, no pane typing). The reply record is durable
+      // BEFORE the child's pump can observe it; the `.ask` sidecar (the
+      // "still pending" marker) is cleared here so the ask stops re-steering
+      // the parent. The child's pump delivers the answer into its own session
+      // and acks ingestion; confirmation rides the 1s status loop via a
+      // pendingRequest (kind 'answer') correlated on the `.ack` sidecar. If
+      // ingestion is not confirmed within the bounded window, the reply record
+      // REMAINS — the child (or a resumed session) still picks it up; only the
+      // stale `.ack` sidecar is cleaned.
       writeReplyRecord(running.id, {
         askId: record.askId,
         message: params.message,
         repliedAt: new Date().toISOString(),
       })
-
-      try {
-        sendLongCommand(running.surface, params.message)
-      } catch (error: any) {
-        const detail = error?.message ?? String(error)
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                `Failed to deliver answer to "${running.name}": ${detail}. ` +
-                'The ask is still pending — retry answer_subagent.',
-            },
-          ],
-          details: {
-            error: detail,
-            id: running.id,
-            askId: record.askId,
-            status: 'delivery_failed',
-          },
-        }
-      }
-
       removeAskSidecar(running.sessionFile)
-      running.notifiedAskId = undefined
+      running.statusState = markPendingRequest(running.statusState, {
+        requestId: record.askId,
+        kind: 'answer',
+        sentAtMs: Date.now(),
+      })
       updateWidget()
 
       return {
         content: [
           {
             type: 'text',
-            text: `Answer delivered to "${running.name}". It will continue in the same session.`,
+            text: `Answer queued for "${running.name}". It will arrive in the same session as its next user message; ingestion is confirmed in the status line.`,
           },
         ],
         details: {
           id: running.id,
           name: running.name,
           askId: record.askId,
-          status: 'answered',
+          status: 'queued',
         },
       }
     },

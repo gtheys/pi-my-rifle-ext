@@ -16,8 +16,12 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
+import { getAgentDir } from '@mariozechner/pi-coding-agent'
+import { readAskRecord } from '../../pi-extension/subagents/asks.ts'
+import { subagentsDataRoot } from '../../pi-extension/subagents/dataroot.ts'
 import {
   cleanupTestEnv,
   createTestEnv,
@@ -41,6 +45,46 @@ if (!isHerdrIntegrationAvailable()) {
   console.log(
     '⚠️  Not inside herdr (HERDR_PANE_ID unset) — skipping subagent lifecycle integration tests',
   )
+}
+
+/**
+ * Poll `fn()` until it returns truthy; returns its value. File-based waits
+ * for the WXG0 mailbox round trip.
+ */
+async function waitFor<T>(
+  fn: () => T | null,
+  timeout: number,
+  what: string,
+): Promise<T> {
+  const start = Date.now()
+  while (Date.now() - start < timeout) {
+    const value = fn()
+    if (value) return value
+    await sleep(1000)
+  }
+  throw new Error(`Timeout (${timeout}ms) waiting for ${what}`)
+}
+
+/**
+ * Find the ask record whose question contains `needle` in the shared asks
+ * dir. Returns its path + childId. Scanning (vs a known childId) is required
+ * because the test does not know the childId the parent assigned.
+ */
+function findAskRecordByQuestion(
+  asksDir: string,
+  needle: string,
+): { path: string; childId: string; content: string } | null {
+  if (!existsSync(asksDir)) return null
+  for (const entry of readdirSync(asksDir)) {
+    if (!entry.endsWith('.json') || entry.endsWith('.reply.json')) continue
+    const path = join(asksDir, entry)
+    const content = readFileSync(path, 'utf8')
+    if (!content.includes(needle)) continue
+    const childId = entry.slice(0, -'.json'.length)
+    if (!readAskRecord(childId, subagentsDataRoot(getAgentDir()))) continue
+    return { path, childId, content }
+  }
+  return null
 }
 
 describe('subagent-lifecycle [herdr]', {
@@ -323,7 +367,7 @@ describe('subagent-lifecycle [herdr]', {
 
   // ── ask_owner round trip (PMR-WXG0) ──
 
-  it('ask_owner blocks the child, answer_subagent delivers and it completes', async () => {
+  it('ask_owner blocks the child, answer_subagent queues the reply and the pump completes it', async () => {
     const id = uniqueId()
     const markerFile = `/tmp/pi-integ-ask-${id}.txt`
     trackTempFile(env, markerFile)
@@ -341,32 +385,60 @@ describe('subagent-lifecycle [herdr]', {
 
     startPi(surface, env.dir, task)
 
-    // Child calls ask_owner → parent receives a subagent_ask steer.
-    const askScreen = await waitForScreen(
-      surface,
-      new RegExp(`asks owner|ASK_ROUNDTRIP_${id}`, 'i'),
+    // File-based round trip (WXG0 phase 5 mailbox pump): wait for the durable
+    // ask record the child wrote, not for a screen scrape.
+    const asksDir = join(subagentsDataRoot(getAgentDir()), 'asks')
+    const askRecordPathForThis = await waitFor(
+      () => findAskRecordByQuestion(asksDir, `ASK_ROUNDTRIP_${id}`),
       PI_TIMEOUT,
+      `ask record for ASK_ROUNDTRIP_${id} in ${asksDir}`,
     )
-    assert.ok(
-      new RegExp(`ASK_ROUNDTRIP_${id}`).test(askScreen),
-      `Parent should see the ask. Got:\n${askScreen.slice(-800)}`,
-    )
+    const askRecord = JSON.parse(askRecordPathForThis.content) as {
+      askId: string
+      childId: string
+      sessionFile: string
+    }
+    assert.equal(askRecord.childId, askRecordPathForThis.childId)
 
-    // Deliver the answer via answer_subagent (askId optional).
+    // Parent-side: deliver the answer via answer_subagent (askId optional).
     sendCommand(
       surface,
       `Use answer_subagent with name "Ask-${id}" and message: ` +
         `Write ANSWER_${id} to ${markerFile} using bash, then call subagent_done.`,
     )
 
-    // Child continues the SAME session: writes the marker, then exits via
-    // the normal .exit path and the parent gets the subagent_result steer.
+    // Reply record appears once answer_subagent queued it...
+    const replyPath = askRecordPathForThis.path.replace(
+      /\.json$/,
+      '.reply.json',
+    )
+    const reply = await waitForFile(replyPath, PI_TIMEOUT, /askId/)
+    assert.equal(JSON.parse(reply).askId, askRecord.askId)
+
+    // ...the child pump ingests it and writes the ack sidecar...
+    await waitForFile(`${askRecord.sessionFile}.ack`, PI_TIMEOUT)
+
+    // ...then continues the SAME session: writes the marker and exits with
+    // the normal `.exit` sidecar.
     const content = await waitForFile(markerFile, PI_TIMEOUT, /ANSWER/)
     assert.ok(
       content.includes(`ANSWER_${id}`),
       `Child should have run the answered instruction. Got: ${content.trim()}`,
     )
-    await waitForScreen(surface, /completed|ANSWER_ROUNDTRIP_DONE/i, PI_TIMEOUT)
+    const exitPayload = await waitForFile(`${askRecord.sessionFile}.exit`)
+    assert.match(exitPayload, /"type":"done"/)
+
+    // Post-ingestion cleanup: ask + reply records removed (at-least-once
+    // window closed).
+    await waitFor(
+      () => {
+        if (existsSync(replyPath)) return null
+        if (existsSync(askRecordPathForThis.path)) return null
+        return 'cleaned'
+      },
+      PI_TIMEOUT,
+      `cleanup of ask/reply records for ${askRecord.childId}`,
+    )
   })
 
   // ── Agent discovery ──

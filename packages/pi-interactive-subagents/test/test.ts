@@ -20,13 +20,16 @@ import {
   readSubagentActivityFile,
 } from '../pi-extension/subagents/activity.ts'
 import {
+  type AskRecord,
   askIdentityMatches,
   askRecordPath,
   readAskRecord,
   readAskSidecar,
   readReplyRecord,
+  removeAskRecord,
   removeAskRecordsForSession,
   removeAskSidecar,
+  removeReplyRecord,
   writeAskRecord,
   writeAskSidecar,
   writeReplyRecord,
@@ -99,6 +102,7 @@ import {
   parseStatusConfig,
 } from '../pi-extension/subagents/status.ts'
 import {
+  decideReplyDelivery,
   exitSidecarPayload,
   findLastStopReason,
   findLatestAssistantError,
@@ -2847,6 +2851,41 @@ describe('request/ack handshake (PMR-DNPZ)', () => {
     assert.equal(applied.state.latestEvent, 'interrupt_acked')
   })
 
+  it('answer pending requests correlate on the askId and expire like interrupts (WXG0 phase 5)', () => {
+    let state = markPendingRequest(
+      createStatusState({ source: 'pi', startTimeMs: 0 }),
+      makePending({ requestId: 'ask-1', kind: 'answer' }),
+    )
+    assert.equal(state.pendingRequest?.kind, 'answer')
+
+    // Wrong askId is ignored, state untouched.
+    const wrong = applyPendingAck(state, 'ask-OTHER')
+    assert.equal(wrong.outcome, 'ignored')
+    assert.equal(wrong.state.pendingRequest?.requestId, 'ask-1')
+
+    // Matching askId acks and clears the pending request.
+    const applied = applyPendingAck(state, 'ask-1')
+    assert.equal(applied.outcome, 'acked')
+    assert.equal(applied.state.pendingRequest, null)
+
+    // Bounded timeout still applies to answers.
+    let timedOut = markPendingRequest(
+      createStatusState({ source: 'pi', startTimeMs: 0 }),
+      makePending({ requestId: 'ask-2', kind: 'answer', sentAtMs: 20_000 }),
+    )
+    const early = expirePendingRequest(
+      timedOut,
+      20_000 + INTERRUPT_ACK_TIMEOUT_MS - 1,
+    )
+    assert.equal(early.outcome, 'pending')
+    const late = expirePendingRequest(
+      timedOut,
+      20_000 + INTERRUPT_ACK_TIMEOUT_MS,
+    )
+    assert.equal(late.outcome, 'timeout')
+    assert.equal(late.state.pendingRequest, null)
+  })
+
   it('expires a pending request after the bounded ack window', () => {
     let state = markPendingRequest(
       createStatusState({ source: 'pi', startTimeMs: 0 }),
@@ -3057,6 +3096,78 @@ describe('asks.ts (PMR-WXG0 blocking ask_owner)', () => {
       const reply = readReplyRecord('child-1', dir)
       assert.equal(reply?.askId, 'ask-9')
       assert.equal(reply?.message, 'use postgres')
+    })
+  })
+
+  it('mailbox pump delivers only identity-matching replies (PMR-WXG0 phase 5)', () => {
+    const record = makeAskRecord()
+    const reply = { askId: 'ask-1', message: 'use postgres', repliedAt: 'now' }
+
+    // Nothing to deliver yet.
+    assert.equal(
+      decideReplyDelivery({
+        reply: null,
+        record,
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      'idle',
+    )
+    assert.equal(
+      decideReplyDelivery({
+        reply,
+        record: null,
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      'idle',
+    )
+
+    // Matching identity delivers.
+    assert.equal(
+      decideReplyDelivery({
+        reply,
+        record,
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      'deliver',
+    )
+
+    // Superseded askId, wrong child, wrong session — never delivered.
+    const mismatches: Array<[AskRecord, string, string]> = [
+      [makeAskRecord({ askId: 'ask-OLD' }), 'child-1', '/tmp/child-1.jsonl'],
+      [makeAskRecord({ childId: 'child-2' }), 'child-1', '/tmp/child-1.jsonl'],
+      [
+        makeAskRecord({ sessionFile: '/tmp/other.jsonl' }),
+        'child-1',
+        '/tmp/child-1.jsonl',
+      ],
+    ]
+    for (const [rec, childId, sessionFile] of mismatches) {
+      assert.equal(
+        decideReplyDelivery({ reply, record: rec, childId, sessionFile }),
+        'identity_mismatch',
+      )
+    }
+  })
+
+  it('pump cleanup removes reply + ask records only after ingestion', () => {
+    withTempDir((dir) => {
+      writeAskRecord(makeAskRecord(), dir)
+      writeReplyRecord(
+        'child-1',
+        { askId: 'ask-1', message: 'go', repliedAt: 'now' },
+        dir,
+      )
+      // Simulate the child's post-ingestion cleanup.
+      removeReplyRecord('child-1', dir)
+      removeAskRecord('child-1', dir)
+      assert.equal(readReplyRecord('child-1', dir), null)
+      assert.equal(readAskRecord('child-1', dir), null)
+      // Idempotent: second removal is a no-op.
+      removeReplyRecord('child-1', dir)
+      removeAskRecord('child-1', dir)
     })
   })
 

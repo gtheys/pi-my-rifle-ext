@@ -1,14 +1,13 @@
 // Durable ask/answer records for the blocking ask_owner flow (PMR-WXG0).
 // A child writes `asks/<childId>.json` + a `<sessionFile>.ask` sidecar when it
-// asks its owner mid-run; the parent's answer_subagent tool validates identity,
-// writes `asks/<childId>.reply.json`, delivers the reply into the live pane,
-// and only then deletes the `.ask` sidecar.
+// asks its owner mid-run; the parent's answer_subagent tool validates identity
+// and writes `asks/<childId>.reply.json`; the child's mailbox pump delivers the
+// reply into its own session and only then removes the reply/ask records.
 //
-// AIDEV-NOTE: at-least-once window — the reply record is written BEFORE pane
-// delivery. If delivery partially fails (keystrokes lost, pane died), the
-// durable record enables a retry via answer_subagent; a retry re-delivers the
-// same message (duplicate user turn in the worst case). The `.ask` sidecar is
-// deleted only after successful delivery, so it is the "still pending" marker.
+// AIDEV-NOTE: at-least-once window — the reply record survives until the child
+// confirms ingestion (its `.ack` sidecar + record cleanup). A lost pump tick or
+// child crash re-delivers the same answer later (duplicate user turn in the
+// worst case); a matched parent-side ack deletes the records idempotently.
 import { randomUUID } from 'node:crypto'
 import {
   closeSync,
@@ -145,7 +144,7 @@ export function removeAskSidecar(sessionFile: string): void {
   } catch {}
 }
 
-/** Durable reply record, written before pane delivery (see file header). */
+/** Durable reply record, written before the child's pump delivers it. */
 export function writeReplyRecord(
   childId: string,
   reply: AskReplyRecord,

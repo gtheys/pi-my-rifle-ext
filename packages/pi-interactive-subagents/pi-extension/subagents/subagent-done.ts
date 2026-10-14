@@ -5,14 +5,19 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, watch, writeFileSync } from 'node:fs'
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent'
 import { Box, Text } from '@mariozechner/pi-tui'
 import { Type } from '@sinclair/typebox'
 import { createSubagentActivityRecorder } from './activity.ts'
 import {
+  type AskRecord,
+  type AskReplyRecord,
   readAskRecord,
   readAskSidecar,
+  readReplyRecord,
+  removeAskRecord,
+  removeReplyRecord,
   writeAskRecord,
   writeAskSidecar,
 } from './asks.ts'
@@ -22,6 +27,7 @@ import {
   readControlRecord,
   writeAckSidecar,
 } from './control.ts'
+import { ensureSubagentsDataDir } from './dataroot.ts'
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted
@@ -49,6 +55,24 @@ export function shouldAutoExitOnAgentEnd(
   }
 
   return true
+}
+
+/** Pure pump decision: should this reply be delivered into this child? */
+export type ReplyPumpDecision = 'idle' | 'identity_mismatch' | 'deliver'
+
+export function decideReplyDelivery(params: {
+  reply: AskReplyRecord | null
+  record: AskRecord | null
+  childId: string
+  sessionFile: string
+}): ReplyPumpDecision {
+  if (!params.reply || !params.record) return 'idle'
+  if (params.record.childId !== params.childId) return 'identity_mismatch'
+  if (params.record.sessionFile !== params.sessionFile) {
+    return 'identity_mismatch'
+  }
+  if (params.record.askId !== params.reply.askId) return 'identity_mismatch'
+  return 'deliver'
 }
 
 export interface SubagentErrorInfo {
@@ -237,6 +261,83 @@ export default function (pi: ExtensionAPI) {
     const record = readControlRecord(childId)
     const ack = interruptAckPayload(stopReason, record)
     if (ack) writeAckSidecar(sessionFile, ack)
+  }
+
+  // ── Mailbox pump (PMR-WXG0 phase 5) ──
+  // Watches the parent-owned reply record for this child's pending ask and
+  // delivers the answer into THIS session as a normal user turn.
+  //
+  // AIDEV-NOTE: at-least-once window — the reply record is only deleted AFTER
+  // sendMessage succeeds and the ingestion ack is written. A pump failure (crash
+  // before sendMessage, failed ack write) leaves the record in place so the next
+  // pump tick (or a resumed session's first tick) re-delivers the same answer;
+  // worst case the child sees the answer twice. Identity is revalidated on every
+  // tick: the ask record must name THIS childId + sessionFile and the reply's
+  // askId must match — a stale/superseded reply is never delivered.
+  let pumpBusy = false
+  let replyWatcher: ReturnType<typeof watch> | null = null
+
+  function pumpReplies(): void {
+    if (pumpBusy) return
+    const childId = process.env.PI_SUBAGENT_ID
+    const sessionFile = process.env.PI_SUBAGENT_SESSION
+    if (!childId || !sessionFile) return
+    pumpBusy = true
+    try {
+      const reply = readReplyRecord(childId)
+      const record = readAskRecord(childId)
+      if (
+        decideReplyDelivery({ reply, record, childId, sessionFile }) !==
+        'deliver'
+      ) {
+        return
+      }
+      if (!reply || !record) return // unreachable per decideReplyDelivery
+      pi.sendMessage(
+        {
+          customType: 'subagent-answer',
+          content:
+            `The owner answered your question (${reply.askId}):\n\n` +
+            reply.message,
+          display: true,
+          details: { askId: reply.askId },
+        },
+        { triggerTurn: true },
+      )
+      writeAckSidecar(sessionFile, {
+        requestId: reply.askId,
+        accepted: true,
+        code: 'idle',
+        message: 'answer ingested',
+      })
+      removeReplyRecord(childId)
+      removeAskRecord(childId)
+    } catch {
+      // Durable record stays — the next tick re-delivers (see AIDEV-NOTE above).
+    } finally {
+      pumpBusy = false
+    }
+  }
+
+  // fs.watch primary (parent's atomic rename is an event) + 500ms cadence
+  // fallback in case the watcher misses events or the dir was created later.
+  function startReplyWatcher(): void {
+    if (replyWatcher) return
+    const childId = process.env.PI_SUBAGENT_ID
+    if (!childId || !process.env.PI_SUBAGENT_SESSION) return
+    try {
+      const asksDir = ensureSubagentsDataDir('asks')
+      replyWatcher = watch(asksDir, () => pumpReplies())
+      replyWatcher.unref()
+    } catch {
+      // asks dir not watchable — the 500ms interval alone still delivers.
+    }
+  }
+
+  if (process.env.PI_SUBAGENT_ID && process.env.PI_SUBAGENT_SESSION) {
+    startReplyWatcher()
+    const pumpInterval = setInterval(pumpReplies, 500)
+    pumpInterval.unref()
   }
 
   pi.on('session_start', (_event, ctx) => {
