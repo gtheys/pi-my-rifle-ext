@@ -27,6 +27,18 @@ export type StatusSnapshotState =
   | 'wrong-id'
 export type StatusActivityPhase = 'starting' | 'active' | 'waiting' | 'done'
 
+// AIDEV-NOTE: pending parent→child control request (PMR-DNPZ). Tracked on the
+// status state so the 1s refresh loop can observe the `.ack` sidecar and
+// transition the request to acked/timeout; survives observeStatus spreads.
+export interface PendingControlRequest {
+  requestId: string
+  kind: 'interrupt' | 'answer'
+  sentAtMs: number
+}
+
+/** No ack within this window ⇒ expire and fall back to fire-and-forget. */
+export const INTERRUPT_ACK_TIMEOUT_MS = 5_000
+
 export interface StatusConfig {
   enabled: boolean
   lineLimit: number
@@ -69,6 +81,7 @@ export interface SubagentStatusState {
   snapshotProblemSinceMs: number | null
   snapshotError: string | null
   currentKind: SubagentStatusKind
+  pendingRequest: PendingControlRequest | null
 }
 
 export interface StatusSnapshot {
@@ -268,6 +281,7 @@ export function createStatusState(params: {
     snapshotProblemSinceMs: null,
     snapshotError: null,
     currentKind: initialKind,
+    pendingRequest: null,
   }
 }
 
@@ -361,6 +375,58 @@ export function forceStatusAfterInterrupt(
     snapshotProblemSinceMs: null,
     snapshotError: null,
     currentKind: 'waiting',
+  }
+}
+
+export function markPendingRequest(
+  state: SubagentStatusState,
+  pending: PendingControlRequest,
+): SubagentStatusState {
+  return { ...state, pendingRequest: pending }
+}
+
+export type PendingAckOutcome = 'acked' | 'ignored'
+
+// AIDEV-NOTE: identity revalidation — only an ack carrying the exact requestId
+// we sent is applied; wrong-id acks are ignored (state untouched) so a stale
+// sidecar from a superseded request can never satisfy a newer one.
+export function applyPendingAck(
+  state: SubagentStatusState,
+  ackRequestId: string,
+): { state: SubagentStatusState; outcome: PendingAckOutcome } {
+  const pending = state.pendingRequest
+  if (!pending || pending.requestId !== ackRequestId) {
+    return { state, outcome: 'ignored' }
+  }
+  return {
+    state: {
+      ...state,
+      pendingRequest: null,
+      latestEvent: 'interrupt_acked',
+    },
+    outcome: 'acked',
+  }
+}
+
+export type PendingExpiryOutcome = 'pending' | 'timeout'
+
+/** Expire the pending request once the bounded ack window elapses. */
+export function expirePendingRequest(
+  state: SubagentStatusState,
+  now: number,
+  timeoutMs: number = INTERRUPT_ACK_TIMEOUT_MS,
+): { state: SubagentStatusState; outcome: PendingExpiryOutcome } {
+  const pending = state.pendingRequest
+  if (!pending || now - pending.sentAtMs < timeoutMs) {
+    return { state, outcome: 'pending' }
+  }
+  return {
+    state: {
+      ...state,
+      pendingRequest: null,
+      latestEvent: 'interrupt_unacknowledged',
+    },
+    outcome: 'timeout',
   }
 }
 

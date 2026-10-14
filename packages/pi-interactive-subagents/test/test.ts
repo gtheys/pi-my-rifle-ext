@@ -34,6 +34,17 @@ import {
   selectZellijStackPlacement,
   shellEscape,
 } from '../pi-extension/subagents/cmux.ts'
+import {
+  ackMatches,
+  ackSidecarPath,
+  type ControlAck,
+  type ControlRecord,
+  controlRecordPath,
+  readAckSidecar,
+  readControlRecord,
+  writeAckSidecar,
+  writeControlRecord,
+} from '../pi-extension/subagents/control.ts'
 import * as subagentsModule from '../pi-extension/subagents/index.ts'
 import {
   __storeInternals__,
@@ -60,20 +71,27 @@ import {
 } from '../pi-extension/subagents/session.ts'
 import {
   advanceStatusState,
+  applyPendingAck,
   capStatusLines,
   classifyStatus,
   createStatusState,
+  expirePendingRequest,
   forceStatusAfterInterrupt,
   formatStatusAggregate,
   formatStatusLine,
   formatTransitionLine,
+  INTERRUPT_ACK_TIMEOUT_MS,
   loadStatusConfig,
+  markPendingRequest,
   observeStatus,
+  type PendingControlRequest,
   parseStatusConfig,
 } from '../pi-extension/subagents/status.ts'
 import {
   exitSidecarPayload,
+  findLastStopReason,
   findLatestAssistantError,
+  interruptAckPayload,
   shouldAutoExitOnAgentEnd,
   shouldMarkUserTookOver,
 } from '../pi-extension/subagents/subagent-done.ts'
@@ -2173,13 +2191,12 @@ describe('subagent interruption', () => {
       assert.equal(sentSurface, 'pane-1')
       assert.equal(
         result.content[0].text,
-        'Interrupt requested for subagent "Worker".',
+        'Interrupt requested for subagent "Worker". Awaiting child acknowledgement.',
       )
-      assert.deepEqual(result.details, {
-        id: 'a1',
-        name: 'Worker',
-        status: 'interrupt_requested',
-      })
+      assert.equal(result.details.ack, 'pending')
+      assert.equal(result.details.status, 'interrupt_requested')
+      assert.equal(result.details.id, 'a1')
+      assert.equal(result.details.name, 'Worker')
       const snapshot = classifyStatus(runningMap.get('a1').statusState, 20_000)
       assert.equal(snapshot.kind, 'waiting')
       assert.equal(snapshot.activityLabel, 'interrupted')
@@ -3235,5 +3252,246 @@ describe('store.ts durable result store', () => {
   it('fails closed on unknown or malformed ref resolution', () => {
     assert.equal(resolveResultRef('result:never#99999', storeRoot), null)
     assert.equal(resolveResultRef('garbage', storeRoot), null)
+  })
+})
+
+describe('request/ack handshake (PMR-DNPZ)', () => {
+  function makeRunning(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'a1',
+      name: 'Worker',
+      task: '',
+      surface: 'pane-1',
+      startTime: 0,
+      sessionFile: 'a1.jsonl',
+      interactive: false,
+      statusState: createStatusState({ source: 'pi', startTimeMs: 0 }),
+      ...overrides,
+    }
+  }
+
+  function makeControlRecord(
+    overrides: Record<string, unknown> = {},
+  ): ControlRecord {
+    return {
+      requestId: 'req-1',
+      childId: 'a1',
+      sessionFile: 'worker.jsonl',
+      kind: 'interrupt',
+      payload: {},
+      sentAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    }
+  }
+
+  function makeAck(overrides: Record<string, unknown> = {}): ControlAck {
+    return {
+      requestId: 'req-1',
+      accepted: true,
+      code: 'idle',
+      ...overrides,
+    }
+  }
+
+  function makePending(
+    overrides: Record<string, unknown> = {},
+  ): PendingControlRequest {
+    return {
+      requestId: 'req-1',
+      kind: 'interrupt',
+      sentAtMs: 10_000,
+      ...overrides,
+    }
+  }
+
+  it('writes and reads control records via the data root (round trip)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-control-'))
+    try {
+      const record = makeControlRecord()
+      writeControlRecord(record, root)
+      const read = readControlRecord(record.childId, root)
+      assert.deepEqual(read, record)
+      assert.equal(readControlRecord('no-such-child', root), null)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('correlates acks on requestId + childId + sessionFile (identity revalidation)', () => {
+    const record = makeControlRecord()
+    const ack = makeAck()
+    assert.equal(
+      ackMatches({ record, ack, childId: 'a1', sessionFile: 'worker.jsonl' }),
+      true,
+    )
+    assert.equal(
+      ackMatches({
+        record,
+        ack: makeAck({ requestId: 'req-OTHER' }),
+        childId: 'a1',
+        sessionFile: 'worker.jsonl',
+      }),
+      false,
+    )
+    assert.equal(
+      ackMatches({
+        record,
+        ack,
+        childId: 'other',
+        sessionFile: 'worker.jsonl',
+      }),
+      false,
+    )
+    assert.equal(
+      ackMatches({ record, ack, childId: 'a1', sessionFile: 'other.jsonl' }),
+      false,
+    )
+  })
+
+  it('writes and reads ack sidecars colocated with the session file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagents-ack-'))
+    try {
+      const sessionFile = join(dir, 'child.jsonl')
+      assert.equal(readAckSidecar(sessionFile), null)
+      writeAckSidecar(sessionFile, makeAck())
+      const ack = readAckSidecar(sessionFile)
+      assert.equal(ack?.requestId, 'req-1')
+      assert.equal(ackSidecarPath(sessionFile), `${sessionFile}.ack`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('marks a pending request and applies only the matching ack', () => {
+    let state = markPendingRequest(
+      forceStatusAfterInterrupt(
+        createStatusState({ source: 'pi', startTimeMs: 0 }),
+        10_000,
+      ),
+      makePending(),
+    )
+    assert.equal(state.pendingRequest?.requestId, 'req-1')
+
+    const wrong = applyPendingAck(state, 'req-OTHER')
+    assert.equal(wrong.outcome, 'ignored')
+    assert.equal(wrong.state.pendingRequest?.requestId, 'req-1')
+
+    const applied = applyPendingAck(state, 'req-1')
+    assert.equal(applied.outcome, 'acked')
+    assert.equal(applied.state.pendingRequest, null)
+    assert.equal(applied.state.latestEvent, 'interrupt_acked')
+  })
+
+  it('expires a pending request after the bounded ack window', () => {
+    let state = markPendingRequest(
+      createStatusState({ source: 'pi', startTimeMs: 0 }),
+      makePending(),
+    )
+
+    const before = expirePendingRequest(
+      state,
+      10_000 + INTERRUPT_ACK_TIMEOUT_MS - 1,
+    )
+    assert.equal(before.outcome, 'pending')
+    assert.notEqual(before.state.pendingRequest, null)
+
+    const after = expirePendingRequest(state, 10_000 + INTERRUPT_ACK_TIMEOUT_MS)
+    assert.equal(after.outcome, 'timeout')
+    assert.equal(after.state.pendingRequest, null)
+    assert.equal(after.state.latestEvent, 'interrupt_unacknowledged')
+  })
+
+  it('interrupt tool writes a durable record and reports ack pending', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-interrupt-io-'))
+    const written: ControlRecord[] = []
+    const io = {
+      writeControlRecord: (record: ControlRecord) => {
+        written.push(record)
+        writeControlRecord(record, root)
+      },
+      readAckSidecar: () => null,
+      readControlRecord: (childId: string) => readControlRecord(childId, root),
+      cleanupAck: () => {},
+    }
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    runningMap.clear()
+
+    try {
+      runningMap.set('a1', makeRunning())
+      const result = withMockedNow(20_000, () =>
+        testApi.handleSubagentInterrupt({ id: 'a1' }, () => {}, io),
+      )
+
+      assert.equal(result.details.ack, 'pending')
+      assert.equal(written.length, 1)
+      assert.equal(written[0].childId, 'a1')
+      assert.equal(written[0].sessionFile, 'a1.jsonl')
+      assert.equal(written[0].kind, 'interrupt')
+      const persisted = readControlRecord('a1', root)
+      assert.equal(persisted?.requestId, written[0].requestId)
+      const state = runningMap.get('a1').statusState
+      assert.equal(state.pendingRequest?.requestId, written[0].requestId)
+    } finally {
+      runningMap.clear()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to fire-and-forget with a warning when the record write fails', () => {
+    const io = {
+      writeControlRecord: () => {
+        throw new Error('disk full')
+      },
+      readAckSidecar: () => null,
+      readControlRecord: () => null,
+      cleanupAck: () => {},
+    }
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    let sent = false
+    runningMap.clear()
+
+    try {
+      runningMap.set('a1', makeRunning())
+      const result = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        () => {
+          sent = true
+        },
+        io,
+      )
+
+      assert.equal(sent, true)
+      assert.equal(result.details.ack, 'unavailable')
+      assert.match(result.content[0].text, /fire-and-forget/)
+    } finally {
+      runningMap.clear()
+    }
+  })
+
+  it('child acks only aborted turns that have a pending interrupt record', () => {
+    const record = makeControlRecord()
+    assert.equal(interruptAckPayload('aborted', record)?.requestId, 'req-1')
+    assert.equal(interruptAckPayload('stop', record), null)
+    assert.equal(interruptAckPayload(undefined, record), null)
+    assert.equal(interruptAckPayload('aborted', null), null)
+    assert.equal(
+      interruptAckPayload('aborted', makeControlRecord({ kind: 'answer' })),
+      null,
+    )
+  })
+
+  it('extracts the latest assistant stopReason', () => {
+    assert.equal(
+      findLastStopReason([
+        { role: 'user', content: 'go' },
+        { role: 'assistant', stopReason: 'aborted' },
+      ]),
+      'aborted',
+    )
+    assert.equal(findLastStopReason([{ role: 'assistant' }]), null)
+    assert.equal(findLastStopReason([]), null)
+    assert.equal(findLastStopReason(undefined), null)
   })
 })

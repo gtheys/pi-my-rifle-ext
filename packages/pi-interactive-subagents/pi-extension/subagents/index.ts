@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import {
   copyFileSync,
   existsSync,
@@ -41,19 +42,33 @@ import {
 } from './cmux.ts'
 import { loadSubagentsConfig, type SubagentsConfig } from './config.ts'
 import {
+  ackMatches,
+  type ControlAck,
+  type ControlRecord,
+  readAckSidecar,
+  readControlRecord,
+  removeAckSidecar,
+  removeControlRecord,
+  writeControlRecord,
+} from './control.ts'
+import {
   findLastAssistantMessage,
   getNewEntries,
   seedSubagentSessionFile,
 } from './session.ts'
 import {
   advanceStatusState,
+  applyPendingAck,
   capStatusLines,
   classifyStatus,
   createStatusState,
   DEFAULT_STATUS_LINE_LIMIT,
+  expirePendingRequest,
   forceStatusAfterInterrupt,
   formatStatusAggregate,
   formatTransitionLine,
+  INTERRUPT_ACK_TIMEOUT_MS,
+  markPendingRequest,
   observeStatus,
   type StatusConfig,
   type StatusSnapshot,
@@ -966,11 +981,32 @@ interface InterruptDetails {
   id?: string
   name?: string
   status?: string
+  /** 'pending' while awaiting the child `.ack` sidecar; 'unavailable' when the durable record could not be written. */
+  ack?: 'pending' | 'unavailable'
+}
+
+// Injectable sidecar IO so unit tests can run the handshake in a temp dir.
+export interface InterruptControlIo {
+  writeControlRecord: (record: ControlRecord) => void
+  readAckSidecar: (sessionFile: string) => ControlAck | null
+  readControlRecord: (childId: string) => ControlRecord | null
+  cleanupAck: (sessionFile: string, childId: string) => void
+}
+
+const defaultInterruptControlIo: InterruptControlIo = {
+  writeControlRecord: (record) => writeControlRecord(record),
+  readAckSidecar: (sessionFile) => readAckSidecar(sessionFile),
+  readControlRecord: (childId) => readControlRecord(childId),
+  cleanupAck: (sessionFile, childId) => {
+    removeAckSidecar(sessionFile)
+    removeControlRecord(childId)
+  },
 }
 
 function handleSubagentInterrupt(
   params: { id?: string; name?: string },
   sendEscapeKey: (surface: string) => void = sendEscape,
+  controlIo: InterruptControlIo = defaultInterruptControlIo,
 ): AgentToolResult<InterruptDetails> {
   const resolved = resolveInterruptTarget(params)
   if ('error' in resolved) {
@@ -1012,20 +1048,50 @@ function handleSubagentInterrupt(
     }
   }
 
-  running.statusState = forceStatusAfterInterrupt(running.statusState, now)
+  // AIDEV-NOTE: request→ack handshake (PMR-DNPZ). The record is durable INTENT
+  // (at-least-once window: if the child's ack write is lost we expire and fall
+  // back to legacy fire-and-forget — the record alone never re-applies the
+  // escape). Record-write failure must not block the interrupt itself.
+  const requestId = randomUUID()
+  let ackState: 'pending' | 'unavailable' = 'pending'
+  try {
+    controlIo.writeControlRecord({
+      requestId,
+      childId: running.id,
+      sessionFile: running.sessionFile,
+      kind: 'interrupt',
+      payload: {},
+      sentAt: new Date().toISOString(),
+    })
+  } catch {
+    ackState = 'unavailable'
+  }
+
+  running.statusState = markPendingRequest(
+    forceStatusAfterInterrupt(running.statusState, now),
+    { requestId, kind: 'interrupt', sentAtMs: now },
+  )
   updateWidget()
+
+  let resultText = `Interrupt requested for subagent "${running.name}".`
+  if (ackState === 'unavailable') {
+    resultText += ' Control record unavailable — legacy fire-and-forget.'
+  } else {
+    resultText += ' Awaiting child acknowledgement.'
+  }
 
   return {
     content: [
       {
         type: 'text' as const,
-        text: `Interrupt requested for subagent "${running.name}".`,
+        text: resultText,
       },
     ],
     details: {
       id: running.id,
       name: running.name,
       status: 'interrupt_requested',
+      ack: ackState,
     },
   }
 }
@@ -1057,6 +1123,61 @@ function startStatusRefresh(pi: ExtensionAPI) {
         shouldRefreshWidget = true
       }
       running.statusState = nextState
+
+      // Request→ack observation (PMR-DNPZ): poll the child `.ack` sidecar for
+      // the pending control request. Ack applies only on requestId+childId+
+      // sessionFile correlation; anything else is ignored until the bounded
+      // timeout expires the request back to legacy fire-and-forget with an
+      // explicit warning. Ack/timeout lines push even for interactive children
+      // — they are one-shot outcomes, not a stall cadence.
+      const pending = running.statusState.pendingRequest
+      if (pending && running.cli !== 'claude') {
+        const ack = defaultInterruptControlIo.readAckSidecar(
+          running.sessionFile,
+        )
+        if (ack) {
+          const record = defaultInterruptControlIo.readControlRecord(running.id)
+          const matched =
+            record &&
+            ackMatches({
+              record,
+              ack,
+              childId: running.id,
+              sessionFile: running.sessionFile,
+            })
+          if (matched) {
+            const applied = applyPendingAck(running.statusState, ack.requestId)
+            running.statusState = applied.state
+            if (applied.outcome === 'acked') {
+              defaultInterruptControlIo.cleanupAck(
+                running.sessionFile,
+                running.id,
+              )
+              shouldRefreshWidget = true
+              transitionLines.push(
+                `${running.name} interrupt acknowledged by child.`,
+              )
+            }
+          }
+        }
+        // AIDEV-NOTE: a present-but-unmatched ack is ignored (identity
+        // revalidation) and left in place; the timeout below cleans up both
+        // record and sidecar when the window elapses.
+        if (running.statusState.pendingRequest) {
+          const expiry = expirePendingRequest(running.statusState, now)
+          running.statusState = expiry.state
+          if (expiry.outcome === 'timeout') {
+            defaultInterruptControlIo.cleanupAck(
+              running.sessionFile,
+              running.id,
+            )
+            transitionLines.push(
+              `${running.name} interrupt not acknowledged within ` +
+                `${Math.round(INTERRUPT_ACK_TIMEOUT_MS / 1000)}s — escape was sent; assuming applied (legacy fire-and-forget).`,
+            )
+          }
+        }
+      }
 
       // Interactive subagents (long-running, user-driven) intentionally don't
       // wake the parent session on stalled/recovered transitions — the user is
@@ -1123,6 +1244,7 @@ export const __test__ = {
   resolveInterruptTarget,
   requestSubagentInterrupt,
   handleSubagentInterrupt,
+  defaultInterruptControlIo,
   resolveResultPresentation,
   resolveResumeLaunchBehavior,
   runningSubagents,

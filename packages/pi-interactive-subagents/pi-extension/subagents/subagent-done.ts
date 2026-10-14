@@ -9,6 +9,12 @@ import type { ExtensionAPI } from '@mariozechner/pi-coding-agent'
 import { Box, Text } from '@mariozechner/pi-tui'
 import { Type } from '@sinclair/typebox'
 import { createSubagentActivityRecorder } from './activity.ts'
+import {
+  type ControlAck,
+  type ControlRecord,
+  readControlRecord,
+  writeAckSidecar,
+} from './control.ts'
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted
@@ -99,6 +105,42 @@ export function parseDeniedTools(rawValue: string | undefined): string[] {
     .filter(Boolean)
 }
 
+/** stopReason of the latest assistant message, or null when none. */
+export function findLastStopReason(messages: any[] | undefined): string | null {
+  if (!messages) return null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg?.role !== 'assistant') continue
+    if (typeof msg.stopReason === 'string') return msg.stopReason
+    return null
+  }
+  return null
+}
+
+/**
+ * Pure ack decision for the parent→child interrupt handshake (PMR-DNPZ).
+ *
+ * AIDEV-NOTE: Escape is observed at the aborted turn boundary, not instantly —
+ * pi aborts the in-flight agent turn, which surfaces here as `agent_end` with
+ * `stopReason === 'aborted'`. That boundary is the earliest reliable signal
+ * that the interrupt took effect, so the ack lands there. A child that exits
+ * normally instead (the interrupt-raced-completion case) never acks; the
+ * parent sees `.exit` and the request times out harmlessly.
+ */
+export function interruptAckPayload(
+  stopReason: string | undefined,
+  record: ControlRecord | null,
+): ControlAck | null {
+  if (stopReason !== 'aborted') return null
+  if (!record || record.kind !== 'interrupt') return null
+  return {
+    requestId: record.requestId,
+    accepted: true,
+    code: 'idle',
+    message: 'turn aborted by interrupt',
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   let toolNames: string[] = []
   let denied: string[] = []
@@ -178,6 +220,18 @@ export default function (pi: ExtensionAPI) {
   let agentStarted = false
 
   // Show widget + status bar on session start
+  // AIDEV-NOTE: the ack correlates on the CURRENT control record's requestId;
+  // if the parent already superseded it, this ack is discarded parent-side by
+  // requestId correlation.
+  function tryAckInterrupt(stopReason: string): void {
+    const childId = process.env.PI_SUBAGENT_ID
+    const sessionFile = process.env.PI_SUBAGENT_SESSION
+    if (!childId || !sessionFile) return
+    const record = readControlRecord(childId)
+    const ack = interruptAckPayload(stopReason, record)
+    if (ack) writeAckSidecar(sessionFile, ack)
+  }
+
   pi.on('session_start', (_event, ctx) => {
     recorder.sessionStart()
     const tools = pi.getAllTools()
@@ -206,6 +260,15 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('agent_end', (event, ctx) => {
     const messages = (event as any).messages as any[] | undefined
+
+    // Request/ack handshake: if the parent just interrupted us, confirm via
+    // the `.ack` sidecar. Best effort — the parent falls back to
+    // fire-and-forget on timeout, so a failed ack write is never fatal.
+    const lastStopReason = findLastStopReason(messages)
+    if (lastStopReason) {
+      tryAckInterrupt(lastStopReason)
+    }
+
     const shouldExit =
       autoExit && shouldAutoExitOnAgentEnd(userTookOver, messages)
 
