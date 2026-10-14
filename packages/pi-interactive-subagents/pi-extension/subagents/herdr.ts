@@ -15,12 +15,20 @@ export const HERDR_MIN_VERSION = '0.9.1'
 export class HerdrError extends Error {
   readonly args: readonly string[]
   readonly stderr: string
+  /** Process exit status when the CLI itself ran and failed, else null. */
+  readonly exitCode: number | null
 
-  constructor(message: string, args: readonly string[], stderr = '') {
+  constructor(
+    message: string,
+    args: readonly string[],
+    stderr = '',
+    exitCode: number | null = null,
+  ) {
     super(message)
     this.name = 'HerdrError'
     this.args = args
     this.stderr = stderr
+    this.exitCode = exitCode
   }
 }
 
@@ -44,7 +52,11 @@ export function runHerdr(args: readonly string[], timeoutMs?: number): string {
   try {
     return execFileSync('herdr', args, opts).trim()
   } catch (err) {
-    const e = err as { stderr?: string | Buffer; message: string }
+    const e = err as {
+      stderr?: string | Buffer
+      message: string
+      status?: number | null
+    }
     let stderr = ''
     if (typeof e.stderr === 'string') {
       stderr = e.stderr
@@ -55,6 +67,7 @@ export function runHerdr(args: readonly string[], timeoutMs?: number): string {
       `herdr ${args.join(' ')} failed: ${stderr.trim() || e.message}`,
       args,
       stderr,
+      typeof e.status === 'number' ? e.status : null,
     )
   }
 }
@@ -290,40 +303,4 @@ export function herdrAgentGet(target: string): HerdrAgent | null {
 /** Focus an agent's pane. */
 export function herdrAgentFocus(target: string): void {
   runHerdr(['agent', 'focus', target])
-}
-
-const AGENT_PANE_BUSY_RETRY_MS = 2000
-
-/**
- * Shell-readiness marker (herdsman's spawn hardening): echo a unique marker
- * via `pane run`, then block on `pane wait-output --regex` until the fresh
- * pane's shell prints it — proving the shell is interactive before any
- * `agent start`. Retries once after ~2s on the fresh-shell busy race.
- *
- * Acceptance is regex-escaped — the marker is generated, not user input, but
- * escape defensively anyway.
- */
-export async function waitShellReady(
-  paneId: string,
-  options?: { timeoutMs?: number },
-): Promise<void> {
-  const marker = `__READY_${crypto.randomUUID().replaceAll('-', '')}__`
-  const escaped = marker.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const timeoutMs = options?.timeoutMs ?? 10_000
-
-  try {
-    herdrRunInPane(paneId, ['echo', marker])
-    herdrWaitOutput(paneId, `^${escaped}$`, timeoutMs)
-    return
-  } catch (err) {
-    // Fresh-shell busy race: pane exists but its agent/shell isn't accepting
-    // input yet (`agent_pane_busy`). Wait ~2s and retry once.
-    if (!(err instanceof HerdrError)) throw err
-    await new Promise<void>((resolve) =>
-      setTimeout(resolve, AGENT_PANE_BUSY_RETRY_MS),
-    )
-  }
-
-  herdrRunInPane(paneId, ['echo', marker])
-  herdrWaitOutput(paneId, `^${escaped}$`, timeoutMs)
 }

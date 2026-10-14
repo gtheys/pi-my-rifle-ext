@@ -26,8 +26,8 @@ import {
   parseHerdrStatus,
   runHerdr,
   runHerdrEnvelope,
-  waitShellReady,
 } from '../../pi-extension/subagents/herdr.ts'
+import { waitShellReady } from '../../pi-extension/subagents/spawn.ts'
 
 if (!process.env.HERDR_PANE_ID) {
   console.log(

@@ -32,22 +32,6 @@ import {
   writeReplyRecord,
 } from '../pi-extension/subagents/asks.ts'
 import {
-  __pollForExitTest__,
-  canSplitZellijPane,
-  isCmuxAvailable,
-  isWezTermAvailable,
-  POLL_CHECK_ORDER,
-  parseCmuxFocusedSnapshot,
-  parseCmuxFocusedSnapshotFromJson,
-  parseCmuxJson,
-  parseCmuxPaneRefForSurface,
-  parseCmuxPaneRefForSurfaceFromJson,
-  predictZellijSplitDirection,
-  selectZellijPlacement,
-  selectZellijStackPlacement,
-  shellEscape,
-} from '../pi-extension/subagents/cmux.ts'
-import {
   ackMatches,
   ackSidecarPath,
   type ControlAck,
@@ -66,6 +50,7 @@ import {
   parseHerdrStatus,
 } from '../pi-extension/subagents/herdr.ts'
 import * as subagentsModule from '../pi-extension/subagents/index.ts'
+import * as spawnModule from '../pi-extension/subagents/spawn.ts'
 // re-exported for blocked-phase widget tests
 import {
   __storeInternals__,
@@ -78,8 +63,12 @@ import {
   resultRecordPath,
   writeResultRecord,
 } from '../pi-extension/subagents/store.ts'
+import {
+  __pollForExitTest__,
+  POLL_CHECK_ORDER,
+  shellEscape,
+} from '../pi-extension/subagents/surface.ts'
 
-const { crashCodeSuffix } = subagentsModule
 const resolveDenyTools = subagentsModule.__test__.resolveDenyTools
 
 import {
@@ -1615,45 +1604,7 @@ describe('subagent-done.ts', () => {
   })
 })
 
-describe('crashCodeSuffix', () => {
-  // The wrapper shell runs after the subagent process dies; this suffix is
-  // what turns that into a filesystem-based crash signal for the parent.
-  it('captures rc once, echoes sentinel, and redirects rc to the code file', () => {
-    const suffix = crashCodeSuffix('/tmp/x/agent.code')
-    assert.ok(suffix.includes('__rc=$?'))
-    assert.ok(suffix.includes('"__SUBAGENT_DONE_${__rc}__"'))
-    assert.ok(suffix.includes("> '/tmp/x/agent.code'"))
-  })
-
-  it('reuses the captured rc — $? after the first echo would be 0', () => {
-    const suffix = crashCodeSuffix('/tmp/x/agent.code')
-    const captureIdx = suffix.indexOf('__rc=$?')
-    const sentinelIdx = suffix.indexOf('__SUBAGENT_DONE_')
-    const redirectVarIdx = suffix.indexOf('"$__rc"')
-    const fileIdx = suffix.indexOf("> '/tmp/x/agent.code'")
-    assert.ok(
-      captureIdx < sentinelIdx &&
-        sentinelIdx < redirectVarIdx &&
-        redirectVarIdx < fileIdx,
-      `unexpected suffix: ${suffix}`,
-    )
-  })
-})
-
-describe('parseExitCodeFile', () => {
-  const { parseExitCodeFile } = __pollForExitTest__
-  it('parses a valid exit code', () => {
-    assert.equal(parseExitCodeFile('137'), 137)
-    assert.equal(parseExitCodeFile(' 0\n'), 0)
-  })
-
-  it('treats garbage as a crash (1), never success', () => {
-    assert.equal(parseExitCodeFile('garbage'), 1)
-    assert.equal(parseExitCodeFile(''), 1)
-  })
-})
-
-describe('cmux.ts interpretExitSidecar', () => {
+describe('surface.ts interpretExitSidecar', () => {
   const { interpretExitSidecar } = __pollForExitTest__
 
   it('decodes ping payloads', () => {
@@ -2419,514 +2370,6 @@ describe('subagent status renderer', () => {
   })
 })
 
-describe('subagent startup delay', () => {
-  it('defaults to 500ms when no env var is set', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.getShellReadyDelayMs, 'function')
-
-    const original = process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-    delete process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-    try {
-      assert.equal(testApi.getShellReadyDelayMs(), 500)
-    } finally {
-      if (original == null) delete process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-      else process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = original
-    }
-  })
-
-  it('uses PI_SUBAGENT_SHELL_READY_DELAY_MS when it is set', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.getShellReadyDelayMs, 'function')
-
-    const original = process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-    process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = '2500'
-    try {
-      assert.equal(testApi.getShellReadyDelayMs(), 2500)
-    } finally {
-      if (original == null) delete process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-      else process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = original
-    }
-  })
-})
-describe('subagents widget rendering', () => {
-  it('keeps every rendered line within a very narrow width', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.renderSubagentWidgetLines, 'function')
-
-    const originalNow = Date.now
-    Date.now = () => 1_000_000
-    try {
-      const lines = testApi.renderSubagentWidgetLines(
-        [
-          {
-            id: 'a1',
-            name: 'A',
-            task: '',
-            surface: 's1',
-            startTime: 1_000_000 - 13_000,
-            sessionFile: 'sess1',
-            statusState: createStatusState({
-              source: 'pi',
-              startTimeMs: 1_000_000 - 13_000,
-            }),
-          },
-          {
-            id: 'a2',
-            name: 'B',
-            task: '',
-            surface: 's2',
-            startTime: 1_000_000 - 21_000,
-            sessionFile: 'sess2',
-            statusState: createStatusState({
-              source: 'pi',
-              startTimeMs: 1_000_000 - 21_000,
-            }),
-          },
-          {
-            id: 'a3',
-            name: 'C',
-            task: '',
-            surface: 's3',
-            startTime: 1_000_000 - 27_000,
-            sessionFile: 'sess3',
-            statusState: createStatusState({
-              source: 'pi',
-              startTimeMs: 1_000_000 - 27_000,
-            }),
-          },
-        ],
-        16,
-      )
-
-      assert.deepEqual(
-        lines.map((line: string) => visibleWidth(line)),
-        [16, 16, 16, 16, 16],
-      )
-    } finally {
-      Date.now = originalNow
-    }
-  })
-
-  it('truncates the right-hand status instead of overflowing when it alone is too wide', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.borderLine, 'function')
-
-    const line = testApi.borderLine(' A ', ' 999 msgs (999.9KB) ', 16)
-    assert.equal(visibleWidth(line), 16)
-  })
-
-  it('handles ultra-narrow widths without exceeding the width contract', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.renderSubagentWidgetLines, 'function')
-
-    const widths = [0, 1, 2]
-    for (const width of widths) {
-      const startTime = Date.now() - 5_000
-      const lines = testApi.renderSubagentWidgetLines(
-        [
-          {
-            id: 'a1',
-            name: 'A',
-            task: '',
-            surface: 's1',
-            startTime,
-            sessionFile: 'sess1',
-            statusState: createStatusState({
-              source: 'pi',
-              startTimeMs: startTime,
-            }),
-          },
-        ],
-        width,
-      )
-
-      for (const line of lines) {
-        assert.ok(
-          visibleWidth(line) <= width,
-          `expected line width <= ${width}, got ${visibleWidth(line)} for ${JSON.stringify(line)}`,
-        )
-      }
-    }
-  })
-})
-
-describe('cmux.ts', () => {
-  describe('shellEscape', () => {
-    it('wraps in single quotes', () => {
-      assert.equal(shellEscape('hello'), "'hello'")
-    })
-
-    it('escapes single quotes', () => {
-      assert.equal(shellEscape("it's"), "'it'\\''s'")
-    })
-
-    it('handles empty string', () => {
-      assert.equal(shellEscape(''), "''")
-    })
-
-    it('handles special characters', () => {
-      const input = 'echo "hello $world" && rm -rf /'
-      const escaped = shellEscape(input)
-      assert.ok(escaped.startsWith("'"))
-      assert.ok(escaped.endsWith("'"))
-      // Inside single quotes, everything is literal
-      assert.ok(escaped.includes('$world'))
-    })
-  })
-
-  describe('parseCmuxFocusedSnapshot', () => {
-    it('parses focused surface and pane refs', () => {
-      assert.deepEqual(
-        parseCmuxFocusedSnapshot({
-          focused: { surface_ref: 'surface:3', pane_ref: 'pane:2' },
-        }),
-        { surfaceRef: 'surface:3', paneRef: 'pane:2' },
-      )
-    })
-
-    it('does not fall back to caller refs', () => {
-      assert.equal(
-        parseCmuxFocusedSnapshot({
-          caller: { surface_ref: 'surface:1', pane_ref: 'pane:1' },
-        }),
-        null,
-      )
-    })
-
-    it('returns null for malformed values', () => {
-      assert.equal(parseCmuxFocusedSnapshot(null), null)
-      assert.equal(parseCmuxFocusedSnapshot({ focused: {} }), null)
-    })
-  })
-
-  describe('parseCmuxJson', () => {
-    it('returns null for malformed JSON text', () => {
-      assert.equal(parseCmuxJson('not json'), null)
-    })
-
-    it('parses valid JSON text', () => {
-      assert.deepEqual(parseCmuxJson('{"ok":true}'), { ok: true })
-    })
-  })
-
-  describe('parseCmuxFocusedSnapshotFromJson', () => {
-    it('returns null for malformed JSON text', () => {
-      assert.equal(parseCmuxFocusedSnapshotFromJson('not json'), null)
-    })
-
-    it('returns null when focused is absent or not an object', () => {
-      assert.equal(
-        parseCmuxFocusedSnapshotFromJson(
-          '{"focused":null,"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}',
-        ),
-        null,
-      )
-      assert.equal(
-        parseCmuxFocusedSnapshotFromJson(
-          '{"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}',
-        ),
-        null,
-      )
-    })
-
-    it('parses focused refs without falling back to caller refs', () => {
-      assert.deepEqual(
-        parseCmuxFocusedSnapshotFromJson(
-          '{"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"},"focused":{"surface_ref":"surface:2","pane_ref":"pane:3"}}',
-        ),
-        { surfaceRef: 'surface:2', paneRef: 'pane:3' },
-      )
-    })
-  })
-
-  describe('parseCmuxPaneRefForSurface', () => {
-    it('parses top-level pane refs for a surface', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurface(
-          { surface_ref: 'surface:7', pane_ref: 'pane:4' },
-          'surface:7',
-        ),
-        'pane:4',
-      )
-    })
-
-    it('parses caller pane refs for identify --surface output', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurface(
-          { caller: { surface_ref: 'surface:7', pane_ref: 'pane:4' } },
-          'surface:7',
-        ),
-        'pane:4',
-      )
-    })
-
-    it('returns null when the surface does not match', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurface(
-          { surface_ref: 'surface:8', pane_ref: 'pane:4' },
-          'surface:7',
-        ),
-        null,
-      )
-    })
-  })
-
-  describe('parseCmuxPaneRefForSurfaceFromJson', () => {
-    it('returns null for malformed JSON text', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurfaceFromJson('not json', 'surface:7'),
-        null,
-      )
-    })
-
-    it('parses caller refs from cmux identify --surface JSON text', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurfaceFromJson(
-          '{"caller":{"surface_ref":"surface:7","pane_ref":"pane:4"}}',
-          'surface:7',
-        ),
-        'pane:4',
-      )
-    })
-  })
-
-  describe('zellij placement', () => {
-    const pane = (overrides: any) => ({
-      id: 1,
-      is_plugin: false,
-      is_floating: false,
-      is_selectable: true,
-      exited: false,
-      pane_rows: 20,
-      pane_columns: 80,
-      tab_id: 1,
-      ...overrides,
-    })
-
-    it('matches Zellij direction and minimum split rules', () => {
-      assert.equal(
-        predictZellijSplitDirection(pane({ pane_rows: 5, pane_columns: 11 })),
-        'right',
-      )
-      assert.equal(
-        predictZellijSplitDirection(pane({ pane_rows: 11, pane_columns: 5 })),
-        'down',
-      )
-      assert.equal(
-        predictZellijSplitDirection(pane({ pane_rows: 5, pane_columns: 10 })),
-        null,
-      )
-      assert.equal(
-        predictZellijSplitDirection(pane({ pane_rows: 4, pane_columns: 80 })),
-        null,
-      )
-
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 5, pane_columns: 11 })),
-        true,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 11, pane_columns: 5 })),
-        true,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 5, pane_columns: 10 })),
-        false,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 4, pane_columns: 80 })),
-        false,
-      )
-
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 30, pane_columns: 100 }), 80, 20),
-        false,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 45, pane_columns: 100 }), 80, 20),
-        true,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 30, pane_columns: 170 }), 80, 20),
-        true,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 31, pane_columns: 47 }), 50, 10),
-        false,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 31, pane_columns: 77 }), 50, 10),
-        true,
-      )
-    })
-
-    it('uses tab-scoped split only when all Zellij split candidates are safe', () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 40, pane_columns: 120 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 120, pane_columns: 100 }),
-          pane({ id: 12, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
-        ],
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'split',
-        anchorPaneId: 11,
-        targetPaneId: 11,
-        tabId: 1,
-        splitDirection: 'down',
-      })
-    })
-
-    it("stacks when any Zellij split candidate would fall below Pi's configured minimum", () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 100, pane_columns: 47 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 31, pane_columns: 77 }),
-        ],
-        10,
-        50,
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'stack',
-        anchorPaneId: 11,
-        targetPaneId: 11,
-        tabId: 1,
-      })
-    })
-
-    it("stacks when Zellij would split a pane below Pi's usable minimum", () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 20, pane_columns: 20 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 18, pane_columns: 60 }),
-          pane({ id: 12, tab_id: 1, pane_rows: 10, pane_columns: 70 }),
-        ],
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'stack',
-        anchorPaneId: 11,
-        targetPaneId: 11,
-        tabId: 1,
-      })
-    })
-
-    it('never chooses the parent pane as the stack target', () => {
-      const plan = selectZellijStackPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 60, pane_columns: 200 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 10, pane_columns: 20 }),
-          pane({ id: 12, tab_id: 1, pane_rows: 8, pane_columns: 30 }),
-        ],
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'stack',
-        anchorPaneId: 12,
-        targetPaneId: 12,
-        tabId: 1,
-      })
-    })
-
-    it('does not stack when the only usable pane is the parent', () => {
-      const plan = selectZellijStackPlacement(
-        [pane({ id: 10, tab_id: 1, pane_rows: 60, pane_columns: 200 })],
-        10,
-      )
-
-      assert.equal(plan, null)
-    })
-
-    it('stacks on the largest usable non-parent pane when none can split', () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 5, pane_columns: 10 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 6, pane_columns: 8 }),
-          pane({ id: 12, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
-        ],
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'stack',
-        anchorPaneId: 11,
-        targetPaneId: 11,
-        tabId: 1,
-      })
-    })
-
-    it('ignores floating, plugin, exited, unselectable, and other-tab panes', () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 5, pane_columns: 10 }),
-          pane({
-            id: 11,
-            tab_id: 1,
-            pane_rows: 60,
-            pane_columns: 200,
-            is_floating: true,
-          }),
-          pane({
-            id: 12,
-            tab_id: 1,
-            pane_rows: 60,
-            pane_columns: 200,
-            is_plugin: true,
-          }),
-          pane({
-            id: 13,
-            tab_id: 1,
-            pane_rows: 60,
-            pane_columns: 200,
-            exited: true,
-          }),
-          pane({
-            id: 14,
-            tab_id: 1,
-            pane_rows: 60,
-            pane_columns: 200,
-            is_selectable: false,
-          }),
-          pane({ id: 15, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
-        ],
-        10,
-      )
-
-      assert.equal(plan, null)
-    })
-
-    it('returns null when the parent pane cannot be found', () => {
-      assert.equal(selectZellijPlacement([pane({ id: 10 })], 99), null)
-    })
-  })
-
-  describe('isCmuxAvailable', () => {
-    it('returns boolean based on CMUX_SOCKET_PATH', () => {
-      // Can't easily mock env in node:test, just verify it returns a boolean
-      const result = isCmuxAvailable()
-      assert.equal(typeof result, 'boolean')
-    })
-  })
-
-  describe('isWezTermAvailable', () => {
-    it('returns boolean based on WEZTERM_UNIX_SOCKET', () => {
-      const result = isWezTermAvailable()
-      assert.equal(typeof result, 'boolean')
-    })
-  })
-})
-
 describe('plan dispatch', () => {
   describe('classifyPlanArg', () => {
     it('routes everything to the aven planner (aven-first dispatch)', () => {
@@ -3636,14 +3079,221 @@ describe('asks.ts (PMR-WXG0 blocking ask_owner)', () => {
   })
 })
 
-describe('pollForExit sidecar observation order (PMR-WXG0)', () => {
-  it('observes .ask before the crash .code file and the screen scrape', () => {
+describe('status widget rows (PMR-TABUX)', () => {
+  function widgetAgent(id: string, name: string, ageMs: number) {
+    return {
+      id,
+      name,
+      task: '',
+      surface: `pane-${id}`,
+      paneId: `w1:p${id}`,
+      startTime: 1_000_000 - ageMs,
+      sessionFile: `sess-${id}`,
+      interactive: false,
+      statusState: createStatusState({
+        source: 'pi' as const,
+        startTimeMs: 1_000_000 - ageMs,
+      }),
+    }
+  }
+
+  it('renders header + marker/label/status/elapsed rows with hit regions', () => {
+    const { renderSupervisionRows } = subagentsModule
+    const rendered = renderSupervisionRows(
+      [widgetAgent('a1', 'Worker', 13_000)],
+      1_000_000,
+    )
+    assert.equal(rendered.lines.length, 2)
+    assert.match(rendered.lines[0], /Subagents · 1 running/)
+    // Fresh state (never observed) classifies as starting — marker + label +
+    // status + elapsed are what matters here.
+    assert.match(rendered.lines[1], /^[●◌] Worker · (working|starting) /)
+    assert.match(rendered.lines[1], /13s/)
+    assert.equal(rendered.hits.length, 1)
+    assert.equal(rendered.hits[0].childId, 'a1')
+    assert.equal(rendered.hits[0].row, 1)
+    assert.ok(rendered.hits[0].to > rendered.hits[0].from)
+  })
+
+  it('marks starting entries transiently and blocked children with ◐', () => {
+    const { renderSupervisionRows, statusKindOf, markerFor } = subagentsModule
+    const starting = {
+      ...widgetAgent('a1', 'Worker', 1_000),
+      starting: true,
+    }
+    assert.equal(statusKindOf(starting, 1_000_000), 'starting')
+    assert.equal(markerFor('starting'), '◌')
+
+    const rendered = renderSupervisionRows([starting], 1_000_000)
+    assert.match(rendered.lines[1], /^◌ Worker · starting /)
+  })
+
+  it('caps rows and shows the … N more overflow line', () => {
+    const { renderSupervisionRows } = subagentsModule
+    const agents = []
+    for (let i = 0; i < 9; i++) {
+      agents.push(widgetAgent(`a${i}`, `Agent${i}`, (i + 1) * 1000))
+    }
+    const rendered = renderSupervisionRows(agents, 1_000_000)
+    // header + 6 rows + overflow
+    assert.equal(rendered.lines.length, 8)
+    assert.equal(rendered.lines[7], '… 3 more')
+    assert.equal(rendered.hits.length, 6)
+  })
+
+  it('shows stale in the header when a snapshot read failed', () => {
+    const { renderSupervisionRows } = subagentsModule
+    const agent = {
+      ...widgetAgent('a1', 'Worker', 5_000),
+      activityRead: { ok: false, reason: 'missing' as const },
+    }
+    const rendered = renderSupervisionRows([agent], 1_000_000)
+    assert.match(rendered.lines[0], /stale/)
+  })
+
+  it('matches left-clicks against hit regions only at the render width', () => {
+    const { matchHitRegion } = subagentsModule
+    const regions = [{ row: 1, from: 2, to: 8, childId: 'a1' }]
+    assert.equal(
+      matchHitRegion(regions, { x: 4, y: 1, width: 80 }, 80)?.childId,
+      'a1',
+    )
+    assert.equal(matchHitRegion(regions, { x: 4, y: 1, width: 100 }, 80), null)
+    assert.equal(matchHitRegion(regions, { x: 4, y: 2, width: 80 }, 80), null)
+    assert.equal(matchHitRegion(regions, { x: 1, y: 1, width: 80 }, 80), null)
+    assert.equal(matchHitRegion(regions, { x: 8, y: 1, width: 80 }, 80), null)
+  })
+})
+
+describe('focus verification gate (PMR-TABUX)', () => {
+  const { canFocusAgent } = spawnModule
+
+  const target = {
+    childId: 'a1',
+    sessionFile: '/tmp/sess.jsonl',
+    paneId: 'w1:p9',
+    tabId: 'w1:t1',
+    workspaceId: 'w1',
+  }
+
+  it('focuses only when herdr reports the same pane/tab/workspace', () => {
+    assert.deepEqual(
+      canFocusAgent(target, {
+        pane_id: 'w1:p9',
+        tab_id: 'w1:t1',
+        workspace_id: 'w1',
+      }),
+      { ok: true, paneId: 'w1:p9' },
+    )
+  })
+
+  it('is inert when the agent is gone, starting, or moved', () => {
+    assert.equal(canFocusAgent(target, null).ok, false)
+    assert.equal(
+      canFocusAgent(
+        { ...target, starting: true },
+        {
+          pane_id: 'w1:p9',
+        },
+      ).ok,
+      false,
+    )
+    assert.equal(canFocusAgent(target, { pane_id: 'w1:pX' }).ok, false)
+    assert.equal(
+      canFocusAgent(target, {
+        pane_id: 'w1:p9',
+        tab_id: 'w1:tX',
+      }).ok,
+      false,
+    )
+    assert.equal(
+      canFocusAgent({ ...target, paneId: undefined }, { pane_id: 'w1:p9' }).ok,
+      false,
+    )
+  })
+})
+
+describe('rollback bookkeeping (PMR-TABUX)', () => {
+  const { pickRollbackTabs } = spawnModule
+
+  it('closes only tabs the spawn created, never user tabs', () => {
+    assert.deepEqual(pickRollbackTabs(['t1', 't2'], ['t1', 'user-a', 't3']), [
+      't1',
+    ])
+    assert.deepEqual(pickRollbackTabs([], ['t1']), [])
+    assert.deepEqual(pickRollbackTabs(['t1'], []), [])
+  })
+})
+
+describe('pollForExit check order (PMR-TABUX)', () => {
+  it('observes .exit first, .ask before the liveness probe; scrape/.code gone', () => {
     const order = POLL_CHECK_ORDER
-    assert.ok(order.indexOf('ask') < order.indexOf('code'))
-    assert.ok(order.indexOf('ask') < order.indexOf('screen'))
-    // Fast paths keep priority: a real exit always wins over a pending ask.
     assert.ok(order.indexOf('exit') < order.indexOf('ask'))
-    assert.ok(order.indexOf('sentinel') < order.indexOf('ask'))
+    assert.ok(order.indexOf('ask') < order.indexOf('liveness'))
+    const names = order as readonly string[]
+    assert.equal(names.includes('screen'), false)
+    assert.equal(names.includes('code'), false)
+    assert.equal(names.includes('sentinel'), false)
+  })
+})
+describe('pollForExit crash inference (PMR-TABUX)', () => {
+  function opts(overrides: Record<string, unknown> = {}) {
+    return {
+      interval: 5,
+      sessionFile: '/tmp/does-not-matter.jsonl',
+      isAlive: () => true,
+      ...overrides,
+    } as any
+  }
+
+  it('resolves from the .exit sidecar when present', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'poll-exit-'))
+    const sessionFile = join(dir, 's.jsonl')
+    writeFileSync(
+      `${sessionFile}.exit`,
+      JSON.stringify({ type: 'done' }),
+      'utf8',
+    )
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const result = await pollForExit(
+      'w1:p1',
+      AbortSignal.timeout(1000),
+      opts({ sessionFile }),
+    )
+    assert.equal(result.reason, 'done')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('fail-closed: pane gone + no .exit ⇒ error result, never success', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const result = await pollForExit(
+      'w1:pGONE',
+      AbortSignal.timeout(1000),
+      opts({ isAlive: () => false }),
+    )
+    assert.equal(result.reason, 'error')
+    assert.equal(result.exitCode, 1)
+    assert.match(
+      result.errorMessage ?? '',
+      /disappeared without an exit sidecar/,
+    )
+  })
+
+  it('probe errors fail OPEN (treated alive)', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const controller = new AbortController()
+    const p = pollForExit(
+      'w1:p1',
+      controller.signal,
+      opts({
+        isAlive: () => {
+          throw new Error('herdr unreachable')
+        },
+      }),
+    )
+    // No error thrown for the probe failure; abort to end the poll.
+    setTimeout(() => controller.abort(), 50)
+    await assert.rejects(p, /Aborted/)
   })
 })
 
