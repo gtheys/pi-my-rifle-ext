@@ -502,6 +502,23 @@ export PI_SUBAGENT_MUX=cmux   # or tmux, zellij, wezterm, herdr
 
 ---
 
+## Configuration
+
+Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on first run).
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `status.enabled` | boolean | `true` | Enable the live status widget and status refresh loop |
+
+```json
+{
+  "$schema": "https://json-schema.org/schema",
+  "status": {
+    "enabled": true
+  }
+}
+```
+
 ## Acknowledgements
 
 The sub-agent status supervision and turn-only interruption features were inspired by [RepoPrompt](https://repoprompt.com/)'s sub-agent snapshot polling and run cancellation features.

@@ -39,6 +39,7 @@ import {
   sendLongCommand,
   shellEscape,
 } from './cmux.ts'
+import { loadSubagentsConfig, type SubagentsConfig } from './config.ts'
 import {
   findLastAssistantMessage,
   getNewEntries,
@@ -49,11 +50,12 @@ import {
   capStatusLines,
   classifyStatus,
   createStatusState,
+  DEFAULT_STATUS_LINE_LIMIT,
   forceStatusAfterInterrupt,
   formatStatusAggregate,
   formatTransitionLine,
-  loadStatusConfig,
   observeStatus,
+  type StatusConfig,
   type StatusSnapshot,
   type SubagentStatusState,
 } from './status.ts'
@@ -513,7 +515,30 @@ function getArtifactDir(sessionDir: string, sessionId: string): string {
   return join(sessionDir, 'artifacts', sessionId)
 }
 
-const statusConfig = loadStatusConfig()
+// AIDEV-NOTE: status config moved to the extension-owned config file
+// (<agentDir>/pi-subagents/config.json, project override in CONFIG_DIR_NAME).
+// loadStatusConfig in status.ts and config.json.example are superseded.
+const STATUS_CONFIG_KEY = Symbol.for('pi-subagents/status-config')
+const DEFAULT_STATUS_CONFIG: StatusConfig = {
+  enabled: true,
+  lineLimit: DEFAULT_STATUS_LINE_LIMIT,
+}
+
+function getStatusConfig(): StatusConfig {
+  const stored = (globalThis as Record<symbol, unknown>)[STATUS_CONFIG_KEY]
+  if (stored !== undefined) return stored as StatusConfig
+  return DEFAULT_STATUS_CONFIG
+}
+
+function loadAndCacheStatusConfig(cwd: string | undefined): StatusConfig {
+  const loaded = loadSubagentsConfig(cwd)
+  const config: StatusConfig = {
+    enabled: loaded.config.status.enabled,
+    lineLimit: DEFAULT_STATUS_LINE_LIMIT,
+  }
+  ;(globalThis as Record<symbol, unknown>)[STATUS_CONFIG_KEY] = config
+  return config
+}
 
 function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
   if (snapshot.kind === 'starting') return ' starting… '
@@ -721,7 +746,7 @@ function renderSubagentWidgetLines(
     const agentTag = agent.agent ? ` (${agent.agent})` : ''
     const left = ` ${elapsed}  ${agent.name}${agentTag} `
     const snapshot = classifyStatus(agent.statusState, Date.now())
-    const right = statusConfig.enabled
+    const right = getStatusConfig().enabled
       ? formatWidgetRightLabel(snapshot)
       : agent.cli === 'claude'
         ? ' running… '
@@ -1001,7 +1026,7 @@ function handleSubagentInterrupt(
 }
 
 function startStatusRefresh(pi: ExtensionAPI) {
-  if (!statusConfig.enabled || statusInterval) return
+  if (!getStatusConfig().enabled || statusInterval) return
 
   statusInterval = setInterval(() => {
     if (runningSubagents.size === 0) {
@@ -1042,7 +1067,10 @@ function startStatusRefresh(pi: ExtensionAPI) {
     if (shouldRefreshWidget) updateWidget()
 
     if (transitionLines.length > 0) {
-      const capped = capStatusLines(transitionLines, statusConfig.lineLimit)
+      const capped = capStatusLines(
+        transitionLines,
+        getStatusConfig().lineLimit,
+      )
       // AIDEV-NOTE: pi can be stale after session replacement — swallow, the
       // new module load recreates this interval with a fresh pi.
       try {
@@ -1051,7 +1079,7 @@ function startStatusRefresh(pi: ExtensionAPI) {
             customType: 'subagent_status',
             content: formatStatusAggregate(
               transitionLines,
-              statusConfig.lineLimit,
+              getStatusConfig().lineLimit,
             ),
             display: true,
             details: { lines: capped.visibleLines, overflow: capped.overflow },
@@ -1760,6 +1788,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   }
   pi.on('session_start', (_event, ctx) => {
     latestCtx = ctx
+    // AIDEV-NOTE: load per session so a project override written mid-run is
+    // honored on the next session. Throws on invalid config — fail fast.
+    loadAndCacheStatusConfig(ctx.cwd)
   })
 
   // Clean up on session shutdown

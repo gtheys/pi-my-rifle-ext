@@ -5,10 +5,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { visibleWidth } from '@mariozechner/pi-tui'
@@ -2900,5 +2901,189 @@ describe('plan dispatch', () => {
         null,
       )
     })
+  })
+})
+
+// --- Phase 0: durable foundation ---
+
+import {
+  DEFAULT_SUBAGENTS_CONFIG,
+  globalSubagentsConfigPath,
+  loadSubagentsConfig,
+  projectSubagentsConfigPath,
+  scaffoldGlobalSubagentsConfig,
+  validateSubagentsConfig,
+} from '../pi-extension/subagents/config.ts'
+import {
+  ensureSubagentsDataDir,
+  subagentsDataRoot,
+} from '../pi-extension/subagents/dataroot.ts'
+import {
+  acquireProcessLock,
+  isProcessLockClaim,
+  keyedProcessLockPath,
+  type ProcessLockClaim,
+  ProcessLockOccupiedError,
+  readProcessLockStatus,
+} from '../pi-extension/subagents/lock.ts'
+
+function modeOf(path: string): number {
+  return statSync(path).mode & 0o777
+}
+
+describe('dataroot.ts', () => {
+  it('builds the data root under the agent dir', () => {
+    assert.equal(subagentsDataRoot('/agents'), join('/agents', 'pi-subagents'))
+  })
+
+  it('creates lazily-named subdirs with 0700 and is idempotent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-dataroot-'))
+    const dir = ensureSubagentsDataDir('results', root)
+    assert.equal(dir, join(root, 'results'))
+    assert.ok(statSync(dir).isDirectory())
+    assert.equal(modeOf(root), 0o700)
+    assert.equal(modeOf(dir), 0o700)
+    assert.equal(ensureSubagentsDataDir('results', root), dir)
+  })
+})
+
+describe('config.ts', () => {
+  it('validates a correct config and rejects bad shapes', () => {
+    assert.deepEqual(
+      validateSubagentsConfig({ status: { enabled: true } }, 't'),
+      {
+        status: { enabled: true },
+      },
+    )
+    assert.throws(
+      () => validateSubagentsConfig({ status: { enabled: 'yes' } }, 't'),
+      /Invalid subagents config in t/,
+    )
+    assert.throws(
+      () =>
+        validateSubagentsConfig({ status: { enabled: true, extra: 1 } }, 't'),
+      /Invalid subagents config in t/,
+    )
+    assert.throws(
+      () => validateSubagentsConfig(null, 't'),
+      /Invalid subagents config in t/,
+    )
+  })
+
+  it('scaffolds the global config only when missing and never overwrites', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const path = globalSubagentsConfigPath(agentDir)
+    assert.equal(scaffoldGlobalSubagentsConfig(agentDir), path)
+    assert.ok(existsSync(path))
+    const onDisk = JSON.parse(readFileSync(path, 'utf8'))
+    assert.equal(onDisk.status.enabled, true)
+    assert.ok(typeof onDisk.$schema === 'string')
+
+    writeFileSync(path, '{"status":{"enabled":false}}')
+    scaffoldGlobalSubagentsConfig(agentDir)
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
+      status: { enabled: false },
+    })
+  })
+
+  it('falls back to the global config and defaults', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'subagents-cwd-'))
+    const loaded = loadSubagentsConfig(cwd, agentDir)
+    assert.deepEqual(loaded.config, DEFAULT_SUBAGENTS_CONFIG)
+    assert.equal(loaded.source, globalSubagentsConfigPath(agentDir))
+  })
+
+  it('lets the project override win and fails fast on invalid config', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'subagents-cwd-'))
+    const projectPath = projectSubagentsConfigPath(cwd)
+    mkdirSync(dirname(projectPath), { recursive: true })
+    writeFileSync(projectPath, '{"status":{"enabled":false}}')
+
+    const loaded = loadSubagentsConfig(cwd, agentDir)
+    assert.equal(loaded.config.status.enabled, false)
+    assert.equal(loaded.source, projectPath)
+
+    writeFileSync(projectPath, '{')
+    assert.throws(
+      () => loadSubagentsConfig(cwd, agentDir),
+      /Invalid JSON in subagents config/,
+    )
+    writeFileSync(projectPath, '{"status":{"enabled":1}}')
+    assert.throws(
+      () => loadSubagentsConfig(cwd, agentDir),
+      /Invalid subagents config/,
+    )
+  })
+})
+
+describe('lock.ts', () => {
+  it('validates claim shape', () => {
+    const claim: ProcessLockClaim = {
+      pid: process.pid,
+      id: 'e5a8d13e-1a2b-4c3d-9e2f-0123456789ab',
+    }
+    assert.ok(isProcessLockClaim(claim))
+    assert.ok(!isProcessLockClaim({ pid: -1, id: claim.id }))
+    assert.ok(!isProcessLockClaim({ pid: 1, id: 'not-a-uuid' }))
+    assert.ok(!isProcessLockClaim(null))
+  })
+
+  it('acquires, observes, and releases a lock', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const path = join(dir, 'lock')
+    const lease = acquireProcessLock(path, { name: 'test lock' })
+    assert.equal(lease.claim.pid, process.pid)
+    const status = readProcessLockStatus(path)
+    assert.deepEqual(status.claim, lease.claim)
+    assert.ok(status.live)
+    lease.release()
+    assert.throws(() => readProcessLockStatus(path))
+  })
+
+  it('rejects a second live claimant', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const path = join(dir, 'lock')
+    const lease = acquireProcessLock(path)
+    assert.throws(
+      () => acquireProcessLock(path, { name: 'test lock' }),
+      ProcessLockOccupiedError,
+    )
+    lease.release()
+    const second = acquireProcessLock(path)
+    second.release()
+  })
+
+  it('takes over a stale claim from a dead pid', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const path = join(dir, 'lock')
+    // Process.kill(pid=largest-possible) can't be used safely; instead write a
+    // claim with a pid that cannot exist (no PID will ever be 2^22+ on Linux).
+    const stale: ProcessLockClaim = {
+      pid: 0x400000,
+      id: 'e5a8d13e-1a2b-4c3d-9e2f-0123456789ab',
+    }
+    mkdirSync(path, { mode: 0o700 })
+    writeFileSync(join(path, `${stale.pid}-${stale.id}`), JSON.stringify(stale))
+    assert.equal(readProcessLockStatus(path).live, false)
+    let removed = false
+    const lease = acquireProcessLock(path, {
+      afterStaleOwnerRemoved: () => {
+        removed = true
+      },
+    })
+    assert.ok(removed)
+    assert.equal(lease.claim.pid, process.pid)
+    lease.release()
+  })
+
+  it('derives stable keyed lock paths', () => {
+    const a = keyedProcessLockPath('session:/tmp/x.jsonl')
+    const b = keyedProcessLockPath('session:/tmp/x.jsonl')
+    const c = keyedProcessLockPath('session:/tmp/y.jsonl')
+    assert.equal(a, b)
+    assert.notEqual(a, c)
+    assert.ok(a.startsWith(join(tmpdir(), 'pi-subagents', 'locks', 'lock-')))
   })
 })

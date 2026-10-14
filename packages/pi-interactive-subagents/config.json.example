@@ -1,4 +1,5 @@
 {
+  "$comment": "Superseded: runtime config now lives at <agentDir>/pi-subagents/config.json (see pi-extension/subagents/config.ts). Kept only for backwards compatibility and tests.",
   "status": {
     "enabled": true
   }

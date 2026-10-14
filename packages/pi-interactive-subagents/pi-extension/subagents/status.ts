@@ -209,6 +209,10 @@ function readStatusConfigFile(
   }
 }
 
+// AIDEV-NOTE: SUPERSEDED — runtime config now loads via config.ts
+// (loadSubagentsConfig) from <agentDir>/pi-subagents/config.json with a
+// project override in CONFIG_DIR_NAME. loadStatusConfig/config.json.example
+// remain only for backwards compatibility and tests.
 export function loadStatusConfig(
   configPath = DEFAULT_STATUS_CONFIG_PATH,
   examplePath = STATUS_CONFIG_EXAMPLE_PATH,
