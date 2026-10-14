@@ -10,6 +10,14 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import {
+  herdrReadPane,
+  herdrSendEscape,
+  herdrSendReturn,
+  herdrSendText,
+  runHerdr,
+  runHerdrEnvelope,
+} from './herdr.ts'
 
 const execFileAsync = promisify(execFile)
 
@@ -927,36 +935,39 @@ export function createSurface(name: string): string {
   return createSurfaceSplit(name, 'right', fromSurface)
 }
 
-// AIDEV-NOTE: Herdr backend uses the `herdr` JSON CLI. Pane IDs look like `wX:pY`,
-// splits default to `right` with `--no-focus` so the parent keeps focus, and reads
-// use `--source visible` because `recent` only captures the focused pane.
+// AIDEV-NOTE: Herdr backend uses the `herdr` JSON CLI (socket API wrappers),
+// verified against `herdr api schema --json` of the installed 0.9.0 binary
+// (protocol 22). Pane IDs look like `wX:pY`. Methods in use:
+// - `pane split --direction right|down --no-focus --cwd [--pane ID|--current] [--env K=V]`
+//   — focus intent passed AT creation (focus-safe spawning; no steal/restore).
+//   herdr injects HERDR_* env vars into the launched process, authoritative on
+//   conflict — that is how children detect the herdr runtime.
+// - `pane send-keys <id> esc` — canonical Escape key combo, never raw byte 27.
+// - `pane send-text <id> <text>` + `pane send-keys <id> return` — command submit.
+//   Long payloads never go through the input queue: script file + short
+//   `bash <file>` line (sendLongCommand), because oversized lines are rejected.
+// - `pane read <id> --source recent-unwrapped --lines N` — logical lines without
+//   viewport hard-wrapping, works for non-focused panes, so string markers stay
+//   contiguous (visible/recent wrap at pane width and break substring matching).
+//   PaneInfo.scroll (offset_from_bottom == 0 = at-bottom) is available via
+//   `herdr pane get` if position ever becomes needed — currently not used.
+// Not adopted (verified present in schema, but a poor fit for the backend-
+// agnostic sidecar/poll design): `agent.wait --until done` and `agent.prompt`
+// with atomic `wait:{until,timeout_ms}` require the child pane to report agent
+// state (pane.report-agent), which the wrapper shell does not do. pollForExit
+// stays file-based and mux-agnostic.
 // ── Herdr helpers ──
 
-function parseHerdrJson<T>(output: string): T | null {
-  try {
-    return JSON.parse(output) as T
-  } catch {
-    return null
-  }
-}
-
-function parseHerdrPaneSurface(output: string, context: string): string {
-  const parsed = parseHerdrJson<{ result?: { pane?: { pane_id?: string } } }>(
-    output,
-  )
-  const paneId = parsed?.result?.pane?.pane_id
-  if (!paneId) {
-    throw new Error(`Unexpected herdr ${context} output: ${output}`)
-  }
-  return paneId
-}
-
-function createHerdrSurface(name: string, fromSurface?: string): string {
+function herdrSplitPane(
+  direction: 'right' | 'down',
+  name: string,
+  fromSurface?: string,
+): string {
   const args = [
     'pane',
     'split',
     '--direction',
-    'right',
+    direction,
     '--no-focus',
     '--cwd',
     process.cwd(),
@@ -967,18 +978,25 @@ function createHerdrSurface(name: string, fromSurface?: string): string {
     args.push('--current')
   }
 
-  const output = execFileSync('herdr', args, { encoding: 'utf8' }).trim()
-  const surface = parseHerdrPaneSurface(output, 'split')
+  const result = runHerdrEnvelope<{ pane?: { pane_id?: string } }>(args)
+  const paneId = result.pane?.pane_id
+  if (!paneId) {
+    throw new Error(
+      `Unexpected herdr split output: ${JSON.stringify(result).slice(0, 200)}`,
+    )
+  }
 
   try {
-    execFileSync('herdr', ['pane', 'rename', surface, name], {
-      encoding: 'utf8',
-    })
+    runHerdr(['pane', 'rename', paneId, name])
   } catch {
     // Pane rename is cosmetic; don't fail the launch if it doesn't work.
   }
 
-  return surface
+  return paneId
+}
+
+function createHerdrSurface(name: string, fromSurface?: string): string {
+  return herdrSplitPane('right', name, fromSurface)
 }
 
 /**
@@ -1080,34 +1098,11 @@ export function createSurfaceSplit(
   if (backend === 'herdr') {
     // Herdr's split command only supports right and down. Normalize left/up
     // to the closest supported direction; createSurface never requests those.
-    const herdrDirection = direction === 'up' ? 'down' : 'right'
-    const args = [
-      'pane',
-      'split',
-      '--direction',
-      herdrDirection,
-      '--no-focus',
-      '--cwd',
-      process.cwd(),
-    ]
-    if (fromSurface) {
-      args.push('--pane', fromSurface)
-    } else {
-      args.push('--current')
+    let herdrDirection: 'right' | 'down' = 'right'
+    if (direction === 'down' || direction === 'up') {
+      herdrDirection = 'down'
     }
-
-    const output = execFileSync('herdr', args, { encoding: 'utf8' }).trim()
-    const surface = parseHerdrPaneSurface(output, 'split')
-
-    try {
-      execFileSync('herdr', ['pane', 'rename', surface, name], {
-        encoding: 'utf8',
-      })
-    } catch {
-      // Optional.
-    }
-
-    return surface
+    return herdrSplitPane(herdrDirection, name, fromSurface)
   }
 
   // zellij
@@ -1304,12 +1299,8 @@ export function sendCommand(surface: string, command: string): void {
   }
 
   if (backend === 'herdr') {
-    execFileSync('herdr', ['pane', 'send-text', surface, command], {
-      encoding: 'utf8',
-    })
-    execFileSync('herdr', ['pane', 'send-keys', surface, 'return'], {
-      encoding: 'utf8',
-    })
+    herdrSendText(surface, command)
+    herdrSendReturn(surface)
     return
   }
 
@@ -1349,9 +1340,7 @@ export function sendEscape(surface: string): void {
   }
 
   if (backend === 'herdr') {
-    execFileSync('herdr', ['pane', 'send-keys', surface, 'esc'], {
-      encoding: 'utf8',
-    })
+    herdrSendEscape(surface)
     return
   }
 
@@ -1431,19 +1420,12 @@ export function readScreen(surface: string, lines = 50): string {
   }
 
   if (backend === 'herdr') {
-    const raw = execFileSync(
-      'herdr',
-      [
-        'pane',
-        'read',
-        surface,
-        '--source',
-        'visible',
-        '--lines',
-        String(lines),
-      ],
-      { encoding: 'utf8' },
-    )
+    // recent-unwrapped: logical lines without viewport hard-wrapping, works
+    // for non-focused panes — see AIDEV-NOTE above.
+    const raw = herdrReadPane(surface, {
+      lines,
+      source: 'recent-unwrapped',
+    })
     return tailLines(raw, lines)
   }
 
@@ -1496,19 +1478,10 @@ export async function readScreenAsync(
   }
 
   if (backend === 'herdr') {
-    const { stdout } = await execFileAsync(
-      'herdr',
-      [
-        'pane',
-        'read',
-        surface,
-        '--source',
-        'visible',
-        '--lines',
-        String(lines),
-      ],
-      { encoding: 'utf8' },
-    )
+    const stdout = herdrReadPane(surface, {
+      lines,
+      source: 'recent-unwrapped',
+    })
     return tailLines(stdout, lines)
   }
 
@@ -1549,7 +1522,7 @@ export function closeSurface(surface: string): void {
 
   if (backend === 'herdr') {
     try {
-      execFileSync('herdr', ['pane', 'close', surface], { encoding: 'utf8' })
+      runHerdr(['pane', 'close', surface])
     } catch {
       // Already gone or not a herdr pane.
     }
@@ -1607,6 +1580,39 @@ export function parseExitCodeFile(raw: string): number {
 }
 
 /**
+ * Poll check order for one pollForExit tick. Exported for tests — the order is
+ * load-bearing: `.ask` (blocked-but-alive, PMR-WXG0) must be observed BEFORE
+ * the crash `.code` file and the screen sentinel scrape, or a blocked child
+ * gets misclassified as crashed.
+ */
+export type PollCheckPhase = 'exit' | 'sentinel' | 'ask' | 'code' | 'screen'
+export const POLL_CHECK_ORDER: readonly PollCheckPhase[] = [
+  'exit',
+  'sentinel',
+  'ask',
+  'code',
+  'screen',
+]
+
+/**
+ * Wait one poll interval; rejects on abort.
+ */
+function waitPollInterval(signal: AbortSignal, ms: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(new Error('Aborted'))
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    function onAbort() {
+      clearTimeout(timer)
+      reject(new Error('Aborted'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
  * Poll until the subagent exits. Checks for a `.exit` sidecar file first
  * (written by subagent_done / caller_ping), falling back to the terminal
  * sentinel for crash detection.
@@ -1619,6 +1625,8 @@ export async function pollForExit(
     sessionFile?: string
     sentinelFile?: string
     onTick?: (elapsed: number) => void
+    /** Called each tick while a `.ask` sidecar is present (blocked child). */
+    onAsk?: () => void
   },
 ): Promise<PollResult> {
   const start = Date.now()
@@ -1645,6 +1653,21 @@ export async function pollForExit(
       try {
         if (existsSync(options.sentinelFile)) {
           return { reason: 'sentinel', exitCode: 0 }
+        }
+      } catch {}
+    }
+
+    // Blocked-ask observation (PMR-WXG0): `.ask` sidecar present ⇒ the child
+    // is blocked-asking and ALIVE. Checked BEFORE the crash `.code` file and
+    // the screen scrape. The poll deliberately does NOT resolve — the watcher
+    // keeps waiting for the eventual `.exit`.
+    if (options.sessionFile) {
+      try {
+        if (existsSync(`${options.sessionFile}.ask`)) {
+          options.onAsk?.()
+          options.onTick?.(Math.floor((Date.now() - start) / 1000))
+          await waitPollInterval(signal, options.interval)
+          continue
         }
       } catch {}
     }
@@ -1691,17 +1714,6 @@ export async function pollForExit(
     const elapsed = Math.floor((Date.now() - start) / 1000)
     options.onTick?.(elapsed)
 
-    await new Promise<void>((resolve, reject) => {
-      if (signal.aborted) return reject(new Error('Aborted'))
-      const timer = setTimeout(() => {
-        signal.removeEventListener('abort', onAbort)
-        resolve()
-      }, options.interval)
-      function onAbort() {
-        clearTimeout(timer)
-        reject(new Error('Aborted'))
-      }
-      signal.addEventListener('abort', onAbort, { once: true })
-    })
+    await waitPollInterval(signal, options.interval)
   }
 }

@@ -28,6 +28,7 @@ import {
   PI_TIMEOUT,
   readScreen,
   restoreBackend,
+  sendCommand,
   setBackend,
   sleep,
   startPi,
@@ -332,6 +333,58 @@ for (const backend of backends) {
       assert.ok(
         /needs help|PING/i.test(screen),
         `Screen should show ping notification. Got:\n${screen.slice(-800)}`,
+      )
+    })
+
+    // ── ask_owner round trip (PMR-WXG0) ──
+
+    it('ask_owner blocks the child, answer_subagent delivers and it completes', async () => {
+      const id = uniqueId()
+      const markerFile = `/tmp/pi-integ-ask-${id}.txt`
+      trackTempFile(env, markerFile)
+
+      const surface = createTrackedSurface(env, `ask-${id}`)
+      await sleep(1000)
+
+      const task = [
+        `Call the subagent tool with these EXACT parameters:`,
+        `  name: "Ask-${id}"`,
+        `  agent: "test-ask"`,
+        `  task: "ASK_ROUNDTRIP_${id}"`,
+        `Just call the subagent tool once. Do not do anything else before calling it.`,
+      ].join('\n')
+
+      startPi(surface, env.dir, task)
+
+      // Child calls ask_owner → parent receives a subagent_ask steer.
+      const askScreen = await waitForScreen(
+        surface,
+        new RegExp(`asks owner|ASK_ROUNDTRIP_${id}`, 'i'),
+        PI_TIMEOUT,
+      )
+      assert.ok(
+        new RegExp(`ASK_ROUNDTRIP_${id}`).test(askScreen),
+        `Parent should see the ask. Got:\n${askScreen.slice(-800)}`,
+      )
+
+      // Deliver the answer via answer_subagent (askId optional).
+      sendCommand(
+        surface,
+        `Use answer_subagent with name "Ask-${id}" and message: ` +
+          `Write ANSWER_${id} to ${markerFile} using bash, then call subagent_done.`,
+      )
+
+      // Child continues the SAME session: writes the marker, then exits via
+      // the normal .exit path and the parent gets the subagent_result steer.
+      const content = await waitForFile(markerFile, PI_TIMEOUT, /ANSWER/)
+      assert.ok(
+        content.includes(`ANSWER_${id}`),
+        `Child should have run the answered instruction. Got: ${content.trim()}`,
+      )
+      await waitForScreen(
+        surface,
+        /completed|ANSWER_ROUNDTRIP_DONE/i,
+        PI_TIMEOUT,
       )
     })
 

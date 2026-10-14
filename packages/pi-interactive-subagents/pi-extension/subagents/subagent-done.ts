@@ -4,11 +4,18 @@
  * - Provides a `subagent_done` tool for autonomous agents to self-terminate
  */
 
+import { randomUUID } from 'node:crypto'
 import { existsSync, writeFileSync } from 'node:fs'
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent'
 import { Box, Text } from '@mariozechner/pi-tui'
 import { Type } from '@sinclair/typebox'
 import { createSubagentActivityRecorder } from './activity.ts'
+import {
+  readAskRecord,
+  readAskSidecar,
+  writeAskRecord,
+  writeAskSidecar,
+} from './asks.ts'
 import {
   type ControlAck,
   type ControlRecord,
@@ -404,6 +411,79 @@ export default function (pi: ExtensionAPI) {
           },
         ],
         details: {},
+      }
+    },
+  })
+
+  pi.registerTool({
+    name: 'ask_owner',
+    label: 'Ask Owner',
+    description:
+      'Ask the parent agent a question WITHOUT ending this session. ' +
+      'The parent is woken immediately with your question and its answer arrives as your next user message; you continue the same session afterwards. ' +
+      'MUST be the only tool call in this turn and the last thing you do before ending the turn. ' +
+      'Only one outstanding ask at a time. Use for genuine blockers (missing decisions, unclear requirements); for final completion use subagent_done instead.',
+    parameters: Type.Object({
+      question: Type.String({ description: 'What you need from the owner' }),
+      files: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'Relevant file paths, if any',
+        }),
+      ),
+    }),
+    // AIDEV-NOTE (PMR-WXG0): this extension is only loaded into Pi-backed
+    // children, so Claude-CLI children can never call ask_owner — for them the
+    // tool simply does not exist (their "unsupported" signal is the absent
+    // tool; they finish with subagent_done semantics instead).
+    // The sole+final rule is conveyed via description + the returned guidance
+    // text; herdsman's harder eligibility gates do not transfer (multi-turn
+    // resumable children).
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const childId = process.env.PI_SUBAGENT_ID
+      const sessionFile = process.env.PI_SUBAGENT_SESSION
+      if (!childId || !sessionFile) {
+        throw new Error(
+          'ask_owner is only available in subagent contexts. ' +
+            'PI_SUBAGENT_ID/PI_SUBAGENT_SESSION environment variables are not set.',
+        )
+      }
+
+      // One outstanding ask per child — fail closed on a second call.
+      const pending = readAskSidecar(sessionFile)
+      if (pending || readAskRecord(childId)) {
+        throw new Error(
+          "You already have an outstanding ask. Wait for the owner's answer " +
+            '(it arrives as your next user message) before asking again.',
+        )
+      }
+
+      const askId = randomUUID()
+      const record = {
+        askId,
+        childId,
+        name: process.env.PI_SUBAGENT_NAME,
+        question: params.question,
+        files: params.files,
+        sessionFile,
+        createdAt: new Date().toISOString(),
+      }
+      // Durable first, sidecar second: the parent's poller keys on the
+      // sidecar, so it can only observe a fully-written record.
+      writeAskRecord(record)
+      writeAskSidecar(sessionFile, askId)
+      recorder.blockedAsking()
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              'Question delivered to the owner. End your turn NOW — do not ' +
+              'call any other tool. The answer will arrive as your next user ' +
+              'message and you continue this same session afterwards.',
+          },
+        ],
+        details: { askId },
       }
     },
   })

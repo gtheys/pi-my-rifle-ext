@@ -8,7 +8,15 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-export type SubagentActivityPhase = 'starting' | 'active' | 'waiting' | 'done'
+// AIDEV-NOTE: 'blocked' (PMR-WXG0) = child called ask_owner and is alive at
+// its prompt waiting for the owner's answer. Distinct from 'waiting' so the
+// parent's status can show blocked and the stall rules can tell them apart.
+export type SubagentActivityPhase =
+  | 'starting'
+  | 'active'
+  | 'waiting'
+  | 'blocked'
+  | 'done'
 export type SubagentActivityScope =
   | 'agent'
   | 'turn'
@@ -33,6 +41,7 @@ export type SubagentActivityEvent =
   | 'tool_result'
   | 'tool_execution_end'
   | 'caller_ping'
+  | 'ask_owner'
   | 'subagent_done'
   | 'session_shutdown'
 
@@ -51,6 +60,7 @@ export interface SubagentActivityState {
   activeScope?: SubagentActivityScope
   activeSince?: number
   waitingSince?: number
+  blockedSince?: number
   turnIndex?: number
   messageEventType?: string
   toolCallId?: string
@@ -88,6 +98,7 @@ export interface SubagentActivityRecorder {
   toolResult(toolCallId?: string, toolName?: string): void
   toolExecutionEnd(toolCallId?: string, toolName?: string): void
   callerPing(): void
+  blockedAsking(): void
   subagentDone(): void
   sessionShutdown(reason: SubagentShutdownReason): void
 }
@@ -98,6 +109,7 @@ const KNOWN_PHASES = new Set<SubagentActivityPhase>([
   'starting',
   'active',
   'waiting',
+  'blocked',
   'done',
 ])
 const KNOWN_SCOPES = new Set<SubagentActivityScope>([
@@ -124,6 +136,7 @@ const KNOWN_EVENTS = new Set<SubagentActivityEvent>([
   'tool_result',
   'tool_execution_end',
   'caller_ping',
+  'ask_owner',
   'subagent_done',
   'session_shutdown',
 ])
@@ -249,6 +262,7 @@ function validateActivity(
     validateBoolean(object, 'toolActive'),
     validateOptionalFiniteNumber(object, 'activeSince'),
     validateOptionalFiniteNumber(object, 'waitingSince'),
+    validateOptionalFiniteNumber(object, 'blockedSince'),
     validateOptionalInteger(object, 'turnIndex'),
     validateOptionalFiniteNumber(object, 'toolStartedAt'),
     validateOptionalFiniteNumber(object, 'toolEndedAt'),
@@ -322,6 +336,7 @@ function createNoopRecorder(): SubagentActivityRecorder {
     toolResult() {},
     toolExecutionEnd() {},
     callerPing() {},
+    blockedAsking() {},
     subagentDone() {},
     sessionShutdown() {},
   }
@@ -372,6 +387,7 @@ function markActive(
   if (activity.activeSince == null || resetActiveSince)
     activity.activeSince = now
   delete activity.waitingSince
+  delete activity.blockedSince
 }
 
 export function createSubagentActivityRecorder(params: {
@@ -403,6 +419,11 @@ export function createSubagentActivityRecorder(params: {
   let failureCount = 0
   let lastFlushAt = 0
   let pendingFlush: ReturnType<typeof setTimeout> | null = null
+  // AIDEV-NOTE: ask_owner is pending — agentEndWaiting must keep the phase at
+  // 'blocked' instead of 'waiting' so the parent never classifies a
+  // blocked-asking child as idle/stalled. Cleared when the answer arrives and
+  // the next agent run starts.
+  let askPending = false
 
   function clearPendingFlush(): void {
     if (!pendingFlush) return
@@ -472,6 +493,7 @@ export function createSubagentActivityRecorder(params: {
         current.phase = 'done'
         clearActiveState(current)
         delete current.waitingSince
+        delete current.blockedSince
       },
       'immediate',
     )
@@ -498,6 +520,7 @@ export function createSubagentActivityRecorder(params: {
         'before_agent_start',
         (current, observedAt) => {
           current.agentActive = true
+          askPending = false
           markActive(current, 'agent', observedAt)
         },
         'immediate',
@@ -518,8 +541,29 @@ export function createSubagentActivityRecorder(params: {
         'agent_end',
         (current, observedAt) => {
           clearActiveState(current)
-          current.phase = 'waiting'
-          current.waitingSince = observedAt
+          if (askPending) {
+            current.phase = 'blocked'
+            if (current.blockedSince == null) current.blockedSince = observedAt
+          } else {
+            current.phase = 'waiting'
+            current.waitingSince = observedAt
+          }
+        },
+        'immediate',
+      )
+    },
+    // AIDEV-NOTE: ask_owner tool called — mark blocked immediately (the turn
+    // is ending); the askPending flag keeps later agent_end at 'blocked'.
+    // Cleared in beforeAgentStart when the owner's answer starts the next run.
+    blockedAsking() {
+      askPending = true
+      record(
+        'ask_owner',
+        (current, observedAt) => {
+          current.phase = 'blocked'
+          clearActiveState(current)
+          delete current.waitingSince
+          if (current.blockedSince == null) current.blockedSince = observedAt
         },
         'immediate',
       )

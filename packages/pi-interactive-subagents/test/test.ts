@@ -20,10 +20,23 @@ import {
   readSubagentActivityFile,
 } from '../pi-extension/subagents/activity.ts'
 import {
+  askIdentityMatches,
+  askRecordPath,
+  readAskRecord,
+  readAskSidecar,
+  readReplyRecord,
+  removeAskRecordsForSession,
+  removeAskSidecar,
+  writeAskRecord,
+  writeAskSidecar,
+  writeReplyRecord,
+} from '../pi-extension/subagents/asks.ts'
+import {
   __pollForExitTest__,
   canSplitZellijPane,
   isCmuxAvailable,
   isWezTermAvailable,
+  POLL_CHECK_ORDER,
   parseCmuxFocusedSnapshot,
   parseCmuxFocusedSnapshotFromJson,
   parseCmuxJson,
@@ -45,7 +58,15 @@ import {
   writeAckSidecar,
   writeControlRecord,
 } from '../pi-extension/subagents/control.ts'
+import {
+  compareVersions,
+  HERDR_MIN_VERSION,
+  HerdrError,
+  parseHerdrEnvelope,
+  parseHerdrStatus,
+} from '../pi-extension/subagents/herdr.ts'
 import * as subagentsModule from '../pi-extension/subagents/index.ts'
+// re-exported for blocked-phase widget tests
 import {
   __storeInternals__,
   allocateSemanticRef,
@@ -59,6 +80,7 @@ import {
 } from '../pi-extension/subagents/store.ts'
 
 const { crashCodeSuffix } = subagentsModule
+const resolveDenyTools = subagentsModule.__test__.resolveDenyTools
 
 import {
   appendBranchSummary,
@@ -3493,5 +3515,334 @@ describe('request/ack handshake (PMR-DNPZ)', () => {
     assert.equal(findLastStopReason([{ role: 'assistant' }]), null)
     assert.equal(findLastStopReason([]), null)
     assert.equal(findLastStopReason(undefined), null)
+  })
+})
+
+describe('asks.ts (PMR-WXG0 blocking ask_owner)', () => {
+  function makeAskRecord(overrides: Record<string, unknown> = {}) {
+    return {
+      askId: 'ask-1',
+      childId: 'child-1',
+      name: 'Worker',
+      question: 'Which database?',
+      sessionFile: '/tmp/child-1.jsonl',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    }
+  }
+
+  it('writes and reads ask records atomically by childId', () => {
+    withTempDir((dir) => {
+      writeAskRecord(makeAskRecord(), dir)
+      const record = readAskRecord('child-1', dir)
+      assert.ok(record)
+      assert.equal(record?.askId, 'ask-1')
+      assert.equal(record?.sessionFile, '/tmp/child-1.jsonl')
+      assert.equal(readAskRecord('missing', dir), null)
+    })
+  })
+
+  it('rejects malformed ask records (fail closed)', () => {
+    withTempDir((dir) => {
+      const path = askRecordPath('child-2', dir)
+      writeFileSync(path, JSON.stringify({ question: 'no identity' }))
+      assert.equal(readAskRecord('child-2', dir), null)
+      writeFileSync(path, 'not json')
+      assert.equal(readAskRecord('child-2', dir), null)
+    })
+  })
+
+  it('validates ask identity before an answer is applied', () => {
+    const record = makeAskRecord()
+    assert.equal(
+      askIdentityMatches({
+        record,
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      true,
+    )
+    assert.equal(
+      askIdentityMatches({
+        record,
+        askId: 'ask-1',
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      true,
+    )
+    assert.equal(
+      askIdentityMatches({
+        record,
+        askId: 'other',
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      false,
+    )
+    assert.equal(
+      askIdentityMatches({
+        record,
+        childId: 'other-child',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      false,
+    )
+    assert.equal(
+      askIdentityMatches({
+        record,
+        childId: 'child-1',
+        sessionFile: '/tmp/other.jsonl',
+      }),
+      false,
+    )
+  })
+
+  it('round-trips the .ask sidecar and reply record', () => {
+    withTempDir((dir) => {
+      writeAskSidecar('/tmp/x.jsonl', 'ask-9')
+      assert.deepEqual(readAskSidecar('/tmp/x.jsonl'), { askId: 'ask-9' })
+      removeAskSidecar('/tmp/x.jsonl')
+      assert.equal(readAskSidecar('/tmp/x.jsonl'), null)
+
+      writeAskRecord(makeAskRecord({ askId: 'ask-9' }), dir)
+      writeReplyRecord(
+        'child-1',
+        { askId: 'ask-9', message: 'use postgres', repliedAt: 'now' },
+        dir,
+      )
+      const reply = readReplyRecord('child-1', dir)
+      assert.equal(reply?.askId, 'ask-9')
+      assert.equal(reply?.message, 'use postgres')
+    })
+  })
+
+  it('removes ask records by sessionFile for resume cleanup', () => {
+    withTempDir((dir) => {
+      writeAskRecord(makeAskRecord(), dir)
+      writeAskRecord(
+        makeAskRecord({
+          askId: 'ask-2',
+          childId: 'child-2',
+          sessionFile: '/tmp/other.jsonl',
+        }),
+        dir,
+      )
+      const removed = removeAskRecordsForSession('/tmp/child-1.jsonl', dir)
+      assert.equal(removed, 1)
+      assert.equal(readAskRecord('child-1', dir), null)
+      assert.ok(readAskRecord('child-2', dir))
+    })
+  })
+})
+
+describe('pollForExit sidecar observation order (PMR-WXG0)', () => {
+  it('observes .ask before the crash .code file and the screen scrape', () => {
+    const order = POLL_CHECK_ORDER
+    assert.ok(order.indexOf('ask') < order.indexOf('code'))
+    assert.ok(order.indexOf('ask') < order.indexOf('screen'))
+    // Fast paths keep priority: a real exit always wins over a pending ask.
+    assert.ok(order.indexOf('exit') < order.indexOf('ask'))
+    assert.ok(order.indexOf('sentinel') < order.indexOf('ask'))
+  })
+})
+
+describe('blocked activity phase (PMR-WXG0)', () => {
+  it('keeps phase blocked across agent_end until the answer starts a run', () => {
+    withTempDir((dir) => {
+      const activityFile = getSubagentActivityFile(dir, 'child-b')
+      const recorder = createSubagentActivityRecorder({
+        runningChildId: 'child-b',
+        activityFile,
+      })
+
+      recorder.sessionStart()
+      recorder.agentStart()
+      recorder.turnStart(1)
+      recorder.blockedAsking()
+
+      let read = readSubagentActivityFile(activityFile, 'child-b')
+      assert.ok(read.ok)
+      assert.equal(read.activity.phase, 'blocked')
+      assert.ok(read.activity.blockedSince != null)
+
+      recorder.turnEnd(1)
+      recorder.agentEndWaiting()
+      read = readSubagentActivityFile(activityFile, 'child-b')
+      assert.ok(read.ok)
+      assert.equal(read.activity.phase, 'blocked')
+      assert.equal(read.activity.waitingSince, undefined)
+
+      // Owner's answer arrives → next run flips back to active and unblocks.
+      recorder.beforeAgentStart()
+      read = readSubagentActivityFile(activityFile, 'child-b')
+      assert.ok(read.ok)
+      assert.equal(read.activity.phase, 'active')
+      assert.equal(read.activity.blockedSince, undefined)
+
+      recorder.agentEndWaiting()
+      read = readSubagentActivityFile(activityFile, 'child-b')
+      assert.ok(read.ok)
+      assert.equal(read.activity.phase, 'waiting')
+    })
+  })
+})
+
+describe('blocked status classification (PMR-WXG0)', () => {
+  function blockedState() {
+    const state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    return observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 1_000,
+        sequence: 1,
+        phase: 'blocked',
+        blockedSince: 1_000,
+        latestEvent: 'ask_owner',
+      },
+      1_000,
+    )
+  }
+
+  it('classifies blocked children as blocked, never stalled', () => {
+    const snapshot = classifyStatus(blockedState(), 5_000_000)
+    assert.equal(snapshot.kind, 'blocked')
+    assert.equal(snapshot.blockedDurationText, '1h 23m')
+    assert.match(formatStatusLine('Worker', snapshot), /blocked/)
+  })
+
+  it('advances without a stalled/recovered transition while blocked', () => {
+    const { transition } = advanceStatusState(blockedState(), 5_000_000)
+    assert.equal(transition, null)
+  })
+})
+
+describe('infrastructure child tools (PMR-WXG0)', () => {
+  it('never lets deny-tools or spawning:false exclude ask_owner', () => {
+    const denied = resolveDenyTools({
+      denyTools: 'ask_owner,web_fetch',
+      spawning: false,
+    })
+    assert.equal(denied.has('ask_owner'), false)
+    assert.equal(denied.has('web_fetch'), true)
+    assert.equal(denied.has('subagent'), true)
+  })
+})
+
+describe('herdr.ts verb layer (PMR-M48Y)', () => {
+  describe('parseHerdrEnvelope', () => {
+    const args = ['pane', 'wait-output', 'w1:p1']
+
+    it('parses the {id, result} envelope and returns result', () => {
+      const raw = '{"id":"cli:pane:wait-output","result":{"matched":"yes"}}'
+      assert.deepEqual(parseHerdrEnvelope<Record<string, string>>(args, raw), {
+        matched: 'yes',
+      })
+    })
+
+    it('fails closed on non-JSON output with a clear error', () => {
+      assert.throws(
+        () => parseHerdrEnvelope(args, 'panic: socket gone\n'),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /non-JSON output/)
+          assert.match(err.message, /pane wait-output w1:p1/)
+          return true
+        },
+      )
+    })
+
+    it('surfaces herdr error envelopes', () => {
+      const raw =
+        '{"id":"x","error":{"code":"agent_pane_busy","message":"busy"}}'
+      assert.throws(
+        () => parseHerdrEnvelope(args, raw),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /agent_pane_busy/)
+          return true
+        },
+      )
+    })
+
+    it('rejects JSON without id/result', () => {
+      assert.throws(
+        () => parseHerdrEnvelope(args, '{"foo":1}'),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /missing id\/result/)
+          return true
+        },
+      )
+    })
+  })
+
+  describe('compareVersions', () => {
+    it('orders semver strings', () => {
+      assert.ok(compareVersions('0.9.0', '0.9.1') < 0)
+      assert.ok(compareVersions('0.9.1', '0.9.1') === 0)
+      assert.ok(compareVersions('0.10.0', '0.9.9') > 0)
+      assert.ok(compareVersions('1.0', '0.9.9') > 0)
+    })
+  })
+
+  describe('parseHerdrStatus (preflight + version gate)', () => {
+    it('rejects non-JSON output with a clear error', () => {
+      assert.throws(
+        () => parseHerdrStatus('herdr: command not found'),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /non-JSON/)
+          return true
+        },
+      )
+    })
+
+    it('rejects an unreachable/not-running server', () => {
+      const fixture = JSON.stringify({
+        client: { version: '0.9.1' },
+        server: { status: 'stopped', running: false },
+      })
+      assert.throws(
+        () => parseHerdrStatus(fixture),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /not running/)
+          assert.match(err.message, /herdr pi/)
+          return true
+        },
+      )
+    })
+
+    it('rejects versions below the gate with an upgrade hint', () => {
+      const fixture = JSON.stringify({
+        client: { version: '0.9.0' },
+        server: { status: 'running', running: true, version: '0.9.0' },
+      })
+      assert.throws(
+        () => parseHerdrStatus(fixture),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /0\.9\.0 is too old/)
+          assert.match(err.message, /herdr upgrade/)
+          return true
+        },
+      )
+    })
+
+    it('accepts a running server at or above the gate', () => {
+      const fixture = JSON.stringify({
+        client: { version: '0.9.1' },
+        server: {
+          status: 'running',
+          running: true,
+          version: '0.9.1',
+          protocol: 22,
+        },
+      })
+      const status = parseHerdrStatus(fixture)
+      assert.equal(status.server?.version, '0.9.1')
+    })
   })
 })

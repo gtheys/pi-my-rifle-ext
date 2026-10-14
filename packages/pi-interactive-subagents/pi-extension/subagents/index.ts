@@ -27,6 +27,14 @@ import {
   type SubagentActivityState,
 } from './activity.ts'
 import {
+  askIdentityMatches,
+  readAskRecord,
+  readAskSidecar,
+  removeAskRecordsForSession,
+  removeAskSidecar,
+  writeReplyRecord,
+} from './asks.ts'
+import {
   closeSurface,
   createSurface,
   getMuxBackend,
@@ -260,6 +268,17 @@ const SPAWNING_TOOLS = new Set([
 ])
 
 /**
+ * Child-side infrastructure tools that can never be excluded — not via
+ * `spawning: false`, not via `deny-tools`. Children need them to report
+ * completion and to ask their owner questions (PMR-WXG0).
+ */
+const INFRASTRUCTURE_CHILD_TOOLS = new Set([
+  'caller_ping',
+  'subagent_done',
+  'ask_owner',
+])
+
+/**
  * Resolve the effective set of denied tool names from agent defaults.
  * `spawning: false` expands to all SPAWNING_TOOLS.
  * `deny-tools` adds individual tool names on top.
@@ -273,12 +292,13 @@ function resolveDenyTools(agentDefs: AgentDefaults | null): Set<string> {
     for (const t of SPAWNING_TOOLS) denied.add(t)
   }
 
-  // deny-tools: explicit list
+  // deny-tools: explicit list (infrastructure child tools are never deniable)
   if (agentDefs.denyTools) {
     for (const t of agentDefs.denyTools
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)) {
+      if (INFRASTRUCTURE_CHILD_TOOLS.has(t)) continue
       denied.add(t)
     }
   }
@@ -577,6 +597,12 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
     const detail = snapshot.statusLabel ? ` · ${snapshot.statusLabel}` : ''
     return ` waiting${duration}${detail} `
   }
+  if (snapshot.kind === 'blocked') {
+    const duration = snapshot.blockedDurationText
+      ? ` ${snapshot.blockedDurationText}`
+      : ''
+    return ` blocked${duration} `
+  }
 
   const detail = snapshot.statusLabel ? ` · ${snapshot.statusLabel}` : ''
   const duration = snapshot.snapshotProblemText
@@ -654,6 +680,8 @@ export interface RunningSubagent {
   abortController?: AbortController
   cli?: string
   sentinelFile?: string
+  /** askId of the last ask we steered to the parent (dedupe, PMR-WXG0). */
+  notifiedAskId?: string
   statusState: SubagentStatusState
   /**
    * When true, status transitions (stalled/recovered) do not wake the parent
@@ -908,6 +936,7 @@ function observeRunningSubagent(
         activeScope: read.activity.activeScope,
         activeSince: read.activity.activeSince,
         waitingSince: read.activity.waitingSince,
+        blockedSince: read.activity.blockedSince,
         latestEvent: read.activity.latestEvent,
         activityLabel: activityLabel(read.activity),
       },
@@ -1243,6 +1272,7 @@ export const __test__ = {
   resolveDenyTools,
   resolveInterruptTarget,
   requestSubagentInterrupt,
+  deliverAskSteer,
   handleSubagentInterrupt,
   defaultInterruptControlIo,
   resolveResultPresentation,
@@ -1653,6 +1683,7 @@ function copyClaudeSession(sentinelFile: string): string | null {
 async function watchSubagent(
   running: RunningSubagent,
   signal: AbortSignal,
+  onAsk?: () => void,
 ): Promise<SubagentResult> {
   const { name, task, surface, startTime, sessionFile } = running
 
@@ -1667,6 +1698,7 @@ async function watchSubagent(
         onTick() {
           observeRunningSubagent(running)
         },
+        onAsk,
       },
     )
 
@@ -1798,11 +1830,60 @@ async function watchSubagent(
  * when re-attaching watchers orphaned by an extension /reload (old module
  * aborted its poll loops but kept entries + panes alive on globalThis).
  */
+// AIDEV-NOTE (PMR-WXG0): wake the parent once per askId while the child sits
+// blocked-asking. The watcher keeps polling — only the eventual `.exit`
+// resolves it. If the steer send fails we clear the dedupe marker so the next
+// poll tick retries (at-least-once delivery).
+function deliverAskSteer(pi: ExtensionAPI, running: RunningSubagent): void {
+  try {
+    const record = readAskRecord(running.id)
+    if (!record) return
+    if (running.notifiedAskId === record.askId) return
+    if (
+      !askIdentityMatches({
+        record,
+        childId: running.id,
+        sessionFile: running.sessionFile,
+      })
+    ) {
+      return
+    }
+    running.notifiedAskId = record.askId
+    const filesNote =
+      record.files && record.files.length > 0
+        ? `\n\nFiles: ${record.files.join(', ')}`
+        : ''
+    pi.sendMessage(
+      {
+        customType: 'subagent_ask',
+        content:
+          `Sub-agent "${running.name}" asks (${record.askId}):\n\n` +
+          `${record.question}${filesNote}\n\n` +
+          `Answer with the answer_subagent tool (id: ${running.id}, askId: ${record.askId}).`,
+        display: true,
+        details: {
+          askId: record.askId,
+          childId: running.id,
+          name: running.name,
+          question: record.question,
+          files: record.files,
+          sessionFile: record.sessionFile,
+        },
+      },
+      { triggerTurn: true, deliverAs: 'steer' },
+    )
+  } catch {
+    running.notifiedAskId = undefined
+  }
+}
+
 function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
   running.watching = true
   const watcherAbort = new AbortController()
   running.abortController = watcherAbort
-  watchSubagent(running, watcherAbort.signal)
+  watchSubagent(running, watcherAbort.signal, () =>
+    deliverAskSteer(pi, running),
+  )
     .then((result) => {
       if (result.error === RELOAD_SENTINEL) return // new module delivers
       // AIDEV-NOTE: pi/latestCtx can be stale after session replacement —
@@ -1971,7 +2052,15 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       // AIDEV-NOTE: parent is quitting — kill orphaned panes, else the child
       // pi keeps running forever with nobody to deliver its result to.
       // Interactive agents are user-driven: their pane survives on purpose.
-      if (!agent.interactive) {
+      // Blocked-asking autonomous children are spared too (PMR-WXG0): their
+      // ask record makes them reattachable via subagent_resume.
+      let blockedAsking = false
+      if (agent.cli !== 'claude' && agent.sessionFile) {
+        try {
+          blockedAsking = existsSync(`${agent.sessionFile}.ask`)
+        } catch {}
+      }
+      if (!agent.interactive && !blockedAsking) {
         try {
           closeSurface(agent.surface)
         } catch {}
@@ -2440,8 +2529,14 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
         // Resume reuses the original session file path — clear stale completion
         // markers from the previous run so the watcher doesn't fire instantly.
+        // A stale `.ask`/ask record would also reattach as blocked-asking;
+        // resume is a fresh start for the ask protocol (PMR-WXG0).
         rmSync(`${params.sessionPath}.exit`, { force: true })
         rmSync(`${params.sessionPath}.code`, { force: true })
+        rmSync(`${params.sessionPath}.ask`, { force: true })
+        try {
+          removeAskRecordsForSession(params.sessionPath)
+        } catch {}
 
         const command = `${resumeEnvPrefix}${parts.join(' ')}${crashCodeSuffix(
           `${params.sessionPath}.code`,
@@ -2507,6 +2602,152 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
       },
     })
+
+  // ── answer_subagent tool (PMR-WXG0) ──
+  pi.registerTool({
+    name: 'answer_subagent',
+    label: 'Answer Subagent',
+    description:
+      'Reply to a blocked sub-agent that asked you a question via ask_owner. ' +
+      'Delivers your message into the live sub-agent pane; the sub-agent continues its SAME session with your answer. ' +
+      'Use the askId from the subagent_ask message when available. Do not use this for completed sub-agents — use subagent_resume for follow-up work instead.',
+    parameters: Type.Object({
+      id: Type.Optional(
+        Type.String({
+          description: 'Subagent id (from the subagent_ask message)',
+        }),
+      ),
+      name: Type.Optional(
+        Type.String({ description: 'Exact subagent display name' }),
+      ),
+      askId: Type.Optional(
+        Type.String({ description: 'Ask id to answer (correlation check)' }),
+      ),
+      message: Type.String({ description: 'The answer / reply to deliver' }),
+    }),
+    renderCall(args, theme) {
+      const target = args.name ?? args.id ?? 'subagent'
+      const text =
+        '▸ ' +
+        theme.fg('toolTitle', theme.bold('Answer')) +
+        theme.fg('dim', ` — ${target}`)
+      return new Text(text, 0, 0)
+    },
+    renderResult(result, _opts, theme) {
+      const details = result.details as any
+      if (details?.status === 'answered') {
+        return new Text(
+          theme.fg('success', '✓') +
+            ' ' +
+            theme.fg('toolTitle', theme.bold(details.name ?? 'subagent')) +
+            theme.fg('dim', ' — answer delivered'),
+          0,
+          0,
+        )
+      }
+      const first = result.content[0]
+      const text =
+        first && first.type === 'text' && typeof first.text === 'string'
+          ? first.text
+          : ''
+      return new Text(theme.fg('dim', text), 0, 0)
+    },
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      if (!isMuxAvailable()) {
+        return muxUnavailableResult()
+      }
+
+      const resolved = resolveInterruptTarget({
+        id: params.id,
+        name: params.name,
+      })
+      if ('error' in resolved) {
+        return {
+          content: [{ type: 'text', text: resolved.error }],
+          details: { error: resolved.error },
+        }
+      }
+      const running = resolved.running
+
+      // Identity revalidation (herdsman discipline): the durable ask record
+      // must name this childId + sessionFile, and (when given) the askId.
+      const record = readAskRecord(running.id)
+      if (!record) {
+        const error = `Subagent "${running.name}" has no outstanding ask.`
+        return {
+          content: [{ type: 'text', text: error }],
+          details: { error, id: running.id },
+        }
+      }
+      const identityOk = askIdentityMatches({
+        record,
+        askId: params.askId,
+        childId: running.id,
+        sessionFile: running.sessionFile,
+      })
+      if (!identityOk) {
+        const error =
+          `Ask record mismatch for "${running.name}" (askId ${record.askId}). ` +
+          'Refusing to deliver a reply to a superseded ask.'
+        return {
+          content: [{ type: 'text', text: error }],
+          details: { error, id: running.id, askId: record.askId },
+        }
+      }
+
+      // AIDEV-NOTE: at-least-once reply delivery (PMR-WXG0). The reply record
+      // is durable BEFORE delivery; the `.ask` sidecar (the "still pending"
+      // marker) is deleted only after sendLongCommand succeeds. If delivery
+      // fails the tool returns an error and a retry re-delivers the message —
+      // worst case the child sees the answer twice.
+      writeReplyRecord(running.id, {
+        askId: record.askId,
+        message: params.message,
+        repliedAt: new Date().toISOString(),
+      })
+
+      try {
+        sendLongCommand(running.surface, params.message)
+      } catch (error: any) {
+        const detail = error?.message ?? String(error)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Failed to deliver answer to "${running.name}": ${detail}. ` +
+                'The ask is still pending — retry answer_subagent.',
+            },
+          ],
+          details: {
+            error: detail,
+            id: running.id,
+            askId: record.askId,
+            status: 'delivery_failed',
+          },
+        }
+      }
+
+      removeAskSidecar(running.sessionFile)
+      running.notifiedAskId = undefined
+      updateWidget()
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Answer delivered to "${running.name}". It will continue in the same session.`,
+          },
+        ],
+        details: {
+          id: running.id,
+          name: running.name,
+          askId: record.askId,
+          status: 'answered',
+        },
+      }
+    },
+  })
 
   // /iterate command — fork the session into a subagent
   pi.registerCommand('iterate', {
@@ -2718,6 +2959,55 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
 
         const box = new Box(1, 1, bgFn)
+        box.addChild(new Text(contentLines.join('\n'), 0, 0))
+        return ['', ...box.render(width)]
+      },
+    } as any
+  })
+
+  // ── subagent_ask message renderer (PMR-WXG0) ──
+  pi.registerMessageRenderer('subagent_ask', (message, options, theme) => {
+    const details = message.details as any
+    if (!details) return undefined
+
+    return {
+      render(width: number): string[] {
+        const name = details.name ?? 'subagent'
+        const header = `${theme.fg('accent', '?')} ${theme.fg('toolTitle', theme.bold(name))}${theme.fg('dim', ' — asks owner (blocked)')}`
+
+        const contentLines = [header]
+
+        if (options.expanded) {
+          contentLines.push('')
+          contentLines.push(details.question ?? '')
+          if (Array.isArray(details.files) && details.files.length > 0) {
+            contentLines.push('')
+            contentLines.push(
+              theme.fg('dim', `Files: ${details.files.join(', ')}`),
+            )
+          }
+          if (details.askId) {
+            contentLines.push('')
+            contentLines.push(
+              theme.fg(
+                'dim',
+                `Answer: answer_subagent (id: ${details.childId}, askId: ${details.askId})`,
+              ),
+            )
+          }
+        } else {
+          const preview = (details.question ?? '')
+            .split('\n')[0]
+            .slice(0, width - 10)
+          contentLines.push(theme.fg('dim', preview))
+          contentLines.push(
+            theme.fg('muted', keyHint('app.tools.expand', 'to expand')),
+          )
+        }
+
+        const box = new Box(1, 1, (text: string) =>
+          theme.bg('customMessageBg', text),
+        )
         box.addChild(new Text(contentLines.join('\n'), 0, 0))
         return ['', ...box.render(width)]
       },
