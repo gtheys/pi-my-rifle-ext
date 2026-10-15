@@ -249,6 +249,13 @@ export async function pollForExit(
     onTick?: (elapsed: number) => void
     /** Called each tick while a `.ask` sidecar is present (blocked child). */
     onAsk?: () => void
+    /**
+     * Called when a VERIFIED completion signal is observed (the `.exit`
+     * sidecar or the claude sentinel file) — as opposed to crash inference
+     * from liveness. Assignment cleanup (PMR-Z5KR) gates record removal on
+     * this distinction.
+     */
+    onVerifiedExit?: () => void
     /** Liveness probe; defaults to herdr pane liveness. Injectable for tests. */
     isAlive?: (paneId: string) => boolean
   },
@@ -264,13 +271,17 @@ export async function pollForExit(
     // Primary path: `.exit` sidecar (subagent_done / caller_ping).
     if (options.sessionFile) {
       const exit = readExitSidecar(options.sessionFile)
-      if (exit) return exit
+      if (exit) {
+        options.onVerifiedExit?.()
+        return exit
+      }
     }
 
     // Claude sentinel file (written by the plugin Stop hook).
     if (options.sentinelFile) {
       try {
         if (existsSync(options.sentinelFile)) {
+          options.onVerifiedExit?.()
           return { reason: 'sentinel', exitCode: 0 }
         }
       } catch {}

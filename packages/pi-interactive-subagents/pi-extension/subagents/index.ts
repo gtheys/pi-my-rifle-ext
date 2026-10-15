@@ -36,6 +36,14 @@ import {
   removeReplyRecord,
   writeReplyRecord,
 } from './asks.ts'
+import {
+  type AssignmentStatus,
+  assignmentPath,
+  listAssignments,
+  removeAssignment,
+  updateAssignmentStatus,
+  writeAssignment,
+} from './assignments.ts'
 import { loadSubagentsConfig, type SubagentsConfig } from './config.ts'
 import {
   ackMatches,
@@ -690,6 +698,9 @@ export interface RunningSubagent {
    * Outlives the child; removal is manual (no auto-delete ever). */
   worktree?: string
   branch?: string
+  /** Last status persisted to the durable assignment record (PMR-Z5KR) —
+   * transition writes happen only on change. */
+  assignmentStatus?: AssignmentStatus
 }
 
 /** All currently running subagents, keyed by id — shared via globalThis (see RUNNING_KEY). */
@@ -1309,6 +1320,9 @@ function startStatusRefresh(pi: ExtensionAPI) {
         shouldRefreshWidget = true
       }
       running.statusState = nextState
+      // PMR-Z5KR: persist coarse status transitions (blocked/interrupted/
+      // stalled/working) to the durable assignment record, on change only.
+      syncAssignmentStatus(running, statusKindOf(running, now))
 
       // Request→ack observation (PMR-DNPZ / WXG0 phase 5): poll the child
       // `.ack` sidecar for the pending control request (interrupt or answer).
@@ -1610,6 +1624,73 @@ function resolveHerdrWorkspaceId(): string | null {
   return null
 }
 
+// ── Durable assignments (PMR-Z5KR) ──
+
+/**
+ * Ids of children spared at session_shutdown because a durable assignment
+ * record exists — their herdr-owned tab keeps running and a future parent
+ * rediscovers the record as an orphan with a resume hint. Consulted by the
+ * watcher catch path so the shutdown abort does not close the pane or mark
+ * the record lost.
+ */
+const sparedAssignments = new Set<string>()
+
+// AIDEV-NOTE (PMR-Z5KR): the durable assignment is the authority, written
+// AFTER a successful spawn (a failed spawn leaves no record — nothing to
+// clean up). A write failure must not fail the spawn (same at-least-once
+// discipline as the result store): the in-memory entry + watcher still
+// deliver the result.
+function persistAssignment(
+  running: RunningSubagent,
+  cwd: string,
+  ownerSessionId: string | null,
+): void {
+  try {
+    writeAssignment({
+      childId: running.id,
+      name: running.name,
+      task: running.task,
+      agent: running.agent,
+      sessionFile: running.sessionFile,
+      paneId: running.paneId,
+      tabId: running.tabId,
+      workspaceId: running.workspaceId,
+      cwd,
+      worktree: running.worktree,
+      branch: running.branch,
+      status: 'working',
+      claim: { pid: process.pid, id: ownerSessionId ?? 'unknown' },
+    })
+    running.assignmentStatus = 'working'
+  } catch {}
+}
+
+/** Persist a status transition to the assignment record (on change only). */
+function syncAssignmentStatus(
+  running: RunningSubagent,
+  status: AssignmentStatus,
+): void {
+  if (running.assignmentStatus === status) return
+  running.assignmentStatus = status
+  try {
+    updateAssignmentStatus(running.id, status)
+  } catch {}
+}
+
+// AIDEV-NOTE (PMR-Z5KR): removal ONLY on a verified completion signal
+// (`.exit`/sentinel observed by pollForExit). Crash-inferred or aborted
+// endings mark the record 'lost' and KEEP it — fail closed, no invented
+// success, the record remains as evidence for a future parent's scan.
+function settleAssignment(childId: string, verified: boolean): void {
+  try {
+    if (verified) {
+      removeAssignment(childId)
+    } else {
+      updateAssignmentStatus(childId, 'lost')
+    }
+  } catch {}
+}
+
 async function launchSubagent(
   params: SubagentInput,
   ctx: ExtensionContext,
@@ -1907,6 +1988,7 @@ async function launchSubagent(
   running.tabId = tab.tabId
   running.workspaceId = tab.workspaceId
   running.starting = false
+  persistAssignment(running, targetCwdForSession, sessionId ?? null)
   updateWidget()
   if (latestPi) startStatusRefresh(latestPi)
   return running
@@ -1949,6 +2031,11 @@ async function watchSubagent(
 ): Promise<SubagentResult> {
   const { name, task, surface, startTime, sessionFile } = running
 
+  // AIDEV-NOTE (PMR-Z5KR): flipped by pollForExit when a VERIFIED completion
+  // signal (`.exit`/sentinel) is observed — never by crash inference. Gates
+  // assignment-record removal in the completion paths below.
+  let verifiedExit = false
+
   try {
     const result = await pollForExit(
       surface,
@@ -1961,6 +2048,9 @@ async function watchSubagent(
           observeRunningSubagent(running)
         },
         onAsk,
+        onVerifiedExit() {
+          verifiedExit = true
+        },
       },
     )
 
@@ -2003,6 +2093,7 @@ async function watchSubagent(
 
       closeSurface(surface, running.tabId)
       runningSubagents.delete(running.id)
+      settleAssignment(running.id, verifiedExit)
 
       return {
         name,
@@ -2035,6 +2126,7 @@ async function watchSubagent(
 
     closeSurface(surface, running.tabId)
     runningSubagents.delete(running.id)
+    settleAssignment(running.id, verifiedExit)
 
     return {
       name,
@@ -2060,9 +2152,13 @@ async function watchSubagent(
         error: RELOAD_SENTINEL,
       }
     }
-    try {
-      closeSurface(surface, running.tabId)
-    } catch {}
+    const spared = sparedAssignments.has(running.id)
+    if (!spared) {
+      try {
+        closeSurface(surface, running.tabId)
+      } catch {}
+      settleAssignment(running.id, false)
+    }
     runningSubagents.delete(running.id)
 
     if (signal.aborted) {
@@ -2111,6 +2207,7 @@ function deliverAskSteer(pi: ExtensionAPI, running: RunningSubagent): void {
       return
     }
     running.notifiedAskId = record.askId
+    syncAssignmentStatus(running, 'blocked')
     const filesNote =
       record.files && record.files.length > 0
         ? `\n\nFiles: ${record.files.join(', ')}`
@@ -2311,24 +2408,36 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       statusInterval = null
       ;(globalThis as any)[STATUS_INTERVAL_KEY] = null
     }
+    // AIDEV-NOTE (PMR-Z5KR): children with a durable assignment record are
+    // SPARED — their herdr-owned tab keeps running and a future parent
+    // rediscovers the record as an orphan with a resume hint (work survives
+    // orchestrator death). Decide sparing BEFORE aborting any watcher: the
+    // watcher catch path consults sparedAssignments to skip its own
+    // closeSurface + lost-marking. Children without a record keep the old
+    // kill behavior (nobody would ever rediscover them). Interactive agents
+    // and blocked-asking children stay spared as before (their records make
+    // this a superset of the old rule).
+    for (const [id, agent] of runningSubagents) {
+      let spared = agent.interactive
+      if (!spared) {
+        try {
+          spared = existsSync(assignmentPath(id))
+        } catch {}
+      }
+      if (!spared && agent.cli !== 'claude' && agent.sessionFile) {
+        try {
+          spared = existsSync(`${agent.sessionFile}.ask`)
+        } catch {}
+      }
+      if (spared) sparedAssignments.add(id)
+    }
     const moduleAbort = (globalThis as any)[POLL_ABORT_KEY] as
       | AbortController
       | undefined
     if (moduleAbort) moduleAbort.abort()
-    for (const [_id, agent] of runningSubagents) {
+    for (const [id, agent] of runningSubagents) {
       agent.abortController?.abort()
-      // AIDEV-NOTE: parent is quitting — kill orphaned panes, else the child
-      // pi keeps running forever with nobody to deliver its result to.
-      // Interactive agents are user-driven: their pane survives on purpose.
-      // Blocked-asking autonomous children are spared too (PMR-WXG0): their
-      // ask record makes them reattachable via subagent_resume.
-      let blockedAsking = false
-      if (agent.cli !== 'claude' && agent.sessionFile) {
-        try {
-          blockedAsking = existsSync(`${agent.sessionFile}.ask`)
-        } catch {}
-      }
-      if (!agent.interactive && !blockedAsking) {
+      if (!sparedAssignments.has(id)) {
         try {
           closeSurface(agent.surface, agent.tabId)
         } catch {}
@@ -2584,22 +2693,30 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       description:
         'List all available subagent definitions. ' +
         'Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. ' +
-        'Project-local agents override global ones with the same name.',
+        'Project-local agents override global ones with the same name. ' +
+        'Also lists durable subagent assignments (<agentDir>/pi-subagents/assignments/) — ' +
+        'running children owned by a live parent and ORPHANED children whose parent ' +
+        'process is gone (with a subagent_resume hint), so a restarted parent can ' +
+        'rediscover work that survived it.',
       promptSnippet:
         'List all available subagent definitions. ' +
         'Scans project-local .pi/agents/ and global ~/.pi/agent/agents/. ' +
-        'Project-local agents override global ones with the same name.',
+        'Project-local agents override global ones with the same name. ' +
+        'Also lists durable subagent assignments (running + orphaned children with resume hints).',
       parameters: Type.Object({}),
 
       async execute() {
         const list = discoverAgentDefinitions().filter(
           (agent) => !agent.disableModelInvocation,
         )
+        // PMR-Z5KR: answer "what is running" from FILES ALONE — the scan
+        // works for a freshly restarted parent with an empty in-memory map.
+        const assignments = listAssignments()
 
-        if (list.length === 0) {
+        if (list.length === 0 && assignments.length === 0) {
           return {
             content: [{ type: 'text', text: 'No subagent definitions found.' }],
-            details: { agents: [] },
+            details: { agents: [], assignments: [] },
           }
         }
 
@@ -2610,16 +2727,38 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           return `• ${a.name}${badge}${model}${desc}`
         })
 
+        if (assignments.length > 0) {
+          lines.push('', 'Assignments (durable — survive parent restart):')
+          for (const view of assignments) {
+            if (view.state === 'unknown') {
+              lines.push(
+                `• ${view.childId} — unknown (unreadable assignment record; no action taken)`,
+              )
+            } else if (view.state === 'owned') {
+              lines.push(
+                `• ${view.record.name} [${view.record.childId}] — running (${view.record.status})`,
+              )
+            } else {
+              let line = `• ${view.record.name} [${view.record.childId}] — ORPHANED (parent process gone, child tab may still be running)`
+              if (view.resumeHint) {
+                line += ` — resume with ${view.resumeHint}`
+              }
+              lines.push(line)
+            }
+          }
+        }
+
         return {
           content: [{ type: 'text', text: lines.join('\n') }],
-          details: { agents: list },
+          details: { agents: list, assignments },
         }
       },
 
       renderResult(result, _opts, theme) {
         const details = result.details as any
         const agents = details?.agents ?? []
-        if (agents.length === 0) {
+        const assignments = details?.assignments ?? []
+        if (agents.length === 0 && assignments.length === 0) {
           return new Text(
             theme.fg('dim', 'No subagent definitions found.'),
             0,
@@ -2635,6 +2774,27 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           const model = a.model ? theme.fg('dim', ` [${a.model}]`) : ''
           return `  ${theme.fg('toolTitle', theme.bold(a.name))}${badge}${model}${desc}`
         })
+        if (assignments.length > 0) {
+          lines.push(
+            '',
+            `  ${theme.fg('toolTitle', theme.bold('Assignments'))}${theme.fg('dim', ' (durable)')}`,
+          )
+          for (const view of assignments) {
+            if (view.state === 'unknown') {
+              lines.push(
+                `  ${theme.fg('dim', `${view.childId} — unknown (unreadable record)`)}`,
+              )
+            } else if (view.state === 'owned') {
+              lines.push(
+                `  ${theme.fg('toolTitle', theme.bold(view.record.name))}${theme.fg('dim', ` [${view.childId}] — running (${view.record.status})`)}`,
+              )
+            } else {
+              lines.push(
+                `  ${theme.fg('toolTitle', theme.bold(view.record.name))}${theme.fg('warning', ` [${view.childId}] — ORPHANED`)}${theme.fg('dim', ', resume: subagent_resume')}`,
+              )
+            }
+          }
+        }
         return new Text(lines.join('\n'), 0, 0)
       },
     })
@@ -2858,6 +3018,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           }),
         }
         runningSubagents.set(id, running)
+        persistAssignment(running, ctx.cwd, sessionId ?? null)
         startWidgetRefresh()
         startStatusRefresh(pi)
 

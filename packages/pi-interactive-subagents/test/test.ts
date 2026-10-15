@@ -35,6 +35,15 @@ import {
   writeReplyRecord,
 } from '../pi-extension/subagents/asks.ts'
 import {
+  assignmentPath,
+  findAssignmentByBranch,
+  listAssignments,
+  readAssignment,
+  removeAssignment,
+  updateAssignmentStatus,
+  writeAssignment,
+} from '../pi-extension/subagents/assignments.ts'
+import {
   ackMatches,
   ackSidecarPath,
   type ControlAck,
@@ -4233,6 +4242,143 @@ describe('worktrees.ts (PMR-11TD)', () => {
         recursive: true,
         force: true,
       })
+    }
+  })
+})
+
+describe('assignments.ts durable branch-owned assignments (PMR-Z5KR)', () => {
+  let root: string
+
+  before(() => {
+    root = join(mkdtempSync(join(tmpdir(), 'assignments-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function draft(
+    childId: string,
+    overrides?: Partial<Parameters<typeof writeAssignment>[0]>,
+  ) {
+    return {
+      childId,
+      name: `agent-${childId}`,
+      task: 'do the thing',
+      sessionFile: `/tmp/${childId}.jsonl`,
+      cwd: '/tmp',
+      status: 'working' as const,
+      claim: { pid: process.pid, id: 'parent-session-1' },
+      ...overrides,
+    }
+  }
+
+  it('writes a record atomically at the canonical path with timestamps', () => {
+    const record = writeAssignment(draft('w-1'), root)
+    const path = assignmentPath('w-1', root)
+    assert.ok(existsSync(path))
+    // no tmp sibling left behind
+    assert.ok(!existsSync(`${path}.tmp`))
+    assert.ok(record.createdAt)
+    assert.equal(record.createdAt, record.updatedAt)
+
+    const read = readAssignment('w-1', root)
+    assert.deepEqual(read, record)
+    assert.equal(read?.claim.pid, process.pid)
+  })
+
+  it('persists worktree + branch fields (PMR-11TD composition)', () => {
+    writeAssignment(
+      draft('w-2', { worktree: '/tmp/wt', branch: 'subagent/w-2' }),
+      root,
+    )
+    const read = readAssignment('w-2', root)
+    assert.equal(read?.worktree, '/tmp/wt')
+    assert.equal(read?.branch, 'subagent/w-2')
+  })
+
+  it('updates status on transitions, bumping updatedAt and preserving fields', async () => {
+    const before = writeAssignment(draft('u-1', { agent: 'worker' }), root)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    updateAssignmentStatus('u-1', 'blocked', root)
+    const after = readAssignment('u-1', root)
+    assert.equal(after?.status, 'blocked')
+    assert.equal(after?.agent, 'worker')
+    assert.equal(after?.createdAt, before.createdAt)
+    assert.ok(after && after.updatedAt >= before.updatedAt)
+  })
+
+  it('update on a missing record is a no-op (fail closed, never resurrect)', () => {
+    updateAssignmentStatus('gone', 'lost', root)
+    assert.equal(readAssignment('gone', root), null)
+  })
+
+  it('removeAssignment deletes the record and tolerates repeats', () => {
+    writeAssignment(draft('r-1'), root)
+    removeAssignment('r-1', root)
+    assert.equal(readAssignment('r-1', root), null)
+    removeAssignment('r-1', root) // idempotent
+  })
+
+  it('listAssignments classifies owned (live claim pid) from files alone', () => {
+    writeAssignment(draft('live-1'), root)
+    const views = listAssignments(root)
+    const view = views.find((v) => v.childId === 'live-1')
+    assert.ok(view)
+    assert.equal(view.state, 'owned')
+    if (view.state === 'owned') {
+      assert.equal(view.record.name, 'agent-live-1')
+    }
+  })
+
+  it('listAssignments marks dead claim pids as orphaned with a resume hint', () => {
+    // 4194304 is the default Linux pid_max — no live process can hold it.
+    writeAssignment(draft('dead-1', { claim: { pid: 4194304, id: 'x' } }), root)
+    const views = listAssignments(root)
+    const view = views.find((v) => v.childId === 'dead-1')
+    assert.ok(view)
+    assert.equal(view.state, 'orphaned')
+    if (view.state === 'orphaned') {
+      assert.match(
+        view.resumeHint ?? '',
+        /subagent_resume\(\{ sessionPath: "\/tmp\/dead-1\.jsonl" \}\)/,
+      )
+    }
+  })
+
+  it('listAssignments fails closed to unknown on a malformed record (kept on disk)', () => {
+    const path = assignmentPath('bad-1', root)
+    writeFileSync(path, '{not json')
+    const views = listAssignments(root)
+    const view = views.find((v) => v.childId === 'bad-1')
+    assert.ok(view)
+    assert.equal(view.state, 'unknown')
+    // fail closed = no destructive action — the record is still there
+    assert.ok(existsSync(path))
+  })
+
+  it('findAssignmentByBranch: unique match returns the record', () => {
+    const found = findAssignmentByBranch('subagent/w-2', root)
+    assert.ok('record' in found)
+    if ('record' in found) {
+      assert.equal(found.record.childId, 'w-2')
+    }
+  })
+
+  it('findAssignmentByBranch: missing branch is unknown, not invented', () => {
+    const found = findAssignmentByBranch('no/such-branch', root)
+    assert.ok('error' in found)
+    if ('error' in found) {
+      assert.match(found.error, /unknown/)
+    }
+  })
+
+  it('findAssignmentByBranch: multiple matches are ambiguous (fail closed)', () => {
+    writeAssignment(draft('amb-1', { branch: 'dup/branch' }), root)
+    writeAssignment(draft('amb-2', { branch: 'dup/branch' }), root)
+    const found = findAssignmentByBranch('dup/branch', root)
+    assert.ok('error' in found)
+    if ('error' in found) {
+      assert.match(found.error, /[Aa]mbiguous/)
     }
   })
 })
