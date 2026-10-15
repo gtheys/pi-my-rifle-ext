@@ -99,7 +99,13 @@ export function herdrAgentStart(options: {
     '--pane',
     options.paneId,
     '--timeout',
-    String(options.timeoutMs ?? 60_000),
+    // AIDEV-NOTE: keep this SHORT. herdr's readiness detection waits for an
+    // idle agent, but our children go busy immediately (positional task), so
+    // this timeout is a false-negative path — the caller (spawnAgentInTab)
+    // treats it as soft and confirms via the child session file. A long
+    // timeout blocks the subagent tool call itself (observed: 31s block made
+    // the parent miss a child's ask window).
+    String(options.timeoutMs ?? 10_000),
     '--',
     ...options.argv,
   ]

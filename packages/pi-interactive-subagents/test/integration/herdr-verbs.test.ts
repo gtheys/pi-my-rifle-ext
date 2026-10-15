@@ -108,19 +108,38 @@ describe('herdr verb layer [real herdr]', { timeout: 60_000 }, () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('agent list / agent get report identity', () => {
+  it('agent list / agent get report identity', async () => {
+    // AIDEV-NOTE: the suite runner pane (HERDR_PANE_ID) is only a herdr agent
+    // when tests run from inside a pi herdr session; a plain shell runner is
+    // never registered and herdr has no `agent register` verb (0.9.5). Create
+    // our own agent instead — this also covers `agent start`.
+    const pane = createTestPane()
+    await waitShellReady(pane, { timeoutMs: 15_000 })
+    runHerdr([
+      'agent',
+      'start',
+      `verb-identity-${Date.now()}`,
+      '--kind',
+      'pi',
+      '--pane',
+      pane,
+      '--timeout',
+      '15000',
+      '--',
+      '-ne',
+    ])
+
     const agents = herdrAgentList()
     assert.ok(Array.isArray(agents))
-    assert.ok(agents.length > 0, 'herdr reports at least one agent (us)')
-    const own = agents.find((a) => a.pane_id === process.env.HERDR_PANE_ID)
-    assert.ok(own, 'own pane appears in agent list')
-    const got = herdrAgentGet(process.env.HERDR_PANE_ID as string)
-    assert.equal(got?.pane_id, process.env.HERDR_PANE_ID)
+    const own = agents.find((a) => a.pane_id === pane)
+    assert.ok(own, 'started agent appears in agent list')
+    const got = herdrAgentGet(pane)
+    assert.equal(got?.pane_id, pane)
 
-    // Agent-path read (recent-unwrapped, text, no --lines) against our own
-    // agent-reported pane. Plain shell panes are NOT agents — herdr replies
-    // agent_not_found (verified on 0.9.0), so use HERDR_PANE_ID here.
-    const agentOut = herdrReadAgent(process.env.HERDR_PANE_ID as string)
+    // Agent-path read (recent-unwrapped, text, no --lines) against the agent
+    // we just started. Plain shell panes are NOT agents — herdr replies
+    // agent_not_found (verified on 0.9.0), so this doubles as that check.
+    const agentOut = herdrReadAgent(pane)
     assert.ok(agentOut.length > 0, 'agent read returns output for agent panes')
   })
 })

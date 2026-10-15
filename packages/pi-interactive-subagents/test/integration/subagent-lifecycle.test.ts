@@ -17,6 +17,7 @@
 
 import assert from 'node:assert/strict'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { getAgentDir } from '@mariozechner/pi-coding-agent'
@@ -195,22 +196,18 @@ describe('subagent-lifecycle [herdr]', {
     )
 
     await waitForFile(startFile, PI_TIMEOUT, /START_/)
-    assert.equal(
-      existsSync(markerFile),
-      false,
-      'Completion marker should not exist before the long sleep',
-    )
-    await sleep(65_000)
-    assert.equal(
-      existsSync(markerFile),
-      false,
-      'Completion marker should not exist before the watchdog assertion',
-    )
-    const watchdogScreen = readScreen(surface, 300)
-    assert.doesNotMatch(
-      watchdogScreen,
-      /Subagent status[\s\S]*stalled|stalled[\s\S]*Subagent status/i,
-    )
+    // AIDEV-NOTE: the old fixed-sleep + marker-absence asserts raced model
+    // latency (25s nominal margin, eaten by snapshot/screen lag). The intent
+    // — a long active tool call never surfaces a stalled status — is checked
+    // by polling the parent screen across the child's sleep window instead.
+    for (let i = 0; i < 5; i++) {
+      await sleep(10_000)
+      const duringScreen = readScreen(surface, 300)
+      assert.doesNotMatch(
+        duringScreen,
+        /Subagent status[\s\S]*stalled|stalled[\s\S]*Subagent status/i,
+      )
+    }
 
     const content = await waitForFile(markerFile, PI_TIMEOUT, /STATUS_/)
     assert.ok(
@@ -375,12 +372,18 @@ describe('subagent-lifecycle [herdr]', {
     const surface = createTrackedSurface(env, `ask-${id}`)
     await sleep(1000)
 
+    // AIDEV-NOTE: the answering instruction rides the INITIAL task — typing it
+    // into the parent mid-run raced the subagent_ask steer's triggerTurn (the
+    // parent answered autonomously before reading the typed instruction).
     const task = [
       `Call the subagent tool with these EXACT parameters:`,
       `  name: "Ask-${id}"`,
       `  agent: "test-ask"`,
       `  task: "ASK_ROUNDTRIP_${id}"`,
       `Just call the subagent tool once. Do not do anything else before calling it.`,
+      `When that sub-agent asks you a question (subagent_ask message), answer it with the`,
+      `answer_subagent tool using EXACTLY this message: "Write ANSWER_${id} to ${markerFile} using bash, then call subagent_done."`,
+      `Do not improvise the answer content.`,
     ].join('\n')
 
     startPi(surface, env.dir, task)
@@ -400,36 +403,54 @@ describe('subagent-lifecycle [herdr]', {
     }
     assert.equal(askRecord.childId, askRecordPathForThis.childId)
 
-    // Parent-side: deliver the answer via answer_subagent (askId optional).
-    sendCommand(
-      surface,
-      `Use answer_subagent with name "Ask-${id}" and message: ` +
-        `Write ANSWER_${id} to ${markerFile} using bash, then call subagent_done.`,
-    )
-
-    // Reply record appears once answer_subagent queued it...
-    const replyPath = askRecordPathForThis.path.replace(
-      /\.json$/,
-      '.reply.json',
-    )
-    const reply = await waitForFile(replyPath, PI_TIMEOUT, /askId/)
-    assert.equal(JSON.parse(reply).askId, askRecord.askId)
-
-    // ...the child pump ingests it and writes the ack sidecar...
-    await waitForFile(`${askRecord.sessionFile}.ack`, PI_TIMEOUT)
-
-    // ...then continues the SAME session: writes the marker and exits with
-    // the normal `.exit` sidecar.
+    // AIDEV-NOTE: no waits on the reply record or ack sidecar here — both are
+    // deleted by the pump/parent within milliseconds of ingestion (cleanup is
+    // part of the design), so waitForFile races them. The durable proof of
+    // the pump is the child continuing the SAME session: it writes the marker
+    // and exits with the normal `.exit` sidecar.
     const content = await waitForFile(markerFile, PI_TIMEOUT, /ANSWER/)
     assert.ok(
       content.includes(`ANSWER_${id}`),
       `Child should have run the answered instruction. Got: ${content.trim()}`,
     )
-    const exitPayload = await waitForFile(`${askRecord.sessionFile}.exit`)
-    assert.match(exitPayload, /"type":"done"/)
+    // AIDEV-NOTE: no `.exit` sidecar wait — the parent's watcher consumes and
+    // deletes it on read (that IS the delivery path), so a file poll races
+    // it. Durable completion proof instead: the parent's session jsonl gains
+    // a subagent_result custom entry naming this child.
+    const parentSessionDir = join(
+      homedir(),
+      '.pi/agent/sessions',
+      // Mirrors pi's session-manager safePath: strip leading slash, replace
+      // separators with '-', wrap in --...--.
+      `--${env.dir.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`,
+    )
+    await waitFor(
+      () => {
+        if (!existsSync(parentSessionDir)) return null
+        for (const f of readdirSync(parentSessionDir)) {
+          if (!f.endsWith('.jsonl')) continue
+          try {
+            const text = readFileSync(join(parentSessionDir, f), 'utf8')
+            if (
+              text.includes('"subagent_result"') &&
+              text.includes(`Ask-${id}`)
+            ) {
+              return 'result delivered'
+            }
+          } catch {}
+        }
+        return null
+      },
+      PI_TIMEOUT,
+      `subagent_result for Ask-${id} in parent session`,
+    )
 
     // Post-ingestion cleanup: ask + reply records removed (at-least-once
     // window closed).
+    const replyPath = askRecordPathForThis.path.replace(
+      /\.json$/,
+      '.reply.json',
+    )
     await waitFor(
       () => {
         if (existsSync(replyPath)) return null
@@ -482,9 +503,11 @@ describe('subagent-lifecycle [herdr]', {
     const surface = createTrackedSurface(env, `nofocus-${id}`)
     await sleep(1000)
 
-    // Hold focus on OUR pane before and during the spawn.
-    const anchor = process.env.HERDR_PANE_ID as string
-    await waitForFocusedSurface(anchor, 10_000)
+    // AIDEV-NOTE: focus is client-driven — in a headless herdr run NO pane is
+    // focused, so an anchor-focus precondition can't hold. The checkable
+    // invariant in both worlds: focus after the spawn equals focus before
+    // (the child tab never steals it).
+    const focusBefore = getFocusedSurface()
 
     const task = [
       `Call the subagent tool with these EXACT parameters:`,
@@ -499,8 +522,8 @@ describe('subagent-lifecycle [herdr]', {
     const content = await waitForFile(markerFile, PI_TIMEOUT, /PASS/)
     assert.ok(content.includes(`PASS_${id}`))
 
-    // Focus must still be on the test anchor (never the spawned tab).
-    assert.equal(getFocusedSurface(), anchor)
+    // Focus must be unchanged — never moved to the spawned tab.
+    assert.equal(getFocusedSurface(), focusBefore)
   })
 
   // ── Subagent with custom system prompt ──

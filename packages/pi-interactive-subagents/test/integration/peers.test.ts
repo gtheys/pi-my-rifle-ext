@@ -38,6 +38,9 @@ describe('peer messaging round trip [file-based, no spawns]', {
   let releasePeer: (() => void) | null = null
   const prevAgentDir = process.env.PI_CODING_AGENT_DIR
 
+  // AIDEV-NOTE: structural mock of the ExtensionAPI surface subagent-done.ts
+  // touches; the double assertion keeps tsc happy without maintaining the
+  // full interface (which grows with pi releases).
   function makeMockPi() {
     return {
       on(name: string, handler: Handler) {
@@ -66,7 +69,7 @@ describe('peer messaging round trip [file-based, no spawns]', {
     delete process.env.PI_SUBAGENT_AGENT
     mkdirSync(join(agentDir, 'sessions'), { recursive: true })
     releasePeer = publishPresence(peer)
-    subagentDone(makeMockPi())
+    subagentDone(makeMockPi() as never)
     // session_start publishes peer A's presence and starts the pump.
     for (const handler of handlers['session_start'] ?? []) {
       handler({}, { ui: { setWidget() {} } })

@@ -1312,7 +1312,7 @@ describe('subagent discovery', () => {
   it('buildSubagentToolAllowlist preserves requested tools and adds child control tools', () => {
     assert.equal(
       testApi.buildSubagentToolAllowlist('read,bash,web_search'),
-      'read,bash,web_search,caller_ping,subagent_done',
+      'read,bash,web_search,caller_ping,subagent_done,ask_owner,message_owner,list_peers,message_peer',
     )
   })
 
@@ -2418,6 +2418,15 @@ import {
   ensureSubagentsDataDir,
   subagentsDataRoot,
 } from '../pi-extension/subagents/dataroot.ts'
+import {
+  coalesceOwnerMessages,
+  OWNER_MESSAGE_MAX_BYTES,
+  type OwnerInboxEntry,
+  ownerInboxDir,
+  readOwnerInbox,
+  removeOwnerMessage,
+  sendOwnerMessage,
+} from '../pi-extension/subagents/inbox.ts'
 import {
   acquireProcessLock,
   isProcessLockClaim,
@@ -3890,5 +3899,149 @@ describe('peers.ts (PMR-98S6 peer-to-peer messaging)', () => {
     } finally {
       releaseA()
     }
+  })
+})
+
+describe('inbox.ts (PMR-QCVA owner messaging)', () => {
+  let inboxRoot: string
+
+  before(() => {
+    inboxRoot = join(
+      mkdtempSync(join(tmpdir(), 'owner-inbox-')),
+      'pi-subagents',
+    )
+  })
+  after(() => {
+    rmSync(inboxRoot, { recursive: true, force: true })
+  })
+
+  it('writes durable records, drains exactly once, deletes drained files', () => {
+    const parent = 'parent-session-1'
+    const first = sendOwnerMessage({
+      parentSessionId: parent,
+      childId: 'kid1',
+      name: 'Kid One',
+      message: 'hello owner',
+      root: inboxRoot,
+    })
+    const second = sendOwnerMessage({
+      parentSessionId: parent,
+      childId: 'kid2',
+      message: 'multi\nline message',
+      root: inboxRoot,
+    })
+    const entries = readOwnerInbox(parent, inboxRoot)
+    assert.equal(entries.length, 2)
+    assert.equal(entries[0].message.childId, 'kid1')
+    assert.equal(entries[0].message.name, 'Kid One')
+    assert.equal(entries[1].message.message, 'multi\nline message')
+    assert.notEqual(first.path, second.path)
+
+    // Drain: remove each entry exactly once, inbox then reads empty.
+    for (const entry of entries) removeOwnerMessage(entry.path)
+    assert.equal(readOwnerInbox(parent, inboxRoot).length, 0)
+    // Double remove is a no-op (idempotent unlink).
+    removeOwnerMessage(first.path)
+  })
+
+  it('isolates inboxes per parent session id and per-child seq', () => {
+    sendOwnerMessage({
+      parentSessionId: 'parent-a',
+      childId: 'kid',
+      message: 'for a',
+      root: inboxRoot,
+    })
+    sendOwnerMessage({
+      parentSessionId: 'parent-b',
+      childId: 'kid',
+      message: 'for b',
+      root: inboxRoot,
+    })
+    sendOwnerMessage({
+      parentSessionId: 'parent-a',
+      childId: 'kid',
+      message: 'for a again',
+      root: inboxRoot,
+    })
+    const a = readOwnerInbox('parent-a', inboxRoot)
+    const b = readOwnerInbox('parent-b', inboxRoot)
+    assert.equal(a.length, 2)
+    assert.equal(b.length, 1)
+    assert.equal(a[1].message.message, 'for a again')
+  })
+
+  it('rejects messages above the 8 KiB cap', () => {
+    assert.throws(
+      () =>
+        sendOwnerMessage({
+          parentSessionId: 'cap-parent',
+          childId: 'kid',
+          message: 'x'.repeat(OWNER_MESSAGE_MAX_BYTES),
+          root: inboxRoot,
+        }),
+      /cap/,
+    )
+  })
+
+  it('coalesces one bullet per message and caps with overflow', () => {
+    const entries: OwnerInboxEntry[] = [
+      {
+        path: '/p/1.json',
+        message: {
+          version: 1,
+          messageId: 'm1',
+          childId: 'kid1',
+          name: 'Scout',
+          message: 'first finding\nmore detail',
+          sentAt: new Date().toISOString(),
+        },
+      },
+      {
+        path: '/p/2.json',
+        message: {
+          version: 1,
+          messageId: 'm2',
+          childId: 'kid2',
+          message: 'second',
+          sentAt: new Date().toISOString(),
+        },
+      },
+      {
+        path: '/p/3.json',
+        message: {
+          version: 1,
+          messageId: 'm3',
+          childId: 'kid3',
+          name: 'Third',
+          message: 'third',
+          sentAt: new Date().toISOString(),
+        },
+      },
+    ]
+    const coalesced = coalesceOwnerMessages(entries, 2)
+    assert.deepEqual(coalesced.lines, [
+      'Scout: first finding',
+      'kid2: second',
+      'Third: third',
+    ])
+    assert.deepEqual(coalesced.visibleLines, [
+      'Scout: first finding',
+      'kid2: second',
+    ])
+    assert.equal(coalesced.overflow, 1)
+  })
+
+  it('ignores malformed records instead of surfacing them', () => {
+    const parent = 'malformed-parent'
+    const dir = ownerInboxDir(parent, inboxRoot)
+    writeFileSync(join(dir, 'kid-000001.json'), '{not json')
+    writeFileSync(
+      join(dir, 'kid-000002.json'),
+      JSON.stringify({ version: 999, message: 'wrong' }),
+    )
+    const entries = readOwnerInbox(parent, inboxRoot)
+    assert.equal(entries.length, 0)
+    // Cleanup so later assertions on other parents stay isolated.
+    rmSync(dir, { recursive: true, force: true })
   })
 })

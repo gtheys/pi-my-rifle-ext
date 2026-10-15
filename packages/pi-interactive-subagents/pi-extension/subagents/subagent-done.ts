@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, watch, writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent'
 import { Box, Text } from '@mariozechner/pi-tui'
 import { Type } from '@sinclair/typebox'
@@ -28,6 +28,7 @@ import {
   writeAckSidecar,
 } from './control.ts'
 import { ensureSubagentsDataDir } from './dataroot.ts'
+import { sendOwnerMessage } from './inbox.ts'
 import {
   type ChildIdentity,
   inboxDir,
@@ -285,7 +286,6 @@ export default function (pi: ExtensionAPI) {
   // tick: the ask record must name THIS childId + sessionFile and the reply's
   // askId must match — a stale/superseded reply is never delivered.
   let pumpBusy = false
-  let replyWatcher: ReturnType<typeof watch> | null = null
 
   function pumpReplies(): void {
     if (pumpBusy) return
@@ -329,18 +329,23 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // fs.watch primary (parent's atomic rename is an event) + 500ms cadence
-  // fallback in case the watcher misses events or the dir was created later.
+  // Delivery cadence: 500ms pumpMailboxes interval (see AIDEV-NOTE below —
+  // fs.watch was removed after it wedged child startup).
+  // AIDEV-NOTE: no fs.watch here — a watcher whose listener runs the pump
+  // during pi's startup wedges the event loop before the first turn (found
+  // 2026-10-15 via integration repro: child pi spins at 100% CPU, never
+  // creates its session file; watch+noop listener is fine, interval-only is
+  // fine). Polling every 500ms is the documented delivery path and is
+  // sufficient — fs.watch bought sub-second latency at the cost of a
+  // startup-deadlock we never fully isolated. Do not re-add without a
+  // startup regression test.
   function startReplyWatcher(): void {
-    if (replyWatcher) return
     const childId = process.env.PI_SUBAGENT_ID
     if (!childId || !process.env.PI_SUBAGENT_SESSION) return
     try {
-      const asksDir = ensureSubagentsDataDir('asks')
-      replyWatcher = watch(asksDir, () => pumpReplies())
-      replyWatcher.unref()
+      ensureSubagentsDataDir('asks')
     } catch {
-      // asks dir not watchable — the 500ms interval alone still delivers.
+      // asks dir missing — the 500ms pump re-checks every tick anyway.
     }
   }
 
@@ -356,7 +361,6 @@ export default function (pi: ExtensionAPI) {
   // sendMessage succeeds; a crash before that re-delivers the same peer
   // message next tick (duplicate turn worst case). Mirrors pumpReplies.
   let peerDrainBusy = false
-  let inboxWatcher: ReturnType<typeof watch> | null = null
   let releasePresence: (() => void) | null = null
 
   function childIdentity(): ChildIdentity | null {
@@ -413,14 +417,16 @@ export default function (pi: ExtensionAPI) {
     pumpInbox()
   }
 
+  // AIDEV-NOTE: polling-only like startReplyWatcher (same startup-wedge
+  // reason, see that note). Kept as a named function so the pump structure
+  // stays symmetric.
   function startPeerWatcher(): void {
     const identity = childIdentity()
     if (!identity) return
     try {
-      inboxWatcher = watch(inboxDir(identity.childId), () => pumpInbox())
-      inboxWatcher.unref()
+      ensureSubagentsDataDir('peers')
     } catch {
-      // Inbox not watchable — the 500ms interval alone still delivers.
+      // peers dir missing — the 500ms pump re-checks every tick anyway.
     }
   }
 
@@ -648,10 +654,6 @@ export default function (pi: ExtensionAPI) {
       } catch {}
       releasePresence = null
     }
-    if (inboxWatcher) {
-      inboxWatcher.close()
-      inboxWatcher = null
-    }
   })
 
   // Toggle expand/collapse with Alt+J
@@ -772,6 +774,50 @@ export default function (pi: ExtensionAPI) {
           },
         ],
         details: { askId },
+      }
+    },
+  })
+
+  pi.registerTool({
+    // AIDEV-NOTE (PMR-QCVA): like ask_owner, this extension is only loaded
+    // into Pi-backed children — Claude-CLI children never see message_owner
+    // (absent tool is their unsupported signal). Fire-and-forget: the tool
+    // writes a durable record and returns immediately; the parent drains it
+    // on its 1s status loop. Never call ctx.shutdown or end the turn.
+    name: 'message_owner',
+    label: 'Message Owner',
+    description:
+      'Send a durable message to the parent agent WITHOUT blocking and WITHOUT ' +
+      'ending the session: you keep working immediately and the parent picks it ' +
+      'up on its next refresh tick. Use for progress updates, findings, or ' +
+      'coordination that must not interrupt your run; for genuine blockers use ' +
+      'ask_owner, for final completion use subagent_done. Max 8 KiB per message.',
+    parameters: Type.Object({
+      message: Type.String({ description: 'Message body' }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const childId = process.env.PI_SUBAGENT_ID
+      const parentSessionId = process.env.PI_SUBAGENT_PARENT_SESSION
+      if (!childId || !parentSessionId) {
+        throw new Error(
+          'message_owner is only available in subagent contexts. ' +
+            'PI_SUBAGENT_ID/PI_SUBAGENT_PARENT_SESSION environment variables are not set.',
+        )
+      }
+      const sent = sendOwnerMessage({
+        parentSessionId,
+        childId,
+        name: subagentName || childId,
+        message: params.message,
+      })
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'Message delivered to the owner. Keep working — no response is expected; the owner reads it on its next refresh tick.',
+          },
+        ],
+        details: { messageId: sent.messageId, path: sent.path },
       }
     },
   })

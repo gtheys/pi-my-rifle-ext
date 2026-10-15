@@ -14,6 +14,7 @@ import { after, before, describe, it } from 'node:test'
 import {
   herdrAgentGet,
   herdrAgentList,
+  runHerdr,
 } from '../../pi-extension/subagents/herdr.ts'
 import { waitShellReady } from '../../pi-extension/subagents/spawn.ts'
 import {
@@ -214,13 +215,31 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
     assert.equal(content.trim(), '27')
   })
 
-  it('reports agent identity via agent list / agent get', () => {
+  it('reports agent identity via agent list / agent get', async () => {
     if (!isHerdrIntegrationAvailable()) return
+    // AIDEV-NOTE: same as herdr-verbs.test.ts — the runner pane is not a
+    // registered agent in headless runs, so start our own.
+    const surface = createTrackedSurface(env, `agent-id-${uniqueId()}`)
+    await waitShellReady(surface, { timeoutMs: 15_000 })
+    runHerdr([
+      'agent',
+      'start',
+      `surface-identity-${Date.now()}`,
+      '--kind',
+      'pi',
+      '--pane',
+      surface,
+      '--timeout',
+      '15000',
+      '--',
+      '-ne',
+    ])
+
     const agents = herdrAgentList()
     assert.ok(Array.isArray(agents))
-    const own = agents.find((a) => a.pane_id === process.env.HERDR_PANE_ID)
-    assert.ok(own, 'own pane appears in agent list')
-    const got = herdrAgentGet(process.env.HERDR_PANE_ID as string)
-    assert.equal(got?.pane_id, process.env.HERDR_PANE_ID)
+    const own = agents.find((a) => a.pane_id === surface)
+    assert.ok(own, 'started agent appears in agent list')
+    const got = herdrAgentGet(surface)
+    assert.equal(got?.pane_id, surface)
   })
 })

@@ -49,6 +49,11 @@ import {
 } from './control.ts'
 import { herdrAgentFocus, herdrAgentGet, herdrPreflight } from './herdr.ts'
 import {
+  coalesceOwnerMessages,
+  readOwnerInbox,
+  removeOwnerMessage,
+} from './inbox.ts'
+import {
   findLastAssistantMessage,
   getNewEntries,
   seedSubagentSessionFile,
@@ -72,6 +77,7 @@ import {
   DEFAULT_STATUS_LINE_LIMIT,
   expirePendingRequest,
   forceStatusAfterInterrupt,
+  formatElapsedDuration,
   formatStatusAggregate,
   formatTransitionLine,
   INTERRUPT_ACK_TIMEOUT_MS,
@@ -284,6 +290,9 @@ const INFRASTRUCTURE_CHILD_TOOLS = new Set([
   'caller_ping',
   'subagent_done',
   'ask_owner',
+  'message_owner',
+  'list_peers',
+  'message_peer',
 ])
 
 /**
@@ -676,6 +685,9 @@ let latestPi: ExtensionAPI | null = null
 /** Interval timer for status transition checks. */
 let statusInterval: ReturnType<typeof setInterval> | null = null
 
+/** Parent session id — owner-inbox routing key (PMR-QCVA). Set on session_start. */
+let ownerSessionId: string | null = null
+
 // ── Status widget (herdsman row pattern, PMR-TABUX) ──
 //
 // Per-agent row: state marker + label + status + elapsed. A 2s presentation
@@ -754,7 +766,19 @@ function formatAgentRow(
   const kind = statusKindOf(running, now)
   const marker = markerFor(kind)
   const label = running.name
-  const status = kind
+  // AIDEV-NOTE: show the live activity detail (`active (bash 12s)`) instead of
+  // the bare kind when the child's snapshot carries one — herdsman's rows do
+  // the same, and it keeps long-tool-call work visible vs. stall silence.
+  let status: string = kind
+  if (
+    kind === 'working' &&
+    running.statusState?.activityLabel &&
+    running.statusState.activeSinceMs !== null &&
+    running.statusState.activeSinceMs !== undefined
+  ) {
+    const dur = formatElapsedDuration(now - running.statusState.activeSinceMs)
+    status = `active (${running.statusState.activityLabel} ${dur})`
+  }
   const elapsed = formatElapsed(Math.floor((now - running.startTime) / 1000))
   const labelFrom = visibleWidth(`${marker} `)
   const labelTo = labelFrom + visibleWidth(label)
@@ -960,7 +984,19 @@ function renderWidget() {
  * first positional message so that /skill: args land in messages[1..] and arrive
  * as standalone prompts in the child session.
  */
-const SUBAGENT_CONTROL_TOOLS = ['caller_ping', 'subagent_done'] as const
+// AIDEV-NOTE: child-side infrastructure tools force-added to every pi-backed
+// child's --tools allowlist, regardless of the agent def's tools list. Keep
+// in sync with INFRASTRUCTURE_CHILD_TOOLS (deny-resolution) — a tool missing
+// here silently disappears from children whose def sets `tools:` (found
+// 2026-10-15: test-ask child had no ask_owner and used caller_ping instead).
+const SUBAGENT_CONTROL_TOOLS = [
+  'caller_ping',
+  'subagent_done',
+  'ask_owner',
+  'message_owner',
+  'list_peers',
+  'message_peer',
+] as const
 
 /**
  * Build the child --tools allowlist.
@@ -1358,6 +1394,47 @@ function startStatusRefresh(pi: ExtensionAPI) {
 
     if (shouldRefreshWidget) updateWidget()
 
+    // Owner-inbox drain (PMR-QCVA): all records present this tick coalesce
+    // into ONE steer, line-capped. Records are deleted only after the steer
+    // send succeeds — a failed send leaves them durable for the next tick.
+    // AIDEV-NOTE: at-least-once — crash after send but before unlink
+    // re-delivers the same messages next tick (duplicate turn, worst case).
+    if (ownerSessionId) {
+      try {
+        const entries = readOwnerInbox(ownerSessionId)
+        if (entries.length > 0) {
+          const coalesced = coalesceOwnerMessages(
+            entries,
+            getStatusConfig().lineLimit,
+          )
+          const noun = entries.length > 1 ? 'messages' : 'message'
+          const content = [
+            `Subagent ${noun} (${entries.length}):`,
+            ...coalesced.visibleLines.map((line) => `• ${line}`),
+          ]
+          if (coalesced.overflow > 0) {
+            content.push(`• +${coalesced.overflow} more messages.`)
+          }
+          pi.sendMessage(
+            {
+              customType: 'subagent_message',
+              content: content.join('\n'),
+              display: true,
+              details: {
+                count: entries.length,
+                lines: coalesced.visibleLines,
+                overflow: coalesced.overflow,
+              },
+            },
+            { triggerTurn: true, deliverAs: 'steer' },
+          )
+          for (const entry of entries) {
+            removeOwnerMessage(entry.path)
+          }
+        }
+      } catch {}
+    }
+
     if (transitionLines.length > 0) {
       const capped = capStatusLines(
         transitionLines,
@@ -1448,12 +1525,44 @@ async function spawnAgentInTab(options: {
   })
   try {
     await waitShellReady(tab.paneId)
-    herdrAgentStart({
-      alias: options.alias,
-      kind: options.kind,
-      paneId: tab.paneId,
-      argv: options.argv,
-    })
+    // AIDEV-NOTE: `herdr agent start --kind pi|claude` launches the canonical
+    // executable itself — the argv must NOT repeat it, or the child runs
+    // `pi pi --session ...` (observed live: child never starts its turn).
+    try {
+      herdrAgentStart({
+        alias: options.alias,
+        kind: options.kind,
+        paneId: tab.paneId,
+        argv: options.argv.slice(1),
+      })
+    } catch (startErr) {
+      // AIDEV-NOTE: herdr's readiness detection waits for an IDLE agent, but
+      // our children receive their task positionally and go busy immediately
+      // — "timed out waiting for agent startup" is a false negative that
+      // used to roll back LIVE children (observed 2026-10-15: child killed
+      // mid-bash after writing its start marker). Treat it as a soft error:
+      // real readiness is the child's session file appearing (file-based,
+      // ours). Hard errors (bad args, missing pane) still roll back at once.
+      const soft = /timed out waiting for agent startup/i.test(
+        String((startErr as Error)?.message ?? startErr),
+      )
+      if (!soft) throw startErr
+      const sessionPath = options.env.PI_SUBAGENT_SESSION
+      const deadline = Date.now() + 30_000
+      let started = false
+      while (Date.now() < deadline) {
+        if (
+          sessionPath &&
+          existsSync(sessionPath) &&
+          readFileSync(sessionPath, 'utf8').length > 0
+        ) {
+          started = true
+          break
+        }
+        await new Promise((r) => setTimeout(r, 500))
+      }
+      if (!started) throw startErr
+    }
   } catch (err) {
     // AIDEV-NOTE: asymmetric rollback (herdsman's createdTab rule) — a failed
     // start tears down ONLY tabs this spawn created, never user tabs.
@@ -1594,6 +1703,9 @@ async function launchSubagent(
   env.PI_SUBAGENT_SESSION = subagentSessionFile
   env.PI_SUBAGENT_ID = id
   env.PI_SUBAGENT_ACTIVITY_FILE = activityFile
+  // Owner-inbox routing key for message_owner (PMR-QCVA): the parent's
+  // session id names the inbox dir the child writes to.
+  env.PI_SUBAGENT_PARENT_SESSION = sessionId
 
   const subagentDonePath = join(SUBAGENTS_DIR, 'subagent-done.ts')
   let kind: 'pi' | 'claude'
@@ -2130,6 +2242,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   }
   pi.on('session_start', (_event, ctx) => {
     latestCtx = ctx
+    // AIDEV-NOTE: parent session id names THIS session's owner inbox —
+    // children spawned by us route message_owner records here (PMR-QCVA).
+    ownerSessionId = ctx.sessionManager.getSessionId() ?? null
     // AIDEV-NOTE: load per session so a project override written mid-run is
     // honored on the next session. Throws on invalid config — fail fast.
     loadAndCacheStatusConfig(ctx.cwd)
@@ -2616,6 +2731,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           PI_SUBAGENT_SESSION: params.sessionPath,
           PI_SUBAGENT_ID: id,
           PI_SUBAGENT_ACTIVITY_FILE: activityFile,
+          // Owner-inbox routing key (PMR-QCVA) — see spawn-site note above.
+          PI_SUBAGENT_PARENT_SESSION: sessionId,
         }
         if (process.env.PI_CODING_AGENT_DIR) {
           env.PI_CODING_AGENT_DIR = process.env.PI_CODING_AGENT_DIR
@@ -3019,6 +3136,42 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
         if (overflow > 0) {
           contentLines.push(theme.fg('muted', `+${overflow} more running.`))
+        }
+        if (!options.expanded) {
+          contentLines.push(
+            theme.fg('muted', keyHint('app.tools.expand', 'to expand')),
+          )
+        }
+
+        const box = new Box(1, 1, (text: string) =>
+          theme.bg('customMessageBg', text),
+        )
+        box.addChild(new Text(contentLines.join('\n'), 0, 0))
+        return ['', ...box.render(width)]
+      },
+    } as any
+  })
+
+  // ── subagent_message message renderer (PMR-QCVA) ──
+  pi.registerMessageRenderer('subagent_message', (message, options, theme) => {
+    const details = message.details as any
+    const lines = Array.isArray(details?.lines) ? details.lines : []
+    const overflow =
+      typeof details?.overflow === 'number' ? details.overflow : 0
+    if (lines.length === 0 && overflow === 0) return undefined
+
+    return {
+      render(width: number): string[] {
+        const lineWidth = Math.max(0, width - 6)
+        const contentLines = [
+          `${theme.fg('accent', '✉')} ${theme.fg('toolTitle', theme.bold('Subagent messages'))}`,
+          ...lines.map((line: string) =>
+            theme.fg('dim', truncateToWidth(line, lineWidth)),
+          ),
+        ]
+
+        if (overflow > 0) {
+          contentLines.push(theme.fg('muted', `+${overflow} more messages.`))
         }
         if (!options.expanded) {
           contentLines.push(
