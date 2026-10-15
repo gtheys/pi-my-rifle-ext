@@ -43,6 +43,10 @@ export interface AssignmentRecord {
   paneId?: string
   tabId?: string
   workspaceId?: string
+  /** Child-side activity snapshot path (PMR-N53A) — lets a reattaching
+   * parent resume activity observation without knowing the original
+   * artifact dir. Absent on records written before PMR-N53A. */
+  activityFile?: string
   cwd: string
   /** Worktree placement (PMR-11TD): the branch-keyed authority fields. */
   worktree?: string
@@ -198,7 +202,9 @@ export function recordAssignmentUsage(
   })
 }
 
-function pidAlive(pid: number): boolean {
+// AIDEV-NOTE (PMR-N53A): exported so the subagent_resume reattach probe
+// reuses the same liveness semantics as listAssignments classification.
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true

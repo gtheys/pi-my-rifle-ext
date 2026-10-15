@@ -37,9 +37,11 @@ import {
   writeReplyRecord,
 } from './asks.ts'
 import {
+  type AssignmentRecord,
   type AssignmentStatus,
   assignmentPath,
   listAssignments,
+  pidAlive,
   recordAssignmentUsage,
   removeAssignment,
   updateAssignmentStatus,
@@ -62,6 +64,7 @@ import {
   readOwnerInbox,
   removeOwnerMessage,
 } from './inbox.ts'
+import { sendPeerMessage } from './peers.ts'
 import {
   retireSettledSubagentPayloads,
   shouldArmRetirement,
@@ -1687,6 +1690,70 @@ function resolveResumeLaunchBehavior(params: { autoExit?: boolean }): {
   return { autoExit, interactive: !autoExit }
 }
 
+/** The record a subagent_resume should reattach to, or null (PMR-N53A). */
+export function latestAssignmentForSession(
+  records: readonly AssignmentRecord[],
+  sessionFile: string,
+): AssignmentRecord | null {
+  let latest: AssignmentRecord | null = null
+  for (const record of records) {
+    if (record.sessionFile !== sessionFile) continue
+    if (latest === null || record.updatedAt > latest.updatedAt) latest = record
+  }
+  return latest
+}
+
+export type ResumeReattachDecision =
+  | { action: 'reattach'; record: AssignmentRecord; why: string }
+  | { action: 'spawn'; why: string }
+
+// AIDEV-NOTE (PMR-N53A): reattach decision for subagent_resume. The hazard:
+// spawning a new tab on a session whose child pi process is STILL ALIVE (a
+// shutdown-spared orphan running in its herdr tab) puts TWO pi processes on
+// one session jsonl — interleaved appends corrupt the transcript. The
+// record's claim pid belongs to the (possibly dead) PARENT, so it cannot
+// prove child liveness; herdr `agent get` on the record's paneId is the
+// ground truth for "a child still runs in that tab". agentAlive ⇒ reattach
+// (the orphan is adopted); agent gone ⇒ spawn (the old path — safe, its
+// sidecar cleanup already runs there). steerCapable=false for claude-kind
+// children: they have no inbox pump, a steered message would never arrive.
+// Pure — no herdr/process access — so tests cover the matrix directly.
+export function decideResumeReattach(input: {
+  record: AssignmentRecord | null
+  pidAlive: boolean
+  agentAlive: boolean
+  steerCapable: boolean
+}): ResumeReattachDecision {
+  if (input.record === null) {
+    return { action: 'spawn', why: 'no assignment record for this session' }
+  }
+  if (!input.record.paneId) {
+    return { action: 'spawn', why: 'assignment record has no pane id' }
+  }
+  if (!input.steerCapable) {
+    return {
+      action: 'spawn',
+      why: 'child kind has no inbox pump (claude) — a steer would never arrive',
+    }
+  }
+  if (input.agentAlive) {
+    let ownership = 'orphaned'
+    if (input.pidAlive) ownership = 'owned'
+    return {
+      action: 'reattach',
+      record: input.record,
+      why: `assignment ${ownership} but herdr reports the agent alive on ${input.record.paneId}`,
+    }
+  }
+  let why =
+    'orphaned child is gone (herdr reports no agent on the recorded pane)'
+  if (input.pidAlive) {
+    why =
+      'herdr reports no agent on the recorded pane (owner parent still live)'
+  }
+  return { action: 'spawn', why }
+}
+
 export const __test__ = {
   loadAgentDefaults,
   discoverAgentDefinitions,
@@ -1841,6 +1908,7 @@ function persistAssignment(
       paneId: running.paneId,
       tabId: running.tabId,
       workspaceId: running.workspaceId,
+      activityFile: running.activityFile,
       cwd,
       worktree: running.worktree,
       branch: running.branch,
@@ -3072,14 +3140,14 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       name: 'subagent_resume',
       label: 'Resume Subagent',
       description:
-        'Resume a previous sub-agent session in a new background herdr tab. ' +
+        "Resume a previous sub-agent session in a background herdr tab, REATTACHING to the live tab when the durable assignment record shows the session's agent still running (never two processes on one session file). " +
         'This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. ' +
         'When the resumed sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. ' +
         'DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT poll for status. All of that is wasted work — the harness handles delivery for you. ' +
         'DO NOT fabricate or assume results. After resuming, either end your turn or work on other independent tasks; the harness will wake you when the result is ready. ' +
         'Use when a sub-agent was cancelled or needs follow-up work.',
       promptSnippet:
-        'Resume a previous sub-agent session in a new background herdr tab. ' +
+        "Resume a previous sub-agent session in a background herdr tab, REATTACHING to the live tab when the durable assignment record shows the session's agent still running (never two processes on one session file). " +
         'This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. ' +
         'When the resumed sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. ' +
         'DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT poll for status. All of that is wasted work — the harness handles delivery for you. ' +
@@ -3132,6 +3200,17 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           )
         }
 
+        if (details?.status === 'reattached') {
+          return new Text(
+            theme.fg('accent', '⇄') +
+              ' ' +
+              theme.fg('toolTitle', theme.bold(name)) +
+              theme.fg('dim', ' — reattached to running agent'),
+            0,
+            0,
+          )
+        }
+
         // Fallback
         const first = result.content[0]
         const text =
@@ -3179,6 +3258,128 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         )
         const activityFile = getSubagentActivityFile(artifactDir, id)
         mkdirSync(dirname(activityFile), { recursive: true })
+
+        // ── Reattach probe (PMR-N53A) ──
+        // AIDEV-NOTE (PMR-N53A): two-process hazard — a plain spawn on a
+        // session whose child pi process is STILL ALIVE (a shutdown-spared
+        // orphan in its herdr tab) puts TWO pi processes on one session
+        // jsonl. When the durable assignment record's pane still hosts a
+        // live agent we REATTACH below instead of spawning: same paneId/
+        // tabId/sessionFile, the resume message is steered into the live
+        // child via its peer inbox (the child's 500ms pump delivers it as a
+        // new turn), and the record is re-claimed under THIS parent so
+        // subagents_list drops the orphan resume hint. We deliberately do
+        // NOT clear the `.ask` sidecar / ask records on this path — the live
+        // child may be mid ask/answer protocol and deleting its half would
+        // hang it. No focus is stolen (same --no-focus discipline as spawn).
+        const reattachCandidates: AssignmentRecord[] = []
+        for (const view of listAssignments()) {
+          if (view.state === 'unknown') continue
+          reattachCandidates.push(view.record)
+        }
+        const reattachRecord = latestAssignmentForSession(
+          reattachCandidates,
+          params.sessionPath,
+        )
+        let reattachClaimAlive = false
+        let reattachPaneAlive = false
+        let reattachSteerCapable = true
+        if (reattachRecord) {
+          reattachClaimAlive = pidAlive(reattachRecord.claim.pid)
+          if (reattachRecord.paneId) {
+            try {
+              reattachPaneAlive = herdrAgentGet(reattachRecord.paneId) !== null
+            } catch {
+              reattachPaneAlive = false
+            }
+          }
+          if (reattachRecord.agent) {
+            const reattachDefs = loadAgentDefaults(reattachRecord.agent)
+            if (reattachDefs?.cli === 'claude') reattachSteerCapable = false
+          }
+        }
+        const reattachDecision = decideResumeReattach({
+          record: reattachRecord,
+          pidAlive: reattachClaimAlive,
+          agentAlive: reattachPaneAlive,
+          steerCapable: reattachSteerCapable,
+        })
+
+        if (reattachDecision.action === 'reattach') {
+          const record = reattachDecision.record
+          const paneId = record.paneId
+          if (paneId) {
+            // Steer the follow-up into the LIVE child via its durable peer
+            // inbox; without a message there is nothing to steer — adopt the
+            // entry and watch the child's own lifecycle instead.
+            let steered = false
+            if (params.message) {
+              try {
+                sendPeerMessage({
+                  toChildId: record.childId,
+                  from: {
+                    childId: `parent-${sessionId ?? 'unknown'}`,
+                    sessionFile: ctx.sessionManager.getSessionFile() ?? '',
+                    name: 'owner',
+                    cwd: ctx.cwd,
+                  },
+                  message: params.message,
+                })
+                steered = true
+              } catch {}
+            }
+
+            const existing = runningSubagents.get(record.childId)
+            if (existing) {
+              // Already tracked by THIS parent (e.g. kept alive across an
+              // extension /reload) — its watcher is still attached; only
+              // refresh the resume baseline for summary extraction.
+              existing.resumeEntryCount = entryCountBefore
+            } else {
+              const running: RunningSubagent = {
+                id: record.childId,
+                name: record.name,
+                task: params.message ?? 'reattached running session',
+                agent: record.agent,
+                surface: paneId,
+                paneId,
+                tabId: record.tabId,
+                workspaceId: record.workspaceId,
+                startTime,
+                sessionFile: params.sessionPath,
+                activityFile: record.activityFile,
+                interactive,
+                resumeEntryCount: entryCountBefore,
+                statusState: createStatusState({
+                  source: 'pi',
+                  startTimeMs: startTime,
+                }),
+              }
+              runningSubagents.set(running.id, running)
+              // Re-claim under THIS parent: the fresh claim pid makes
+              // listAssignments classify the record owned again, so the
+              // orphaned marker + resume hint disappear from subagents_list.
+              persistAssignment(running, record.cwd, sessionId ?? null)
+              startWidgetRefresh()
+              startStatusRefresh(pi)
+              runWatcher(pi, running)
+            }
+            let ackText = `Reattached to running session "${record.name}".`
+            if (steered) {
+              ackText = `Reattached to running session "${record.name}" and steered the follow-up message into it.`
+            }
+            return {
+              content: [{ type: 'text', text: ackText }],
+              details: {
+                id: record.childId,
+                name: record.name,
+                sessionPath: params.sessionPath,
+                paneId,
+                status: 'reattached',
+              },
+            }
+          }
+        }
 
         const argv = [
           'pi',

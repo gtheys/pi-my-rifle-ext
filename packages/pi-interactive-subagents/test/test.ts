@@ -5235,3 +5235,137 @@ describe('config.ts contextRetirement (PMR-1EC3)', () => {
     assert.deepEqual(onDisk.contextRetirement, { enabled: false })
   })
 })
+
+describe('subagent_resume reattach decision (PMR-N53A)', () => {
+  function makeRecord(overrides: Record<string, unknown> = {}) {
+    return {
+      childId: 'child-1',
+      name: 'Worker',
+      task: 'do things',
+      sessionFile: '/tmp/child-1.jsonl',
+      paneId: 'pane-1',
+      tabId: 'tab-1',
+      workspaceId: 'ws-1',
+      cwd: '/tmp',
+      status: 'working' as const,
+      claim: { pid: 4242, id: 'parent-session' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    }
+  }
+
+  const deadProbe = { pidAlive: false, agentAlive: false, steerCapable: true }
+
+  it('spawns when no assignment record matches the session', () => {
+    const decision = subagentsModule.decideResumeReattach({
+      record: null,
+      ...deadProbe,
+    })
+    assert.equal(decision.action, 'spawn')
+  })
+
+  it('spawns when the record predates pane tracking (no paneId)', () => {
+    const decision = subagentsModule.decideResumeReattach({
+      record: makeRecord({ paneId: undefined }),
+      ...deadProbe,
+    })
+    assert.equal(decision.action, 'spawn')
+  })
+
+  it('spawns for claude-kind children (no inbox pump to steer)', () => {
+    const decision = subagentsModule.decideResumeReattach({
+      record: makeRecord(),
+      pidAlive: true,
+      agentAlive: true,
+      steerCapable: false,
+    })
+    assert.equal(decision.action, 'spawn')
+  })
+
+  it('reattaches a live owned child', () => {
+    const decision = subagentsModule.decideResumeReattach({
+      record: makeRecord(),
+      pidAlive: true,
+      agentAlive: true,
+      steerCapable: true,
+    })
+    assert.equal(decision.action, 'reattach')
+    if (decision.action === 'reattach') {
+      assert.equal(decision.record.childId, 'child-1')
+      assert.ok(decision.why.includes('owned'))
+    }
+  })
+
+  it('reattaches the ORPHANED child when its pane is still alive (core PMR-N53A case)', () => {
+    const decision = subagentsModule.decideResumeReattach({
+      record: makeRecord(),
+      pidAlive: false,
+      agentAlive: true,
+      steerCapable: true,
+    })
+    assert.equal(decision.action, 'reattach')
+    if (decision.action === 'reattach') {
+      assert.ok(decision.why.includes('orphaned'))
+    }
+  })
+
+  it('spawns when herdr reports no agent on the recorded pane (child gone)', () => {
+    const ownedGone = subagentsModule.decideResumeReattach({
+      record: makeRecord(),
+      pidAlive: true,
+      agentAlive: false,
+      steerCapable: true,
+    })
+    assert.equal(ownedGone.action, 'spawn')
+
+    const orphanGone = subagentsModule.decideResumeReattach({
+      record: makeRecord(),
+      pidAlive: false,
+      agentAlive: false,
+      steerCapable: true,
+    })
+    assert.equal(orphanGone.action, 'spawn')
+  })
+
+  it('picks the latest record for a session and ignores other sessions', () => {
+    const records = [
+      makeRecord({ childId: 'old', updatedAt: '2026-01-01T00:00:00.000Z' }),
+      makeRecord({
+        childId: 'other-session',
+        sessionFile: '/tmp/other.jsonl',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      }),
+      makeRecord({
+        childId: 'new',
+        updatedAt: '2026-01-03T00:00:00.000Z',
+      }),
+    ]
+    const latest = subagentsModule.latestAssignmentForSession(
+      records,
+      '/tmp/child-1.jsonl',
+    )
+    assert.equal(latest?.childId, 'new')
+    assert.equal(
+      subagentsModule.latestAssignmentForSession(records, '/tmp/none.jsonl'),
+      null,
+    )
+    assert.equal(
+      subagentsModule.latestAssignmentForSession([], '/tmp/child-1.jsonl'),
+      null,
+    )
+  })
+
+  it('round-trips activityFile on the record so reattach can observe activity', () => {
+    withTempDir((dir) => {
+      writeAssignment(
+        {
+          ...makeRecord({ activityFile: '/tmp/art/activity-child-1.json' }),
+        },
+        dir,
+      )
+      const record = readAssignment('child-1', dir)
+      assert.equal(record?.activityFile, '/tmp/art/activity-child-1.json')
+    })
+  })
+})
