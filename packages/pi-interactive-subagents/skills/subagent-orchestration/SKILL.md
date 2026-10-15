@@ -16,8 +16,9 @@ them — keep working or end your turn, the harness wakes you.
   area. Synthesize when results steer back.
 - **Implementation while you continue** → `worker` in the background; review
   when the result lands.
-- **Dirty or risky changes** → `worktree: true` so the child gets its own git
-  worktree and your checkout stays clean.
+- **Any code-writing subagent in the main checkout** → `worktree: true` —
+  implementation ALWAYS runs in an isolated git worktree; the main checkout
+  is read-only for workers. Scout/investigation children are exempt.
 - **Long-running watches** (test loops, deploy monitors) → background child +
   `message_owner` updates.
 

@@ -303,6 +303,17 @@ present but not `approved` → plan still in draft/review → route back to
 
    "Implement all phases" / "run end-to-end" skips inter-phase pauses.
 
+### Execution isolation
+
+ALL code-writing implementation — feature phases, oneshots, and debug
+fixes — runs in a git worktree. The main checkout is read-only for workers.
+There is no user override to in-place. Machinery: the herdr `worktree` tool
+(`worktree({ action: 'create', jira_id | name })` — derives the branch,
+bootstraps deps by lockfile, copies `.env*`; resume via `worktree list` +
+the `worktree:` ticket note; `remove` only after the PR is MERGED).
+Sole failure mode: `pi-worktree` requirements unmet (no herdr) → STOP AND
+ASK — never a silent in-place fallback.
+
 6. **Close feature** — after final commit:
 
    ```bash

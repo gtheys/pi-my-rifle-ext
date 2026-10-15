@@ -30,11 +30,30 @@ aven ticket. On `unknown-ref`, treat the arg as a Jira ID.
 
 ## Step 0a: Aven Bootstrap (when an aven ref resolves)
 
-No plan gate, no branch automation — bug tickets skip the feature lifecycle.
+No plan gate — bug tickets skip the feature lifecycle.
 
 ```bash
 aven show <REF> --json        # title + description = the bug report
 aven edit <REF> --status active
+```
+
+**Worktree for the fix.** Investigation and repro stay read-only in the
+main checkout, but the fix itself (Phase 5) ALWAYS runs in a git worktree —
+no user override. Before Phase 5, create one (or reuse an existing one from
+the ticket's `worktree:` note / `worktree list`):
+
+```
+worktree({ action: 'create', name: '<REF-slug>' })
+```
+
+If `herdr` is unavailable (`pi-worktree` can't run): STOP AND ASK — never
+fall back to in-place fixes. Record the worktree on the ticket so a later
+session can resume:
+
+```bash
+aven note <REF> --stdin <<'EOF'
+worktree: <WORKTREE_PATH> branch: <branch>
+EOF
 ```
 
 Present the ticket summary and ask what broke (same questions as below).
@@ -97,6 +116,11 @@ If one exists, check it out:
 ```bash
 git checkout $(git branch --list "*$JIRA_ID*" | head -1 | tr -d ' *')
 ```
+
+After the branch exists, create the worktree for the fix (Phase 5) — same
+rule as the aven path: `worktree({ action: 'create', jira_id: '$JIRA_ID' })`,
+record it via `aven`/ticket note, resume via `worktree list`. Investigation
+and repro stay read-only in the main checkout.
 
 > `jira_create_branch` sets the git-town parent to `develop` and names the branch `<prefix>/$JIRA_ID-<summary-slug>`. Pass `dry_run: true` to preview without creating. Requires the `pi-planning` package's tools to be loaded in this session.
 
@@ -244,6 +268,12 @@ Tool preference:
 If data state is in question, `references/sh-environment.md` (when `SH` is set) has the nonprod database queries for inspecting record state, migrations, and constraint violations.
 
 ## Phase 5: Fix + Regression Test
+
+**Worktree rule:** apply the fix in a git worktree (created in Step 0a, or
+via the `jira_create_branch` → `worktree create` pattern below for the Jira
+path), never in the main checkout. Investigation and repro may stay
+read-only in the main checkout. No `herdr` → STOP AND ASK; no in-place
+fallback.
 
 Only do this phase if the user has asked you to proceed with the fix itself — otherwise stop after Phase 4 and report findings (see Output Format).
 

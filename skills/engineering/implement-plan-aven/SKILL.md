@@ -1,6 +1,6 @@
 ---
 name: implement-plan-aven
-description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (aven ref, e.g. PMR-ZTVG, or Jira ID of an aven-synced ticket, e.g. DP-71 — pulled into the repo's aven project as a local epic via the find-or-create pull-in), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. Optional worktree mode — the feature executes in an isolated Herdr worktree (worktree create → workers spawn into it → finish/PR → remove). Tickets with a self-sufficient description and no plan can be executed directly as oneshots (single worker, single commit). Use when the user says "implement PMR-ZTVG", "implement DP-71", "start work on <aven-ref>", "resume the aven feature", "implement <REF> in a worktree", "oneshot <aven-ref>", or names an aven ticket or synced Jira ID whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
+description: Execute an aven feature tree created by feature-plan-aven. Given a feature ref (aven ref, e.g. PMR-ZTVG, or Jira ID of an aven-synced ticket, e.g. DP-71 — pulled into the repo's aven project as a local epic via the find-or-create pull-in), pull the phase/subtask tree from the ticket's epic children, read plan.md from the ticket's plan-path metadata, and execute phase by phase with a test/commit cycle closing each phase. ALL implementation — feature phases AND oneshots — executes in an isolated Herdr git worktree (worktree create → workers spawn into it → finish/PR → remove); the main checkout is read-only for implementation. Tickets with a self-sufficient description and no plan can be executed directly as oneshots (single worker, single commit), still inside a worktree. Use when the user says "implement PMR-ZTVG", "implement DP-71", "start work on <aven-ref>", "resume the aven feature", "implement <REF> in a worktree", "oneshot <aven-ref>", or names an aven ticket or synced Jira ID whose tree was planned via feature-plan-aven. Do NOT use to author new plans — route those to feature-plan-aven.
 ---
 
 # Implement Plan (Aven)
@@ -106,13 +106,15 @@ record clarifications and the outcome via `aven note` on the epic.
    and record answers via `aven note <REF> --stdin`. Grows legs → route to
    `feature-plan-aven`.
 2. `aven edit <REF> --status active`
-3. Load `/skill:coding-standards` + `/skill:tdd-workflow`. Spawn one `worker`
-   subagent with the description as the spec (tests first, run them, show
-   output; do NOT commit, do NOT touch aven). No worker tool → implement
-   inline.
-4. Review the diff; `run_tests({})`.
-5. Present a commit message, wait for confirmation, commit.
-6. Leave the outcome on the ticket and close it:
+3. Create the worktree exactly as in Step 3 (create is one tool call; reuse
+   an existing worktree from the ticket's `worktree:` note if present).
+4. Load `/skill:coding-standards` + `/skill:tdd-workflow`. Spawn one `worker`
+   subagent with the description as the spec and `cwd: <WORKTREE_PATH>`
+   (tests first, run them, show output; do NOT commit, do NOT touch aven).
+   No worker tool → implement inline, still in the worktree.
+5. Review the diff; `run_tests({})`.
+6. Present a commit message, wait for confirmation, commit.
+7. Leave the outcome on the ticket and close it:
 
    ```bash
    aven note <REF> --stdin <<'EOF'
@@ -181,18 +183,16 @@ implementation summary + acceptance criteria in `--description`, so the
 ticket alone is the executable spec. Resolve plan-path from
 the subtask first, fall back to the feature ticket.
 
-## Step 3 — Workspace: worktree (default) or in-place
+## Step 3 — Workspace: create the worktree (mandatory)
 
-Decide **where** this feature executes before touching any branch.
+**All implementation runs in a git worktree. The main checkout is read-only
+for implementation — no user override to in-place exists.** This applies to
+feature phases and oneshots alike.
 
-**Worktree mode is the default.** Run it unless one of these holds:
+Sole exception: `herdr` is unavailable / not inside Herdr (`pi-worktree`
+can't run). In that case **STOP AND ASK** — never silently fall back to
+in-place, and never create a plain branch and continue on your own.
 
-- the user explicitly asked for in-place work
-- `herdr` is unavailable / not inside Herdr (`pi-worktree` can't run)
-- the feature is a oneshot (single worker, single commit)
-
-**Never silently fall back to in-place.** If `worktree list`/`create` fails,
-report the error and ask the user before creating a plain branch instead.
 All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
 
 1. Check for an existing open worktree first — resume, don't duplicate:
@@ -228,11 +228,12 @@ All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
 
 4. Set `WORKTREE_PATH` for the rest of this skill: every git command,
    `run_tests`, and worker spawn targets the worktree. **The main checkout
-   is read-only from here on** — the orchestrator never edits code there.
+   is read-only** — the orchestrator never edits code there.
 
-**In-place mode** — the exception, not the default: only for oneshots,
-explicit user request, or when `pi-worktree` is unavailable. Behaves exactly
-like the pre-worktree flow:
+**No-worktree fallback (STOP-AND-ASK only)** — the machinery below is kept
+only for the case where `pi-worktree` requirements are unmet, and only after
+the user has been asked and explicitly approved continuing without a
+worktree. Never use it by default:
 
 Check the `jira-ref` metadata in the `aven show <FEATURE_REF> --full` output
 from Step 2 (Jira-linked epic pulled in from a synced ticket).
@@ -297,7 +298,7 @@ inline; same steps otherwise. When in doubt, spawn the worker.
    subagent({
      name: "worker: <N.M> <title>",
      agent: "worker",
-     cwd: "<WORKTREE_PATH>",   // worktree mode: workers are born in the worktree
+     cwd: "<WORKTREE_PATH>",   // mandatory: workers are born in the worktree
      task: [
        "Subtask: <N.M> <title>",
        "Ticket description (the spec — implement to this, verify against its acceptance criteria):",
@@ -313,7 +314,7 @@ inline; same steps otherwise. When in doubt, spawn the worker.
    })
    ```
 
-   In worktree mode, omit `cwd` only when running in-place. The worker's
+   Always set `cwd: "<WORKTREE_PATH>"`. The worker's
    `cwd` pins it to the worktree — it picks up the worktree's own `.pi/`
    config, deps, and `.env` snapshots, and physically cannot touch the main
    checkout. Parallel workers (if you consciously split disjoint-file
@@ -358,7 +359,8 @@ inline; same steps otherwise. When in doubt, spawn the worker.
 
    Conventional subject with the repo's scope; explain the why in the body.
    Worktree mode: every git command carries `-C <WORKTREE_PATH>` (or runs
-   with the worktree as cwd). In-place mode: plain git in the repo root.
+   with the worktree as cwd). (No-worktree fallback only: plain git in the
+   repo root — see Step 3's stop-and-ask gate.)
 4. Commit, then close the phase in aven:
 
    ```bash
@@ -395,7 +397,8 @@ Worktree mode — finish the feature (the workmux `merge` moment):
    - No → leave it; `worktree({ action: 'list' })` shows it on the
      dashboard and a later session resumes it via the aven note.
 
-In-place mode — after the final phase is committed:
+No-worktree fallback (approved stop-and-ask case) — after the final phase is
+committed:
 
 ```bash
 aven edit <FEATURE_REF> --status done

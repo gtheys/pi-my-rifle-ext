@@ -383,10 +383,9 @@ aven status is its ledger entry.
   aven stays in Jira — there is no local mirror for it anymore.
 - No branch automation.
 - No worktree creation — the planner works in the main checkout; execution
-  isolation is `implement-plan-aven`'s job (its Step 3 defaults to creating
-  the worktree at implement time). Mention in the plan document when a
-  feature should run in-place instead (oneshot, no Herdr) so implement's
-  default doesn't surprise anyone.
+  isolation is `implement-plan-aven`'s job. Execution ALWAYS happens in a
+  git worktree created at implement time (PMR-NJYY) — never authorize or
+  mention in-place execution in the plan document.
 - No extra metadata for grouping — epic membership covers it; `plan-path` is
   the only metadata this flow writes.
 

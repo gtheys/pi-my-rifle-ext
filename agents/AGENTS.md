@@ -143,7 +143,9 @@ in-session. Full playbook: the bundled `subagent-orchestration` skill.
 - **Parallel independent work** → fan out `subagent()` calls in ONE turn; they
   run concurrently in background herdr tabs. Never poll — results steer back
   and wake you.
-- **Risky/dirty implementation** → `worktree: true` (isolated git worktree).
+- **Any code-writing subagent in the main checkout** → `worktree: true` —
+  implementation ALWAYS runs in an isolated git worktree; the main checkout
+  is read-only for workers (scout/investigation children exempt).
 - **Child channels**: `ask_owner` = blocking question (answer via
   `answer_subagent`), `caller_ping` = stuck, exits, resume with guidance,
   `message_owner` = FYI only. Siblings coordinate via `list_peers` /
@@ -163,6 +165,7 @@ in-session. Full playbook: the bundled `subagent-orchestration` skill.
 4. **Never commit secrets** - Use environment variables
 5. **Never assume business logic** - Always ask
 6. **Never remove AIDEV- comments** - They're there for a reason
+7. **Never implement features on the main checkout** - Always a git worktree; main checkout is read-only for workers
 
 Remember: We optimize for maintainability over cleverness.  
 When in doubt, choose the boring solution.
