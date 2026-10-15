@@ -123,6 +123,7 @@ import {
 } from '../pi-extension/subagents/status.ts'
 import {
   decideReplyDelivery,
+  decideThresholdIntercept,
   exitSidecarPayload,
   findLastStopReason,
   findLatestAssistantError,
@@ -1718,6 +1719,66 @@ describe('subagent-done.ts', () => {
     it('returns null when messages is undefined or empty', () => {
       assert.equal(findLatestAssistantError(undefined), null)
       assert.equal(findLatestAssistantError([]), null)
+    })
+  })
+
+  describe('decideThresholdIntercept', () => {
+    const gate = { enabled: true, isChild: true }
+
+    it('cancels and retires on the first threshold event', () => {
+      assert.deepEqual(
+        decideThresholdIntercept({
+          reason: 'threshold',
+          ...gate,
+          interceptUsed: false,
+        }),
+        { cancel: true, retire: true },
+      )
+    })
+
+    it('falls through to native compaction on the second threshold event', () => {
+      assert.deepEqual(
+        decideThresholdIntercept({
+          reason: 'threshold',
+          ...gate,
+          interceptUsed: true,
+        }),
+        { cancel: false, retire: false },
+      )
+    })
+
+    it('never touches manual or emergency compaction', () => {
+      for (const reason of ['manual', 'emergency']) {
+        assert.deepEqual(
+          decideThresholdIntercept({
+            reason,
+            ...gate,
+            interceptUsed: false,
+          }),
+          { cancel: false, retire: false },
+        )
+      }
+    })
+
+    it('is inert when the gate is off or the session is not a child', () => {
+      assert.deepEqual(
+        decideThresholdIntercept({
+          reason: 'threshold',
+          enabled: false,
+          isChild: true,
+          interceptUsed: false,
+        }),
+        { cancel: false, retire: false },
+      )
+      assert.deepEqual(
+        decideThresholdIntercept({
+          reason: 'threshold',
+          enabled: true,
+          isChild: false,
+          interceptUsed: false,
+        }),
+        { cancel: false, retire: false },
+      )
     })
   })
 

@@ -21,6 +21,7 @@ import {
   writeAskRecord,
   writeAskSidecar,
 } from './asks.ts'
+import { loadSubagentsConfig } from './config.ts'
 import {
   type ControlAck,
   type ControlRecord,
@@ -182,6 +183,42 @@ export function interruptAckPayload(
     message: 'turn aborted by interrupt',
   }
 }
+
+/**
+ * Pure one-shot intercept decision for threshold compaction (PMR-HVM8).
+ *
+ * AIDEV-NOTE: first threshold compaction on a gated child is cancelled so the
+ * child can converge (finish up, call subagent_done) instead of being
+ * summarized mid-flight. The SECOND threshold event must fall through to
+ * native compaction — canceling forever would loop-block the child against
+ * a context it can never shrink. Manual/emergency compaction is never
+ * touched (the user or pi asked for summarization explicitly).
+ */
+export interface ThresholdInterceptDecision {
+  cancel: boolean
+  retire: boolean
+}
+
+export function decideThresholdIntercept(params: {
+  reason: string
+  enabled: boolean
+  isChild: boolean
+  interceptUsed: boolean
+}): ThresholdInterceptDecision {
+  if (!params.enabled || !params.isChild)
+    return { cancel: false, retire: false }
+  if (params.interceptUsed) return { cancel: false, retire: false }
+  if (params.reason !== 'threshold') return { cancel: false, retire: false }
+  return { cancel: true, retire: true }
+}
+
+const CONVERGE_GUIDANCE =
+  'Context retirement: this subagent session hit its compaction threshold. ' +
+  'Compaction was cancelled once so you can converge instead of being ' +
+  'summarized mid-task. Wrap up NOW: finish (or safely abandon) whatever you ' +
+  'are doing and call the subagent_done tool with your final summary. Do not ' +
+  'start new work. If this session hits the threshold again, native ' +
+  'compaction will proceed and this guidance will not repeat.'
 
 export default function (pi: ExtensionAPI) {
   let toolNames: string[] = []
@@ -349,11 +386,50 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  if (process.env.PI_SUBAGENT_ID && process.env.PI_SUBAGENT_SESSION) {
+  const isChildSession = Boolean(
+    process.env.PI_SUBAGENT_ID && process.env.PI_SUBAGENT_SESSION,
+  )
+
+  if (isChildSession) {
     startReplyWatcher()
     startPeerWatcher()
     const pumpInterval = setInterval(pumpMailboxes, 500)
     pumpInterval.unref()
+  }
+
+  // ── Context retirement, child side (PMR-HVM8) ──
+  // AIDEV-NOTE: one-shot intercept — see decideThresholdIntercept. The hook
+  // is only registered for gated children; non-child sessions and
+  // contextRetirement.enabled=false never see it.
+  const retirementEnabled =
+    loadSubagentsConfig(process.cwd()).config.contextRetirement?.enabled ===
+    true
+  if (isChildSession && retirementEnabled) {
+    let thresholdInterceptUsed = false
+    pi.on('session_before_compact', (event) => {
+      // pi's extension typings (0.65) omit `reason`; the runtime (0.84) always
+      // passes it. Narrow structurally instead of bumping types.
+      const reason = (event as { reason?: string }).reason ?? ''
+      const decision = decideThresholdIntercept({
+        reason,
+        enabled: retirementEnabled,
+        isChild: isChildSession,
+        interceptUsed: thresholdInterceptUsed,
+      })
+      if (decision.retire) {
+        thresholdInterceptUsed = true
+        recorder.retiring()
+        pi.sendMessage(
+          {
+            customType: 'subagent-converge',
+            content: CONVERGE_GUIDANCE,
+            display: true,
+          },
+          { triggerTurn: true },
+        )
+      }
+      if (decision.cancel) return { cancel: true }
+    })
   }
 
   // ── Peer inbox drain (PMR-98S6) ──

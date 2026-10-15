@@ -31,6 +31,7 @@ export type StatusActivityPhase =
   | 'active'
   | 'waiting'
   | 'blocked'
+  | 'retiring'
   | 'done'
 
 // AIDEV-NOTE: pending parent→child control request (PMR-DNPZ). Tracked on the

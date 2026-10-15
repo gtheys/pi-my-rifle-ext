@@ -16,6 +16,7 @@ export type SubagentActivityPhase =
   | 'active'
   | 'waiting'
   | 'blocked'
+  | 'retiring'
   | 'done'
 export type SubagentActivityScope =
   | 'agent'
@@ -42,6 +43,7 @@ export type SubagentActivityEvent =
   | 'tool_execution_end'
   | 'caller_ping'
   | 'ask_owner'
+  | 'context_retiring'
   | 'subagent_done'
   | 'session_shutdown'
 
@@ -99,6 +101,7 @@ export interface SubagentActivityRecorder {
   toolExecutionEnd(toolCallId?: string, toolName?: string): void
   callerPing(): void
   blockedAsking(): void
+  retiring(): void
   subagentDone(): void
   sessionShutdown(reason: SubagentShutdownReason): void
 }
@@ -110,6 +113,7 @@ const KNOWN_PHASES = new Set<SubagentActivityPhase>([
   'active',
   'waiting',
   'blocked',
+  'retiring',
   'done',
 ])
 const KNOWN_SCOPES = new Set<SubagentActivityScope>([
@@ -137,6 +141,7 @@ const KNOWN_EVENTS = new Set<SubagentActivityEvent>([
   'tool_execution_end',
   'caller_ping',
   'ask_owner',
+  'context_retiring',
   'subagent_done',
   'session_shutdown',
 ])
@@ -337,6 +342,7 @@ function createNoopRecorder(): SubagentActivityRecorder {
     toolExecutionEnd() {},
     callerPing() {},
     blockedAsking() {},
+    retiring() {},
     subagentDone() {},
     sessionShutdown() {},
   }
@@ -564,6 +570,21 @@ export function createSubagentActivityRecorder(params: {
           clearActiveState(current)
           delete current.waitingSince
           if (current.blockedSince == null) current.blockedSince = observedAt
+        },
+        'immediate',
+      )
+    },
+    // AIDEV-NOTE (PMR-HVM8): threshold compaction intercepted — child should
+    // converge (finish + subagent_done). Transient: the triggered converge
+    // turn flips the phase back to 'active' via before_agent_start.
+    retiring() {
+      record(
+        'context_retiring',
+        (current) => {
+          current.phase = 'retiring'
+          clearActiveState(current)
+          delete current.waitingSince
+          delete current.blockedSince
         },
         'immediate',
       )
