@@ -135,6 +135,26 @@ This principle emphasizes human oversight for critical aspects like architecture
 
 ---
 
+## Subagent orchestration (pi-interactive-subagents)
+
+When this extension is installed, prefer delegating over doing everything
+in-session. Full playbook: the bundled `subagent-orchestration` skill.
+
+- **Parallel independent work** → fan out `subagent()` calls in ONE turn; they
+  run concurrently in background herdr tabs. Never poll — results steer back
+  and wake you.
+- **Risky/dirty implementation** → `worktree: true` (isolated git worktree).
+- **Child channels**: `ask_owner` = blocking question (answer via
+  `answer_subagent`), `caller_ping` = stuck, exits, resume with guidance,
+  `message_owner` = FYI only. Siblings coordinate via `list_peers` /
+  `message_peer`.
+- **After any parent restart**: `subagents_list` first — orphaned children show
+  resume hints; resume, don't respawn.
+- **`spawning: manager-approval` denials are final** — don't retry; hand the
+  user the `/subagent <agent> <task>` command.
+
+---
+
 ## What AI Must NEVER Do
 
 1. **Never modify test files** - Tests encode human intent
