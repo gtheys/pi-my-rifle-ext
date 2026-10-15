@@ -28,6 +28,16 @@ import {
   writeAckSidecar,
 } from './control.ts'
 import { ensureSubagentsDataDir } from './dataroot.ts'
+import {
+  type ChildIdentity,
+  inboxDir,
+  listLivePeers,
+  publishPresence,
+  readInbox,
+  removeInboxEntry,
+  resolvePeer,
+  sendPeerMessage,
+} from './peers.ts'
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted
@@ -336,12 +346,179 @@ export default function (pi: ExtensionAPI) {
 
   if (process.env.PI_SUBAGENT_ID && process.env.PI_SUBAGENT_SESSION) {
     startReplyWatcher()
-    const pumpInterval = setInterval(pumpReplies, 500)
+    startPeerWatcher()
+    const pumpInterval = setInterval(pumpMailboxes, 500)
     pumpInterval.unref()
   }
 
+  // ── Peer inbox drain (PMR-98S6) ──
+  // AIDEV-NOTE: at-least-once — an inbox entry is unlinked only AFTER its
+  // sendMessage succeeds; a crash before that re-delivers the same peer
+  // message next tick (duplicate turn worst case). Mirrors pumpReplies.
+  let peerDrainBusy = false
+  let inboxWatcher: ReturnType<typeof watch> | null = null
+  let releasePresence: (() => void) | null = null
+
+  function childIdentity(): ChildIdentity | null {
+    const childId = process.env.PI_SUBAGENT_ID
+    const sessionFile = process.env.PI_SUBAGENT_SESSION
+    if (!childId || !sessionFile) return null
+    const identity: ChildIdentity = {
+      childId,
+      sessionFile,
+      name: subagentName || childId,
+      cwd: process.cwd(),
+    }
+    if (subagentAgent) identity.agent = subagentAgent
+    return identity
+  }
+
+  function pumpInbox(): void {
+    if (peerDrainBusy) return
+    const identity = childIdentity()
+    if (!identity) return
+    peerDrainBusy = true
+    try {
+      for (const entry of readInbox(identity.childId)) {
+        const from = entry.message.from
+        const who = from.name || from.childId
+        const details: Record<string, unknown> = {
+          messageId: entry.message.messageId,
+        }
+        if (entry.message.resultRef !== undefined) {
+          details.resultRef = entry.message.resultRef
+        }
+        pi.sendMessage(
+          {
+            customType: 'subagent-peer-message',
+            content:
+              `Peer message from ${who} (${from.childId}):\n\n` +
+              entry.message.message,
+            display: true,
+            details,
+          },
+          { triggerTurn: true },
+        )
+        removeInboxEntry(entry.path)
+      }
+    } catch {
+      // Entries stay durable — next tick re-delivers (see AIDEV-NOTE above).
+    } finally {
+      peerDrainBusy = false
+    }
+  }
+
+  function pumpMailboxes(): void {
+    pumpReplies()
+    pumpInbox()
+  }
+
+  function startPeerWatcher(): void {
+    const identity = childIdentity()
+    if (!identity) return
+    try {
+      inboxWatcher = watch(inboxDir(identity.childId), () => pumpInbox())
+      inboxWatcher.unref()
+    } catch {
+      // Inbox not watchable — the 500ms interval alone still delivers.
+    }
+  }
+
+  pi.registerTool({
+    name: 'list_peers',
+    label: 'List Peers',
+    description:
+      'List other live subagents you can message. Returns yourself plus every ' +
+      'currently-running peer (dead/stale peers are filtered). Use childId or name ' +
+      'as the `peer` argument of message_peer.',
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
+      const identity = childIdentity()
+      if (!identity) {
+        throw new Error(
+          'list_peers is only available in subagent contexts. ' +
+            'PI_SUBAGENT_ID/PI_SUBAGENT_SESSION environment variables are not set.',
+        )
+      }
+      const peers = listLivePeers(identity)
+      const lines: string[] = []
+      for (const p of peers) {
+        const agentTag = p.agent ? ` [${p.agent}]` : ''
+        const selfMark = p.self ? ' (you)' : ''
+        lines.push(`- ${p.name}${agentTag} childId=${p.childId}${selfMark}`)
+      }
+      let text = 'No live peers right now.'
+      if (lines.length > 0) {
+        text = `Live peers (including you):\n${lines.join('\n')}`
+      }
+      return {
+        content: [{ type: 'text', text }],
+        details: { peers },
+      }
+    },
+  })
+
+  pi.registerTool({
+    name: 'message_peer',
+    label: 'Message Peer',
+    description:
+      'Send a durable message to another live subagent WITHOUT blocking: the message is ' +
+      'delivered to the peer as a new turn in ITS session and you keep working immediately. ' +
+      'Resolve recipients with list_peers first. Max 8 KiB per message.',
+    parameters: Type.Object({
+      peer: Type.String({
+        description: 'Recipient childId or name (from list_peers)',
+      }),
+      message: Type.String({ description: 'Message body' }),
+      resultRef: Type.Optional(
+        Type.String({
+          description:
+            'Optional result ref (result:<name>#<n>) to forward so the peer can load it',
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const identity = childIdentity()
+      if (!identity) {
+        throw new Error(
+          'message_peer is only available in subagent contexts. ' +
+            'PI_SUBAGENT_ID/PI_SUBAGENT_SESSION environment variables are not set.',
+        )
+      }
+      const target = resolvePeer(params.peer, identity)
+      if (target.self) {
+        throw new Error('Cannot message yourself — just continue working.')
+      }
+      const sent = sendPeerMessage({
+        toChildId: target.childId,
+        from: identity,
+        message: params.message,
+        resultRef: params.resultRef,
+      })
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Message delivered to ${target.name} (${target.childId}). You can keep working — the peer will pick it up as its next turn.`,
+          },
+        ],
+        details: { messageId: sent.messageId, path: sent.path },
+      }
+    },
+  })
+
   pi.on('session_start', (_event, ctx) => {
     recorder.sessionStart()
+    // Publish peer presence (PMR-98S6): the record lives exactly as long as
+    // our process-lock claim; release removes it on shutdown.
+    const peerIdentity = childIdentity()
+    if (peerIdentity && !releasePresence) {
+      try {
+        releasePresence = publishPresence(peerIdentity)
+      } catch {
+        // Presence is best-effort — list_peers just won't include us.
+      }
+    }
     const tools = pi.getAllTools()
     toolNames = tools.map((t) => t.name).sort()
     denied = parseDeniedTools(deniedToolsValue)
@@ -465,6 +642,16 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('session_shutdown', (event) => {
     recorder.sessionShutdown((event as any).reason)
+    if (releasePresence) {
+      try {
+        releasePresence()
+      } catch {}
+      releasePresence = null
+    }
+    if (inboxWatcher) {
+      inboxWatcher.close()
+      inboxWatcher = null
+    }
   })
 
   // Toggle expand/collapse with Alt+J

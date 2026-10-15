@@ -2404,6 +2404,8 @@ describe('plan dispatch', () => {
 
 // --- Phase 0: durable foundation ---
 
+import { randomUUID } from 'node:crypto'
+import { basename } from 'node:path'
 import {
   DEFAULT_SUBAGENTS_CONFIG,
   globalSubagentsConfigPath,
@@ -2424,6 +2426,18 @@ import {
   ProcessLockOccupiedError,
   readProcessLockStatus,
 } from '../pi-extension/subagents/lock.ts'
+import {
+  type ChildIdentity,
+  inboxDir,
+  listLivePeers,
+  peerLockPath,
+  presencePath,
+  publishPresence,
+  readInbox,
+  removeInboxEntry,
+  resolvePeer,
+  sendPeerMessage,
+} from '../pi-extension/subagents/peers.ts'
 
 function modeOf(path: string): number {
   return statSync(path).mode & 0o777
@@ -3605,5 +3619,276 @@ describe('herdr.ts verb layer (PMR-M48Y)', () => {
       const status = parseHerdrStatus(fixture)
       assert.equal(status.server?.version, '0.9.1')
     })
+  })
+})
+
+describe('peers.ts (PMR-98S6 peer-to-peer messaging)', () => {
+  const DEAD_PID = 0x400000
+  let peersRoot: string
+  let counter = 0
+
+  // Never touch the real agent dir in tests — every call passes peersRoot.
+  function fakePresence(params: {
+    childId: string
+    sessionFile: string
+    claim: ProcessLockClaim
+    name?: string
+  }): Record<string, unknown> {
+    return {
+      version: 1,
+      childId: params.childId,
+      sessionId: basename(params.sessionFile, '.jsonl'),
+      sessionFile: params.sessionFile,
+      name: params.name ?? params.childId,
+      cwd: '/tmp',
+      claim: params.claim,
+      updatedAt: new Date().toISOString(),
+    }
+  }
+
+  function identityFor(childId: string): ChildIdentity {
+    counter += 1
+    return {
+      childId,
+      sessionFile: join(peersRoot, 'sessions', `${childId}-${counter}.jsonl`),
+      name: childId,
+      cwd: '/tmp',
+    }
+  }
+
+  // Hand-publish a presence record whose claim is a dead pid (no lock dir).
+  function publishDeadPresence(childId: string): void {
+    writeFileSync(
+      presencePath(childId, peersRoot),
+      JSON.stringify(
+        fakePresence({
+          childId,
+          sessionFile: `/nonexistent/${childId}.jsonl`,
+          claim: { pid: DEAD_PID, id: randomUUID() },
+        }),
+      ),
+    )
+  }
+
+  before(() => {
+    peersRoot = join(mkdtempSync(join(tmpdir(), 'peers-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(peersRoot, { recursive: true, force: true })
+  })
+
+  it('publishes presence, lists self + live peer, release removes record', () => {
+    const a = identityFor('alpha')
+    const b = identityFor('beta')
+    const releaseA = publishPresence(a, peersRoot)
+    const releaseB = publishPresence(b, peersRoot)
+    try {
+      const peers = listLivePeers(a, peersRoot)
+      const self = peers.find((p) => p.self)
+      const other = peers.find((p) => p.childId === b.childId)
+      assert.ok(self)
+      assert.equal(self.childId, a.childId)
+      assert.ok(other)
+      assert.equal(other.name, 'beta')
+    } finally {
+      releaseA()
+      releaseB()
+    }
+    assert.ok(!existsSync(presencePath(a.childId, peersRoot)))
+    assert.ok(!existsSync(presencePath(b.childId, peersRoot)))
+  })
+
+  it('filters dead-claim, malformed and takeover-stale presence records', () => {
+    const live = identityFor('live')
+    const releaseLive = publishPresence(live, peersRoot)
+    try {
+      // Dead pid: no lock dir behind the record at all.
+      publishDeadPresence('ghost')
+      // Malformed record file.
+      writeFileSync(presencePath('broken', peersRoot), '{not json')
+      // Wrong schema version.
+      writeFileSync(
+        presencePath('oldversion', peersRoot),
+        JSON.stringify({
+          ...fakePresence({
+            childId: 'oldversion',
+            sessionFile: '/nonexistent/x.jsonl',
+            claim: { pid: process.pid, id: randomUUID() },
+          }),
+          version: 99,
+        }),
+      )
+      // Stale claim: lock dir exists but with a DEAD pid, record matches it.
+      const staleSession = join(peersRoot, 'sessions', 'stale.jsonl')
+      const staleClaim: ProcessLockClaim = {
+        pid: DEAD_PID,
+        id: 'e5a8d13e-1a2b-4c3d-9e2f-0123456789ab',
+      }
+      const staleLockPath = peerLockPath(staleSession)
+      mkdirSync(staleLockPath, { recursive: true, mode: 0o700 })
+      writeFileSync(
+        join(staleLockPath, `${staleClaim.pid}-${staleClaim.id}`),
+        JSON.stringify(staleClaim),
+      )
+      writeFileSync(
+        presencePath('stale', peersRoot),
+        JSON.stringify(
+          fakePresence({
+            childId: 'stale',
+            sessionFile: staleSession,
+            claim: staleClaim,
+          }),
+        ),
+      )
+      // Takeover: lock now held by US (live) but the record claims the old
+      // generation id — must be filtered as superseded.
+      const takenOver = identityFor('takenover')
+      const leaseUs = acquireProcessLock(peerLockPath(takenOver.sessionFile))
+      const releaseUs = () => leaseUs.release()
+      writeFileSync(
+        presencePath('takenover', peersRoot),
+        JSON.stringify(
+          fakePresence({
+            childId: 'takenover',
+            sessionFile: takenOver.sessionFile,
+            claim: { pid: process.pid, id: randomUUID() },
+          }),
+        ),
+      )
+
+      const peers = listLivePeers(live, peersRoot)
+      const ids = peers.map((p) => p.childId)
+      assert.ok(ids.includes(live.childId))
+      assert.ok(!ids.includes('ghost'))
+      assert.ok(!ids.includes('broken'))
+      assert.ok(!ids.includes('oldversion'))
+      assert.ok(!ids.includes('stale'))
+      assert.ok(!ids.includes('takenover'))
+      releaseUs()
+    } finally {
+      releaseLive()
+    }
+  })
+
+  it('refuses presence records above the 4 KiB cap', () => {
+    const big = identityFor('bigname')
+    big.name = 'x'.repeat(5000)
+    assert.throws(
+      () => publishPresence(big, peersRoot),
+      /presence record exceeds 4096 bytes/,
+    )
+  })
+
+  it('round-trips a message between peers, forwarding resultRef', () => {
+    const a = identityFor('sender')
+    const b = identityFor('receiver')
+    const releaseA = publishPresence(a, peersRoot)
+    const releaseB = publishPresence(b, peersRoot)
+    try {
+      const target = resolvePeer('receiver', a, peersRoot)
+      assert.equal(target.childId, b.childId)
+      const sent = sendPeerMessage({
+        toChildId: target.childId,
+        from: a,
+        message: 'compare findings',
+        resultRef: 'result:findings#1',
+        root: peersRoot,
+      })
+      assert.ok(existsSync(sent.path))
+      const inbox = readInbox(b.childId, peersRoot)
+      assert.equal(inbox.length, 1)
+      assert.equal(inbox[0].message.message, 'compare findings')
+      assert.equal(inbox[0].message.from.childId, a.childId)
+      assert.equal(inbox[0].message.resultRef, 'result:findings#1')
+      removeInboxEntry(inbox[0].path)
+      assert.equal(readInbox(b.childId, peersRoot).length, 0)
+      assert.ok(!existsSync(sent.path))
+    } finally {
+      releaseA()
+      releaseB()
+    }
+  })
+
+  it('allocates monotonically increasing inbox seqs', () => {
+    const b = identityFor('seqbox')
+    const a = identityFor('seqsend')
+    const releaseA = publishPresence(a, peersRoot)
+    const releaseB = publishPresence(b, peersRoot)
+    try {
+      const first = sendPeerMessage({
+        toChildId: b.childId,
+        from: a,
+        message: 'one',
+        root: peersRoot,
+      })
+      const second = sendPeerMessage({
+        toChildId: b.childId,
+        from: a,
+        message: 'two',
+        root: peersRoot,
+      })
+      assert.ok(first.path < second.path)
+      const inbox = readInbox(b.childId, peersRoot)
+      assert.deepEqual(
+        inbox.map((e) => e.message.message),
+        ['one', 'two'],
+      )
+    } finally {
+      releaseA()
+      releaseB()
+    }
+  })
+
+  it('rejects messages above the 8 KiB cap with a clear error', () => {
+    const a = identityFor('bigsender')
+    const b = identityFor('biginbox')
+    assert.throws(
+      () =>
+        sendPeerMessage({
+          toChildId: b.childId,
+          from: a,
+          message: 'y'.repeat(9000),
+          root: peersRoot,
+        }),
+      /inbox cap is 8192 bytes/,
+    )
+    assert.equal(readInbox(b.childId, peersRoot).length, 0)
+  })
+
+  it('skips malformed inbox entries instead of surfacing them', () => {
+    const b = identityFor('messyinbox')
+    const dir = inboxDir(b.childId, peersRoot)
+    writeFileSync(join(dir, 'garbage.json'), '{oops')
+    writeFileSync(
+      join(dir, 'wrongversion.json'),
+      JSON.stringify({ version: 42, message: 'nope' }),
+    )
+    assert.equal(readInbox(b.childId, peersRoot).length, 0)
+  })
+
+  it('resolvePeer reports missing and ambiguous peers', () => {
+    const a = identityFor('resolver')
+    const releaseA = publishPresence(a, peersRoot)
+    try {
+      assert.throws(
+        () => resolvePeer('nobody', a, peersRoot),
+        /No live peer found/,
+      )
+      // Ambiguity: two live peers sharing a name.
+      const dup1 = identityFor('dup-child-1')
+      const dup2 = identityFor('dup-child-2')
+      dup1.name = 'twin'
+      dup2.name = 'twin'
+      const releaseD1 = publishPresence(dup1, peersRoot)
+      const releaseD2 = publishPresence(dup2, peersRoot)
+      try {
+        assert.throws(() => resolvePeer('twin', a, peersRoot), /ambiguous/)
+      } finally {
+        releaseD1()
+        releaseD2()
+      }
+    } finally {
+      releaseA()
+    }
   })
 })
