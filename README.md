@@ -115,6 +115,17 @@ pi install npm:pi-intercom
 pi install git:github.com/DietrichGebert/ponytail
 ```
 
+### Tested version baseline
+
+<!-- AIDEV-NOTE: PMR-0SWR. Update after integration runs against newer versions. -->
+
+| Component | Tested | Runtime floor |
+|---|---|---|
+| `@earendil-works/pi-coding-agent` | 0.85.1 | per package `peerDependencies` |
+| [herdr](https://github.com/steipete/herdr) | 0.9.5 | >= 0.9.1 (enforced at runtime by `pi-interactive-subagents`' `HERDR_MIN_VERSION` gate) |
+
+Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it checks every workspace's `npm pack --dry-run` output against its `files` allowlist and scans packed contents for secrets and absolute home paths, failing on any violation.
+
 ---
 
 ## Extensions
