@@ -449,6 +449,23 @@ export function expirePendingRequest(
   }
 }
 
+function lastHealthyKindOf(state: SubagentStatusState): SubagentStatusKind {
+  if (state.activeNow) return 'active'
+  if (state.phase === 'blocked') return 'blocked'
+  if (state.waitingSinceMs != null || state.phase === 'done') return 'waiting'
+  if (state.currentKind === 'stalled') return 'starting'
+  return state.currentKind
+}
+
+// AIDEV-NOTE (PMR-SMHB): a 'wrong-id' read means the activity file exists and
+// some live child is writing it, but its runningChildId disagrees with our
+// bookkeeping (identity churn: resume/reload/re-key paths hand out a new id
+// while the old writer keeps going, or vice versa). That is identity
+// ambiguity, not inactivity — a writer being present is evidence of life, so
+// the 60s problem-age escalation must NEVER claim 'stalled' for it (fail
+// closed: a possibly-alive child is never reported dead). Hold the last
+// healthy kind ('starting' when identity was never validated) and keep the
+// diagnostic label so the mismatch stays visible.
 function classifyProblemState(
   state: SubagentStatusState,
   now: number,
@@ -456,29 +473,29 @@ function classifyProblemState(
   const problemLabel = snapshotProblemLabel(state.snapshotState)
   const hasValidSnapshot = state.lastActivityAtMs != null
 
+  if (state.snapshotState === 'wrong-id') {
+    if (!hasValidSnapshot) {
+      return { kind: 'starting', statusLabel: problemLabel }
+    }
+    return { kind: lastHealthyKindOf(state), statusLabel: problemLabel }
+  }
+
   if (!hasValidSnapshot) {
     const referenceMs = state.firstObservationAtMs ?? state.startTimeMs
     const elapsedMs = Math.max(0, now - referenceMs)
-    return elapsedMs >= SNAPSHOT_STALLED_AFTER_MS
-      ? { kind: 'stalled', statusLabel: problemLabel }
-      : { kind: 'starting', statusLabel: null }
+    if (elapsedMs >= SNAPSHOT_STALLED_AFTER_MS) {
+      return { kind: 'stalled', statusLabel: problemLabel }
+    }
+    return { kind: 'starting', statusLabel: null }
   }
 
   const problemSinceMs = state.snapshotProblemSinceMs ?? now
   const problemMs = Math.max(0, now - problemSinceMs)
-  if (problemMs >= SNAPSHOT_STALLED_AFTER_MS)
+  if (problemMs >= SNAPSHOT_STALLED_AFTER_MS) {
     return { kind: 'stalled', statusLabel: problemLabel }
+  }
 
-  const lastHealthyKind = state.activeNow
-    ? 'active'
-    : state.phase === 'blocked'
-      ? 'blocked'
-      : state.waitingSinceMs != null || state.phase === 'done'
-        ? 'waiting'
-        : state.currentKind === 'stalled'
-          ? 'starting'
-          : state.currentKind
-  return { kind: lastHealthyKind, statusLabel: problemLabel }
+  return { kind: lastHealthyKindOf(state), statusLabel: problemLabel }
 }
 
 export function classifyStatus(

@@ -804,6 +804,52 @@ describe('status.ts', () => {
     assert.equal(snapshot.statusLabel, null)
   })
 
+  // PMR-SMHB regression: healthy long-running workers were flagged
+  // 'stalled (wrong activity id)' once identity churn produced wrong-id
+  // reads. A writer behind the file is evidence of life — never stall it.
+  it('never classifies wrong-id snapshot problems as stalled', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 5_000,
+        sequence: 7,
+        phase: 'active',
+        active: true,
+        activeScope: 'tool',
+        activeSince: 5_000,
+        activityLabel: 'bash',
+        latestEvent: 'tool_execution_start',
+      },
+      5_000,
+    )
+    state = advanceStatusState(state, 6_000).nextState
+    state = observeStatus(state, { snapshot: 'wrong-id' }, 10_000)
+
+    const shortlyAfter = classifyStatus(state, 15_000)
+    assert.equal(shortlyAfter.kind, 'active')
+    assert.equal(shortlyAfter.statusLabel, 'wrong activity id')
+
+    const longAfter = classifyStatus(state, 240_000)
+    assert.equal(longAfter.kind, 'active')
+    assert.equal(longAfter.statusLabel, 'wrong activity id')
+
+    const advanced = advanceStatusState(state, 240_000)
+    assert.equal(advanced.snapshot.kind, 'active')
+    assert.equal(advanced.transition, null)
+  })
+
+  it('holds starting for never-validated wrong-id snapshots instead of stalling', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(state, { snapshot: 'wrong-id' }, 1_000)
+
+    assert.equal(classifyStatus(state, 60_999).kind, 'starting')
+    const aged = classifyStatus(state, 240_000)
+    assert.equal(aged.kind, 'starting')
+    assert.equal(aged.statusLabel, 'wrong activity id')
+  })
+
   it('forces an active state to waiting after interrupt', () => {
     const now = 20_000
     let state = createStatusState({ source: 'pi', startTimeMs: 0 })
