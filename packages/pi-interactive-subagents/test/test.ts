@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -64,6 +65,14 @@ import {
   parseHerdrStatus,
 } from '../pi-extension/subagents/herdr.ts'
 import * as subagentsModule from '../pi-extension/subagents/index.ts'
+import {
+  buildRetirementStub,
+  DEFAULT_RETIREMENT_KEEP_RECENT,
+  DEFAULT_RETIREMENT_MIN_BYTES,
+  RETIRED_STUB_PREFIX,
+  retireSettledSubagentPayloads,
+  shouldArmRetirement,
+} from '../pi-extension/subagents/retirement.ts'
 import * as spawnModule from '../pi-extension/subagents/spawn.ts'
 // re-exported for blocked-phase widget tests
 import {
@@ -4803,5 +4812,287 @@ describe('usage.ts (PMR-874G)', () => {
       assert.ok(!rendered.lines[0].includes('tok'))
       assert.ok(!rendered.lines[1].includes('tok'))
     })
+  })
+})
+
+describe('retirement.ts (PMR-1EC3 context retirement)', () => {
+  let retireRoot: string
+
+  before(() => {
+    retireRoot = join(mkdtempSync(join(tmpdir(), 'retire-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(retireRoot, { recursive: true, force: true })
+  })
+
+  function customMsg(
+    customType: string,
+    content: unknown,
+    details?: unknown,
+  ): {
+    role: string
+    customType: string
+    content: unknown
+    details?: unknown
+  } {
+    const msg: {
+      role: string
+      customType: string
+      content: unknown
+      details?: unknown
+    } = { role: 'custom', customType, content }
+    if (details !== undefined) msg.details = details
+    return msg
+  }
+
+  const big = 'x'.repeat(DEFAULT_RETIREMENT_MIN_BYTES + 1)
+
+  describe('shouldArmRetirement', () => {
+    it('arms on automatic pressure only when enabled', () => {
+      assert.equal(shouldArmRetirement('threshold', true), true)
+      assert.equal(shouldArmRetirement('overflow', true), true)
+      assert.equal(shouldArmRetirement('manual', true), false)
+      assert.equal(shouldArmRetirement('threshold', false), false)
+      assert.equal(shouldArmRetirement('overflow', false), false)
+      assert.equal(shouldArmRetirement('manual', false), false)
+    })
+  })
+
+  describe('retireSettledSubagentPayloads', () => {
+    it('returns the input untouched when nothing qualifies', () => {
+      const messages = [
+        customMsg('subagent_result', 'small'),
+        customMsg('subagent_status', big),
+        { role: 'user', content: big },
+        customMsg('subagent_result', big), // single candidate <= keepRecent
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+      })
+      assert.equal(outcome.retired, 0)
+      assert.equal(outcome.messages, messages)
+      assert.equal(messages[3]?.content, big)
+    })
+
+    it('keeps the most recent keepRecent candidates inline', () => {
+      const messages = [
+        customMsg('subagent_result', `${big}-1`),
+        customMsg('subagent_result', `${big}-2`),
+        customMsg('subagent_result', `${big}-3`),
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+      })
+      assert.equal(outcome.retired, 2)
+      const out = outcome.messages
+      assert.ok(String(out[0]?.content).startsWith(RETIRED_STUB_PREFIX))
+      assert.ok(String(out[1]?.content).startsWith(RETIRED_STUB_PREFIX))
+      assert.equal(out[2]?.content, `${big}-3`)
+      assert.equal(DEFAULT_RETIREMENT_KEEP_RECENT, 1)
+    })
+
+    it('honors an explicit keepRecent of 0', () => {
+      const messages = [customMsg('subagent_ask', big)]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+        keepRecent: 0,
+      })
+      assert.equal(outcome.retired, 1)
+      assert.ok(
+        String(outcome.messages[0]?.content).startsWith(RETIRED_STUB_PREFIX),
+      )
+    })
+
+    it('points subagent_result stubs at the existing result record', () => {
+      // own root: the retired/ dir must not exist unless THIS test writes it
+      const root = join(
+        mkdtempSync(join(tmpdir(), 'retire-ref-')),
+        'pi-subagents',
+      )
+      const written = writeResultRecord(
+        {
+          childId: 'child-ret',
+          name: 'scout',
+          summary: 'big summary',
+          sessionFile: null,
+        },
+        root,
+      )
+      const messages = [
+        customMsg('subagent_result', `${big}-r1`, {
+          name: 'scout',
+          resultPath: written.path,
+          resultRef: 'result:scout#1',
+        }),
+        customMsg('subagent_result', `${big}-r2`),
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root,
+      })
+      assert.equal(outcome.retired, 1)
+      const stub = String(outcome.messages[0]?.content)
+      assert.ok(stub.includes(written.path))
+      assert.ok(stub.includes('result:scout#1'))
+      assert.ok(stub.includes('"scout"'))
+      // no duplicate payload record written under retired/
+      assert.ok(!existsSync(join(root, 'retired')))
+      // details survive retirement (UI renderers read them)
+      assert.deepEqual(outcome.messages[0]?.details, {
+        name: 'scout',
+        resultPath: written.path,
+        resultRef: 'result:scout#1',
+      })
+    })
+
+    it('writes a durable hash-named record when no resultPath exists', () => {
+      // own root: idempotence assertion counts files under retired/
+      const root = join(
+        mkdtempSync(join(tmpdir(), 'retire-hash-')),
+        'pi-subagents',
+      )
+      const messages = [
+        customMsg('subagent_ask', `${big}-q`, { name: 'worker' }),
+        customMsg('subagent_result', `${big}-keep`),
+      ]
+      const first = retireSettledSubagentPayloads(messages, {
+        root,
+      })
+      assert.equal(first.retired, 1)
+      const stub = String(first.messages[0]?.content)
+      assert.ok(stub.includes('subagent_ask "worker"'))
+      const match = /retired to (\S+\.json)/.exec(stub)
+      assert.ok(match, `stub names a record path: ${stub}`)
+      const recordPath = match?.[1] ?? ''
+      assert.ok(recordPath.startsWith(join(root, 'retired', '')))
+      const record = JSON.parse(readFileSync(recordPath, 'utf8'))
+      assert.equal(record.customType, 'subagent_ask')
+      assert.equal(record.content, `${big}-q`)
+      assert.equal(record.details.name, 'worker')
+      assert.ok(record.retiredAt)
+
+      // Idempotent: same payload retires to the same path, no second write.
+      const second = retireSettledSubagentPayloads(messages, {
+        root,
+      })
+      assert.equal(second.retired, 1)
+      assert.equal(String(second.messages[0]?.content), stub)
+      assert.equal(readdirSync(join(root, 'retired')).length, 1)
+    })
+
+    it('skips small, already-retired, and non-string payloads', () => {
+      const messages = [
+        customMsg('subagent_result', 'small'),
+        customMsg('subagent_result', `${RETIRED_STUB_PREFIX} earlier`),
+        customMsg('subagent_message', [{ type: 'text', text: big }]),
+        customMsg('subagent_result', `${big}-a`),
+        customMsg('subagent_result', `${big}-b`),
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+      })
+      assert.equal(outcome.retired, 1)
+      assert.ok(
+        String(outcome.messages[3]?.content).startsWith(RETIRED_STUB_PREFIX),
+      )
+      assert.equal(outcome.messages[4]?.content, `${big}-b`)
+    })
+
+    it('does not mutate the input array or message objects', () => {
+      const original = customMsg('subagent_result', `${big}-m`)
+      const messages = [original, customMsg('subagent_result', `${big}-k`)]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+      })
+      assert.equal(outcome.retired, 1)
+      assert.equal(original.content, `${big}-m`)
+      assert.notEqual(outcome.messages, messages)
+      assert.notEqual(outcome.messages[0], original)
+    })
+
+    it('retires below an explicit minBytes threshold', () => {
+      const messages = [
+        customMsg('subagent_message', 'moderately sized message payload'),
+        customMsg('subagent_result', `${big}-keep`),
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+        minBytes: 10,
+      })
+      assert.equal(outcome.retired, 1)
+      assert.ok(
+        String(outcome.messages[0]?.content).startsWith(RETIRED_STUB_PREFIX),
+      )
+    })
+  })
+
+  describe('buildRetirementStub', () => {
+    it('includes the ref path and optional name/ref', () => {
+      const stub = buildRetirementStub(
+        'subagent_result',
+        'scout',
+        '/tmp/r.json',
+        'result:scout#2',
+      )
+      assert.ok(stub.startsWith(RETIRED_STUB_PREFIX))
+      assert.ok(stub.includes('"scout"'))
+      assert.ok(stub.includes('/tmp/r.json (result:scout#2)'))
+      const bare = buildRetirementStub(
+        'subagent_ask',
+        undefined,
+        '/tmp/a.json',
+        undefined,
+      )
+      assert.ok(bare.includes('subagent_ask —'))
+      assert.ok(!bare.includes('('))
+    })
+  })
+})
+
+describe('config.ts contextRetirement (PMR-1EC3)', () => {
+  it('defaults to disabled and round-trips an explicit setting', () => {
+    assert.deepEqual(DEFAULT_SUBAGENTS_CONFIG.contextRetirement, {
+      enabled: false,
+    })
+    assert.deepEqual(
+      validateSubagentsConfig(
+        {
+          status: { enabled: true },
+          contextRetirement: { enabled: true },
+        },
+        't',
+      ),
+      { status: { enabled: true }, contextRetirement: { enabled: true } },
+    )
+    // absent key stays absent (no invented state)
+    assert.deepEqual(
+      validateSubagentsConfig({ status: { enabled: true } }, 't'),
+      { status: { enabled: true } },
+    )
+  })
+
+  it('rejects malformed contextRetirement shapes', () => {
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          { status: { enabled: true }, contextRetirement: { enabled: 'y' } },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          { status: { enabled: true }, contextRetirement: {} },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+  })
+
+  it('scaffolded global config carries the disabled default', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const path = scaffoldGlobalSubagentsConfig(agentDir)
+    const onDisk = JSON.parse(readFileSync(path, 'utf8'))
+    assert.deepEqual(onDisk.contextRetirement, { enabled: false })
   })
 })

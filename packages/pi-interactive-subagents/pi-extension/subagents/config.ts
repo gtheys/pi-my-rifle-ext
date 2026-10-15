@@ -17,6 +17,11 @@ const SubagentsConfigSchema = Type.Object(
       { enabled: Type.Boolean() },
       { additionalProperties: false },
     ),
+    // AIDEV-NOTE (PMR-1EC3): off by default — context retirement changes what
+    // the model sees, so it is an explicit opt-in. Absent = disabled.
+    contextRetirement: Type.Optional(
+      Type.Object({ enabled: Type.Boolean() }, { additionalProperties: false }),
+    ),
   },
   { additionalProperties: false },
 )
@@ -25,6 +30,7 @@ export type SubagentsConfig = Static<typeof SubagentsConfigSchema>
 
 export const DEFAULT_SUBAGENTS_CONFIG: SubagentsConfig = {
   status: { enabled: true },
+  contextRetirement: { enabled: false },
 }
 
 export function globalSubagentsConfigPath(
@@ -51,7 +57,11 @@ export function validateSubagentsConfig(
   }
   // Reconstruct instead of returning raw so metadata keys like $schema never
   // leak into the typed config value.
-  return { status: raw.status }
+  const config: SubagentsConfig = { status: raw.status }
+  if (raw.contextRetirement !== undefined) {
+    config.contextRetirement = raw.contextRetirement
+  }
+  return config
 }
 
 function readSubagentsConfigFile(

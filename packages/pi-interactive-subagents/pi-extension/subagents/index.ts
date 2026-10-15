@@ -63,6 +63,10 @@ import {
   removeOwnerMessage,
 } from './inbox.ts'
 import {
+  retireSettledSubagentPayloads,
+  shouldArmRetirement,
+} from './retirement.ts'
+import {
   findLastAssistantMessage,
   getNewEntries,
   seedSubagentSessionFile,
@@ -612,6 +616,23 @@ function getStatusConfig(): StatusConfig {
   return DEFAULT_STATUS_CONFIG
 }
 
+// AIDEV-NOTE (PMR-1EC3): context-retirement state lives on globalThis so an
+// extension /reload keeps it (new module instance, same session). Armed by
+// the first automatic compaction pressure signal; from then on the context
+// hook retires settled subagent payloads per provider request.
+const RETIREMENT_ENABLED_KEY = Symbol.for('pi-subagents/retirement-enabled')
+const RETIREMENT_ARMED_KEY = Symbol.for('pi-subagents/retirement-armed')
+
+function getRetirementEnabled(): boolean {
+  return (
+    (globalThis as Record<symbol, unknown>)[RETIREMENT_ENABLED_KEY] === true
+  )
+}
+
+function isRetirementArmed(): boolean {
+  return (globalThis as Record<symbol, unknown>)[RETIREMENT_ARMED_KEY] === true
+}
+
 function loadAndCacheStatusConfig(cwd: string | undefined): StatusConfig {
   const loaded = loadSubagentsConfig(cwd)
   const config: StatusConfig = {
@@ -619,6 +640,8 @@ function loadAndCacheStatusConfig(cwd: string | undefined): StatusConfig {
     lineLimit: DEFAULT_STATUS_LINE_LIMIT,
   }
   ;(globalThis as Record<symbol, unknown>)[STATUS_CONFIG_KEY] = config
+  ;(globalThis as Record<symbol, unknown>)[RETIREMENT_ENABLED_KEY] =
+    loaded.config.contextRetirement?.enabled === true
   return config
 }
 
@@ -2497,6 +2520,27 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     // AIDEV-NOTE: load per session so a project override written mid-run is
     // honored on the next session. Throws on invalid config — fail fast.
     loadAndCacheStatusConfig(ctx.cwd)
+  })
+
+  // AIDEV-NOTE (PMR-1EC3): context retirement. session_before_compact is the
+  // pressure signal ONLY — we never cancel or replace pi's compaction, so
+  // manual/overflow compaction runs untouched and there is no loop-block.
+  // Once armed, the context hook retires settled subagent payloads (large
+  // subagent_result/ask/message steers) to durable refs per request; the
+  // session file keeps full records, only model-visible context shrinks.
+  pi.on('session_before_compact', (event) => {
+    if (!shouldArmRetirement(event.reason, getRetirementEnabled())) {
+      return undefined
+    }
+    ;(globalThis as Record<symbol, unknown>)[RETIREMENT_ARMED_KEY] = true
+    return undefined
+  })
+
+  pi.on('context', (event) => {
+    if (!isRetirementArmed()) return undefined
+    const outcome = retireSettledSubagentPayloads(event.messages)
+    if (outcome.retired === 0) return undefined
+    return { messages: outcome.messages }
   })
 
   // Clean up on session shutdown

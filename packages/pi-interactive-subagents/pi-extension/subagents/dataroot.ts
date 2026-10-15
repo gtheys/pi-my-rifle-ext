@@ -9,6 +9,7 @@ export type SubagentsDataDirName =
   | 'asks'
   | 'assignments'
   | 'inbox'
+  | 'retired'
 
 export const SUBAGENTS_DATA_DIR_NAMES: readonly SubagentsDataDirName[] = [
   'results',
@@ -17,6 +18,7 @@ export const SUBAGENTS_DATA_DIR_NAMES: readonly SubagentsDataDirName[] = [
   'asks',
   'assignments',
   'inbox',
+  'retired',
 ]
 
 /** Durable data root for pi-interactive-subagents: <agentDir>/pi-subagents/. */
