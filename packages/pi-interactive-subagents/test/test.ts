@@ -2447,6 +2447,14 @@ import {
   resolvePeer,
   sendPeerMessage,
 } from '../pi-extension/subagents/peers.ts'
+import {
+  createSubagentWorktree,
+  deriveWorktreeBranch,
+  findMainRepoRoot,
+  slugifyWorktree,
+  WorktreeError,
+  worktreePathFor,
+} from '../pi-extension/subagents/worktrees.ts'
 
 function modeOf(path: string): number {
   return statSync(path).mode & 0o777
@@ -4043,5 +4051,188 @@ describe('inbox.ts (PMR-QCVA owner messaging)', () => {
     assert.equal(entries.length, 0)
     // Cleanup so later assertions on other parents stay isolated.
     rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+// ── worktrees.ts (PMR-11TD) ──
+
+import { execFileSync } from 'node:child_process'
+import { homedir } from 'node:os'
+
+describe('worktrees.ts (PMR-11TD)', () => {
+  function gitInitRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wt-unit-'))
+    execFileSync('git', ['init', '-q', dir])
+    execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@test'])
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'test'])
+    writeFileSync(join(dir, 'README.md'), 'x')
+    execFileSync('git', ['-C', dir, 'add', '.'])
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'init'])
+    return dir
+  }
+
+  it('slugifyWorktree lowercases, strips, and dashes', () => {
+    assert.equal(
+      slugifyWorktree('Fix PMR-11TD: Worktree Spawn!'),
+      'fix-pmr-11td-worktree-spawn',
+    )
+    assert.equal(slugifyWorktree('  --weird__  name-- '), 'weird-name')
+    assert.equal(slugifyWorktree('!!!'), '')
+  })
+
+  it('deriveWorktreeBranch is subagent/<slug>-<ts>-<id> and deterministic', () => {
+    const now = new Date(Date.UTC(2026, 9, 15, 7, 14, 24))
+    const branch = deriveWorktreeBranch('Echo Test', 'abc123', now)
+    assert.equal(branch, 'subagent/echo-test-20261015-071424-abc123')
+    assert.equal(deriveWorktreeBranch('Echo Test', 'abc123', now), branch)
+    // childId disambiguates same-second same-name spawns
+    assert.notEqual(deriveWorktreeBranch('Echo Test', 'def456', now), branch)
+    // empty-slug fallback
+    assert.ok(
+      deriveWorktreeBranch('!!!', 'x1', now).startsWith('subagent/agent-'),
+    )
+    // long names are capped
+    const long = deriveWorktreeBranch('a'.repeat(200), 'x1', now)
+    assert.ok(long.length < 70, `branch too long: ${long.length}`)
+  })
+
+  it('worktreePathFor follows $HOME/.herdr/worktrees/<repo>/<branch-slug>', () => {
+    const path = worktreePathFor('/repos/my-repo', 'subagent/echo-1-x')
+    assert.equal(
+      path,
+      join(homedir(), '.herdr', 'worktrees', 'my-repo', 'subagent-echo-1-x'),
+    )
+  })
+
+  it('findMainRepoRoot resolves the main checkout from repo and worktree', () => {
+    const repo = gitInitRepo()
+    try {
+      assert.equal(findMainRepoRoot(repo), repo)
+      const wt = join(repo, 'linked')
+      execFileSync('git', [
+        '-C',
+        repo,
+        'worktree',
+        'add',
+        '-q',
+        '-b',
+        'linked',
+        wt,
+      ])
+      assert.equal(findMainRepoRoot(wt), repo)
+    } finally {
+      execFileSync(
+        'git',
+        ['-C', repo, 'worktree', 'remove', '--force', join(repo, 'linked')],
+        { stdio: 'ignore' },
+      )
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('findMainRepoRoot fails closed outside a git repo', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wt-nogit-'))
+    try {
+      assert.throws(() => findMainRepoRoot(dir), WorktreeError)
+      assert.throws(() => findMainRepoRoot(dir), /not a git repository/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('createSubagentWorktree creates worktree + branch off HEAD', () => {
+    const repo = gitInitRepo()
+    const branch = deriveWorktreeBranch(
+      'unit echo',
+      't1',
+      new Date(Date.UTC(2026, 0, 1)),
+    )
+    let created: string | null = null
+    try {
+      const wt = createSubagentWorktree({ cwd: repo, branch })
+      created = wt.path
+      assert.equal(wt.branch, branch)
+      assert.ok(existsSync(join(wt.path, 'README.md')))
+      assert.ok(existsSync(join(wt.path, '.git')))
+      const head = execFileSync(
+        'git',
+        ['-C', wt.path, 'branch', '--show-current'],
+        { encoding: 'utf8' },
+      ).trim()
+      assert.equal(head, branch)
+      // base ref variant branches from that ref
+      const wt2 = createSubagentWorktree({
+        cwd: repo,
+        branch: `${branch}-b`,
+        base: 'HEAD',
+      })
+      assert.ok(existsSync(wt2.path))
+      execFileSync('git', [
+        '-C',
+        repo,
+        'worktree',
+        'remove',
+        '--force',
+        wt2.path,
+      ])
+      execFileSync('git', ['-C', repo, 'branch', '-qD', `${branch}-b`])
+    } finally {
+      if (created) {
+        execFileSync(
+          'git',
+          ['-C', repo, 'worktree', 'remove', '--force', created],
+          { stdio: 'ignore' },
+        )
+        execFileSync('git', ['-C', repo, 'branch', '-qD', branch], {
+          stdio: 'ignore',
+        })
+      }
+      rmSync(repo, { recursive: true, force: true })
+      rmSync(join(homedir(), '.herdr', 'worktrees', basename(repo)), {
+        recursive: true,
+        force: true,
+      })
+    }
+  })
+
+  it('createSubagentWorktree failure: clear WorktreeError, no partial state', () => {
+    const repo = gitInitRepo()
+    const branch = deriveWorktreeBranch(
+      'bad base',
+      't2',
+      new Date(Date.UTC(2026, 0, 1)),
+    )
+    const path = worktreePathFor(repo, branch)
+    try {
+      assert.throws(
+        () =>
+          createSubagentWorktree({ cwd: repo, branch, base: 'no-such-ref' }),
+        (err: unknown) => {
+          assert.ok(err instanceof WorktreeError)
+          assert.match(err.message, /git worktree add failed/)
+          assert.match(err.message, /no-such-ref/)
+          return true
+        },
+      )
+      // no worktree registered, no branch created
+      assert.ok(!existsSync(path))
+      const list = execFileSync(
+        'git',
+        ['-C', repo, 'worktree', 'list', '--porcelain'],
+        { encoding: 'utf8' },
+      )
+      assert.ok(!list.includes(path))
+      assert.throws(() =>
+        execFileSync('git', ['-C', repo, 'rev-parse', '--verify', branch], {
+          stdio: 'pipe',
+        }),
+      )
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+      rmSync(join(homedir(), '.herdr', 'worktrees', basename(repo)), {
+        recursive: true,
+        force: true,
+      })
+    }
   })
 })

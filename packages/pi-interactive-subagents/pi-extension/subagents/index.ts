@@ -101,6 +101,11 @@ import {
   sendEscape,
   shellEscape,
 } from './surface.ts'
+import {
+  createSubagentWorktree,
+  deriveWorktreeBranch,
+  type WorktreeOption,
+} from './worktrees.ts'
 
 /** Absolute path to `pi-extension/subagents`. https://github.com/nodejs/node/issues/37845 */
 const SUBAGENTS_DIR = dirname(fileURLToPath(import.meta.url))
@@ -219,6 +224,15 @@ const SubagentParams = Type.Object({
       description:
         'Working directory for the sub-agent. The agent starts in this folder and picks up its local .pi/ config, CLAUDE.md, skills, and extensions. Use for role-specific subfolders.',
     }),
+  ),
+  worktree: Type.Optional(
+    Type.Union(
+      [Type.Boolean(), Type.Object({ base: Type.Optional(Type.String()) })],
+      {
+        description:
+          'Create an isolated git worktree and run the sub-agent with cwd set to it (mutually exclusive with cwd). `true` branches from the current HEAD; `{base}` branches from the given ref. A failed `git worktree add` aborts the call — no tab is spawned. The worktree outlives the child; removal is manual (git worktree remove), never automatic.',
+      },
+    ),
   ),
   fork: Type.Optional(
     Type.Boolean({
@@ -672,6 +686,10 @@ export interface RunningSubagent {
   watching?: boolean
   /** Resume flow: entry count in sessionFile before resume — new-only summary extraction. */
   resumeEntryCount?: number
+  /** Worktree placement (PMR-11TD): absolute worktree path + its branch.
+   * Outlives the child; removal is manual (no auto-delete ever). */
+  worktree?: string
+  branch?: string
 }
 
 /** All currently running subagents, keyed by id — shared via globalThis (see RUNNING_KEY). */
@@ -1612,6 +1630,29 @@ async function launchSubagent(
   const effectiveThinking = agentDefs?.thinking
   const effectiveInteractive = resolveEffectiveInteractive(params, agentDefs)
 
+  // AIDEV-NOTE: worktree placement (PMR-11TD) — blocking `git worktree add`
+  // BEFORE any tab/session setup. A failure here means no tab, no partial
+  // state (the worktree itself, if created, is never auto-removed). The
+  // worktree path then becomes the child cwd for session dir, agent
+  // discovery, and `tab create --cwd`.
+  let worktree: { path: string; branch: string } | null = null
+  if (params.worktree) {
+    if (params.cwd) {
+      throw new Error(
+        'worktree and cwd cannot be combined — the worktree becomes the cwd.',
+      )
+    }
+    let base: string | undefined
+    if (typeof params.worktree === 'object') {
+      base = params.worktree.base
+    }
+    worktree = createSubagentWorktree({
+      cwd: ctx.cwd,
+      branch: deriveWorktreeBranch(params.name, id),
+      base,
+    })
+  }
+
   const sessionFile = ctx.sessionManager.getSessionFile()
   if (!sessionFile) throw new Error('No session file')
   const sessionId = ctx.sessionManager.getSessionId()
@@ -1620,8 +1661,9 @@ async function launchSubagent(
     sessionId,
   )
 
+  const pathParams = worktree ? { ...params, cwd: worktree.path } : params
   const { effectiveCwd, localAgentDir, effectiveAgentDir } =
-    resolveSubagentPaths(params, agentDefs)
+    resolveSubagentPaths(pathParams, agentDefs)
   const targetCwdForSession = effectiveCwd ?? ctx.cwd
   const sessionDir = getDefaultSessionDirFor(
     targetCwdForSession,
@@ -1703,6 +1745,9 @@ async function launchSubagent(
   env.PI_SUBAGENT_SESSION = subagentSessionFile
   env.PI_SUBAGENT_ID = id
   env.PI_SUBAGENT_ACTIVITY_FILE = activityFile
+  if (worktree) {
+    env.PI_SUBAGENT_WORKTREE = worktree.path
+  }
   // Owner-inbox routing key for message_owner (PMR-QCVA): the parent's
   // session id names the inbox dir the child writes to.
   env.PI_SUBAGENT_PARENT_SESSION = sessionId
@@ -1816,6 +1861,7 @@ async function launchSubagent(
     sessionFile: subagentSessionFile,
     activityFile,
     ...(agentDefs?.cli === 'claude' ? { cli: 'claude' as const } : {}),
+    ...(worktree ? { worktree: worktree.path, branch: worktree.branch } : {}),
     interactive: effectiveInteractive,
     starting: true,
     statusState: createStatusState({
@@ -2147,7 +2193,12 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
           result = { ...result, summary }
         }
 
-        const presentation = resolveResultPresentation(result, running.name)
+        let presentation = resolveResultPresentation(result, running.name)
+        if (running.worktree) {
+          // AIDEV-NOTE: durable result references the worktree (PMR-11TD) —
+          // the worktree outlives the child; removal is manual, never auto.
+          presentation += `\n\nWorktree: ${running.worktree} (branch ${running.branch}) — removal is manual (git worktree remove).`
+        }
 
         // AIDEV-NOTE: persist result + reserve a semantic ref, but delivery
         // never depends on the store — if it fails we fall back to exactly
@@ -2184,6 +2235,9 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
               exitCode: result.exitCode,
               elapsed: result.elapsed,
               sessionFile: result.sessionFile,
+              ...(running.worktree
+                ? { worktree: running.worktree, branch: running.branch }
+                : {}),
               ...(result.errorMessage
                 ? { errorMessage: result.errorMessage }
                 : {}),
@@ -2310,14 +2364,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         'When the sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. ' +
         "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
         'DO NOT fabricate, assume, or summarize results after calling this tool. ' +
-        'After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready.',
+        'After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready. ' +
+        'Set worktree: true to run the sub-agent in a fresh isolated git worktree (its cwd); the worktree outlives the child and is removed manually.',
       promptSnippet:
         'Spawn a sub-agent in a dedicated terminal multiplexer pane. ' +
         'This is a fire-and-forget async tool: the call returns immediately with only an acknowledgement. ' +
         'When the sub-agent finishes, the harness AUTOMATICALLY delivers its result as a steer message that wakes you up and starts a new turn — you do not need to do anything to receive it. ' +
         "DO NOT write polling loops, sleep/wait commands, tail/watch scripts, or repeatedly read session/log files to detect completion. DO NOT call subagents_list or any other tool to 'check' status. All of that is wasted work — the harness handles delivery for you. " +
         'DO NOT fabricate, assume, or summarize results after calling this tool. ' +
-        'After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready.',
+        'After spawning, either end your turn immediately, or work on other independent tasks (including spawning more subagents in parallel). The harness will wake you with the result when it is ready. ' +
+        'Set worktree: true to run the sub-agent in a fresh isolated git worktree (its cwd); the worktree outlives the child and is removed manually.',
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -2386,6 +2442,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
             agent: params.agent,
             sessionFile: running.sessionFile,
             paneId: running.paneId,
+            ...(running.worktree
+              ? { worktree: running.worktree, branch: running.branch }
+              : {}),
             status: 'started',
           },
         }
