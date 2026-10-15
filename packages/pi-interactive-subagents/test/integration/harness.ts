@@ -1,12 +1,13 @@
 /**
- * Integration test harness for pi-interactive-subagents.
+ * Integration test harness for pi-interactive-subagents — herdr-only
+ * (PMR-TABUX). The cmux/tmux/zellij/wezterm backend matrix is gone.
  *
  * Provides utilities to:
- * - Detect available mux backends (cmux, tmux, zellij)
  * - Create isolated test environments with test agent definitions
- * - Start real pi sessions in mux surfaces
- * - Poll for file creation and screen output
- * - Clean up surfaces and temp files after tests
+ * - Create herdr background tabs for test sessions
+ * - Start real pi sessions in those tabs
+ * - Poll for file creation and pane output
+ * - Clean up tabs and temp files after tests
  */
 import { execFileSync } from 'node:child_process'
 import {
@@ -22,28 +23,26 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runHerdr } from '../../pi-extension/subagents/herdr.ts'
+import {
+  herdrPaneAlive,
+  herdrTabClose,
+  herdrTabCreate,
+  herdrTabList,
+} from '../../pi-extension/subagents/spawn.ts'
 import {
   closeSurface,
-  createSurface,
-  createSurfaceSplit,
-  getMuxBackend,
-  type MuxBackend,
-  parseCmuxFocusedSnapshotFromJson,
-  parseCmuxPaneRefForSurfaceFromJson,
   readScreen,
   readScreenAsync,
   sendCommand,
   sendEscape,
   sendLongCommand,
   shellEscape,
-} from '../../pi-extension/subagents/cmux.ts'
+} from '../../pi-extension/subagents/surface.ts'
 
-export type { MuxBackend }
-// Re-export mux primitives for tests
+// Re-export surface primitives for tests
 export {
   closeSurface,
-  createSurface,
-  createSurfaceSplit,
   readScreen,
   readScreenAsync,
   sendCommand,
@@ -79,123 +78,158 @@ const EXTENSION_SOURCE = join(
 // ── Configuration ──
 
 /** Model used for integration tests. Override with PI_TEST_MODEL env var. */
-export const TEST_MODEL =
-  process.env.PI_TEST_MODEL ?? 'anthropic/claude-haiku-4-5'
+export const TEST_MODEL = process.env.PI_TEST_MODEL ?? 'zai/glm-5.3-flash'
 
 /** Per-test timeout in ms. Override with PI_TEST_TIMEOUT env var. */
 export const PI_TIMEOUT = Number(process.env.PI_TEST_TIMEOUT ?? '120000')
 
-// ── Backend detection ──
+// ── Herdr environment ──
 
-/**
- * Detect which mux backends are actually available in the current environment.
- * Temporarily sets PI_SUBAGENT_MUX to probe each backend.
- */
-export function getAvailableBackends(): MuxBackend[] {
-  const backends: MuxBackend[] = []
-  const orig = process.env.PI_SUBAGENT_MUX
-
-  for (const backend of ['cmux', 'tmux', 'zellij'] as MuxBackend[]) {
-    process.env.PI_SUBAGENT_MUX = backend
-    try {
-      if (getMuxBackend() === backend) backends.push(backend)
-    } catch {}
-  }
-
-  if (orig === undefined) delete process.env.PI_SUBAGENT_MUX
-  else process.env.PI_SUBAGENT_MUX = orig
-
-  return backends
+/** Skip guard: tests need to run inside herdr. */
+export function isHerdrIntegrationAvailable(): boolean {
+  return !!process.env.HERDR_PANE_ID
 }
 
-export function setBackend(backend: MuxBackend): string | undefined {
-  const prev = process.env.PI_SUBAGENT_MUX
-  process.env.PI_SUBAGENT_MUX = backend
-  return prev
+function herdrWorkspaceId(): string {
+  return (
+    process.env.HERDR_WORKSPACE_ID ??
+    process.env.HERDR_PANE_ID?.split(':')[0] ??
+    ''
+  )
 }
 
-export function restoreBackend(prev: string | undefined): void {
-  if (prev === undefined) delete process.env.PI_SUBAGENT_MUX
-  else process.env.PI_SUBAGENT_MUX = prev
+interface HerdrPaneInfo {
+  pane_id?: string
+  focused?: boolean
+  workspace_id?: string
 }
 
-export function focusSurface(backend: MuxBackend, surface: string): void {
-  if (backend === 'cmux') {
-    const pane = getSurfacePane(backend, surface)
-    if (pane)
-      execFileSync('cmux', ['focus-pane', '--pane', pane], { encoding: 'utf8' })
-    execFileSync('cmux', ['focus-panel', '--panel', surface], {
+function herdrPaneList(): HerdrPaneInfo[] {
+  const info = execFileSync('herdr', ['pane', 'list'], { encoding: 'utf8' })
+  const parsed = JSON.parse(info) as { result?: { panes?: HerdrPaneInfo[] } }
+  return parsed.result?.panes ?? []
+}
+
+export function herdrFocusedPane(): string | null {
+  const workspace = process.env.HERDR_PANE_ID?.split(':')[0]
+  const focused = herdrPaneList().find(
+    (p) => p.focused && (!workspace || p.workspace_id === workspace),
+  )
+  return focused?.pane_id ?? null
+}
+
+// AIDEV-NOTE: focus is server-global — focus the target's workspace+tab first
+// (read from `pane get`), then nudge with directional pane focus if needed.
+function herdrFocusSurface(target: string): void {
+  try {
+    const info = execFileSync('herdr', ['pane', 'get', target], {
       encoding: 'utf8',
     })
-    return
+    const parsed = JSON.parse(info) as {
+      result?: { pane?: { workspace_id?: string; tab_id?: string } }
+    }
+    const pane = parsed.result?.pane
+    if (pane?.workspace_id) {
+      execFileSync('herdr', ['workspace', 'focus', pane.workspace_id])
+    }
+    if (pane?.tab_id) {
+      execFileSync('herdr', ['tab', 'focus', pane.tab_id])
+    }
+  } catch {}
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (herdrFocusedPane() === target) return
+    const focused = herdrFocusedPane()
+    if (!focused) break
+    const rects = herdrPaneRects(target)
+    const from = rects.get(focused)
+    const to = rects.get(target)
+    if (!from || !to) {
+      // A fresh pane can lag the layout snapshot by a tick — retry.
+      if (attempt < 9) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+        continue
+      }
+      throw new Error(`Cannot locate herdr pane ${target} in layout`)
+    }
+    const direction = herdrFocusDirection(from, to)
+    execFileSync(
+      'herdr',
+      ['pane', 'focus', '--direction', direction, '--current'],
+      { encoding: 'utf8' },
+    )
   }
-
-  if (backend === 'tmux') {
-    execFileSync('tmux', ['select-pane', '-t', surface], { encoding: 'utf8' })
-    return
-  }
-
-  throw new Error(`Focus helpers are not implemented for ${backend}`)
+  throw new Error(`Failed to focus herdr pane ${target}`)
 }
 
-export function getFocusedSurface(backend: MuxBackend): string | null {
-  if (backend === 'cmux') {
-    const info = execFileSync('cmux', ['identify', '--json'], {
-      encoding: 'utf8',
-    })
-    return parseCmuxFocusedSnapshotFromJson(info)?.surfaceRef ?? null
-  }
+interface HerdrRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
-  if (backend === 'tmux') {
-    try {
-      const panes = execFileSync(
-        'tmux',
-        ['list-panes', '-F', '#{pane_id} #{pane_active}'],
-        {
-          encoding: 'utf8',
-        },
-      )
-      const activeLine = panes.split('\n').find((line) => line.endsWith(' 1'))
-      return activeLine?.split(' ')[0] ?? null
-    } catch {
-      return null
+// AIDEV-NOTE: layout must be queried for the TARGET pane's tab
+// (`--pane <id>`) — `--current` follows the server's global focus, which
+// may be a human's workspace, not the test's.
+function herdrPaneRects(target: string): Map<string, HerdrRect> {
+  const info = execFileSync('herdr', ['pane', 'layout', '--pane', target], {
+    encoding: 'utf8',
+  })
+  const parsed = JSON.parse(info) as {
+    result?: {
+      layout?: {
+        panes?: Array<{ pane_id?: string; rect?: HerdrRect; focused?: boolean }>
+      }
     }
   }
-
-  throw new Error(`Focus helpers are not implemented for ${backend}`)
+  const rects = new Map<string, HerdrRect>()
+  for (const pane of parsed.result?.layout?.panes ?? []) {
+    if (pane.pane_id && pane.rect) rects.set(pane.pane_id, pane.rect)
+  }
+  return rects
 }
 
-export function getSurfacePane(
-  backend: MuxBackend,
-  surface: string,
-): string | null {
-  if (backend === 'cmux') {
-    const info = execFileSync('cmux', ['identify', '--surface', surface], {
-      encoding: 'utf8',
-    })
-    return parseCmuxPaneRefForSurfaceFromJson(info, surface)
+function herdrFocusDirection(from: HerdrRect, to: HerdrRect): string {
+  const fromCenterX = from.x + from.width / 2
+  const fromCenterY = from.y + from.height / 2
+  const toCenterX = to.x + to.width / 2
+  const toCenterY = to.y + to.height / 2
+  const dx = toCenterX - fromCenterX
+  const dy = toCenterY - fromCenterY
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    if (dx >= 0) return 'right'
+    return 'left'
   }
+  if (dy >= 0) return 'down'
+  return 'up'
+}
 
-  if (backend === 'tmux') return surface
+export function focusSurface(paneId: string): void {
+  herdrFocusSurface(paneId)
+}
 
-  throw new Error(`Pane lookup is not implemented for ${backend}`)
+export function getFocusedSurface(): string | null {
+  return herdrFocusedPane()
 }
 
 export async function waitForFocusedSurface(
-  backend: MuxBackend,
-  surface: string,
+  paneId: string,
   timeout: number = PI_TIMEOUT,
 ): Promise<void> {
   const start = Date.now()
   while (Date.now() - start < timeout) {
-    if (getFocusedSurface(backend) === surface) return
+    if (getFocusedSurface() === paneId) return
     await sleep(200)
   }
 
   throw new Error(
-    `Timeout (${timeout}ms) waiting for focused ${backend} surface ${surface}; ` +
-      `current focus is ${getFocusedSurface(backend) ?? 'unknown'}`,
+    `Timeout (${timeout}ms) waiting for focused herdr pane ${paneId}; ` +
+      `current focus is ${getFocusedSurface() ?? 'unknown'}`,
   )
+}
+
+export function isPaneAlive(paneId: string): boolean {
+  return herdrPaneAlive(paneId)
 }
 
 // ── Test environment ──
@@ -203,10 +237,10 @@ export async function waitForFocusedSurface(
 export interface TestEnv {
   /** Temp directory serving as the test project root */
   dir: string
-  /** Active mux backend for this test run */
-  backend: MuxBackend
-  /** Surfaces created during the test (cleaned up automatically) */
+  /** Herdr panes created during the test (panes closed on cleanup) */
   surfaces: string[]
+  /** Herdr tabs created during the test (closed on cleanup) */
+  tabs: string[]
   /** Temp files to clean up */
   tempFiles: string[]
 }
@@ -215,7 +249,7 @@ export interface TestEnv {
  * Create an isolated test environment with test agent definitions.
  * The temp dir has `.pi/agents/` containing copies of all test agents.
  */
-export function createTestEnv(backend: MuxBackend): TestEnv {
+export function createTestEnv(): TestEnv {
   const dir = mkdtempSync(join(tmpdir(), 'pi-integ-'))
   const agentsDir = join(dir, '.pi', 'agents')
   mkdirSync(agentsDir, { recursive: true })
@@ -229,16 +263,23 @@ export function createTestEnv(backend: MuxBackend): TestEnv {
     }
   }
 
-  return { dir, backend, surfaces: [], tempFiles: [] }
+  return { dir, surfaces: [], tabs: [], tempFiles: [] }
 }
 
 /**
  * Clean up all resources created during the test.
  */
 export function cleanupTestEnv(env: TestEnv): void {
-  for (const surface of env.surfaces) {
+  for (const pane of env.surfaces) {
     try {
-      closeSurface(surface)
+      closeSurface(pane)
+    } catch {}
+  }
+  // Close any still-existing tabs the test created (asymmetric rollback
+  // discipline: only our own tabs).
+  for (const tab of env.tabs) {
+    try {
+      herdrTabClose(tab)
     } catch {}
   }
   for (const file of env.tempFiles) {
@@ -252,23 +293,18 @@ export function cleanupTestEnv(env: TestEnv): void {
 }
 
 /**
- * Create a surface and register it for automatic cleanup.
+ * Create a background herdr tab; returns its root pane id and registers
+ * pane + tab for automatic cleanup.
  */
 export function createTrackedSurface(env: TestEnv, name: string): string {
-  const surface = createSurface(name)
-  env.surfaces.push(surface)
-  return surface
-}
-
-export function createTrackedSurfaceSplit(
-  env: TestEnv,
-  name: string,
-  direction: 'left' | 'right' | 'up' | 'down',
-  fromSurface?: string,
-): string {
-  const surface = createSurfaceSplit(name, direction, fromSurface)
-  env.surfaces.push(surface)
-  return surface
+  const tab = herdrTabCreate({
+    workspaceId: herdrWorkspaceId(),
+    cwd: env.dir,
+    label: name,
+  })
+  env.surfaces.push(tab.paneId)
+  env.tabs.push(tab.tabId)
+  return tab.paneId
 }
 
 /**
@@ -278,17 +314,21 @@ export function untrackSurface(env: TestEnv, surface: string): void {
   env.surfaces = env.surfaces.filter((s) => s !== surface)
 }
 
+export function stillExists(tabId: string): boolean {
+  return herdrTabList(herdrWorkspaceId()).includes(tabId)
+}
+
 // ── Pi session management ──
 
 /**
- * Start a pi session in a mux surface with the subagents extension loaded.
- * Returns immediately — the pi process runs asynchronously in the surface.
+ * Start a pi session in a herdr pane with the subagents extension loaded.
+ * Returns immediately — the pi process runs asynchronously in the pane.
  *
  * The command ends with a sentinel so we can detect when pi exits:
  *   `pi ...; echo '__TEST_DONE_'$?'__'`
  */
 export function startPi(
-  surface: string,
+  paneId: string,
   testDir: string,
   task: string,
   opts?: { model?: string; extraArgs?: string },
@@ -312,7 +352,7 @@ export function startPi(
     .filter(Boolean)
     .join(' ')
 
-  sendLongCommand(surface, `${cmd}; echo '__TEST_DONE_'$?'__'`, {
+  sendLongCommand(paneId, `${cmd}; echo '__TEST_DONE_'$?'__'`, {
     scriptPath: join(testDir, `test-launch-${Date.now()}.sh`),
   })
 }
@@ -320,11 +360,11 @@ export function startPi(
 // ── Polling helpers ──
 
 /**
- * Poll until a regex pattern appears in the surface's screen output.
+ * Poll until a regex pattern appears in the pane's screen output.
  * Throws on timeout with the last screen contents for debugging.
  */
 export async function waitForScreen(
-  surface: string,
+  paneId: string,
   pattern: RegExp,
   timeout: number = PI_TIMEOUT,
   lines: number = 200,
@@ -332,7 +372,7 @@ export async function waitForScreen(
   const start = Date.now()
   while (Date.now() - start < timeout) {
     try {
-      const screen = await readScreenAsync(surface, lines)
+      const screen = await readScreenAsync(paneId, lines)
       if (pattern.test(screen)) return screen
     } catch {}
     await sleep(2000)
@@ -340,7 +380,7 @@ export async function waitForScreen(
 
   let finalScreen = ''
   try {
-    finalScreen = readScreen(surface, lines)
+    finalScreen = readScreen(paneId, lines)
   } catch {}
   throw new Error(
     `Timeout (${timeout}ms) waiting for pattern ${pattern}.\nLast screen:\n${finalScreen.slice(-1000)}`,
@@ -371,14 +411,14 @@ export async function waitForFile(
 }
 
 /**
- * Wait for the pi process in a surface to exit (sentinel detection).
+ * Wait for the pi process in a pane to exit (sentinel detection).
  * Returns the exit code.
  */
 export async function waitForPiExit(
-  surface: string,
+  paneId: string,
   timeout: number = PI_TIMEOUT,
 ): Promise<number> {
-  const screen = await waitForScreen(surface, /__TEST_DONE_(\d+)__/, timeout)
+  const screen = await waitForScreen(paneId, /__TEST_DONE_(\d+)__/, timeout)
   const match = screen.match(/__TEST_DONE_(\d+)__/)
   return match ? parseInt(match[1], 10) : -1
 }
@@ -399,3 +439,5 @@ export function uniqueId(): string {
 export function trackTempFile(env: TestEnv, path: string): void {
   env.tempFiles.push(path)
 }
+
+export { runHerdr }

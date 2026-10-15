@@ -15,6 +15,7 @@ export type SubagentStatusKind =
   | 'starting'
   | 'active'
   | 'waiting'
+  | 'blocked'
   | 'stalled'
   | 'running'
 export type SubagentStatusSource = 'pi' | 'claude'
@@ -25,7 +26,24 @@ export type StatusSnapshotState =
   | 'missing'
   | 'invalid'
   | 'wrong-id'
-export type StatusActivityPhase = 'starting' | 'active' | 'waiting' | 'done'
+export type StatusActivityPhase =
+  | 'starting'
+  | 'active'
+  | 'waiting'
+  | 'blocked'
+  | 'done'
+
+// AIDEV-NOTE: pending parent→child control request (PMR-DNPZ). Tracked on the
+// status state so the 1s refresh loop can observe the `.ack` sidecar and
+// transition the request to acked/timeout; survives observeStatus spreads.
+export interface PendingControlRequest {
+  requestId: string
+  kind: 'interrupt' | 'answer'
+  sentAtMs: number
+}
+
+/** No ack within this window ⇒ expire and fall back to fire-and-forget. */
+export const INTERRUPT_ACK_TIMEOUT_MS = 5_000
 
 export interface StatusConfig {
   enabled: boolean
@@ -42,6 +60,7 @@ export type StatusObservation =
       activeScope?: string
       activeSince?: number
       waitingSince?: number
+      blockedSince?: number
       latestEvent?: string
       activityLabel?: string
     }
@@ -62,6 +81,7 @@ export interface SubagentStatusState {
   activeSinceMs: number | null
   activeScope: string | null
   waitingSinceMs: number | null
+  blockedSinceMs: number | null
   phase: StatusActivityPhase | null
   latestEvent: string | null
   activityLabel: string | null
@@ -69,6 +89,7 @@ export interface SubagentStatusState {
   snapshotProblemSinceMs: number | null
   snapshotError: string | null
   currentKind: SubagentStatusKind
+  pendingRequest: PendingControlRequest | null
 }
 
 export interface StatusSnapshot {
@@ -79,7 +100,9 @@ export interface StatusSnapshot {
   activeDurationText: string | null
   activeScope: string | null
   waitingSinceMs: number | null
+  blockedSinceMs: number | null
   waitingDurationText: string | null
+  blockedDurationText: string | null
   latestEvent: string | null
   activityLabel: string | null
   snapshotState: StatusSnapshotState
@@ -209,6 +232,10 @@ function readStatusConfigFile(
   }
 }
 
+// AIDEV-NOTE: SUPERSEDED — runtime config now loads via config.ts
+// (loadSubagentsConfig) from <agentDir>/pi-subagents/config.json with a
+// project override in CONFIG_DIR_NAME. loadStatusConfig/config.json.example
+// remain only for backwards compatibility and tests.
 export function loadStatusConfig(
   configPath = DEFAULT_STATUS_CONFIG_PATH,
   examplePath = STATUS_CONFIG_EXAMPLE_PATH,
@@ -257,6 +284,7 @@ export function createStatusState(params: {
     activeSinceMs: null,
     activeScope: null,
     waitingSinceMs: null,
+    blockedSinceMs: null,
     phase: null,
     latestEvent: null,
     activityLabel: null,
@@ -264,6 +292,7 @@ export function createStatusState(params: {
     snapshotProblemSinceMs: null,
     snapshotError: null,
     currentKind: initialKind,
+    pendingRequest: null,
   }
 }
 
@@ -313,6 +342,12 @@ export function observeStatus(
     phase === 'waiting'
       ? (observation.waitingSince ?? state.waitingSinceMs ?? updatedAt)
       : null
+  // AIDEV-NOTE: blocked ≠ waiting (PMR-WXG0) — a child sitting in ask_owner
+  // keeps its own since-timestamp so the status line can show "blocked".
+  const blockedSinceMs =
+    phase === 'blocked'
+      ? (observation.blockedSince ?? state.blockedSinceMs ?? updatedAt)
+      : null
 
   return {
     ...state,
@@ -323,6 +358,7 @@ export function observeStatus(
     activeSinceMs,
     activeScope: activeNow ? (observation.activeScope ?? null) : null,
     waitingSinceMs,
+    blockedSinceMs,
     phase,
     latestEvent: observation.latestEvent ?? null,
     activityLabel: observation.activityLabel ?? null,
@@ -350,6 +386,7 @@ export function forceStatusAfterInterrupt(
     activeSinceMs: null,
     activeScope: null,
     waitingSinceMs: now,
+    blockedSinceMs: null,
     phase: 'waiting',
     latestEvent: 'interrupt_requested',
     activityLabel: 'interrupted',
@@ -357,6 +394,58 @@ export function forceStatusAfterInterrupt(
     snapshotProblemSinceMs: null,
     snapshotError: null,
     currentKind: 'waiting',
+  }
+}
+
+export function markPendingRequest(
+  state: SubagentStatusState,
+  pending: PendingControlRequest,
+): SubagentStatusState {
+  return { ...state, pendingRequest: pending }
+}
+
+export type PendingAckOutcome = 'acked' | 'ignored'
+
+// AIDEV-NOTE: identity revalidation — only an ack carrying the exact requestId
+// we sent is applied; wrong-id acks are ignored (state untouched) so a stale
+// sidecar from a superseded request can never satisfy a newer one.
+export function applyPendingAck(
+  state: SubagentStatusState,
+  ackRequestId: string,
+): { state: SubagentStatusState; outcome: PendingAckOutcome } {
+  const pending = state.pendingRequest
+  if (!pending || pending.requestId !== ackRequestId) {
+    return { state, outcome: 'ignored' }
+  }
+  return {
+    state: {
+      ...state,
+      pendingRequest: null,
+      latestEvent: 'interrupt_acked',
+    },
+    outcome: 'acked',
+  }
+}
+
+export type PendingExpiryOutcome = 'pending' | 'timeout'
+
+/** Expire the pending request once the bounded ack window elapses. */
+export function expirePendingRequest(
+  state: SubagentStatusState,
+  now: number,
+  timeoutMs: number = INTERRUPT_ACK_TIMEOUT_MS,
+): { state: SubagentStatusState; outcome: PendingExpiryOutcome } {
+  const pending = state.pendingRequest
+  if (!pending || now - pending.sentAtMs < timeoutMs) {
+    return { state, outcome: 'pending' }
+  }
+  return {
+    state: {
+      ...state,
+      pendingRequest: null,
+      latestEvent: 'interrupt_unacknowledged',
+    },
+    outcome: 'timeout',
   }
 }
 
@@ -382,11 +471,13 @@ function classifyProblemState(
 
   const lastHealthyKind = state.activeNow
     ? 'active'
-    : state.waitingSinceMs != null || state.phase === 'done'
-      ? 'waiting'
-      : state.currentKind === 'stalled'
-        ? 'starting'
-        : state.currentKind
+    : state.phase === 'blocked'
+      ? 'blocked'
+      : state.waitingSinceMs != null || state.phase === 'done'
+        ? 'waiting'
+        : state.currentKind === 'stalled'
+          ? 'starting'
+          : state.currentKind
   return { kind: lastHealthyKind, statusLabel: problemLabel }
 }
 
@@ -406,7 +497,9 @@ export function classifyStatus(
       activeDurationText: null,
       activeScope: null,
       waitingSinceMs: null,
+      blockedSinceMs: null,
       waitingDurationText: null,
+      blockedDurationText: null,
       latestEvent: null,
       activityLabel: null,
       snapshotState: state.snapshotState,
@@ -422,6 +515,11 @@ export function classifyStatus(
   if (state.snapshotState === 'present') {
     if (state.phase === 'active' || state.activeNow) {
       kind = 'active'
+    } else if (state.phase === 'blocked') {
+      // AIDEV-NOTE: blocked ≠ stalled (PMR-WXG0) — a blocked-asking child is
+      // intentionally waiting for its owner and must never trip the 60s
+      // snapshot-staleness rule, no matter how quiet it goes at its prompt.
+      kind = 'blocked'
     } else if (state.phase === 'waiting') {
       kind = 'waiting'
     } else if (state.phase === 'done') {
@@ -450,6 +548,10 @@ export function classifyStatus(
     state.waitingSinceMs == null
       ? null
       : formatElapsedDuration(now - state.waitingSinceMs)
+  const blockedDurationText =
+    state.blockedSinceMs == null
+      ? null
+      : formatElapsedDuration(now - state.blockedSinceMs)
   const snapshotProblemText =
     state.snapshotProblemSinceMs == null
       ? null
@@ -463,7 +565,9 @@ export function classifyStatus(
     activeDurationText,
     activeScope: state.activeScope,
     waitingSinceMs: state.waitingSinceMs,
+    blockedSinceMs: state.blockedSinceMs,
     waitingDurationText,
+    blockedDurationText,
     latestEvent: state.latestEvent,
     activityLabel: state.activityLabel,
     snapshotState: state.snapshotState,
@@ -544,6 +648,15 @@ export function formatStatusLine(
   if (snapshot.kind === 'active') {
     return boundStatusLine(
       `${boundedName} running ${snapshot.elapsedText}, ${formatActiveDetail(snapshot)}.`,
+    )
+  }
+
+  if (snapshot.kind === 'blocked') {
+    const duration = snapshot.blockedDurationText
+      ? ` ${snapshot.blockedDurationText}`
+      : ''
+    return boundStatusLine(
+      `${boundedName} running ${snapshot.elapsedText}, blocked (waiting for owner${duration}).`,
     )
   }
 

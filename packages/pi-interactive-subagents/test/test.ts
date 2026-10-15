@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict'
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { Worker } from 'node:worker_threads'
 import { visibleWidth } from '@mariozechner/pi-tui'
 import {
   createSubagentActivityRecorder,
@@ -18,23 +22,77 @@ import {
   readSubagentActivityFile,
 } from '../pi-extension/subagents/activity.ts'
 import {
-  __pollForExitTest__,
-  canSplitZellijPane,
-  isCmuxAvailable,
-  isWezTermAvailable,
-  parseCmuxFocusedSnapshot,
-  parseCmuxFocusedSnapshotFromJson,
-  parseCmuxJson,
-  parseCmuxPaneRefForSurface,
-  parseCmuxPaneRefForSurfaceFromJson,
-  predictZellijSplitDirection,
-  selectZellijPlacement,
-  selectZellijStackPlacement,
-  shellEscape,
-} from '../pi-extension/subagents/cmux.ts'
+  type AskRecord,
+  askIdentityMatches,
+  askRecordPath,
+  readAskRecord,
+  readAskSidecar,
+  readReplyRecord,
+  removeAskRecord,
+  removeAskRecordsForSession,
+  removeAskSidecar,
+  removeReplyRecord,
+  writeAskRecord,
+  writeAskSidecar,
+  writeReplyRecord,
+} from '../pi-extension/subagents/asks.ts'
+import {
+  assignmentPath,
+  findAssignmentByBranch,
+  listAssignments,
+  readAssignment,
+  recordAssignmentUsage,
+  removeAssignment,
+  updateAssignmentStatus,
+  writeAssignment,
+} from '../pi-extension/subagents/assignments.ts'
+import {
+  ackMatches,
+  ackSidecarPath,
+  type ControlAck,
+  type ControlRecord,
+  controlRecordPath,
+  readAckSidecar,
+  readControlRecord,
+  writeAckSidecar,
+  writeControlRecord,
+} from '../pi-extension/subagents/control.ts'
+import {
+  compareVersions,
+  HERDR_MIN_VERSION,
+  HerdrError,
+  parseHerdrEnvelope,
+  parseHerdrStatus,
+} from '../pi-extension/subagents/herdr.ts'
 import * as subagentsModule from '../pi-extension/subagents/index.ts'
+import {
+  buildRetirementStub,
+  DEFAULT_RETIREMENT_KEEP_RECENT,
+  DEFAULT_RETIREMENT_MIN_BYTES,
+  RETIRED_STUB_PREFIX,
+  retireSettledSubagentPayloads,
+  shouldArmRetirement,
+} from '../pi-extension/subagents/retirement.ts'
+import * as spawnModule from '../pi-extension/subagents/spawn.ts'
+// re-exported for blocked-phase widget tests
+import {
+  __storeInternals__,
+  allocateSemanticRef,
+  MAX_RESULT_RECORD_BYTES,
+  parseSemanticRef,
+  type ResultRefBinding,
+  readResultRecord,
+  resolveResultRef,
+  resultRecordPath,
+  writeResultRecord,
+} from '../pi-extension/subagents/store.ts'
+import {
+  __pollForExitTest__,
+  POLL_CHECK_ORDER,
+  shellEscape,
+} from '../pi-extension/subagents/surface.ts'
 
-const { crashCodeSuffix } = subagentsModule
+const resolveDenyTools = subagentsModule.__test__.resolveDenyTools
 
 import {
   appendBranchSummary,
@@ -47,20 +105,28 @@ import {
 } from '../pi-extension/subagents/session.ts'
 import {
   advanceStatusState,
+  applyPendingAck,
   capStatusLines,
   classifyStatus,
   createStatusState,
+  expirePendingRequest,
   forceStatusAfterInterrupt,
   formatStatusAggregate,
   formatStatusLine,
   formatTransitionLine,
+  INTERRUPT_ACK_TIMEOUT_MS,
   loadStatusConfig,
+  markPendingRequest,
   observeStatus,
+  type PendingControlRequest,
   parseStatusConfig,
 } from '../pi-extension/subagents/status.ts'
 import {
+  decideReplyDelivery,
   exitSidecarPayload,
+  findLastStopReason,
   findLatestAssistantError,
+  interruptAckPayload,
   shouldAutoExitOnAgentEnd,
   shouldMarkUserTookOver,
 } from '../pi-extension/subagents/subagent-done.ts'
@@ -1194,6 +1260,78 @@ describe('subagent discovery', () => {
     })
   })
 
+  // PMR-RKH5: governed spawning — `spawning` is an enum
+  // (true | false | manager-approval); invalid values reject the file.
+  it('parses spawning enum values from frontmatter', async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      for (const [value, expected] of [
+        ['true', true],
+        ['false', false],
+        ['manager-approval', 'manager-approval'],
+      ] as const) {
+        const name = `spawning-${value}-test-agent`
+        writeAgentFile(
+          projectAgentsDir,
+          name,
+          [`name: ${name}`, `spawning: ${value}`].join('\n'),
+        )
+        const loaded = testApi.loadAgentDefaults(name)
+        assert.ok(loaded, `expected ${name} to load`)
+        assert.equal(loaded.spawning, expected)
+      }
+    })
+  })
+
+  it('leaves spawning undefined when not set in frontmatter', async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        'spawning-unset-test-agent',
+        'name: spawning-unset-test-agent',
+      )
+      const loaded = testApi.loadAgentDefaults('spawning-unset-test-agent')
+      assert.equal(loaded?.spawning, undefined)
+    })
+  })
+
+  it('rejects agent file with invalid spawning value', async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        'spawning-invalid-test-agent',
+        ['name: spawning-invalid-test-agent', 'spawning: sideways'].join('\n'),
+      )
+      assert.throws(
+        () => testApi.loadAgentDefaults('spawning-invalid-test-agent'),
+        /invalid spawning value "sideways".*manager-approval/,
+      )
+    })
+  })
+
+  it('skips agent files with invalid spawning during discovery', async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        'spawning-invalid-test-agent',
+        ['name: spawning-invalid-test-agent', 'spawning: sideways'].join('\n'),
+      )
+      writeAgentFile(
+        projectAgentsDir,
+        'spawning-valid-test-agent',
+        ['name: spawning-valid-test-agent', 'spawning: manager-approval'].join(
+          '\n',
+        ),
+      )
+      const discovered = testApi.discoverAgentDefinitions()
+      const names = discovered.map((d: { name: string }) => d.name)
+      assert.ok(
+        !names.includes('spawning-invalid-test-agent'),
+        'invalid spawning file must be rejected from discovery',
+      )
+      assert.ok(names.includes('spawning-valid-test-agent'))
+    })
+  })
+
   it('resolves session mode with fork override precedence', () => {
     assert.equal(
       testApi.resolveEffectiveSessionMode({ name: 'A', task: 'T' }, null),
@@ -1266,7 +1404,7 @@ describe('subagent discovery', () => {
   it('buildSubagentToolAllowlist preserves requested tools and adds child control tools', () => {
     assert.equal(
       testApi.buildSubagentToolAllowlist('read,bash,web_search'),
-      'read,bash,web_search,caller_ping,subagent_done',
+      'read,bash,web_search,caller_ping,subagent_done,ask_owner,message_owner,list_peers,message_peer',
     )
   })
 
@@ -1562,45 +1700,7 @@ describe('subagent-done.ts', () => {
   })
 })
 
-describe('crashCodeSuffix', () => {
-  // The wrapper shell runs after the subagent process dies; this suffix is
-  // what turns that into a filesystem-based crash signal for the parent.
-  it('captures rc once, echoes sentinel, and redirects rc to the code file', () => {
-    const suffix = crashCodeSuffix('/tmp/x/agent.code')
-    assert.ok(suffix.includes('__rc=$?'))
-    assert.ok(suffix.includes('"__SUBAGENT_DONE_${__rc}__"'))
-    assert.ok(suffix.includes("> '/tmp/x/agent.code'"))
-  })
-
-  it('reuses the captured rc — $? after the first echo would be 0', () => {
-    const suffix = crashCodeSuffix('/tmp/x/agent.code')
-    const captureIdx = suffix.indexOf('__rc=$?')
-    const sentinelIdx = suffix.indexOf('__SUBAGENT_DONE_')
-    const redirectVarIdx = suffix.indexOf('"$__rc"')
-    const fileIdx = suffix.indexOf("> '/tmp/x/agent.code'")
-    assert.ok(
-      captureIdx < sentinelIdx &&
-        sentinelIdx < redirectVarIdx &&
-        redirectVarIdx < fileIdx,
-      `unexpected suffix: ${suffix}`,
-    )
-  })
-})
-
-describe('parseExitCodeFile', () => {
-  const { parseExitCodeFile } = __pollForExitTest__
-  it('parses a valid exit code', () => {
-    assert.equal(parseExitCodeFile('137'), 137)
-    assert.equal(parseExitCodeFile(' 0\n'), 0)
-  })
-
-  it('treats garbage as a crash (1), never success', () => {
-    assert.equal(parseExitCodeFile('garbage'), 1)
-    assert.equal(parseExitCodeFile(''), 1)
-  })
-})
-
-describe('cmux.ts interpretExitSidecar', () => {
+describe('surface.ts interpretExitSidecar', () => {
   const { interpretExitSidecar } = __pollForExitTest__
 
   it('decodes ping payloads', () => {
@@ -1696,6 +1796,27 @@ describe('tool registration', () => {
     assert.equal(denied.has('subagent'), true)
     assert.equal(denied.has('subagent_interrupt'), true)
     assert.equal(denied.has('subagent_resume'), true)
+  })
+
+  // PMR-RKH5: manager-approval gate — model spawns denied and pointed at
+  // /subagent; user-initiated /subagent bypasses the tool path entirely.
+  it('manager-approval gate denies model spawns with /subagent instructions', () => {
+    const testApi = (subagentsModule as any).__test__
+    const denial = testApi.managerApprovalDenial(
+      { spawning: 'manager-approval' },
+      'deployer',
+    )
+    assert.match(denial, /requires user approval/)
+    assert.match(denial, /\/subagent deployer/)
+    assert.match(denial, /Do not retry/)
+  })
+
+  it('manager-approval gate allows ungated and boolean spawning agents', () => {
+    const testApi = (subagentsModule as any).__test__
+    assert.equal(testApi.managerApprovalDenial(null, 'x'), null)
+    assert.equal(testApi.managerApprovalDenial({}, 'x'), null)
+    assert.equal(testApi.managerApprovalDenial({ spawning: true }, 'x'), null)
+    assert.equal(testApi.managerApprovalDenial({ spawning: false }, 'x'), null)
   })
 
   it('renders partial subagent tool-call args without throwing', () => {
@@ -2160,13 +2281,12 @@ describe('subagent interruption', () => {
       assert.equal(sentSurface, 'pane-1')
       assert.equal(
         result.content[0].text,
-        'Interrupt requested for subagent "Worker".',
+        'Interrupt requested for subagent "Worker". Awaiting child acknowledgement.',
       )
-      assert.deepEqual(result.details, {
-        id: 'a1',
-        name: 'Worker',
-        status: 'interrupt_requested',
-      })
+      assert.equal(result.details.ack, 'pending')
+      assert.equal(result.details.status, 'interrupt_requested')
+      assert.equal(result.details.id, 'a1')
+      assert.equal(result.details.name, 'Worker')
       const snapshot = classifyStatus(runningMap.get('a1').statusState, 20_000)
       assert.equal(snapshot.kind, 'waiting')
       assert.equal(snapshot.activityLabel, 'interrupted')
@@ -2367,514 +2487,6 @@ describe('subagent status renderer', () => {
   })
 })
 
-describe('subagent startup delay', () => {
-  it('defaults to 500ms when no env var is set', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.getShellReadyDelayMs, 'function')
-
-    const original = process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-    delete process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-    try {
-      assert.equal(testApi.getShellReadyDelayMs(), 500)
-    } finally {
-      if (original == null) delete process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-      else process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = original
-    }
-  })
-
-  it('uses PI_SUBAGENT_SHELL_READY_DELAY_MS when it is set', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.getShellReadyDelayMs, 'function')
-
-    const original = process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-    process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = '2500'
-    try {
-      assert.equal(testApi.getShellReadyDelayMs(), 2500)
-    } finally {
-      if (original == null) delete process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS
-      else process.env.PI_SUBAGENT_SHELL_READY_DELAY_MS = original
-    }
-  })
-})
-describe('subagents widget rendering', () => {
-  it('keeps every rendered line within a very narrow width', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.renderSubagentWidgetLines, 'function')
-
-    const originalNow = Date.now
-    Date.now = () => 1_000_000
-    try {
-      const lines = testApi.renderSubagentWidgetLines(
-        [
-          {
-            id: 'a1',
-            name: 'A',
-            task: '',
-            surface: 's1',
-            startTime: 1_000_000 - 13_000,
-            sessionFile: 'sess1',
-            statusState: createStatusState({
-              source: 'pi',
-              startTimeMs: 1_000_000 - 13_000,
-            }),
-          },
-          {
-            id: 'a2',
-            name: 'B',
-            task: '',
-            surface: 's2',
-            startTime: 1_000_000 - 21_000,
-            sessionFile: 'sess2',
-            statusState: createStatusState({
-              source: 'pi',
-              startTimeMs: 1_000_000 - 21_000,
-            }),
-          },
-          {
-            id: 'a3',
-            name: 'C',
-            task: '',
-            surface: 's3',
-            startTime: 1_000_000 - 27_000,
-            sessionFile: 'sess3',
-            statusState: createStatusState({
-              source: 'pi',
-              startTimeMs: 1_000_000 - 27_000,
-            }),
-          },
-        ],
-        16,
-      )
-
-      assert.deepEqual(
-        lines.map((line: string) => visibleWidth(line)),
-        [16, 16, 16, 16, 16],
-      )
-    } finally {
-      Date.now = originalNow
-    }
-  })
-
-  it('truncates the right-hand status instead of overflowing when it alone is too wide', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.borderLine, 'function')
-
-    const line = testApi.borderLine(' A ', ' 999 msgs (999.9KB) ', 16)
-    assert.equal(visibleWidth(line), 16)
-  })
-
-  it('handles ultra-narrow widths without exceeding the width contract', () => {
-    const testApi = (subagentsModule as any).__test__
-    assert.ok(testApi, 'expected subagents test helpers to be exported')
-    assert.equal(typeof testApi.renderSubagentWidgetLines, 'function')
-
-    const widths = [0, 1, 2]
-    for (const width of widths) {
-      const startTime = Date.now() - 5_000
-      const lines = testApi.renderSubagentWidgetLines(
-        [
-          {
-            id: 'a1',
-            name: 'A',
-            task: '',
-            surface: 's1',
-            startTime,
-            sessionFile: 'sess1',
-            statusState: createStatusState({
-              source: 'pi',
-              startTimeMs: startTime,
-            }),
-          },
-        ],
-        width,
-      )
-
-      for (const line of lines) {
-        assert.ok(
-          visibleWidth(line) <= width,
-          `expected line width <= ${width}, got ${visibleWidth(line)} for ${JSON.stringify(line)}`,
-        )
-      }
-    }
-  })
-})
-
-describe('cmux.ts', () => {
-  describe('shellEscape', () => {
-    it('wraps in single quotes', () => {
-      assert.equal(shellEscape('hello'), "'hello'")
-    })
-
-    it('escapes single quotes', () => {
-      assert.equal(shellEscape("it's"), "'it'\\''s'")
-    })
-
-    it('handles empty string', () => {
-      assert.equal(shellEscape(''), "''")
-    })
-
-    it('handles special characters', () => {
-      const input = 'echo "hello $world" && rm -rf /'
-      const escaped = shellEscape(input)
-      assert.ok(escaped.startsWith("'"))
-      assert.ok(escaped.endsWith("'"))
-      // Inside single quotes, everything is literal
-      assert.ok(escaped.includes('$world'))
-    })
-  })
-
-  describe('parseCmuxFocusedSnapshot', () => {
-    it('parses focused surface and pane refs', () => {
-      assert.deepEqual(
-        parseCmuxFocusedSnapshot({
-          focused: { surface_ref: 'surface:3', pane_ref: 'pane:2' },
-        }),
-        { surfaceRef: 'surface:3', paneRef: 'pane:2' },
-      )
-    })
-
-    it('does not fall back to caller refs', () => {
-      assert.equal(
-        parseCmuxFocusedSnapshot({
-          caller: { surface_ref: 'surface:1', pane_ref: 'pane:1' },
-        }),
-        null,
-      )
-    })
-
-    it('returns null for malformed values', () => {
-      assert.equal(parseCmuxFocusedSnapshot(null), null)
-      assert.equal(parseCmuxFocusedSnapshot({ focused: {} }), null)
-    })
-  })
-
-  describe('parseCmuxJson', () => {
-    it('returns null for malformed JSON text', () => {
-      assert.equal(parseCmuxJson('not json'), null)
-    })
-
-    it('parses valid JSON text', () => {
-      assert.deepEqual(parseCmuxJson('{"ok":true}'), { ok: true })
-    })
-  })
-
-  describe('parseCmuxFocusedSnapshotFromJson', () => {
-    it('returns null for malformed JSON text', () => {
-      assert.equal(parseCmuxFocusedSnapshotFromJson('not json'), null)
-    })
-
-    it('returns null when focused is absent or not an object', () => {
-      assert.equal(
-        parseCmuxFocusedSnapshotFromJson(
-          '{"focused":null,"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}',
-        ),
-        null,
-      )
-      assert.equal(
-        parseCmuxFocusedSnapshotFromJson(
-          '{"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"}}',
-        ),
-        null,
-      )
-    })
-
-    it('parses focused refs without falling back to caller refs', () => {
-      assert.deepEqual(
-        parseCmuxFocusedSnapshotFromJson(
-          '{"caller":{"surface_ref":"surface:1","pane_ref":"pane:1"},"focused":{"surface_ref":"surface:2","pane_ref":"pane:3"}}',
-        ),
-        { surfaceRef: 'surface:2', paneRef: 'pane:3' },
-      )
-    })
-  })
-
-  describe('parseCmuxPaneRefForSurface', () => {
-    it('parses top-level pane refs for a surface', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurface(
-          { surface_ref: 'surface:7', pane_ref: 'pane:4' },
-          'surface:7',
-        ),
-        'pane:4',
-      )
-    })
-
-    it('parses caller pane refs for identify --surface output', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurface(
-          { caller: { surface_ref: 'surface:7', pane_ref: 'pane:4' } },
-          'surface:7',
-        ),
-        'pane:4',
-      )
-    })
-
-    it('returns null when the surface does not match', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurface(
-          { surface_ref: 'surface:8', pane_ref: 'pane:4' },
-          'surface:7',
-        ),
-        null,
-      )
-    })
-  })
-
-  describe('parseCmuxPaneRefForSurfaceFromJson', () => {
-    it('returns null for malformed JSON text', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurfaceFromJson('not json', 'surface:7'),
-        null,
-      )
-    })
-
-    it('parses caller refs from cmux identify --surface JSON text', () => {
-      assert.equal(
-        parseCmuxPaneRefForSurfaceFromJson(
-          '{"caller":{"surface_ref":"surface:7","pane_ref":"pane:4"}}',
-          'surface:7',
-        ),
-        'pane:4',
-      )
-    })
-  })
-
-  describe('zellij placement', () => {
-    const pane = (overrides: any) => ({
-      id: 1,
-      is_plugin: false,
-      is_floating: false,
-      is_selectable: true,
-      exited: false,
-      pane_rows: 20,
-      pane_columns: 80,
-      tab_id: 1,
-      ...overrides,
-    })
-
-    it('matches Zellij direction and minimum split rules', () => {
-      assert.equal(
-        predictZellijSplitDirection(pane({ pane_rows: 5, pane_columns: 11 })),
-        'right',
-      )
-      assert.equal(
-        predictZellijSplitDirection(pane({ pane_rows: 11, pane_columns: 5 })),
-        'down',
-      )
-      assert.equal(
-        predictZellijSplitDirection(pane({ pane_rows: 5, pane_columns: 10 })),
-        null,
-      )
-      assert.equal(
-        predictZellijSplitDirection(pane({ pane_rows: 4, pane_columns: 80 })),
-        null,
-      )
-
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 5, pane_columns: 11 })),
-        true,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 11, pane_columns: 5 })),
-        true,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 5, pane_columns: 10 })),
-        false,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 4, pane_columns: 80 })),
-        false,
-      )
-
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 30, pane_columns: 100 }), 80, 20),
-        false,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 45, pane_columns: 100 }), 80, 20),
-        true,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 30, pane_columns: 170 }), 80, 20),
-        true,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 31, pane_columns: 47 }), 50, 10),
-        false,
-      )
-      assert.equal(
-        canSplitZellijPane(pane({ pane_rows: 31, pane_columns: 77 }), 50, 10),
-        true,
-      )
-    })
-
-    it('uses tab-scoped split only when all Zellij split candidates are safe', () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 40, pane_columns: 120 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 120, pane_columns: 100 }),
-          pane({ id: 12, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
-        ],
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'split',
-        anchorPaneId: 11,
-        targetPaneId: 11,
-        tabId: 1,
-        splitDirection: 'down',
-      })
-    })
-
-    it("stacks when any Zellij split candidate would fall below Pi's configured minimum", () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 100, pane_columns: 47 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 31, pane_columns: 77 }),
-        ],
-        10,
-        50,
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'stack',
-        anchorPaneId: 11,
-        targetPaneId: 11,
-        tabId: 1,
-      })
-    })
-
-    it("stacks when Zellij would split a pane below Pi's usable minimum", () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 20, pane_columns: 20 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 18, pane_columns: 60 }),
-          pane({ id: 12, tab_id: 1, pane_rows: 10, pane_columns: 70 }),
-        ],
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'stack',
-        anchorPaneId: 11,
-        targetPaneId: 11,
-        tabId: 1,
-      })
-    })
-
-    it('never chooses the parent pane as the stack target', () => {
-      const plan = selectZellijStackPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 60, pane_columns: 200 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 10, pane_columns: 20 }),
-          pane({ id: 12, tab_id: 1, pane_rows: 8, pane_columns: 30 }),
-        ],
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'stack',
-        anchorPaneId: 12,
-        targetPaneId: 12,
-        tabId: 1,
-      })
-    })
-
-    it('does not stack when the only usable pane is the parent', () => {
-      const plan = selectZellijStackPlacement(
-        [pane({ id: 10, tab_id: 1, pane_rows: 60, pane_columns: 200 })],
-        10,
-      )
-
-      assert.equal(plan, null)
-    })
-
-    it('stacks on the largest usable non-parent pane when none can split', () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 5, pane_columns: 10 }),
-          pane({ id: 11, tab_id: 1, pane_rows: 6, pane_columns: 8 }),
-          pane({ id: 12, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
-        ],
-        10,
-      )
-
-      assert.deepEqual(plan, {
-        mode: 'stack',
-        anchorPaneId: 11,
-        targetPaneId: 11,
-        tabId: 1,
-      })
-    })
-
-    it('ignores floating, plugin, exited, unselectable, and other-tab panes', () => {
-      const plan = selectZellijPlacement(
-        [
-          pane({ id: 10, tab_id: 1, pane_rows: 5, pane_columns: 10 }),
-          pane({
-            id: 11,
-            tab_id: 1,
-            pane_rows: 60,
-            pane_columns: 200,
-            is_floating: true,
-          }),
-          pane({
-            id: 12,
-            tab_id: 1,
-            pane_rows: 60,
-            pane_columns: 200,
-            is_plugin: true,
-          }),
-          pane({
-            id: 13,
-            tab_id: 1,
-            pane_rows: 60,
-            pane_columns: 200,
-            exited: true,
-          }),
-          pane({
-            id: 14,
-            tab_id: 1,
-            pane_rows: 60,
-            pane_columns: 200,
-            is_selectable: false,
-          }),
-          pane({ id: 15, tab_id: 2, pane_rows: 60, pane_columns: 200 }),
-        ],
-        10,
-      )
-
-      assert.equal(plan, null)
-    })
-
-    it('returns null when the parent pane cannot be found', () => {
-      assert.equal(selectZellijPlacement([pane({ id: 10 })], 99), null)
-    })
-  })
-
-  describe('isCmuxAvailable', () => {
-    it('returns boolean based on CMUX_SOCKET_PATH', () => {
-      // Can't easily mock env in node:test, just verify it returns a boolean
-      const result = isCmuxAvailable()
-      assert.equal(typeof result, 'boolean')
-    })
-  })
-
-  describe('isWezTermAvailable', () => {
-    it('returns boolean based on WEZTERM_UNIX_SOCKET', () => {
-      const result = isWezTermAvailable()
-      assert.equal(typeof result, 'boolean')
-    })
-  })
-})
-
 describe('plan dispatch', () => {
   describe('classifyPlanArg', () => {
     it('routes everything to the aven planner (aven-first dispatch)', () => {
@@ -2900,5 +2512,2680 @@ describe('plan dispatch', () => {
         null,
       )
     })
+  })
+})
+
+// --- Phase 0: durable foundation ---
+
+import { randomUUID } from 'node:crypto'
+import { basename } from 'node:path'
+import {
+  DEFAULT_SUBAGENTS_CONFIG,
+  globalSubagentsConfigPath,
+  loadSubagentsConfig,
+  projectSubagentsConfigPath,
+  scaffoldGlobalSubagentsConfig,
+  validateSubagentsConfig,
+} from '../pi-extension/subagents/config.ts'
+import {
+  ensureSubagentsDataDir,
+  subagentsDataRoot,
+} from '../pi-extension/subagents/dataroot.ts'
+import {
+  coalesceOwnerMessages,
+  OWNER_MESSAGE_MAX_BYTES,
+  type OwnerInboxEntry,
+  ownerInboxDir,
+  readOwnerInbox,
+  removeOwnerMessage,
+  sendOwnerMessage,
+} from '../pi-extension/subagents/inbox.ts'
+import {
+  acquireProcessLock,
+  isProcessLockClaim,
+  keyedProcessLockPath,
+  type ProcessLockClaim,
+  ProcessLockOccupiedError,
+  readProcessLockStatus,
+} from '../pi-extension/subagents/lock.ts'
+import {
+  type ChildIdentity,
+  inboxDir,
+  listLivePeers,
+  peerLockPath,
+  presencePath,
+  publishPresence,
+  readInbox,
+  removeInboxEntry,
+  resolvePeer,
+  sendPeerMessage,
+} from '../pi-extension/subagents/peers.ts'
+import {
+  createSubagentWorktree,
+  deriveWorktreeBranch,
+  findMainRepoRoot,
+  slugifyWorktree,
+  WorktreeError,
+  worktreePathFor,
+} from '../pi-extension/subagents/worktrees.ts'
+
+function modeOf(path: string): number {
+  return statSync(path).mode & 0o777
+}
+
+describe('dataroot.ts', () => {
+  it('builds the data root under the agent dir', () => {
+    assert.equal(subagentsDataRoot('/agents'), join('/agents', 'pi-subagents'))
+  })
+
+  it('creates lazily-named subdirs with 0700 and is idempotent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-dataroot-'))
+    const dir = ensureSubagentsDataDir('results', root)
+    assert.equal(dir, join(root, 'results'))
+    assert.ok(statSync(dir).isDirectory())
+    assert.equal(modeOf(root), 0o700)
+    assert.equal(modeOf(dir), 0o700)
+    assert.equal(ensureSubagentsDataDir('results', root), dir)
+  })
+})
+
+describe('config.ts', () => {
+  it('validates a correct config and rejects bad shapes', () => {
+    assert.deepEqual(
+      validateSubagentsConfig({ status: { enabled: true } }, 't'),
+      {
+        status: { enabled: true },
+      },
+    )
+    assert.throws(
+      () => validateSubagentsConfig({ status: { enabled: 'yes' } }, 't'),
+      /Invalid subagents config in t/,
+    )
+    assert.throws(
+      () =>
+        validateSubagentsConfig({ status: { enabled: true, extra: 1 } }, 't'),
+      /Invalid subagents config in t/,
+    )
+    assert.throws(
+      () => validateSubagentsConfig(null, 't'),
+      /Invalid subagents config in t/,
+    )
+  })
+
+  it('scaffolds the global config only when missing and never overwrites', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const path = globalSubagentsConfigPath(agentDir)
+    assert.equal(scaffoldGlobalSubagentsConfig(agentDir), path)
+    assert.ok(existsSync(path))
+    const onDisk = JSON.parse(readFileSync(path, 'utf8'))
+    assert.equal(onDisk.status.enabled, true)
+    assert.ok(typeof onDisk.$schema === 'string')
+
+    writeFileSync(path, '{"status":{"enabled":false}}')
+    scaffoldGlobalSubagentsConfig(agentDir)
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
+      status: { enabled: false },
+    })
+  })
+
+  it('falls back to the global config and defaults', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'subagents-cwd-'))
+    const loaded = loadSubagentsConfig(cwd, agentDir)
+    assert.deepEqual(loaded.config, DEFAULT_SUBAGENTS_CONFIG)
+    assert.equal(loaded.source, globalSubagentsConfigPath(agentDir))
+  })
+
+  it('lets the project override win and fails fast on invalid config', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'subagents-cwd-'))
+    const projectPath = projectSubagentsConfigPath(cwd)
+    mkdirSync(dirname(projectPath), { recursive: true })
+    writeFileSync(projectPath, '{"status":{"enabled":false}}')
+
+    const loaded = loadSubagentsConfig(cwd, agentDir)
+    assert.equal(loaded.config.status.enabled, false)
+    assert.equal(loaded.source, projectPath)
+
+    writeFileSync(projectPath, '{')
+    assert.throws(
+      () => loadSubagentsConfig(cwd, agentDir),
+      /Invalid JSON in subagents config/,
+    )
+    writeFileSync(projectPath, '{"status":{"enabled":1}}')
+    assert.throws(
+      () => loadSubagentsConfig(cwd, agentDir),
+      /Invalid subagents config/,
+    )
+  })
+})
+
+describe('lock.ts', () => {
+  it('validates claim shape', () => {
+    const claim: ProcessLockClaim = {
+      pid: process.pid,
+      id: 'e5a8d13e-1a2b-4c3d-9e2f-0123456789ab',
+    }
+    assert.ok(isProcessLockClaim(claim))
+    assert.ok(!isProcessLockClaim({ pid: -1, id: claim.id }))
+    assert.ok(!isProcessLockClaim({ pid: 1, id: 'not-a-uuid' }))
+    assert.ok(!isProcessLockClaim(null))
+  })
+
+  it('acquires, observes, and releases a lock', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const path = join(dir, 'lock')
+    const lease = acquireProcessLock(path, { name: 'test lock' })
+    assert.equal(lease.claim.pid, process.pid)
+    const status = readProcessLockStatus(path)
+    assert.deepEqual(status.claim, lease.claim)
+    assert.ok(status.live)
+    lease.release()
+    assert.throws(() => readProcessLockStatus(path))
+  })
+
+  it('rejects a second live claimant', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const path = join(dir, 'lock')
+    const lease = acquireProcessLock(path)
+    assert.throws(
+      () => acquireProcessLock(path, { name: 'test lock' }),
+      ProcessLockOccupiedError,
+    )
+    lease.release()
+    const second = acquireProcessLock(path)
+    second.release()
+  })
+
+  it('takes over a stale claim from a dead pid', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const path = join(dir, 'lock')
+    // Process.kill(pid=largest-possible) can't be used safely; instead write a
+    // claim with a pid that cannot exist (no PID will ever be 2^22+ on Linux).
+    const stale: ProcessLockClaim = {
+      pid: 0x400000,
+      id: 'e5a8d13e-1a2b-4c3d-9e2f-0123456789ab',
+    }
+    mkdirSync(path, { mode: 0o700 })
+    writeFileSync(join(path, `${stale.pid}-${stale.id}`), JSON.stringify(stale))
+    assert.equal(readProcessLockStatus(path).live, false)
+    let removed = false
+    const lease = acquireProcessLock(path, {
+      afterStaleOwnerRemoved: () => {
+        removed = true
+      },
+    })
+    assert.ok(removed)
+    assert.equal(lease.claim.pid, process.pid)
+    lease.release()
+  })
+
+  it('derives stable keyed lock paths', () => {
+    const a = keyedProcessLockPath('session:/tmp/x.jsonl')
+    const b = keyedProcessLockPath('session:/tmp/x.jsonl')
+    const c = keyedProcessLockPath('session:/tmp/y.jsonl')
+    assert.equal(a, b)
+    assert.notEqual(a, c)
+    assert.ok(a.startsWith(join(tmpdir(), 'pi-subagents', 'locks', 'lock-')))
+  })
+})
+
+describe('store.ts durable result store', () => {
+  let storeRoot: string
+
+  before(() => {
+    storeRoot = join(mkdtempSync(join(tmpdir(), 'store-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(storeRoot, { recursive: true, force: true })
+  })
+
+  it('writes and reads a result record atomically at the canonical path', () => {
+    const written = writeResultRecord(
+      {
+        childId: 'child-1',
+        name: 'scout',
+        summary: 'found three files',
+        sessionFile: '/tmp/child.jsonl',
+      },
+      storeRoot,
+    )
+    assert.ok(existsSync(written.path))
+    assert.equal(written.path, resultRecordPath(written.canonicalId, storeRoot))
+    assert.ok(written.path.startsWith(join(storeRoot, 'results', '')))
+    const record = readResultRecord(written.path)
+    assert.equal(record.canonicalId, written.canonicalId)
+    assert.equal(record.name, 'scout')
+    assert.equal(record.summary, 'found three files')
+    assert.deepEqual(record.artifactPaths, [])
+    assert.ok(record.createdAt)
+    // no tmp sibling left behind
+    assert.ok(
+      !existsSync(join(storeRoot, 'results', `.tmp-${written.canonicalId}`)),
+    )
+  })
+
+  it('rejects records above the byte ceiling (fail closed)', () => {
+    assert.throws(
+      () =>
+        writeResultRecord(
+          {
+            childId: 'child-2',
+            name: 'scout',
+            summary: 'x'.repeat(MAX_RESULT_RECORD_BYTES + 1),
+            sessionFile: null,
+          },
+          storeRoot,
+        ),
+      (err: unknown) =>
+        (err as { code?: string }).code === 'RESULT_RECORD_TOO_LARGE',
+    )
+  })
+
+  it('parses semantic refs strictly', () => {
+    assert.deepEqual(parseSemanticRef('result:scout#3'), {
+      name: 'scout',
+      n: 3,
+    })
+    assert.equal(parseSemanticRef('result:scout'), null)
+    assert.equal(parseSemanticRef('result:scout#0'), null)
+    assert.equal(parseSemanticRef('result:scout#abc'), null)
+    assert.equal(parseSemanticRef('result:sc out#1'), null)
+  })
+
+  it('sanitizes names for filesystem paths', () => {
+    assert.equal(__storeInternals__.sanitizeName('my agent'), 'my_agent')
+    assert.equal(__storeInternals__.sanitizeName('..'), '_')
+    assert.equal(__storeInternals__.sanitizeName(''), '_')
+  })
+
+  it('allocates monotonic, never-reused semantic refs per name', () => {
+    const a = allocateSemanticRef('monotonic', storeRoot)
+    const b = allocateSemanticRef('monotonic', storeRoot)
+    const other = allocateSemanticRef('other-name', storeRoot)
+    assert.match(a, /^result:monotonic#(\d+)$/)
+    assert.match(b, /^result:monotonic#(\d+)$/)
+    const nA = Number(a.split('#')[1])
+    const nB = Number(b.split('#')[1])
+    assert.ok(nB > nA)
+    assert.match(other, /^result:other-name#1$/)
+  })
+
+  it('covers concurrent allocation: two allocators get distinct n', async () => {
+    const storeUrl = new URL(
+      '../pi-extension/subagents/store.ts',
+      import.meta.url,
+    ).href
+    const workerSrc = `
+      const { parentPort, workerData } = require('node:worker_threads')
+      import(workerData.storeUrl).then((m) => {
+        const ref = m.allocateSemanticRef(workerData.name, workerData.root)
+        parentPort.postMessage(ref)
+      })
+    `
+    const refs: string[] = await Promise.all(
+      [0, 1].map(
+        (i) =>
+          new Promise<string>((resolve, reject) => {
+            const worker = new Worker(workerSrc, {
+              eval: true,
+              workerData: { name: 'racy', root: storeRoot, storeUrl },
+            })
+            worker.on('message', resolve)
+            worker.on('error', reject)
+            void i
+          }),
+      ),
+    )
+    const n1 = Number(refs[0].split('#')[1])
+    const n2 = Number(refs[1].split('#')[1])
+    assert.notEqual(n1, n2)
+    const highest = Number(allocateSemanticRef('racy', storeRoot).split('#')[1])
+    assert.ok(highest > n1 && highest > n2)
+  })
+
+  it('resolves a semantic ref to the canonical record path (hidden binding round trip)', () => {
+    const written = writeResultRecord(
+      {
+        childId: 'child-3',
+        name: 'worker',
+        summary: 'done',
+        sessionFile: null,
+      },
+      storeRoot,
+    )
+    const ref = allocateSemanticRef('worker', storeRoot, written.canonicalId)
+    const binding: ResultRefBinding = { ref, canonicalId: written.canonicalId }
+    const resolved = resolveResultRef(binding.ref, storeRoot)
+    assert.equal(resolved, written.path)
+    const record = readResultRecord(resolved as string)
+    assert.equal(record.canonicalId, binding.canonicalId)
+  })
+
+  it('fails closed on unknown or malformed ref resolution', () => {
+    assert.equal(resolveResultRef('result:never#99999', storeRoot), null)
+    assert.equal(resolveResultRef('garbage', storeRoot), null)
+  })
+})
+
+describe('request/ack handshake (PMR-DNPZ)', () => {
+  function makeRunning(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'a1',
+      name: 'Worker',
+      task: '',
+      surface: 'pane-1',
+      startTime: 0,
+      sessionFile: 'a1.jsonl',
+      interactive: false,
+      statusState: createStatusState({ source: 'pi', startTimeMs: 0 }),
+      ...overrides,
+    }
+  }
+
+  function makeControlRecord(
+    overrides: Record<string, unknown> = {},
+  ): ControlRecord {
+    return {
+      requestId: 'req-1',
+      childId: 'a1',
+      sessionFile: 'worker.jsonl',
+      kind: 'interrupt',
+      payload: {},
+      sentAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    }
+  }
+
+  function makeAck(overrides: Record<string, unknown> = {}): ControlAck {
+    return {
+      requestId: 'req-1',
+      accepted: true,
+      code: 'idle',
+      ...overrides,
+    }
+  }
+
+  function makePending(
+    overrides: Record<string, unknown> = {},
+  ): PendingControlRequest {
+    return {
+      requestId: 'req-1',
+      kind: 'interrupt',
+      sentAtMs: 10_000,
+      ...overrides,
+    }
+  }
+
+  it('writes and reads control records via the data root (round trip)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-control-'))
+    try {
+      const record = makeControlRecord()
+      writeControlRecord(record, root)
+      const read = readControlRecord(record.childId, root)
+      assert.deepEqual(read, record)
+      assert.equal(readControlRecord('no-such-child', root), null)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('correlates acks on requestId + childId + sessionFile (identity revalidation)', () => {
+    const record = makeControlRecord()
+    const ack = makeAck()
+    assert.equal(
+      ackMatches({ record, ack, childId: 'a1', sessionFile: 'worker.jsonl' }),
+      true,
+    )
+    assert.equal(
+      ackMatches({
+        record,
+        ack: makeAck({ requestId: 'req-OTHER' }),
+        childId: 'a1',
+        sessionFile: 'worker.jsonl',
+      }),
+      false,
+    )
+    assert.equal(
+      ackMatches({
+        record,
+        ack,
+        childId: 'other',
+        sessionFile: 'worker.jsonl',
+      }),
+      false,
+    )
+    assert.equal(
+      ackMatches({ record, ack, childId: 'a1', sessionFile: 'other.jsonl' }),
+      false,
+    )
+  })
+
+  it('writes and reads ack sidecars colocated with the session file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subagents-ack-'))
+    try {
+      const sessionFile = join(dir, 'child.jsonl')
+      assert.equal(readAckSidecar(sessionFile), null)
+      writeAckSidecar(sessionFile, makeAck())
+      const ack = readAckSidecar(sessionFile)
+      assert.equal(ack?.requestId, 'req-1')
+      assert.equal(ackSidecarPath(sessionFile), `${sessionFile}.ack`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('marks a pending request and applies only the matching ack', () => {
+    let state = markPendingRequest(
+      forceStatusAfterInterrupt(
+        createStatusState({ source: 'pi', startTimeMs: 0 }),
+        10_000,
+      ),
+      makePending(),
+    )
+    assert.equal(state.pendingRequest?.requestId, 'req-1')
+
+    const wrong = applyPendingAck(state, 'req-OTHER')
+    assert.equal(wrong.outcome, 'ignored')
+    assert.equal(wrong.state.pendingRequest?.requestId, 'req-1')
+
+    const applied = applyPendingAck(state, 'req-1')
+    assert.equal(applied.outcome, 'acked')
+    assert.equal(applied.state.pendingRequest, null)
+    assert.equal(applied.state.latestEvent, 'interrupt_acked')
+  })
+
+  it('answer pending requests correlate on the askId and expire like interrupts (WXG0 phase 5)', () => {
+    let state = markPendingRequest(
+      createStatusState({ source: 'pi', startTimeMs: 0 }),
+      makePending({ requestId: 'ask-1', kind: 'answer' }),
+    )
+    assert.equal(state.pendingRequest?.kind, 'answer')
+
+    // Wrong askId is ignored, state untouched.
+    const wrong = applyPendingAck(state, 'ask-OTHER')
+    assert.equal(wrong.outcome, 'ignored')
+    assert.equal(wrong.state.pendingRequest?.requestId, 'ask-1')
+
+    // Matching askId acks and clears the pending request.
+    const applied = applyPendingAck(state, 'ask-1')
+    assert.equal(applied.outcome, 'acked')
+    assert.equal(applied.state.pendingRequest, null)
+
+    // Bounded timeout still applies to answers.
+    let timedOut = markPendingRequest(
+      createStatusState({ source: 'pi', startTimeMs: 0 }),
+      makePending({ requestId: 'ask-2', kind: 'answer', sentAtMs: 20_000 }),
+    )
+    const early = expirePendingRequest(
+      timedOut,
+      20_000 + INTERRUPT_ACK_TIMEOUT_MS - 1,
+    )
+    assert.equal(early.outcome, 'pending')
+    const late = expirePendingRequest(
+      timedOut,
+      20_000 + INTERRUPT_ACK_TIMEOUT_MS,
+    )
+    assert.equal(late.outcome, 'timeout')
+    assert.equal(late.state.pendingRequest, null)
+  })
+
+  it('expires a pending request after the bounded ack window', () => {
+    let state = markPendingRequest(
+      createStatusState({ source: 'pi', startTimeMs: 0 }),
+      makePending(),
+    )
+
+    const before = expirePendingRequest(
+      state,
+      10_000 + INTERRUPT_ACK_TIMEOUT_MS - 1,
+    )
+    assert.equal(before.outcome, 'pending')
+    assert.notEqual(before.state.pendingRequest, null)
+
+    const after = expirePendingRequest(state, 10_000 + INTERRUPT_ACK_TIMEOUT_MS)
+    assert.equal(after.outcome, 'timeout')
+    assert.equal(after.state.pendingRequest, null)
+    assert.equal(after.state.latestEvent, 'interrupt_unacknowledged')
+  })
+
+  it('interrupt tool writes a durable record and reports ack pending', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-interrupt-io-'))
+    const written: ControlRecord[] = []
+    const io = {
+      writeControlRecord: (record: ControlRecord) => {
+        written.push(record)
+        writeControlRecord(record, root)
+      },
+      readAckSidecar: () => null,
+      readControlRecord: (childId: string) => readControlRecord(childId, root),
+      cleanupAck: () => {},
+    }
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    runningMap.clear()
+
+    try {
+      runningMap.set('a1', makeRunning())
+      const result = withMockedNow(20_000, () =>
+        testApi.handleSubagentInterrupt({ id: 'a1' }, () => {}, io),
+      )
+
+      assert.equal(result.details.ack, 'pending')
+      assert.equal(written.length, 1)
+      assert.equal(written[0].childId, 'a1')
+      assert.equal(written[0].sessionFile, 'a1.jsonl')
+      assert.equal(written[0].kind, 'interrupt')
+      const persisted = readControlRecord('a1', root)
+      assert.equal(persisted?.requestId, written[0].requestId)
+      const state = runningMap.get('a1').statusState
+      assert.equal(state.pendingRequest?.requestId, written[0].requestId)
+    } finally {
+      runningMap.clear()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to fire-and-forget with a warning when the record write fails', () => {
+    const io = {
+      writeControlRecord: () => {
+        throw new Error('disk full')
+      },
+      readAckSidecar: () => null,
+      readControlRecord: () => null,
+      cleanupAck: () => {},
+    }
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    let sent = false
+    runningMap.clear()
+
+    try {
+      runningMap.set('a1', makeRunning())
+      const result = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        () => {
+          sent = true
+        },
+        io,
+      )
+
+      assert.equal(sent, true)
+      assert.equal(result.details.ack, 'unavailable')
+      assert.match(result.content[0].text, /fire-and-forget/)
+    } finally {
+      runningMap.clear()
+    }
+  })
+
+  it('child acks only aborted turns that have a pending interrupt record', () => {
+    const record = makeControlRecord()
+    assert.equal(interruptAckPayload('aborted', record)?.requestId, 'req-1')
+    assert.equal(interruptAckPayload('stop', record), null)
+    assert.equal(interruptAckPayload(undefined, record), null)
+    assert.equal(interruptAckPayload('aborted', null), null)
+    assert.equal(
+      interruptAckPayload('aborted', makeControlRecord({ kind: 'answer' })),
+      null,
+    )
+  })
+
+  it('extracts the latest assistant stopReason', () => {
+    assert.equal(
+      findLastStopReason([
+        { role: 'user', content: 'go' },
+        { role: 'assistant', stopReason: 'aborted' },
+      ]),
+      'aborted',
+    )
+    assert.equal(findLastStopReason([{ role: 'assistant' }]), null)
+    assert.equal(findLastStopReason([]), null)
+    assert.equal(findLastStopReason(undefined), null)
+  })
+})
+
+describe('asks.ts (PMR-WXG0 blocking ask_owner)', () => {
+  function makeAskRecord(overrides: Record<string, unknown> = {}) {
+    return {
+      askId: 'ask-1',
+      childId: 'child-1',
+      name: 'Worker',
+      question: 'Which database?',
+      sessionFile: '/tmp/child-1.jsonl',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    }
+  }
+
+  it('writes and reads ask records atomically by childId', () => {
+    withTempDir((dir) => {
+      writeAskRecord(makeAskRecord(), dir)
+      const record = readAskRecord('child-1', dir)
+      assert.ok(record)
+      assert.equal(record?.askId, 'ask-1')
+      assert.equal(record?.sessionFile, '/tmp/child-1.jsonl')
+      assert.equal(readAskRecord('missing', dir), null)
+    })
+  })
+
+  it('rejects malformed ask records (fail closed)', () => {
+    withTempDir((dir) => {
+      const path = askRecordPath('child-2', dir)
+      writeFileSync(path, JSON.stringify({ question: 'no identity' }))
+      assert.equal(readAskRecord('child-2', dir), null)
+      writeFileSync(path, 'not json')
+      assert.equal(readAskRecord('child-2', dir), null)
+    })
+  })
+
+  it('validates ask identity before an answer is applied', () => {
+    const record = makeAskRecord()
+    assert.equal(
+      askIdentityMatches({
+        record,
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      true,
+    )
+    assert.equal(
+      askIdentityMatches({
+        record,
+        askId: 'ask-1',
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      true,
+    )
+    assert.equal(
+      askIdentityMatches({
+        record,
+        askId: 'other',
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      false,
+    )
+    assert.equal(
+      askIdentityMatches({
+        record,
+        childId: 'other-child',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      false,
+    )
+    assert.equal(
+      askIdentityMatches({
+        record,
+        childId: 'child-1',
+        sessionFile: '/tmp/other.jsonl',
+      }),
+      false,
+    )
+  })
+
+  it('round-trips the .ask sidecar and reply record', () => {
+    withTempDir((dir) => {
+      writeAskSidecar('/tmp/x.jsonl', 'ask-9')
+      assert.deepEqual(readAskSidecar('/tmp/x.jsonl'), { askId: 'ask-9' })
+      removeAskSidecar('/tmp/x.jsonl')
+      assert.equal(readAskSidecar('/tmp/x.jsonl'), null)
+
+      writeAskRecord(makeAskRecord({ askId: 'ask-9' }), dir)
+      writeReplyRecord(
+        'child-1',
+        { askId: 'ask-9', message: 'use postgres', repliedAt: 'now' },
+        dir,
+      )
+      const reply = readReplyRecord('child-1', dir)
+      assert.equal(reply?.askId, 'ask-9')
+      assert.equal(reply?.message, 'use postgres')
+    })
+  })
+
+  it('mailbox pump delivers only identity-matching replies (PMR-WXG0 phase 5)', () => {
+    const record = makeAskRecord()
+    const reply = { askId: 'ask-1', message: 'use postgres', repliedAt: 'now' }
+
+    // Nothing to deliver yet.
+    assert.equal(
+      decideReplyDelivery({
+        reply: null,
+        record,
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      'idle',
+    )
+    assert.equal(
+      decideReplyDelivery({
+        reply,
+        record: null,
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      'idle',
+    )
+
+    // Matching identity delivers.
+    assert.equal(
+      decideReplyDelivery({
+        reply,
+        record,
+        childId: 'child-1',
+        sessionFile: '/tmp/child-1.jsonl',
+      }),
+      'deliver',
+    )
+
+    // Superseded askId, wrong child, wrong session — never delivered.
+    const mismatches: Array<[AskRecord, string, string]> = [
+      [makeAskRecord({ askId: 'ask-OLD' }), 'child-1', '/tmp/child-1.jsonl'],
+      [makeAskRecord({ childId: 'child-2' }), 'child-1', '/tmp/child-1.jsonl'],
+      [
+        makeAskRecord({ sessionFile: '/tmp/other.jsonl' }),
+        'child-1',
+        '/tmp/child-1.jsonl',
+      ],
+    ]
+    for (const [rec, childId, sessionFile] of mismatches) {
+      assert.equal(
+        decideReplyDelivery({ reply, record: rec, childId, sessionFile }),
+        'identity_mismatch',
+      )
+    }
+  })
+
+  it('pump cleanup removes reply + ask records only after ingestion', () => {
+    withTempDir((dir) => {
+      writeAskRecord(makeAskRecord(), dir)
+      writeReplyRecord(
+        'child-1',
+        { askId: 'ask-1', message: 'go', repliedAt: 'now' },
+        dir,
+      )
+      // Simulate the child's post-ingestion cleanup.
+      removeReplyRecord('child-1', dir)
+      removeAskRecord('child-1', dir)
+      assert.equal(readReplyRecord('child-1', dir), null)
+      assert.equal(readAskRecord('child-1', dir), null)
+      // Idempotent: second removal is a no-op.
+      removeReplyRecord('child-1', dir)
+      removeAskRecord('child-1', dir)
+    })
+  })
+
+  it('removes ask records by sessionFile for resume cleanup', () => {
+    withTempDir((dir) => {
+      writeAskRecord(makeAskRecord(), dir)
+      writeAskRecord(
+        makeAskRecord({
+          askId: 'ask-2',
+          childId: 'child-2',
+          sessionFile: '/tmp/other.jsonl',
+        }),
+        dir,
+      )
+      const removed = removeAskRecordsForSession('/tmp/child-1.jsonl', dir)
+      assert.equal(removed, 1)
+      assert.equal(readAskRecord('child-1', dir), null)
+      assert.ok(readAskRecord('child-2', dir))
+    })
+  })
+})
+
+describe('status widget rows (PMR-TABUX)', () => {
+  function widgetAgent(id: string, name: string, ageMs: number) {
+    return {
+      id,
+      name,
+      task: '',
+      surface: `pane-${id}`,
+      paneId: `w1:p${id}`,
+      startTime: 1_000_000 - ageMs,
+      sessionFile: `sess-${id}`,
+      interactive: false,
+      statusState: createStatusState({
+        source: 'pi' as const,
+        startTimeMs: 1_000_000 - ageMs,
+      }),
+    }
+  }
+
+  it('renders header + marker/label/status/elapsed rows with hit regions', () => {
+    const { renderSupervisionRows } = subagentsModule
+    const rendered = renderSupervisionRows(
+      [widgetAgent('a1', 'Worker', 13_000)],
+      1_000_000,
+    )
+    assert.equal(rendered.lines.length, 2)
+    assert.match(rendered.lines[0], /Subagents · 1 running/)
+    // Fresh state (never observed) classifies as starting — marker + label +
+    // status + elapsed are what matters here.
+    assert.match(rendered.lines[1], /^[●◌] Worker · (working|starting) /)
+    assert.match(rendered.lines[1], /13s/)
+    assert.equal(rendered.hits.length, 1)
+    assert.equal(rendered.hits[0].childId, 'a1')
+    assert.equal(rendered.hits[0].row, 1)
+    assert.ok(rendered.hits[0].to > rendered.hits[0].from)
+  })
+
+  it('marks starting entries transiently and blocked children with ◐', () => {
+    const { renderSupervisionRows, statusKindOf, markerFor } = subagentsModule
+    const starting = {
+      ...widgetAgent('a1', 'Worker', 1_000),
+      starting: true,
+    }
+    assert.equal(statusKindOf(starting, 1_000_000), 'starting')
+    assert.equal(markerFor('starting'), '◌')
+
+    const rendered = renderSupervisionRows([starting], 1_000_000)
+    assert.match(rendered.lines[1], /^◌ Worker · starting /)
+  })
+
+  it('caps rows and shows the … N more overflow line', () => {
+    const { renderSupervisionRows } = subagentsModule
+    const agents = []
+    for (let i = 0; i < 9; i++) {
+      agents.push(widgetAgent(`a${i}`, `Agent${i}`, (i + 1) * 1000))
+    }
+    const rendered = renderSupervisionRows(agents, 1_000_000)
+    // header + 6 rows + overflow
+    assert.equal(rendered.lines.length, 8)
+    assert.equal(rendered.lines[7], '… 3 more')
+    assert.equal(rendered.hits.length, 6)
+  })
+
+  it('shows stale in the header when a snapshot read failed', () => {
+    const { renderSupervisionRows } = subagentsModule
+    const agent = {
+      ...widgetAgent('a1', 'Worker', 5_000),
+      activityRead: { ok: false, reason: 'missing' as const },
+    }
+    const rendered = renderSupervisionRows([agent], 1_000_000)
+    assert.match(rendered.lines[0], /stale/)
+  })
+
+  it('matches left-clicks against hit regions only at the render width', () => {
+    const { matchHitRegion } = subagentsModule
+    const regions = [{ row: 1, from: 2, to: 8, childId: 'a1' }]
+    assert.equal(
+      matchHitRegion(regions, { x: 4, y: 1, width: 80 }, 80)?.childId,
+      'a1',
+    )
+    assert.equal(matchHitRegion(regions, { x: 4, y: 1, width: 100 }, 80), null)
+    assert.equal(matchHitRegion(regions, { x: 4, y: 2, width: 80 }, 80), null)
+    assert.equal(matchHitRegion(regions, { x: 1, y: 1, width: 80 }, 80), null)
+    assert.equal(matchHitRegion(regions, { x: 8, y: 1, width: 80 }, 80), null)
+  })
+})
+
+describe('focus verification gate (PMR-TABUX)', () => {
+  const { canFocusAgent } = spawnModule
+
+  const target = {
+    childId: 'a1',
+    sessionFile: '/tmp/sess.jsonl',
+    paneId: 'w1:p9',
+    tabId: 'w1:t1',
+    workspaceId: 'w1',
+  }
+
+  it('focuses only when herdr reports the same pane/tab/workspace', () => {
+    assert.deepEqual(
+      canFocusAgent(target, {
+        pane_id: 'w1:p9',
+        tab_id: 'w1:t1',
+        workspace_id: 'w1',
+      }),
+      { ok: true, paneId: 'w1:p9' },
+    )
+  })
+
+  it('is inert when the agent is gone, starting, or moved', () => {
+    assert.equal(canFocusAgent(target, null).ok, false)
+    assert.equal(
+      canFocusAgent(
+        { ...target, starting: true },
+        {
+          pane_id: 'w1:p9',
+        },
+      ).ok,
+      false,
+    )
+    assert.equal(canFocusAgent(target, { pane_id: 'w1:pX' }).ok, false)
+    assert.equal(
+      canFocusAgent(target, {
+        pane_id: 'w1:p9',
+        tab_id: 'w1:tX',
+      }).ok,
+      false,
+    )
+    assert.equal(
+      canFocusAgent({ ...target, paneId: undefined }, { pane_id: 'w1:p9' }).ok,
+      false,
+    )
+  })
+})
+
+describe('rollback bookkeeping (PMR-TABUX)', () => {
+  const { pickRollbackTabs } = spawnModule
+
+  it('closes only tabs the spawn created, never user tabs', () => {
+    assert.deepEqual(pickRollbackTabs(['t1', 't2'], ['t1', 'user-a', 't3']), [
+      't1',
+    ])
+    assert.deepEqual(pickRollbackTabs([], ['t1']), [])
+    assert.deepEqual(pickRollbackTabs(['t1'], []), [])
+  })
+})
+
+describe('pollForExit check order (PMR-TABUX)', () => {
+  it('observes .exit first, .ask before the liveness probe; scrape/.code gone', () => {
+    const order = POLL_CHECK_ORDER
+    assert.ok(order.indexOf('exit') < order.indexOf('ask'))
+    assert.ok(order.indexOf('ask') < order.indexOf('liveness'))
+    const names = order as readonly string[]
+    assert.equal(names.includes('screen'), false)
+    assert.equal(names.includes('code'), false)
+    assert.equal(names.includes('sentinel'), false)
+  })
+})
+describe('pollForExit crash inference (PMR-TABUX)', () => {
+  function opts(overrides: Record<string, unknown> = {}) {
+    return {
+      interval: 5,
+      sessionFile: '/tmp/does-not-matter.jsonl',
+      isAlive: () => true,
+      ...overrides,
+    } as any
+  }
+
+  it('resolves from the .exit sidecar when present', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'poll-exit-'))
+    const sessionFile = join(dir, 's.jsonl')
+    writeFileSync(
+      `${sessionFile}.exit`,
+      JSON.stringify({ type: 'done' }),
+      'utf8',
+    )
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const result = await pollForExit(
+      'w1:p1',
+      AbortSignal.timeout(1000),
+      opts({ sessionFile }),
+    )
+    assert.equal(result.reason, 'done')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('fail-closed: pane gone + no .exit ⇒ error result, never success', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const result = await pollForExit(
+      'w1:pGONE',
+      AbortSignal.timeout(1000),
+      opts({ isAlive: () => false }),
+    )
+    assert.equal(result.reason, 'error')
+    assert.equal(result.exitCode, 1)
+    assert.match(
+      result.errorMessage ?? '',
+      /disappeared without an exit sidecar/,
+    )
+  })
+
+  it('probe errors fail OPEN (treated alive)', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const controller = new AbortController()
+    const p = pollForExit(
+      'w1:p1',
+      controller.signal,
+      opts({
+        isAlive: () => {
+          throw new Error('herdr unreachable')
+        },
+      }),
+    )
+    // No error thrown for the probe failure; abort to end the poll.
+    setTimeout(() => controller.abort(), 50)
+    await assert.rejects(p, /Aborted/)
+  })
+})
+
+describe('blocked activity phase (PMR-WXG0)', () => {
+  it('keeps phase blocked across agent_end until the answer starts a run', () => {
+    withTempDir((dir) => {
+      const activityFile = getSubagentActivityFile(dir, 'child-b')
+      const recorder = createSubagentActivityRecorder({
+        runningChildId: 'child-b',
+        activityFile,
+      })
+
+      recorder.sessionStart()
+      recorder.agentStart()
+      recorder.turnStart(1)
+      recorder.blockedAsking()
+
+      let read = readSubagentActivityFile(activityFile, 'child-b')
+      assert.ok(read.ok)
+      assert.equal(read.activity.phase, 'blocked')
+      assert.ok(read.activity.blockedSince != null)
+
+      recorder.turnEnd(1)
+      recorder.agentEndWaiting()
+      read = readSubagentActivityFile(activityFile, 'child-b')
+      assert.ok(read.ok)
+      assert.equal(read.activity.phase, 'blocked')
+      assert.equal(read.activity.waitingSince, undefined)
+
+      // Owner's answer arrives → next run flips back to active and unblocks.
+      recorder.beforeAgentStart()
+      read = readSubagentActivityFile(activityFile, 'child-b')
+      assert.ok(read.ok)
+      assert.equal(read.activity.phase, 'active')
+      assert.equal(read.activity.blockedSince, undefined)
+
+      recorder.agentEndWaiting()
+      read = readSubagentActivityFile(activityFile, 'child-b')
+      assert.ok(read.ok)
+      assert.equal(read.activity.phase, 'waiting')
+    })
+  })
+})
+
+describe('blocked status classification (PMR-WXG0)', () => {
+  function blockedState() {
+    const state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    return observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 1_000,
+        sequence: 1,
+        phase: 'blocked',
+        blockedSince: 1_000,
+        latestEvent: 'ask_owner',
+      },
+      1_000,
+    )
+  }
+
+  it('classifies blocked children as blocked, never stalled', () => {
+    const snapshot = classifyStatus(blockedState(), 5_000_000)
+    assert.equal(snapshot.kind, 'blocked')
+    assert.equal(snapshot.blockedDurationText, '1h 23m')
+    assert.match(formatStatusLine('Worker', snapshot), /blocked/)
+  })
+
+  it('advances without a stalled/recovered transition while blocked', () => {
+    const { transition } = advanceStatusState(blockedState(), 5_000_000)
+    assert.equal(transition, null)
+  })
+})
+
+describe('infrastructure child tools (PMR-WXG0)', () => {
+  it('never lets deny-tools or spawning:false exclude ask_owner', () => {
+    const denied = resolveDenyTools({
+      denyTools: 'ask_owner,web_fetch',
+      spawning: false,
+    })
+    assert.equal(denied.has('ask_owner'), false)
+    assert.equal(denied.has('web_fetch'), true)
+    assert.equal(denied.has('subagent'), true)
+  })
+})
+
+describe('herdr.ts verb layer (PMR-M48Y)', () => {
+  describe('parseHerdrEnvelope', () => {
+    const args = ['pane', 'wait-output', 'w1:p1']
+
+    it('parses the {id, result} envelope and returns result', () => {
+      const raw = '{"id":"cli:pane:wait-output","result":{"matched":"yes"}}'
+      assert.deepEqual(parseHerdrEnvelope<Record<string, string>>(args, raw), {
+        matched: 'yes',
+      })
+    })
+
+    it('fails closed on non-JSON output with a clear error', () => {
+      assert.throws(
+        () => parseHerdrEnvelope(args, 'panic: socket gone\n'),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /non-JSON output/)
+          assert.match(err.message, /pane wait-output w1:p1/)
+          return true
+        },
+      )
+    })
+
+    it('surfaces herdr error envelopes', () => {
+      const raw =
+        '{"id":"x","error":{"code":"agent_pane_busy","message":"busy"}}'
+      assert.throws(
+        () => parseHerdrEnvelope(args, raw),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /agent_pane_busy/)
+          return true
+        },
+      )
+    })
+
+    it('rejects JSON without id/result', () => {
+      assert.throws(
+        () => parseHerdrEnvelope(args, '{"foo":1}'),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /missing id\/result/)
+          return true
+        },
+      )
+    })
+  })
+
+  describe('compareVersions', () => {
+    it('orders semver strings', () => {
+      assert.ok(compareVersions('0.9.0', '0.9.1') < 0)
+      assert.ok(compareVersions('0.9.1', '0.9.1') === 0)
+      assert.ok(compareVersions('0.10.0', '0.9.9') > 0)
+      assert.ok(compareVersions('1.0', '0.9.9') > 0)
+    })
+  })
+
+  describe('parseHerdrStatus (preflight + version gate)', () => {
+    it('rejects non-JSON output with a clear error', () => {
+      assert.throws(
+        () => parseHerdrStatus('herdr: command not found'),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /non-JSON/)
+          return true
+        },
+      )
+    })
+
+    it('rejects an unreachable/not-running server', () => {
+      const fixture = JSON.stringify({
+        client: { version: '0.9.1' },
+        server: { status: 'stopped', running: false },
+      })
+      assert.throws(
+        () => parseHerdrStatus(fixture),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /not running/)
+          assert.match(err.message, /herdr pi/)
+          return true
+        },
+      )
+    })
+
+    it('rejects versions below the gate with an upgrade hint', () => {
+      const fixture = JSON.stringify({
+        client: { version: '0.9.0' },
+        server: { status: 'running', running: true, version: '0.9.0' },
+      })
+      assert.throws(
+        () => parseHerdrStatus(fixture),
+        (err: unknown) => {
+          assert.ok(err instanceof HerdrError)
+          assert.match(err.message, /0\.9\.0 is too old/)
+          assert.match(err.message, /herdr upgrade/)
+          return true
+        },
+      )
+    })
+
+    it('accepts a running server at or above the gate', () => {
+      const fixture = JSON.stringify({
+        client: { version: '0.9.1' },
+        server: {
+          status: 'running',
+          running: true,
+          version: '0.9.1',
+          protocol: 22,
+        },
+      })
+      const status = parseHerdrStatus(fixture)
+      assert.equal(status.server?.version, '0.9.1')
+    })
+  })
+})
+
+describe('peers.ts (PMR-98S6 peer-to-peer messaging)', () => {
+  const DEAD_PID = 0x400000
+  let peersRoot: string
+  let counter = 0
+
+  // Never touch the real agent dir in tests — every call passes peersRoot.
+  function fakePresence(params: {
+    childId: string
+    sessionFile: string
+    claim: ProcessLockClaim
+    name?: string
+  }): Record<string, unknown> {
+    return {
+      version: 1,
+      childId: params.childId,
+      sessionId: basename(params.sessionFile, '.jsonl'),
+      sessionFile: params.sessionFile,
+      name: params.name ?? params.childId,
+      cwd: '/tmp',
+      claim: params.claim,
+      updatedAt: new Date().toISOString(),
+    }
+  }
+
+  function identityFor(childId: string): ChildIdentity {
+    counter += 1
+    return {
+      childId,
+      sessionFile: join(peersRoot, 'sessions', `${childId}-${counter}.jsonl`),
+      name: childId,
+      cwd: '/tmp',
+    }
+  }
+
+  // Hand-publish a presence record whose claim is a dead pid (no lock dir).
+  function publishDeadPresence(childId: string): void {
+    writeFileSync(
+      presencePath(childId, peersRoot),
+      JSON.stringify(
+        fakePresence({
+          childId,
+          sessionFile: `/nonexistent/${childId}.jsonl`,
+          claim: { pid: DEAD_PID, id: randomUUID() },
+        }),
+      ),
+    )
+  }
+
+  before(() => {
+    peersRoot = join(mkdtempSync(join(tmpdir(), 'peers-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(peersRoot, { recursive: true, force: true })
+  })
+
+  it('publishes presence, lists self + live peer, release removes record', () => {
+    const a = identityFor('alpha')
+    const b = identityFor('beta')
+    const releaseA = publishPresence(a, peersRoot)
+    const releaseB = publishPresence(b, peersRoot)
+    try {
+      const peers = listLivePeers(a, peersRoot)
+      const self = peers.find((p) => p.self)
+      const other = peers.find((p) => p.childId === b.childId)
+      assert.ok(self)
+      assert.equal(self.childId, a.childId)
+      assert.ok(other)
+      assert.equal(other.name, 'beta')
+    } finally {
+      releaseA()
+      releaseB()
+    }
+    assert.ok(!existsSync(presencePath(a.childId, peersRoot)))
+    assert.ok(!existsSync(presencePath(b.childId, peersRoot)))
+  })
+
+  it('filters dead-claim, malformed and takeover-stale presence records', () => {
+    const live = identityFor('live')
+    const releaseLive = publishPresence(live, peersRoot)
+    try {
+      // Dead pid: no lock dir behind the record at all.
+      publishDeadPresence('ghost')
+      // Malformed record file.
+      writeFileSync(presencePath('broken', peersRoot), '{not json')
+      // Wrong schema version.
+      writeFileSync(
+        presencePath('oldversion', peersRoot),
+        JSON.stringify({
+          ...fakePresence({
+            childId: 'oldversion',
+            sessionFile: '/nonexistent/x.jsonl',
+            claim: { pid: process.pid, id: randomUUID() },
+          }),
+          version: 99,
+        }),
+      )
+      // Stale claim: lock dir exists but with a DEAD pid, record matches it.
+      const staleSession = join(peersRoot, 'sessions', 'stale.jsonl')
+      const staleClaim: ProcessLockClaim = {
+        pid: DEAD_PID,
+        id: 'e5a8d13e-1a2b-4c3d-9e2f-0123456789ab',
+      }
+      const staleLockPath = peerLockPath(staleSession)
+      mkdirSync(staleLockPath, { recursive: true, mode: 0o700 })
+      writeFileSync(
+        join(staleLockPath, `${staleClaim.pid}-${staleClaim.id}`),
+        JSON.stringify(staleClaim),
+      )
+      writeFileSync(
+        presencePath('stale', peersRoot),
+        JSON.stringify(
+          fakePresence({
+            childId: 'stale',
+            sessionFile: staleSession,
+            claim: staleClaim,
+          }),
+        ),
+      )
+      // Takeover: lock now held by US (live) but the record claims the old
+      // generation id — must be filtered as superseded.
+      const takenOver = identityFor('takenover')
+      const leaseUs = acquireProcessLock(peerLockPath(takenOver.sessionFile))
+      const releaseUs = () => leaseUs.release()
+      writeFileSync(
+        presencePath('takenover', peersRoot),
+        JSON.stringify(
+          fakePresence({
+            childId: 'takenover',
+            sessionFile: takenOver.sessionFile,
+            claim: { pid: process.pid, id: randomUUID() },
+          }),
+        ),
+      )
+
+      const peers = listLivePeers(live, peersRoot)
+      const ids = peers.map((p) => p.childId)
+      assert.ok(ids.includes(live.childId))
+      assert.ok(!ids.includes('ghost'))
+      assert.ok(!ids.includes('broken'))
+      assert.ok(!ids.includes('oldversion'))
+      assert.ok(!ids.includes('stale'))
+      assert.ok(!ids.includes('takenover'))
+      releaseUs()
+    } finally {
+      releaseLive()
+    }
+  })
+
+  it('refuses presence records above the 4 KiB cap', () => {
+    const big = identityFor('bigname')
+    big.name = 'x'.repeat(5000)
+    assert.throws(
+      () => publishPresence(big, peersRoot),
+      /presence record exceeds 4096 bytes/,
+    )
+  })
+
+  it('round-trips a message between peers, forwarding resultRef', () => {
+    const a = identityFor('sender')
+    const b = identityFor('receiver')
+    const releaseA = publishPresence(a, peersRoot)
+    const releaseB = publishPresence(b, peersRoot)
+    try {
+      const target = resolvePeer('receiver', a, peersRoot)
+      assert.equal(target.childId, b.childId)
+      const sent = sendPeerMessage({
+        toChildId: target.childId,
+        from: a,
+        message: 'compare findings',
+        resultRef: 'result:findings#1',
+        root: peersRoot,
+      })
+      assert.ok(existsSync(sent.path))
+      const inbox = readInbox(b.childId, peersRoot)
+      assert.equal(inbox.length, 1)
+      assert.equal(inbox[0].message.message, 'compare findings')
+      assert.equal(inbox[0].message.from.childId, a.childId)
+      assert.equal(inbox[0].message.resultRef, 'result:findings#1')
+      removeInboxEntry(inbox[0].path)
+      assert.equal(readInbox(b.childId, peersRoot).length, 0)
+      assert.ok(!existsSync(sent.path))
+    } finally {
+      releaseA()
+      releaseB()
+    }
+  })
+
+  it('allocates monotonically increasing inbox seqs', () => {
+    const b = identityFor('seqbox')
+    const a = identityFor('seqsend')
+    const releaseA = publishPresence(a, peersRoot)
+    const releaseB = publishPresence(b, peersRoot)
+    try {
+      const first = sendPeerMessage({
+        toChildId: b.childId,
+        from: a,
+        message: 'one',
+        root: peersRoot,
+      })
+      const second = sendPeerMessage({
+        toChildId: b.childId,
+        from: a,
+        message: 'two',
+        root: peersRoot,
+      })
+      assert.ok(first.path < second.path)
+      const inbox = readInbox(b.childId, peersRoot)
+      assert.deepEqual(
+        inbox.map((e) => e.message.message),
+        ['one', 'two'],
+      )
+    } finally {
+      releaseA()
+      releaseB()
+    }
+  })
+
+  it('rejects messages above the 8 KiB cap with a clear error', () => {
+    const a = identityFor('bigsender')
+    const b = identityFor('biginbox')
+    assert.throws(
+      () =>
+        sendPeerMessage({
+          toChildId: b.childId,
+          from: a,
+          message: 'y'.repeat(9000),
+          root: peersRoot,
+        }),
+      /inbox cap is 8192 bytes/,
+    )
+    assert.equal(readInbox(b.childId, peersRoot).length, 0)
+  })
+
+  it('skips malformed inbox entries instead of surfacing them', () => {
+    const b = identityFor('messyinbox')
+    const dir = inboxDir(b.childId, peersRoot)
+    writeFileSync(join(dir, 'garbage.json'), '{oops')
+    writeFileSync(
+      join(dir, 'wrongversion.json'),
+      JSON.stringify({ version: 42, message: 'nope' }),
+    )
+    assert.equal(readInbox(b.childId, peersRoot).length, 0)
+  })
+
+  it('resolvePeer reports missing and ambiguous peers', () => {
+    const a = identityFor('resolver')
+    const releaseA = publishPresence(a, peersRoot)
+    try {
+      assert.throws(
+        () => resolvePeer('nobody', a, peersRoot),
+        /No live peer found/,
+      )
+      // Ambiguity: two live peers sharing a name.
+      const dup1 = identityFor('dup-child-1')
+      const dup2 = identityFor('dup-child-2')
+      dup1.name = 'twin'
+      dup2.name = 'twin'
+      const releaseD1 = publishPresence(dup1, peersRoot)
+      const releaseD2 = publishPresence(dup2, peersRoot)
+      try {
+        assert.throws(() => resolvePeer('twin', a, peersRoot), /ambiguous/)
+      } finally {
+        releaseD1()
+        releaseD2()
+      }
+    } finally {
+      releaseA()
+    }
+  })
+})
+
+describe('inbox.ts (PMR-QCVA owner messaging)', () => {
+  let inboxRoot: string
+
+  before(() => {
+    inboxRoot = join(
+      mkdtempSync(join(tmpdir(), 'owner-inbox-')),
+      'pi-subagents',
+    )
+  })
+  after(() => {
+    rmSync(inboxRoot, { recursive: true, force: true })
+  })
+
+  it('writes durable records, drains exactly once, deletes drained files', () => {
+    const parent = 'parent-session-1'
+    const first = sendOwnerMessage({
+      parentSessionId: parent,
+      childId: 'kid1',
+      name: 'Kid One',
+      message: 'hello owner',
+      root: inboxRoot,
+    })
+    const second = sendOwnerMessage({
+      parentSessionId: parent,
+      childId: 'kid2',
+      message: 'multi\nline message',
+      root: inboxRoot,
+    })
+    const entries = readOwnerInbox(parent, inboxRoot)
+    assert.equal(entries.length, 2)
+    assert.equal(entries[0].message.childId, 'kid1')
+    assert.equal(entries[0].message.name, 'Kid One')
+    assert.equal(entries[1].message.message, 'multi\nline message')
+    assert.notEqual(first.path, second.path)
+
+    // Drain: remove each entry exactly once, inbox then reads empty.
+    for (const entry of entries) removeOwnerMessage(entry.path)
+    assert.equal(readOwnerInbox(parent, inboxRoot).length, 0)
+    // Double remove is a no-op (idempotent unlink).
+    removeOwnerMessage(first.path)
+  })
+
+  it('isolates inboxes per parent session id and per-child seq', () => {
+    sendOwnerMessage({
+      parentSessionId: 'parent-a',
+      childId: 'kid',
+      message: 'for a',
+      root: inboxRoot,
+    })
+    sendOwnerMessage({
+      parentSessionId: 'parent-b',
+      childId: 'kid',
+      message: 'for b',
+      root: inboxRoot,
+    })
+    sendOwnerMessage({
+      parentSessionId: 'parent-a',
+      childId: 'kid',
+      message: 'for a again',
+      root: inboxRoot,
+    })
+    const a = readOwnerInbox('parent-a', inboxRoot)
+    const b = readOwnerInbox('parent-b', inboxRoot)
+    assert.equal(a.length, 2)
+    assert.equal(b.length, 1)
+    assert.equal(a[1].message.message, 'for a again')
+  })
+
+  it('rejects messages above the 8 KiB cap', () => {
+    assert.throws(
+      () =>
+        sendOwnerMessage({
+          parentSessionId: 'cap-parent',
+          childId: 'kid',
+          message: 'x'.repeat(OWNER_MESSAGE_MAX_BYTES),
+          root: inboxRoot,
+        }),
+      /cap/,
+    )
+  })
+
+  it('coalesces one bullet per message and caps with overflow', () => {
+    const entries: OwnerInboxEntry[] = [
+      {
+        path: '/p/1.json',
+        message: {
+          version: 1,
+          messageId: 'm1',
+          childId: 'kid1',
+          name: 'Scout',
+          message: 'first finding\nmore detail',
+          sentAt: new Date().toISOString(),
+        },
+      },
+      {
+        path: '/p/2.json',
+        message: {
+          version: 1,
+          messageId: 'm2',
+          childId: 'kid2',
+          message: 'second',
+          sentAt: new Date().toISOString(),
+        },
+      },
+      {
+        path: '/p/3.json',
+        message: {
+          version: 1,
+          messageId: 'm3',
+          childId: 'kid3',
+          name: 'Third',
+          message: 'third',
+          sentAt: new Date().toISOString(),
+        },
+      },
+    ]
+    const coalesced = coalesceOwnerMessages(entries, 2)
+    assert.deepEqual(coalesced.lines, [
+      'Scout: first finding',
+      'kid2: second',
+      'Third: third',
+    ])
+    assert.deepEqual(coalesced.visibleLines, [
+      'Scout: first finding',
+      'kid2: second',
+    ])
+    assert.equal(coalesced.overflow, 1)
+  })
+
+  it('ignores malformed records instead of surfacing them', () => {
+    const parent = 'malformed-parent'
+    const dir = ownerInboxDir(parent, inboxRoot)
+    writeFileSync(join(dir, 'kid-000001.json'), '{not json')
+    writeFileSync(
+      join(dir, 'kid-000002.json'),
+      JSON.stringify({ version: 999, message: 'wrong' }),
+    )
+    const entries = readOwnerInbox(parent, inboxRoot)
+    assert.equal(entries.length, 0)
+    // Cleanup so later assertions on other parents stay isolated.
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+// ── worktrees.ts (PMR-11TD) ──
+
+import { execFileSync } from 'node:child_process'
+import { homedir } from 'node:os'
+
+describe('worktrees.ts (PMR-11TD)', () => {
+  function gitInitRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wt-unit-'))
+    execFileSync('git', ['init', '-q', dir])
+    execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@test'])
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'test'])
+    writeFileSync(join(dir, 'README.md'), 'x')
+    execFileSync('git', ['-C', dir, 'add', '.'])
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'init'])
+    return dir
+  }
+
+  it('slugifyWorktree lowercases, strips, and dashes', () => {
+    assert.equal(
+      slugifyWorktree('Fix PMR-11TD: Worktree Spawn!'),
+      'fix-pmr-11td-worktree-spawn',
+    )
+    assert.equal(slugifyWorktree('  --weird__  name-- '), 'weird-name')
+    assert.equal(slugifyWorktree('!!!'), '')
+  })
+
+  it('deriveWorktreeBranch is subagent/<slug>-<ts>-<id> and deterministic', () => {
+    const now = new Date(Date.UTC(2026, 9, 15, 7, 14, 24))
+    const branch = deriveWorktreeBranch('Echo Test', 'abc123', now)
+    assert.equal(branch, 'subagent/echo-test-20261015-071424-abc123')
+    assert.equal(deriveWorktreeBranch('Echo Test', 'abc123', now), branch)
+    // childId disambiguates same-second same-name spawns
+    assert.notEqual(deriveWorktreeBranch('Echo Test', 'def456', now), branch)
+    // empty-slug fallback
+    assert.ok(
+      deriveWorktreeBranch('!!!', 'x1', now).startsWith('subagent/agent-'),
+    )
+    // long names are capped
+    const long = deriveWorktreeBranch('a'.repeat(200), 'x1', now)
+    assert.ok(long.length < 70, `branch too long: ${long.length}`)
+  })
+
+  it('worktreePathFor follows $HOME/.herdr/worktrees/<repo>/<branch-slug>', () => {
+    const path = worktreePathFor('/repos/my-repo', 'subagent/echo-1-x')
+    assert.equal(
+      path,
+      join(homedir(), '.herdr', 'worktrees', 'my-repo', 'subagent-echo-1-x'),
+    )
+  })
+
+  it('findMainRepoRoot resolves the main checkout from repo and worktree', () => {
+    const repo = gitInitRepo()
+    try {
+      assert.equal(findMainRepoRoot(repo), repo)
+      const wt = join(repo, 'linked')
+      execFileSync('git', [
+        '-C',
+        repo,
+        'worktree',
+        'add',
+        '-q',
+        '-b',
+        'linked',
+        wt,
+      ])
+      assert.equal(findMainRepoRoot(wt), repo)
+    } finally {
+      execFileSync(
+        'git',
+        ['-C', repo, 'worktree', 'remove', '--force', join(repo, 'linked')],
+        { stdio: 'ignore' },
+      )
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('findMainRepoRoot fails closed outside a git repo', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wt-nogit-'))
+    try {
+      assert.throws(() => findMainRepoRoot(dir), WorktreeError)
+      assert.throws(() => findMainRepoRoot(dir), /not a git repository/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('createSubagentWorktree creates worktree + branch off HEAD', () => {
+    const repo = gitInitRepo()
+    const branch = deriveWorktreeBranch(
+      'unit echo',
+      't1',
+      new Date(Date.UTC(2026, 0, 1)),
+    )
+    let created: string | null = null
+    try {
+      const wt = createSubagentWorktree({ cwd: repo, branch })
+      created = wt.path
+      assert.equal(wt.branch, branch)
+      assert.ok(existsSync(join(wt.path, 'README.md')))
+      assert.ok(existsSync(join(wt.path, '.git')))
+      const head = execFileSync(
+        'git',
+        ['-C', wt.path, 'branch', '--show-current'],
+        { encoding: 'utf8' },
+      ).trim()
+      assert.equal(head, branch)
+      // base ref variant branches from that ref
+      const wt2 = createSubagentWorktree({
+        cwd: repo,
+        branch: `${branch}-b`,
+        base: 'HEAD',
+      })
+      assert.ok(existsSync(wt2.path))
+      execFileSync('git', [
+        '-C',
+        repo,
+        'worktree',
+        'remove',
+        '--force',
+        wt2.path,
+      ])
+      execFileSync('git', ['-C', repo, 'branch', '-qD', `${branch}-b`])
+    } finally {
+      if (created) {
+        execFileSync(
+          'git',
+          ['-C', repo, 'worktree', 'remove', '--force', created],
+          { stdio: 'ignore' },
+        )
+        execFileSync('git', ['-C', repo, 'branch', '-qD', branch], {
+          stdio: 'ignore',
+        })
+      }
+      rmSync(repo, { recursive: true, force: true })
+      rmSync(join(homedir(), '.herdr', 'worktrees', basename(repo)), {
+        recursive: true,
+        force: true,
+      })
+    }
+  })
+
+  it('createSubagentWorktree failure: clear WorktreeError, no partial state', () => {
+    const repo = gitInitRepo()
+    const branch = deriveWorktreeBranch(
+      'bad base',
+      't2',
+      new Date(Date.UTC(2026, 0, 1)),
+    )
+    const path = worktreePathFor(repo, branch)
+    try {
+      assert.throws(
+        () =>
+          createSubagentWorktree({ cwd: repo, branch, base: 'no-such-ref' }),
+        (err: unknown) => {
+          assert.ok(err instanceof WorktreeError)
+          assert.match(err.message, /git worktree add failed/)
+          assert.match(err.message, /no-such-ref/)
+          return true
+        },
+      )
+      // no worktree registered, no branch created
+      assert.ok(!existsSync(path))
+      const list = execFileSync(
+        'git',
+        ['-C', repo, 'worktree', 'list', '--porcelain'],
+        { encoding: 'utf8' },
+      )
+      assert.ok(!list.includes(path))
+      assert.throws(() =>
+        execFileSync('git', ['-C', repo, 'rev-parse', '--verify', branch], {
+          stdio: 'pipe',
+        }),
+      )
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+      rmSync(join(homedir(), '.herdr', 'worktrees', basename(repo)), {
+        recursive: true,
+        force: true,
+      })
+    }
+  })
+})
+
+describe('assignments.ts durable branch-owned assignments (PMR-Z5KR)', () => {
+  let root: string
+
+  before(() => {
+    root = join(mkdtempSync(join(tmpdir(), 'assignments-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function draft(
+    childId: string,
+    overrides?: Partial<Parameters<typeof writeAssignment>[0]>,
+  ) {
+    return {
+      childId,
+      name: `agent-${childId}`,
+      task: 'do the thing',
+      sessionFile: `/tmp/${childId}.jsonl`,
+      cwd: '/tmp',
+      status: 'working' as const,
+      claim: { pid: process.pid, id: 'parent-session-1' },
+      ...overrides,
+    }
+  }
+
+  it('writes a record atomically at the canonical path with timestamps', () => {
+    const record = writeAssignment(draft('w-1'), root)
+    const path = assignmentPath('w-1', root)
+    assert.ok(existsSync(path))
+    // no tmp sibling left behind
+    assert.ok(!existsSync(`${path}.tmp`))
+    assert.ok(record.createdAt)
+    assert.equal(record.createdAt, record.updatedAt)
+
+    const read = readAssignment('w-1', root)
+    assert.deepEqual(read, record)
+    assert.equal(read?.claim.pid, process.pid)
+  })
+
+  it('persists worktree + branch fields (PMR-11TD composition)', () => {
+    writeAssignment(
+      draft('w-2', { worktree: '/tmp/wt', branch: 'subagent/w-2' }),
+      root,
+    )
+    const read = readAssignment('w-2', root)
+    assert.equal(read?.worktree, '/tmp/wt')
+    assert.equal(read?.branch, 'subagent/w-2')
+  })
+
+  it('updates status on transitions, bumping updatedAt and preserving fields', async () => {
+    const before = writeAssignment(draft('u-1', { agent: 'worker' }), root)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    updateAssignmentStatus('u-1', 'blocked', root)
+    const after = readAssignment('u-1', root)
+    assert.equal(after?.status, 'blocked')
+    assert.equal(after?.agent, 'worker')
+    assert.equal(after?.createdAt, before.createdAt)
+    assert.ok(after && after.updatedAt >= before.updatedAt)
+  })
+
+  it('update on a missing record is a no-op (fail closed, never resurrect)', () => {
+    updateAssignmentStatus('gone', 'lost', root)
+    assert.equal(readAssignment('gone', root), null)
+  })
+
+  it('removeAssignment deletes the record and tolerates repeats', () => {
+    writeAssignment(draft('r-1'), root)
+    removeAssignment('r-1', root)
+    assert.equal(readAssignment('r-1', root), null)
+    removeAssignment('r-1', root) // idempotent
+  })
+
+  it('listAssignments classifies owned (live claim pid) from files alone', () => {
+    writeAssignment(draft('live-1'), root)
+    const views = listAssignments(root)
+    const view = views.find((v) => v.childId === 'live-1')
+    assert.ok(view)
+    assert.equal(view.state, 'owned')
+    if (view.state === 'owned') {
+      assert.equal(view.record.name, 'agent-live-1')
+    }
+  })
+
+  it('listAssignments marks dead claim pids as orphaned with a resume hint', () => {
+    // 4194304 is the default Linux pid_max — no live process can hold it.
+    writeAssignment(draft('dead-1', { claim: { pid: 4194304, id: 'x' } }), root)
+    const views = listAssignments(root)
+    const view = views.find((v) => v.childId === 'dead-1')
+    assert.ok(view)
+    assert.equal(view.state, 'orphaned')
+    if (view.state === 'orphaned') {
+      assert.match(
+        view.resumeHint ?? '',
+        /subagent_resume\(\{ sessionPath: "\/tmp\/dead-1\.jsonl" \}\)/,
+      )
+    }
+  })
+
+  it('listAssignments fails closed to unknown on a malformed record (kept on disk)', () => {
+    const path = assignmentPath('bad-1', root)
+    writeFileSync(path, '{not json')
+    const views = listAssignments(root)
+    const view = views.find((v) => v.childId === 'bad-1')
+    assert.ok(view)
+    assert.equal(view.state, 'unknown')
+    // fail closed = no destructive action — the record is still there
+    assert.ok(existsSync(path))
+  })
+
+  it('findAssignmentByBranch: unique match returns the record', () => {
+    const found = findAssignmentByBranch('subagent/w-2', root)
+    assert.ok('record' in found)
+    if ('record' in found) {
+      assert.equal(found.record.childId, 'w-2')
+    }
+  })
+
+  it('findAssignmentByBranch: missing branch is unknown, not invented', () => {
+    const found = findAssignmentByBranch('no/such-branch', root)
+    assert.ok('error' in found)
+    if ('error' in found) {
+      assert.match(found.error, /unknown/)
+    }
+  })
+
+  it('findAssignmentByBranch: multiple matches are ambiguous (fail closed)', () => {
+    writeAssignment(draft('amb-1', { branch: 'dup/branch' }), root)
+    writeAssignment(draft('amb-2', { branch: 'dup/branch' }), root)
+    const found = findAssignmentByBranch('dup/branch', root)
+    assert.ok('error' in found)
+    if ('error' in found) {
+      assert.match(found.error, /[Aa]mbiguous/)
+    }
+  })
+})
+
+import {
+  createSessionUsageTracker,
+  formatUsageCompact,
+  readSessionParentFile,
+  readSessionUsage,
+  rollupUsageByOwnership,
+  summarizeEntriesUsage,
+  type UsageOwnershipNode,
+  type UsageSummary,
+  updateSessionUsageTracker,
+} from '../pi-extension/subagents/usage.ts'
+
+function usageNode(
+  childId: string,
+  sessionFile: string,
+  parentSessionFile: string | null,
+  summary: UsageSummary | null,
+): UsageOwnershipNode {
+  return { childId, sessionFile, parentSessionFile, summary }
+}
+
+function summaryOf(input: number, output: number, cost: number): UsageSummary {
+  return {
+    totals: { input, output, cacheRead: 0, cacheWrite: 0, cost },
+    sawUsage: true,
+  }
+}
+
+describe('usage.ts (PMR-874G)', () => {
+  let usageRoot: string
+
+  before(() => {
+    usageRoot = mkdtempSync(join(tmpdir(), 'usage-'))
+  })
+  after(() => {
+    rmSync(usageRoot, { recursive: true, force: true })
+  })
+
+  const assistantEntry = (input: number, output: number, cost: number) => ({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      content: [],
+      usage: {
+        input,
+        output,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+      },
+    },
+  })
+
+  describe('summarizeEntriesUsage', () => {
+    it('sums assistant, toolResult, branch_summary and compaction usage', () => {
+      const summary = summarizeEntriesUsage([
+        { type: 'session', id: 's1' },
+        assistantEntry(100, 50, 0.01),
+        {
+          type: 'message',
+          message: {
+            role: 'toolResult',
+            usage: { input: 10, output: 5, cost: { total: 0.001 } },
+          },
+        },
+        { type: 'message', message: { role: 'user', content: [] } },
+        {
+          type: 'branch_summary',
+          usage: { input: 20, output: 10, cost: { total: 0.002 } },
+        },
+        {
+          type: 'compaction',
+          usage: { input: 30, output: 15, cost: { total: 0.003 } },
+        },
+        'garbage',
+        null,
+        { type: 'message' },
+      ])
+      assert.equal(summary.sawUsage, true)
+      assert.equal(summary.totals.input, 160)
+      assert.equal(summary.totals.output, 80)
+      assert.ok(Math.abs(summary.totals.cost - 0.016) < 1e-9)
+    })
+
+    it('flags sawUsage=false when no entry carries usage (never a zero)', () => {
+      const summary = summarizeEntriesUsage([
+        { type: 'session', id: 's1' },
+        { type: 'message', message: { role: 'user', content: [] } },
+        { type: 'message', message: { role: 'assistant', content: [] } },
+      ])
+      assert.equal(summary.sawUsage, false)
+      assert.equal(summary.totals.input, 0)
+      assert.equal(summary.totals.cost, 0)
+    })
+  })
+
+  describe('readSessionUsage', () => {
+    it('reads usage from a session jsonl fixture', () => {
+      const file = join(usageRoot, 'sess.jsonl')
+      writeFileSync(
+        file,
+        [
+          JSON.stringify({ type: 'session', id: 's1' }),
+          JSON.stringify(assistantEntry(1000, 500, 0.05)),
+          JSON.stringify(assistantEntry(2000, 1000, 0.1)),
+        ].join('\n') + '\n',
+      )
+      const summary = readSessionUsage(file)
+      assert.ok(summary)
+      assert.equal(summary.sawUsage, true)
+      assert.equal(summary.totals.input, 3000)
+      assert.equal(summary.totals.output, 1500)
+      assert.ok(Math.abs(summary.totals.cost - 0.15) < 1e-9)
+    })
+
+    it('returns null for an unreadable/missing file (coverage gap)', () => {
+      assert.equal(readSessionUsage(join(usageRoot, 'nope.jsonl')), null)
+    })
+  })
+
+  describe('updateSessionUsageTracker', () => {
+    it('parses incrementally without double counting appended lines', () => {
+      const file = join(usageRoot, 'incr.jsonl')
+      writeFileSync(file, `${JSON.stringify(assistantEntry(100, 10, 0.01))}\n`)
+      const tracker = createSessionUsageTracker()
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 100)
+
+      appendFileSync(file, `${JSON.stringify(assistantEntry(200, 20, 0.02))}\n`)
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 300)
+      assert.ok(Math.abs(tracker.summary.totals.cost - 0.03) < 1e-9)
+
+      // no-op tick: same size, no reparse
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 300)
+    })
+
+    it('consumes only complete lines; a partial line waits for the next tick', () => {
+      const file = join(usageRoot, 'partial.jsonl')
+      const line = JSON.stringify(assistantEntry(50, 5, 0.005))
+      writeFileSync(file, line) // no trailing newline — mid-write
+      const tracker = createSessionUsageTracker()
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.sawUsage, false)
+
+      appendFileSync(file, '\n')
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.sawUsage, true)
+      assert.equal(tracker.summary.totals.input, 50)
+    })
+
+    it('resets when the file shrinks instead of double counting', () => {
+      const file = join(usageRoot, 'shrink.jsonl')
+      writeFileSync(file, `${JSON.stringify(assistantEntry(100, 10, 0.01))}\n`)
+      const tracker = createSessionUsageTracker()
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 100)
+
+      writeFileSync(file, `${JSON.stringify(assistantEntry(7, 1, 0.001))}\n`)
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 7)
+    })
+  })
+
+  describe('readSessionParentFile', () => {
+    it('reads parentSession from the session header', () => {
+      const file = join(usageRoot, 'child.jsonl')
+      writeFileSync(
+        file,
+        `${JSON.stringify({ type: 'session', id: 'c1', parentSession: '/tmp/parent.jsonl' })}\n${JSON.stringify(assistantEntry(1, 1, 0))}\n`,
+      )
+      assert.equal(readSessionParentFile(file), '/tmp/parent.jsonl')
+    })
+
+    it('returns null for roots, non-headers and missing files', () => {
+      const root = join(usageRoot, 'root.jsonl')
+      writeFileSync(root, `${JSON.stringify({ type: 'session', id: 'r1' })}\n`)
+      assert.equal(readSessionParentFile(root), null)
+      const bogus = join(usageRoot, 'bogus.jsonl')
+      writeFileSync(bogus, 'not json\n')
+      assert.equal(readSessionParentFile(bogus), null)
+      assert.equal(readSessionParentFile(join(usageRoot, 'gone.jsonl')), null)
+    })
+  })
+
+  describe('formatUsageCompact', () => {
+    const totals = (tokens: number, cost: number) => ({
+      input: tokens,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost,
+    })
+
+    it('formats tokens with k/M suffixes and cost with precision', () => {
+      assert.equal(formatUsageCompact(totals(420, 0)), '420 tok')
+      assert.equal(
+        formatUsageCompact(totals(12_300, 0.042)),
+        '12.3k tok $0.0420',
+      )
+      assert.equal(
+        formatUsageCompact(totals(1_500_000, 3.456)),
+        '1.5M tok $3.46',
+      )
+    })
+
+    it('omits cost when zero', () => {
+      assert.equal(formatUsageCompact(totals(1000, 0)), '1.0k tok')
+    })
+  })
+
+  describe('rollupUsageByOwnership', () => {
+    it('sums self + transitive descendants per node', () => {
+      const nodes = [
+        usageNode('root', '/s/root.jsonl', null, summaryOf(100, 10, 0.01)),
+        usageNode(
+          'child',
+          '/s/child.jsonl',
+          '/s/root.jsonl',
+          summaryOf(200, 20, 0.02),
+        ),
+        usageNode(
+          'grand',
+          '/s/grand.jsonl',
+          '/s/child.jsonl',
+          summaryOf(400, 40, 0.04),
+        ),
+      ]
+      const rollups = rollupUsageByOwnership(nodes)
+      const root = rollups.get('root')
+      assert.ok(root)
+      assert.equal(root.totals.input, 700)
+      assert.equal(root.incomplete, false)
+      assert.equal(rollups.get('child')?.totals.input, 600)
+      assert.equal(rollups.get('grand')?.totals.input, 400)
+    })
+
+    it('flags coverage gaps and terminates on cycles', () => {
+      const cyclic = rollupUsageByOwnership([
+        usageNode('a', '/s/a.jsonl', '/s/b.jsonl', summaryOf(1, 1, 0)),
+        usageNode('b', '/s/b.jsonl', '/s/a.jsonl', summaryOf(2, 2, 0)),
+      ])
+      assert.equal(cyclic.get('a')?.incomplete, true)
+      assert.equal(cyclic.get('b')?.incomplete, true)
+
+      const gapped = rollupUsageByOwnership([
+        usageNode('root', '/s/root.jsonl', null, summaryOf(1, 1, 0)),
+        usageNode('child', '/s/child.jsonl', '/s/root.jsonl', null),
+      ])
+      const root = gapped.get('root')
+      assert.ok(root)
+      assert.equal(root.incomplete, true)
+      assert.equal(root.totals.input, 1)
+      assert.equal(gapped.get('child')?.incomplete, true)
+    })
+  })
+
+  describe('settle-time accounting', () => {
+    it('recordAssignmentUsage persists totals onto the record; missing record is a no-op', () => {
+      const root = join(
+        mkdtempSync(join(tmpdir(), 'usage-assign-')),
+        'pi-subagents',
+      )
+      writeAssignment(
+        {
+          childId: 'u1',
+          name: 'worker',
+          task: 't',
+          sessionFile: '/tmp/u1.jsonl',
+          cwd: '/tmp',
+          status: 'working',
+          claim: { pid: process.pid, id: 'parent' },
+        },
+        root,
+      )
+      recordAssignmentUsage(
+        'u1',
+        { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, cost: 0.5 },
+        root,
+      )
+      const record = readAssignment('u1', root)
+      assert.deepEqual(record?.usage, {
+        input: 5,
+        output: 6,
+        cacheRead: 7,
+        cacheWrite: 8,
+        cost: 0.5,
+      })
+      recordAssignmentUsage(
+        'gone',
+        { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        root,
+      )
+      assert.equal(readAssignment('gone', root), null)
+      rmSync(root, { recursive: true, force: true })
+    })
+
+    it('writeResultRecord carries usage into the durable result record', () => {
+      const root = join(
+        mkdtempSync(join(tmpdir(), 'usage-store-')),
+        'pi-subagents',
+      )
+      const written = writeResultRecord(
+        {
+          childId: 'u2',
+          name: 'worker',
+          summary: 'done',
+          sessionFile: '/tmp/u2.jsonl',
+          usage: {
+            input: 9,
+            output: 9,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.09,
+          },
+        },
+        root,
+      )
+      const record = readResultRecord(written.path)
+      assert.deepEqual(record.usage, {
+        input: 9,
+        output: 9,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.09,
+      })
+      rmSync(root, { recursive: true, force: true })
+    })
+  })
+
+  describe('usageSuffixFor', () => {
+    it('shows self totals, tree totals when descendants add more, coverage flags', () => {
+      const nodes = [
+        usageNode('root', '/s/root.jsonl', null, summaryOf(1000, 0, 0.01)),
+        usageNode(
+          'child',
+          '/s/child.jsonl',
+          '/s/root.jsonl',
+          summaryOf(2000, 0, 0.02),
+        ),
+      ]
+      const rollups = rollupUsageByOwnership(nodes)
+      const rootSuffix = subagentsModule.usageSuffixFor(nodes[0], rollups)
+      assert.match(rootSuffix, /· 1\.0k tok \$0\.0100/)
+      assert.match(rootSuffix, /\(tree: 3\.0k tok \$0\.0300\)/)
+      assert.ok(!rootSuffix.includes('coverage'))
+
+      const leafSuffix = subagentsModule.usageSuffixFor(nodes[1], rollups)
+      assert.match(leafSuffix, /· 2\.0k tok \$0\.0200/)
+      assert.ok(!leafSuffix.includes('tree:'))
+    })
+
+    it('flags unavailable usage instead of inventing numbers', () => {
+      const nodes = [usageNode('lone', '/s/lone.jsonl', null, null)]
+      const rollups = rollupUsageByOwnership(nodes)
+      const suffix = subagentsModule.usageSuffixFor(nodes[0], rollups)
+      assert.match(suffix, /usage unavailable/)
+    })
+
+    it('flags incomplete coverage on a subtree gap', () => {
+      const nodes = [
+        usageNode('root', '/s/root.jsonl', null, summaryOf(100, 0, 0)),
+        usageNode('child', '/s/child.jsonl', '/s/root.jsonl', null),
+      ]
+      const rollups = rollupUsageByOwnership(nodes)
+      const suffix = subagentsModule.usageSuffixFor(nodes[0], rollups)
+      assert.match(suffix, /coverage incomplete/)
+    })
+  })
+
+  describe('widget usage display (PMR-874G)', () => {
+    function usageAgent(id: string, name: string, tokens: number) {
+      return {
+        id,
+        name,
+        task: '',
+        surface: `pane-${id}`,
+        paneId: `w1:p${id}`,
+        startTime: 900_000,
+        sessionFile: `sess-${id}`,
+        interactive: false,
+        usage: {
+          totals: {
+            input: tokens,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.01,
+          },
+          sawUsage: true,
+        },
+        statusState: createStatusState({
+          source: 'pi' as const,
+          startTimeMs: 900_000,
+        }),
+      }
+    }
+
+    it('appends per-row usage and a header aggregate when available', () => {
+      const { renderSupervisionRows } = subagentsModule
+      const rendered = renderSupervisionRows(
+        [usageAgent('a1', 'Worker', 1500), usageAgent('a2', 'Scout', 2500)],
+        1_000_000,
+      )
+      assert.match(rendered.lines[0], /4\.0k tok \$0\.0200/)
+      assert.match(rendered.lines[1], /Worker · .* 1\.5k tok \$0\.0100/)
+      assert.match(rendered.lines[2], /Scout · .* 2\.5k tok \$0\.0100/)
+    })
+
+    it('omits usage entirely when no child saw usage (no invented zeros)', () => {
+      const { renderSupervisionRows } = subagentsModule
+      const agent = usageAgent('a1', 'Worker', 0)
+      agent.usage = { totals: agent.usage.totals, sawUsage: false }
+      const rendered = renderSupervisionRows([agent], 1_000_000)
+      assert.ok(!rendered.lines[0].includes('tok'))
+      assert.ok(!rendered.lines[1].includes('tok'))
+    })
+  })
+})
+
+describe('retirement.ts (PMR-1EC3 context retirement)', () => {
+  let retireRoot: string
+
+  before(() => {
+    retireRoot = join(mkdtempSync(join(tmpdir(), 'retire-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(retireRoot, { recursive: true, force: true })
+  })
+
+  function customMsg(
+    customType: string,
+    content: unknown,
+    details?: unknown,
+  ): {
+    role: string
+    customType: string
+    content: unknown
+    details?: unknown
+  } {
+    const msg: {
+      role: string
+      customType: string
+      content: unknown
+      details?: unknown
+    } = { role: 'custom', customType, content }
+    if (details !== undefined) msg.details = details
+    return msg
+  }
+
+  const big = 'x'.repeat(DEFAULT_RETIREMENT_MIN_BYTES + 1)
+
+  describe('shouldArmRetirement', () => {
+    it('arms on automatic pressure only when enabled', () => {
+      assert.equal(shouldArmRetirement('threshold', true), true)
+      assert.equal(shouldArmRetirement('overflow', true), true)
+      assert.equal(shouldArmRetirement('manual', true), false)
+      assert.equal(shouldArmRetirement('threshold', false), false)
+      assert.equal(shouldArmRetirement('overflow', false), false)
+      assert.equal(shouldArmRetirement('manual', false), false)
+    })
+  })
+
+  describe('retireSettledSubagentPayloads', () => {
+    it('returns the input untouched when nothing qualifies', () => {
+      const messages = [
+        customMsg('subagent_result', 'small'),
+        customMsg('subagent_status', big),
+        { role: 'user', content: big },
+        customMsg('subagent_result', big), // single candidate <= keepRecent
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+      })
+      assert.equal(outcome.retired, 0)
+      assert.equal(outcome.messages, messages)
+      assert.equal(messages[3]?.content, big)
+    })
+
+    it('keeps the most recent keepRecent candidates inline', () => {
+      const messages = [
+        customMsg('subagent_result', `${big}-1`),
+        customMsg('subagent_result', `${big}-2`),
+        customMsg('subagent_result', `${big}-3`),
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+      })
+      assert.equal(outcome.retired, 2)
+      const out = outcome.messages
+      assert.ok(String(out[0]?.content).startsWith(RETIRED_STUB_PREFIX))
+      assert.ok(String(out[1]?.content).startsWith(RETIRED_STUB_PREFIX))
+      assert.equal(out[2]?.content, `${big}-3`)
+      assert.equal(DEFAULT_RETIREMENT_KEEP_RECENT, 1)
+    })
+
+    it('honors an explicit keepRecent of 0', () => {
+      const messages = [customMsg('subagent_ask', big)]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+        keepRecent: 0,
+      })
+      assert.equal(outcome.retired, 1)
+      assert.ok(
+        String(outcome.messages[0]?.content).startsWith(RETIRED_STUB_PREFIX),
+      )
+    })
+
+    it('points subagent_result stubs at the existing result record', () => {
+      // own root: the retired/ dir must not exist unless THIS test writes it
+      const root = join(
+        mkdtempSync(join(tmpdir(), 'retire-ref-')),
+        'pi-subagents',
+      )
+      const written = writeResultRecord(
+        {
+          childId: 'child-ret',
+          name: 'scout',
+          summary: 'big summary',
+          sessionFile: null,
+        },
+        root,
+      )
+      const messages = [
+        customMsg('subagent_result', `${big}-r1`, {
+          name: 'scout',
+          resultPath: written.path,
+          resultRef: 'result:scout#1',
+        }),
+        customMsg('subagent_result', `${big}-r2`),
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root,
+      })
+      assert.equal(outcome.retired, 1)
+      const stub = String(outcome.messages[0]?.content)
+      assert.ok(stub.includes(written.path))
+      assert.ok(stub.includes('result:scout#1'))
+      assert.ok(stub.includes('"scout"'))
+      // no duplicate payload record written under retired/
+      assert.ok(!existsSync(join(root, 'retired')))
+      // details survive retirement (UI renderers read them)
+      assert.deepEqual(outcome.messages[0]?.details, {
+        name: 'scout',
+        resultPath: written.path,
+        resultRef: 'result:scout#1',
+      })
+    })
+
+    it('writes a durable hash-named record when no resultPath exists', () => {
+      // own root: idempotence assertion counts files under retired/
+      const root = join(
+        mkdtempSync(join(tmpdir(), 'retire-hash-')),
+        'pi-subagents',
+      )
+      const messages = [
+        customMsg('subagent_ask', `${big}-q`, { name: 'worker' }),
+        customMsg('subagent_result', `${big}-keep`),
+      ]
+      const first = retireSettledSubagentPayloads(messages, {
+        root,
+      })
+      assert.equal(first.retired, 1)
+      const stub = String(first.messages[0]?.content)
+      assert.ok(stub.includes('subagent_ask "worker"'))
+      const match = /retired to (\S+\.json)/.exec(stub)
+      assert.ok(match, `stub names a record path: ${stub}`)
+      const recordPath = match?.[1] ?? ''
+      assert.ok(recordPath.startsWith(join(root, 'retired', '')))
+      const record = JSON.parse(readFileSync(recordPath, 'utf8'))
+      assert.equal(record.customType, 'subagent_ask')
+      assert.equal(record.content, `${big}-q`)
+      assert.equal(record.details.name, 'worker')
+      assert.ok(record.retiredAt)
+
+      // Idempotent: same payload retires to the same path, no second write.
+      const second = retireSettledSubagentPayloads(messages, {
+        root,
+      })
+      assert.equal(second.retired, 1)
+      assert.equal(String(second.messages[0]?.content), stub)
+      assert.equal(readdirSync(join(root, 'retired')).length, 1)
+    })
+
+    it('skips small, already-retired, and non-string payloads', () => {
+      const messages = [
+        customMsg('subagent_result', 'small'),
+        customMsg('subagent_result', `${RETIRED_STUB_PREFIX} earlier`),
+        customMsg('subagent_message', [{ type: 'text', text: big }]),
+        customMsg('subagent_result', `${big}-a`),
+        customMsg('subagent_result', `${big}-b`),
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+      })
+      assert.equal(outcome.retired, 1)
+      assert.ok(
+        String(outcome.messages[3]?.content).startsWith(RETIRED_STUB_PREFIX),
+      )
+      assert.equal(outcome.messages[4]?.content, `${big}-b`)
+    })
+
+    it('does not mutate the input array or message objects', () => {
+      const original = customMsg('subagent_result', `${big}-m`)
+      const messages = [original, customMsg('subagent_result', `${big}-k`)]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+      })
+      assert.equal(outcome.retired, 1)
+      assert.equal(original.content, `${big}-m`)
+      assert.notEqual(outcome.messages, messages)
+      assert.notEqual(outcome.messages[0], original)
+    })
+
+    it('retires below an explicit minBytes threshold', () => {
+      const messages = [
+        customMsg('subagent_message', 'moderately sized message payload'),
+        customMsg('subagent_result', `${big}-keep`),
+      ]
+      const outcome = retireSettledSubagentPayloads(messages, {
+        root: retireRoot,
+        minBytes: 10,
+      })
+      assert.equal(outcome.retired, 1)
+      assert.ok(
+        String(outcome.messages[0]?.content).startsWith(RETIRED_STUB_PREFIX),
+      )
+    })
+  })
+
+  describe('buildRetirementStub', () => {
+    it('includes the ref path and optional name/ref', () => {
+      const stub = buildRetirementStub(
+        'subagent_result',
+        'scout',
+        '/tmp/r.json',
+        'result:scout#2',
+      )
+      assert.ok(stub.startsWith(RETIRED_STUB_PREFIX))
+      assert.ok(stub.includes('"scout"'))
+      assert.ok(stub.includes('/tmp/r.json (result:scout#2)'))
+      const bare = buildRetirementStub(
+        'subagent_ask',
+        undefined,
+        '/tmp/a.json',
+        undefined,
+      )
+      assert.ok(bare.includes('subagent_ask —'))
+      assert.ok(!bare.includes('('))
+    })
+  })
+})
+
+describe('config.ts contextRetirement (PMR-1EC3)', () => {
+  it('defaults to disabled and round-trips an explicit setting', () => {
+    assert.deepEqual(DEFAULT_SUBAGENTS_CONFIG.contextRetirement, {
+      enabled: false,
+    })
+    assert.deepEqual(
+      validateSubagentsConfig(
+        {
+          status: { enabled: true },
+          contextRetirement: { enabled: true },
+        },
+        't',
+      ),
+      { status: { enabled: true }, contextRetirement: { enabled: true } },
+    )
+    // absent key stays absent (no invented state)
+    assert.deepEqual(
+      validateSubagentsConfig({ status: { enabled: true } }, 't'),
+      { status: { enabled: true } },
+    )
+  })
+
+  it('rejects malformed contextRetirement shapes', () => {
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          { status: { enabled: true }, contextRetirement: { enabled: 'y' } },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          { status: { enabled: true }, contextRetirement: {} },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+  })
+
+  it('scaffolded global config carries the disabled default', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const path = scaffoldGlobalSubagentsConfig(agentDir)
+    const onDisk = JSON.parse(readFileSync(path, 'utf8'))
+    assert.deepEqual(onDisk.contextRetirement, { enabled: false })
   })
 })
