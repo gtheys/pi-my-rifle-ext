@@ -5430,3 +5430,45 @@ describe('subagent_resume reattach decision (PMR-N53A)', () => {
     })
   })
 })
+
+describe('rolePrefixWithoutAgent guardrail (PMR-J2V5)', () => {
+  const rolePrefixWithoutAgent = subagentsModule.__test__.rolePrefixWithoutAgent
+
+  it('matches a role prefix with colon separator', () => {
+    assert.equal(
+      rolePrefixWithoutAgent('worker: implement thing', undefined),
+      'worker',
+    )
+  })
+
+  it('matches a role prefix with em-dash separator', () => {
+    assert.equal(rolePrefixWithoutAgent('scout — map repo', undefined), 'scout')
+  })
+
+  it('matches hyphen and colon-only separators', () => {
+    assert.equal(rolePrefixWithoutAgent('planner: plan', undefined), 'planner')
+    assert.equal(
+      rolePrefixWithoutAgent('reviewer - review', undefined),
+      'reviewer',
+    )
+  })
+
+  it('returns null without a known separator', () => {
+    assert.equal(
+      rolePrefixWithoutAgent('worker implement thing', undefined),
+      null,
+    )
+  })
+
+  it('returns null when agent is set', () => {
+    assert.equal(rolePrefixWithoutAgent('worker: X', 'worker'), null)
+  })
+
+  it('returns null for unknown role prefixes', () => {
+    assert.equal(rolePrefixWithoutAgent('peon: dig', undefined), null)
+  })
+
+  it('returns null for undefined name', () => {
+    assert.equal(rolePrefixWithoutAgent(undefined, undefined), null)
+  })
+})

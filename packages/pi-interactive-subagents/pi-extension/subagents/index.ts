@@ -1764,6 +1764,7 @@ export const __test__ = {
   buildPiPromptArgs,
   observeRunningSubagent,
   resolveDenyTools,
+  rolePrefixWithoutAgent,
   managerApprovalDenial,
   resolveInterruptTarget,
   requestSubagentInterrupt,
@@ -1945,6 +1946,33 @@ function settleAssignment(childId: string, verified: boolean): void {
   } catch {}
 }
 
+// AIDEV-NOTE (PMR-J2V5): guardrail against silent agent-definition drift — a
+// caller naming its child 'worker: X' (or 'worker — X') but omitting agent:
+// gets settings.json defaults in the child, NOT the role's frontmatter
+// (model/skills/thinking). Keep this role list in sync with agents/*.md in
+// the package root. Pure advisory: we surface the mismatch, never infer.
+const KNOWN_ROLE_PREFIXES = [
+  'worker',
+  'scout',
+  'reviewer',
+  'planner',
+  'visual-tester',
+]
+const ROLE_NAME_SEPARATORS = [': ', ':', ' — ', ' —', ' - ', ' -']
+
+export function rolePrefixWithoutAgent(
+  name: string | undefined,
+  agent: string | undefined,
+): string | null {
+  if (agent != null || name == null) return null
+  for (const role of KNOWN_ROLE_PREFIXES) {
+    for (const separator of ROLE_NAME_SEPARATORS) {
+      if (name.startsWith(`${role}${separator}`)) return role
+    }
+  }
+  return null
+}
+
 async function launchSubagent(
   params: SubagentInput,
   ctx: ExtensionContext,
@@ -1959,6 +1987,15 @@ async function launchSubagent(
   }
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null
+  const driftRole = rolePrefixWithoutAgent(params.name, params.agent)
+  if (driftRole && latestCtx) {
+    try {
+      latestCtx.ui.notify(
+        `Name suggests role "${driftRole}" but no agent: passed — agent frontmatter (model, skills, thinking) will NOT apply. Pass agent: "${driftRole}" or rename.`,
+        'warning',
+      )
+    } catch {}
+  }
   const effectiveModel = params.model ?? agentDefs?.model
   const effectiveTools = params.tools ?? agentDefs?.tools
   const effectiveSkills = params.skills ?? agentDefs?.skills

@@ -42,5 +42,12 @@ them — keep working or end your turn, the harness wakes you.
 - Respect `spawning` frontmatter: `manager-approval` agents can only be started
   by the user via `/subagent <agent> <task>` — don't retry denied `subagent()`
   calls; tell the user the command to run instead.
+- ALWAYS pass `agent:` for role children — a display name like `Worker: X`
+  does NOT resolve the agent definition; without `agent:` the child gets
+  settings.json defaults instead of the frontmatter model/skills/thinking.
+  (The extension warns on this drift.)
 - `fork: true` only when the child genuinely needs the parent's conversation
   context — it costs tokens on every spawn.
+- ALWAYS pass `agent:` for role children — a display name like `"Worker: X"`
+  does NOT resolve the agent definition; without `agent:` the child gets
+  settings.json defaults instead of the frontmatter model/skills.

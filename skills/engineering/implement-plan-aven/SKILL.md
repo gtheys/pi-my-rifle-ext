@@ -292,7 +292,8 @@ inline; same steps otherwise. When in doubt, spawn the worker.
    How should I proceed?
    ```
 
-4. Spawn a `worker` subagent:
+4. Spawn a `worker` subagent (always include `agent: "worker"` — the name
+   prefix alone does not resolve the definition):
 
    ```
    subagent({
