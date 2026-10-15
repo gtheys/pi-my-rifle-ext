@@ -26,6 +26,7 @@
   "files": [
     "pi-extension",
     "agents",
+    "skills",
     "README.md",
     "config.json.example",
     "config.schema.json"
