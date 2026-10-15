@@ -1011,6 +1011,31 @@ let lastWidgetRender: { width: number; hits: HitRegion[] } = {
   hits: [],
 }
 
+// AIDEV-NOTE: blue box chrome restored (PMR-N65M follow-up) — the pre-port
+// widget drew an ACCENT-bordered panel, the herdsman row port dropped it and
+// the panel boundary was missed. Purely visual: hit regions shift +1 row
+// (top border) / +1 col (left border) in render().
+const WIDGET_ACCENT = '\x1b[38;2;77;163;255m'
+const WIDGET_RST = '\x1b[0m'
+
+/** Wrap content lines in a bordered box: ╭───╮ │line│ ╰───╯. */
+function boxWidgetLines(lines: readonly string[], width: number): string[] {
+  if (width <= 2) return [...lines]
+  const inner = width - 2
+  const boxed: string[] = [
+    `${WIDGET_ACCENT}╭${'─'.repeat(inner)}╮${WIDGET_RST}`,
+  ]
+  for (const line of lines) {
+    const trunc = truncateToWidth(line, inner)
+    const pad = Math.max(0, inner - visibleWidth(trunc))
+    boxed.push(
+      `${WIDGET_ACCENT}│${WIDGET_RST}${trunc}${' '.repeat(pad)}${WIDGET_ACCENT}│${WIDGET_RST}`,
+    )
+  }
+  boxed.push(`${WIDGET_ACCENT}╰${'─'.repeat(inner)}╯${WIDGET_RST}`)
+  return boxed
+}
+
 /** The tui object from the active widget component (for tick re-renders). */
 let widgetTui: { requestRender: () => void } | null = null
 
@@ -1134,8 +1159,16 @@ function renderWidget() {
             Array.from(runningSubagents.values()),
             Date.now(),
           )
-          lastWidgetRender = { width, hits: rendered.hits }
-          return rendered.lines
+          lastWidgetRender = {
+            width,
+            hits: rendered.hits.map((hit) => ({
+              ...hit,
+              row: hit.row + 1,
+              from: hit.from + 1,
+              to: hit.to + 1,
+            })),
+          }
+          return boxWidgetLines(rendered.lines, width)
         },
         handleMouse: handleWidgetMouse,
       }
