@@ -284,7 +284,7 @@ You are a specialized agent that does X...
 | `tools`       | string  | Comma-separated **native pi tools only**: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`                                                                                                                                                                             |
 | `skills`      | string  | Comma-separated skill names to auto-load                                                                                                                                                                                                                                    |
 | `session-mode` | string | Default child-session mode: `standalone`, `lineage-only`, or `fork` |
-| `spawning`    | boolean | Set `false` to deny all subagent-spawning tools                                                                                                                                                                                                                             |
+| `spawning`    | enum    | `true` (default), `false` to deny all subagent-spawning tools, or `"manager-approval"` to require user approval (model `subagent()` calls denied; `/subagent <agent> <task>` succeeds) — invalid values reject the agent file |
 | `deny-tools`  | string  | Comma-separated extension tool names to deny                                                                                                                                                                                                                                |
 | `auto-exit`   | boolean | Auto-shutdown when the agent finishes its turn — no `subagent_done` call needed. If the user sends any input, auto-exit is permanently disabled and the user takes over the session. Recommended for autonomous agents (scout, worker); not for interactive ones (planner). Also determines the default value of `interactive` (see below). |
 | `interactive` | boolean | derived        | Override whether stall/recovery transitions wake the parent session. Defaults to the inverse of `auto-exit`: autonomous agents (`auto-exit: true`) are non-interactive and get stall pings; agents without `auto-exit` are interactive and stay quiet. Explicit values take precedence. |
@@ -376,6 +376,17 @@ Denies all subagent lifecycle tools (`subagent`, `subagent_interrupt`, `subagent
 ---
 name: worker
 spawning: false
+---
+```
+
+### `spawning: manager-approval`
+
+Gates the agent behind explicit user approval: model-invoked `subagent()` calls for this agent are denied with instructions, and the user spawning it via `/subagent <agent> <task>` IS the approval (spawns directly). Use for high-privilege agents that should never be delegated to autonomously.
+
+```yaml
+---
+name: deployer
+spawning: manager-approval
 ---
 ```
 

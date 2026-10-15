@@ -1260,6 +1260,78 @@ describe('subagent discovery', () => {
     })
   })
 
+  // PMR-RKH5: governed spawning — `spawning` is an enum
+  // (true | false | manager-approval); invalid values reject the file.
+  it('parses spawning enum values from frontmatter', async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      for (const [value, expected] of [
+        ['true', true],
+        ['false', false],
+        ['manager-approval', 'manager-approval'],
+      ] as const) {
+        const name = `spawning-${value}-test-agent`
+        writeAgentFile(
+          projectAgentsDir,
+          name,
+          [`name: ${name}`, `spawning: ${value}`].join('\n'),
+        )
+        const loaded = testApi.loadAgentDefaults(name)
+        assert.ok(loaded, `expected ${name} to load`)
+        assert.equal(loaded.spawning, expected)
+      }
+    })
+  })
+
+  it('leaves spawning undefined when not set in frontmatter', async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        'spawning-unset-test-agent',
+        'name: spawning-unset-test-agent',
+      )
+      const loaded = testApi.loadAgentDefaults('spawning-unset-test-agent')
+      assert.equal(loaded?.spawning, undefined)
+    })
+  })
+
+  it('rejects agent file with invalid spawning value', async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        'spawning-invalid-test-agent',
+        ['name: spawning-invalid-test-agent', 'spawning: sideways'].join('\n'),
+      )
+      assert.throws(
+        () => testApi.loadAgentDefaults('spawning-invalid-test-agent'),
+        /invalid spawning value "sideways".*manager-approval/,
+      )
+    })
+  })
+
+  it('skips agent files with invalid spawning during discovery', async () => {
+    await withIsolatedAgentEnv(async ({ projectAgentsDir }) => {
+      writeAgentFile(
+        projectAgentsDir,
+        'spawning-invalid-test-agent',
+        ['name: spawning-invalid-test-agent', 'spawning: sideways'].join('\n'),
+      )
+      writeAgentFile(
+        projectAgentsDir,
+        'spawning-valid-test-agent',
+        ['name: spawning-valid-test-agent', 'spawning: manager-approval'].join(
+          '\n',
+        ),
+      )
+      const discovered = testApi.discoverAgentDefinitions()
+      const names = discovered.map((d: { name: string }) => d.name)
+      assert.ok(
+        !names.includes('spawning-invalid-test-agent'),
+        'invalid spawning file must be rejected from discovery',
+      )
+      assert.ok(names.includes('spawning-valid-test-agent'))
+    })
+  })
+
   it('resolves session mode with fork override precedence', () => {
     assert.equal(
       testApi.resolveEffectiveSessionMode({ name: 'A', task: 'T' }, null),
@@ -1724,6 +1796,27 @@ describe('tool registration', () => {
     assert.equal(denied.has('subagent'), true)
     assert.equal(denied.has('subagent_interrupt'), true)
     assert.equal(denied.has('subagent_resume'), true)
+  })
+
+  // PMR-RKH5: manager-approval gate — model spawns denied and pointed at
+  // /subagent; user-initiated /subagent bypasses the tool path entirely.
+  it('manager-approval gate denies model spawns with /subagent instructions', () => {
+    const testApi = (subagentsModule as any).__test__
+    const denial = testApi.managerApprovalDenial(
+      { spawning: 'manager-approval' },
+      'deployer',
+    )
+    assert.match(denial, /requires user approval/)
+    assert.match(denial, /\/subagent deployer/)
+    assert.match(denial, /Do not retry/)
+  })
+
+  it('manager-approval gate allows ungated and boolean spawning agents', () => {
+    const testApi = (subagentsModule as any).__test__
+    assert.equal(testApi.managerApprovalDenial(null, 'x'), null)
+    assert.equal(testApi.managerApprovalDenial({}, 'x'), null)
+    assert.equal(testApi.managerApprovalDenial({ spawning: true }, 'x'), null)
+    assert.equal(testApi.managerApprovalDenial({ spawning: false }, 'x'), null)
   })
 
   it('renders partial subagent tool-call args without throwing', () => {

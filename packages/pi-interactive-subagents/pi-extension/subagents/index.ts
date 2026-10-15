@@ -286,13 +286,17 @@ export type SubagentInput = Static<typeof SubagentParams>
 
 type SubagentSessionMode = 'standalone' | 'lineage-only' | 'fork'
 
+// AIDEV-NOTE (PMR-RKH5): `spawning` is an enum, not a plain boolean —
+// true | false | 'manager-approval'. Absent = today's default behavior.
+type SpawningPolicy = boolean | 'manager-approval'
+
 interface AgentDefaults {
   model?: string
   tools?: string
   skills?: string
   thinking?: string
   denyTools?: string
-  spawning?: boolean
+  spawning?: SpawningPolicy
   autoExit?: boolean
   interactive?: boolean
   systemPromptMode?: 'append' | 'replace'
@@ -386,6 +390,38 @@ function parseOptionalBoolean(value: string | undefined): boolean | undefined {
   return value != null ? value === 'true' : undefined
 }
 
+// AIDEV-NOTE (PMR-RKH5): invalid `spawning` values reject the whole agent
+// definition file with a clear error (fail loud — herdsman allowlist-gating
+// discipline), instead of silently falling back to the ungoverned default.
+function parseSpawning(
+  value: string | undefined,
+  agentName: string,
+): SpawningPolicy | undefined {
+  if (value == null) return undefined
+  if (value === 'true') return true
+  if (value === 'false') return false
+  if (value === 'manager-approval') return 'manager-approval'
+  throw new Error(
+    `Agent "${agentName}": invalid spawning value "${value}" — expected true, false, or "manager-approval". Fix the agent definition file.`,
+  )
+}
+
+// AIDEV-NOTE (PMR-RKH5): `spawning: manager-approval` — model-invoked
+// subagent() calls are denied with instructions; the user running
+// `/subagent <agent> <task>` IS the approval (herdsman has no approval
+// mode — do not invent mid-tool confirmation).
+function managerApprovalDenial(
+  agentDefs: AgentDefaults | null,
+  agentName: string | undefined,
+): string | null {
+  if (!agentDefs || agentDefs.spawning !== 'manager-approval') return null
+  const name = agentName ?? 'unnamed'
+  return (
+    `Spawning agent "${name}" requires user approval (spawning: manager-approval). ` +
+    `Do not retry this tool call — ask the user to run: /subagent ${name} <task>`
+  )
+}
+
 function parseSessionMode(
   value: string | undefined,
 ): SubagentSessionMode | undefined {
@@ -422,8 +458,9 @@ function parseAgentDefinition(
       getFrontmatterValue(frontmatter, 'skills'),
     thinking: getFrontmatterValue(frontmatter, 'thinking'),
     denyTools: getFrontmatterValue(frontmatter, 'deny-tools'),
-    spawning: parseOptionalBoolean(
+    spawning: parseSpawning(
       getFrontmatterValue(frontmatter, 'spawning'),
+      fallbackName,
     ),
     autoExit: parseOptionalBoolean(
       getFrontmatterValue(frontmatter, 'auto-exit'),
@@ -458,10 +495,21 @@ function discoverAgentDefinitions(): ListedAgentDefinition[] {
     for (const file of readdirSync(dir).filter((entry) =>
       entry.endsWith('.md'),
     )) {
-      const parsed = parseAgentDefinition(
-        readFileSync(join(dir, file), 'utf8'),
-        file.replace(/\.md$/, ''),
-      )
+      let parsed: AgentDefinition | null = null
+      try {
+        parsed = parseAgentDefinition(
+          readFileSync(join(dir, file), 'utf8'),
+          file.replace(/\.md$/, ''),
+        )
+      } catch (err) {
+        // Rejected definition (e.g. invalid `spawning:` enum) — warn and
+        // skip the file; one bad agent must not break listing the rest.
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn(
+          `[pi-subagents] rejecting agent definition ${join(dir, file)}: ${message}`,
+        )
+        continue
+      }
       if (!parsed) continue
       agents.set(parsed.name, { ...parsed, source })
     }
@@ -1616,6 +1664,7 @@ export const __test__ = {
   buildPiPromptArgs,
   observeRunningSubagent,
   resolveDenyTools,
+  managerApprovalDenial,
   resolveInterruptTarget,
   requestSubagentInterrupt,
   deliverAskSteer,
@@ -2642,6 +2691,19 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           }
         }
 
+        // PMR-RKH5: manager-approval gate — model-invoked spawns of a gated
+        // agent are denied; the user running /subagent IS the approval.
+        const spawnGateDefs = params.agent
+          ? loadAgentDefaults(params.agent)
+          : null
+        const spawnDenial = managerApprovalDenial(spawnGateDefs, params.agent)
+        if (spawnDenial) {
+          return {
+            content: [{ type: 'text', text: spawnDenial }],
+            details: { error: 'manager-approval required' },
+          }
+        }
+
         // Validate prerequisites (herdr version gate, actionable message)
         try {
           herdrPreflight()
@@ -3386,6 +3448,30 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       const taskText =
         task || `You are the ${agentName} agent. Wait for instructions.`
       const displayName = agentName[0].toUpperCase() + agentName.slice(1)
+
+      // AIDEV-NOTE (PMR-RKH5): manager-approval agents spawn directly from
+      // this command — user initiation IS the approval. The model tool path
+      // below (sendUserMessage → subagent tool) would hit the denial gate.
+      if (defs.spawning === 'manager-approval') {
+        try {
+          const running = await launchSubagent(
+            { agent: agentName, name: displayName, task: taskText },
+            ctx,
+          )
+          startWidgetRefresh()
+          startStatusRefresh(pi)
+          runWatcher(pi, running)
+          ctx.ui.notify(
+            `Subagent "${displayName}" launched (user-approved).`,
+            'info',
+          )
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          ctx.ui.notify(`Failed to spawn ${agentName}: ${message}`, 'error')
+        }
+        return
+      }
+
       const toolCall = `Use subagent with agent: "${agentName}", name: "${displayName}", task: ${JSON.stringify(taskText)}`
       pi.sendUserMessage(toolCall)
     },
