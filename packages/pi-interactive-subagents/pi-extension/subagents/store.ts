@@ -19,6 +19,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { ensureSubagentsDataDir, subagentsDataRoot } from './dataroot.ts'
+import type { UsageTotals } from './usage.ts'
 
 // AIDEV-NOTE: per-kind byte ceiling on a serialized result record (herdsman
 // discipline). 1 MiB is generous for a final summary; anything larger is
@@ -33,6 +34,8 @@ export interface ResultRecord {
   summary: string
   sessionFile: string | null
   artifactPaths: string[]
+  /** Session-accumulated token/cost totals (PMR-874G), recorded at settlement. */
+  usage?: UsageTotals
   createdAt: string
 }
 
@@ -95,6 +98,7 @@ export function writeResultRecord(
     summary: string
     sessionFile: string | null
     artifactPaths?: string[]
+    usage?: UsageTotals
   },
   root?: string,
 ): { canonicalId: string; path: string } {
@@ -108,6 +112,7 @@ export function writeResultRecord(
     artifactPaths: params.artifactPaths ?? [],
     createdAt: new Date().toISOString(),
   }
+  if (params.usage) record.usage = params.usage
   const serialized = JSON.stringify(record)
   const bytes = Buffer.byteLength(serialized, 'utf8')
   if (bytes > MAX_RESULT_RECORD_BYTES) {

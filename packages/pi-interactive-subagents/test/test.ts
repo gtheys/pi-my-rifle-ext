@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -39,6 +40,7 @@ import {
   findAssignmentByBranch,
   listAssignments,
   readAssignment,
+  recordAssignmentUsage,
   removeAssignment,
   updateAssignmentStatus,
   writeAssignment,
@@ -4380,5 +4382,426 @@ describe('assignments.ts durable branch-owned assignments (PMR-Z5KR)', () => {
     if ('error' in found) {
       assert.match(found.error, /[Aa]mbiguous/)
     }
+  })
+})
+
+import {
+  createSessionUsageTracker,
+  formatUsageCompact,
+  readSessionParentFile,
+  readSessionUsage,
+  rollupUsageByOwnership,
+  summarizeEntriesUsage,
+  type UsageOwnershipNode,
+  type UsageSummary,
+  updateSessionUsageTracker,
+} from '../pi-extension/subagents/usage.ts'
+
+function usageNode(
+  childId: string,
+  sessionFile: string,
+  parentSessionFile: string | null,
+  summary: UsageSummary | null,
+): UsageOwnershipNode {
+  return { childId, sessionFile, parentSessionFile, summary }
+}
+
+function summaryOf(input: number, output: number, cost: number): UsageSummary {
+  return {
+    totals: { input, output, cacheRead: 0, cacheWrite: 0, cost },
+    sawUsage: true,
+  }
+}
+
+describe('usage.ts (PMR-874G)', () => {
+  let usageRoot: string
+
+  before(() => {
+    usageRoot = mkdtempSync(join(tmpdir(), 'usage-'))
+  })
+  after(() => {
+    rmSync(usageRoot, { recursive: true, force: true })
+  })
+
+  const assistantEntry = (input: number, output: number, cost: number) => ({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      content: [],
+      usage: {
+        input,
+        output,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+      },
+    },
+  })
+
+  describe('summarizeEntriesUsage', () => {
+    it('sums assistant, toolResult, branch_summary and compaction usage', () => {
+      const summary = summarizeEntriesUsage([
+        { type: 'session', id: 's1' },
+        assistantEntry(100, 50, 0.01),
+        {
+          type: 'message',
+          message: {
+            role: 'toolResult',
+            usage: { input: 10, output: 5, cost: { total: 0.001 } },
+          },
+        },
+        { type: 'message', message: { role: 'user', content: [] } },
+        {
+          type: 'branch_summary',
+          usage: { input: 20, output: 10, cost: { total: 0.002 } },
+        },
+        {
+          type: 'compaction',
+          usage: { input: 30, output: 15, cost: { total: 0.003 } },
+        },
+        'garbage',
+        null,
+        { type: 'message' },
+      ])
+      assert.equal(summary.sawUsage, true)
+      assert.equal(summary.totals.input, 160)
+      assert.equal(summary.totals.output, 80)
+      assert.ok(Math.abs(summary.totals.cost - 0.016) < 1e-9)
+    })
+
+    it('flags sawUsage=false when no entry carries usage (never a zero)', () => {
+      const summary = summarizeEntriesUsage([
+        { type: 'session', id: 's1' },
+        { type: 'message', message: { role: 'user', content: [] } },
+        { type: 'message', message: { role: 'assistant', content: [] } },
+      ])
+      assert.equal(summary.sawUsage, false)
+      assert.equal(summary.totals.input, 0)
+      assert.equal(summary.totals.cost, 0)
+    })
+  })
+
+  describe('readSessionUsage', () => {
+    it('reads usage from a session jsonl fixture', () => {
+      const file = join(usageRoot, 'sess.jsonl')
+      writeFileSync(
+        file,
+        [
+          JSON.stringify({ type: 'session', id: 's1' }),
+          JSON.stringify(assistantEntry(1000, 500, 0.05)),
+          JSON.stringify(assistantEntry(2000, 1000, 0.1)),
+        ].join('\n') + '\n',
+      )
+      const summary = readSessionUsage(file)
+      assert.ok(summary)
+      assert.equal(summary.sawUsage, true)
+      assert.equal(summary.totals.input, 3000)
+      assert.equal(summary.totals.output, 1500)
+      assert.ok(Math.abs(summary.totals.cost - 0.15) < 1e-9)
+    })
+
+    it('returns null for an unreadable/missing file (coverage gap)', () => {
+      assert.equal(readSessionUsage(join(usageRoot, 'nope.jsonl')), null)
+    })
+  })
+
+  describe('updateSessionUsageTracker', () => {
+    it('parses incrementally without double counting appended lines', () => {
+      const file = join(usageRoot, 'incr.jsonl')
+      writeFileSync(file, `${JSON.stringify(assistantEntry(100, 10, 0.01))}\n`)
+      const tracker = createSessionUsageTracker()
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 100)
+
+      appendFileSync(file, `${JSON.stringify(assistantEntry(200, 20, 0.02))}\n`)
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 300)
+      assert.ok(Math.abs(tracker.summary.totals.cost - 0.03) < 1e-9)
+
+      // no-op tick: same size, no reparse
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 300)
+    })
+
+    it('consumes only complete lines; a partial line waits for the next tick', () => {
+      const file = join(usageRoot, 'partial.jsonl')
+      const line = JSON.stringify(assistantEntry(50, 5, 0.005))
+      writeFileSync(file, line) // no trailing newline — mid-write
+      const tracker = createSessionUsageTracker()
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.sawUsage, false)
+
+      appendFileSync(file, '\n')
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.sawUsage, true)
+      assert.equal(tracker.summary.totals.input, 50)
+    })
+
+    it('resets when the file shrinks instead of double counting', () => {
+      const file = join(usageRoot, 'shrink.jsonl')
+      writeFileSync(file, `${JSON.stringify(assistantEntry(100, 10, 0.01))}\n`)
+      const tracker = createSessionUsageTracker()
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 100)
+
+      writeFileSync(file, `${JSON.stringify(assistantEntry(7, 1, 0.001))}\n`)
+      updateSessionUsageTracker(tracker, file)
+      assert.equal(tracker.summary.totals.input, 7)
+    })
+  })
+
+  describe('readSessionParentFile', () => {
+    it('reads parentSession from the session header', () => {
+      const file = join(usageRoot, 'child.jsonl')
+      writeFileSync(
+        file,
+        `${JSON.stringify({ type: 'session', id: 'c1', parentSession: '/tmp/parent.jsonl' })}\n${JSON.stringify(assistantEntry(1, 1, 0))}\n`,
+      )
+      assert.equal(readSessionParentFile(file), '/tmp/parent.jsonl')
+    })
+
+    it('returns null for roots, non-headers and missing files', () => {
+      const root = join(usageRoot, 'root.jsonl')
+      writeFileSync(root, `${JSON.stringify({ type: 'session', id: 'r1' })}\n`)
+      assert.equal(readSessionParentFile(root), null)
+      const bogus = join(usageRoot, 'bogus.jsonl')
+      writeFileSync(bogus, 'not json\n')
+      assert.equal(readSessionParentFile(bogus), null)
+      assert.equal(readSessionParentFile(join(usageRoot, 'gone.jsonl')), null)
+    })
+  })
+
+  describe('formatUsageCompact', () => {
+    const totals = (tokens: number, cost: number) => ({
+      input: tokens,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost,
+    })
+
+    it('formats tokens with k/M suffixes and cost with precision', () => {
+      assert.equal(formatUsageCompact(totals(420, 0)), '420 tok')
+      assert.equal(
+        formatUsageCompact(totals(12_300, 0.042)),
+        '12.3k tok $0.0420',
+      )
+      assert.equal(
+        formatUsageCompact(totals(1_500_000, 3.456)),
+        '1.5M tok $3.46',
+      )
+    })
+
+    it('omits cost when zero', () => {
+      assert.equal(formatUsageCompact(totals(1000, 0)), '1.0k tok')
+    })
+  })
+
+  describe('rollupUsageByOwnership', () => {
+    it('sums self + transitive descendants per node', () => {
+      const nodes = [
+        usageNode('root', '/s/root.jsonl', null, summaryOf(100, 10, 0.01)),
+        usageNode(
+          'child',
+          '/s/child.jsonl',
+          '/s/root.jsonl',
+          summaryOf(200, 20, 0.02),
+        ),
+        usageNode(
+          'grand',
+          '/s/grand.jsonl',
+          '/s/child.jsonl',
+          summaryOf(400, 40, 0.04),
+        ),
+      ]
+      const rollups = rollupUsageByOwnership(nodes)
+      const root = rollups.get('root')
+      assert.ok(root)
+      assert.equal(root.totals.input, 700)
+      assert.equal(root.incomplete, false)
+      assert.equal(rollups.get('child')?.totals.input, 600)
+      assert.equal(rollups.get('grand')?.totals.input, 400)
+    })
+
+    it('flags coverage gaps and terminates on cycles', () => {
+      const cyclic = rollupUsageByOwnership([
+        usageNode('a', '/s/a.jsonl', '/s/b.jsonl', summaryOf(1, 1, 0)),
+        usageNode('b', '/s/b.jsonl', '/s/a.jsonl', summaryOf(2, 2, 0)),
+      ])
+      assert.equal(cyclic.get('a')?.incomplete, true)
+      assert.equal(cyclic.get('b')?.incomplete, true)
+
+      const gapped = rollupUsageByOwnership([
+        usageNode('root', '/s/root.jsonl', null, summaryOf(1, 1, 0)),
+        usageNode('child', '/s/child.jsonl', '/s/root.jsonl', null),
+      ])
+      const root = gapped.get('root')
+      assert.ok(root)
+      assert.equal(root.incomplete, true)
+      assert.equal(root.totals.input, 1)
+      assert.equal(gapped.get('child')?.incomplete, true)
+    })
+  })
+
+  describe('settle-time accounting', () => {
+    it('recordAssignmentUsage persists totals onto the record; missing record is a no-op', () => {
+      const root = join(
+        mkdtempSync(join(tmpdir(), 'usage-assign-')),
+        'pi-subagents',
+      )
+      writeAssignment(
+        {
+          childId: 'u1',
+          name: 'worker',
+          task: 't',
+          sessionFile: '/tmp/u1.jsonl',
+          cwd: '/tmp',
+          status: 'working',
+          claim: { pid: process.pid, id: 'parent' },
+        },
+        root,
+      )
+      recordAssignmentUsage(
+        'u1',
+        { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, cost: 0.5 },
+        root,
+      )
+      const record = readAssignment('u1', root)
+      assert.deepEqual(record?.usage, {
+        input: 5,
+        output: 6,
+        cacheRead: 7,
+        cacheWrite: 8,
+        cost: 0.5,
+      })
+      recordAssignmentUsage(
+        'gone',
+        { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        root,
+      )
+      assert.equal(readAssignment('gone', root), null)
+      rmSync(root, { recursive: true, force: true })
+    })
+
+    it('writeResultRecord carries usage into the durable result record', () => {
+      const root = join(
+        mkdtempSync(join(tmpdir(), 'usage-store-')),
+        'pi-subagents',
+      )
+      const written = writeResultRecord(
+        {
+          childId: 'u2',
+          name: 'worker',
+          summary: 'done',
+          sessionFile: '/tmp/u2.jsonl',
+          usage: {
+            input: 9,
+            output: 9,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.09,
+          },
+        },
+        root,
+      )
+      const record = readResultRecord(written.path)
+      assert.deepEqual(record.usage, {
+        input: 9,
+        output: 9,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.09,
+      })
+      rmSync(root, { recursive: true, force: true })
+    })
+  })
+
+  describe('usageSuffixFor', () => {
+    it('shows self totals, tree totals when descendants add more, coverage flags', () => {
+      const nodes = [
+        usageNode('root', '/s/root.jsonl', null, summaryOf(1000, 0, 0.01)),
+        usageNode(
+          'child',
+          '/s/child.jsonl',
+          '/s/root.jsonl',
+          summaryOf(2000, 0, 0.02),
+        ),
+      ]
+      const rollups = rollupUsageByOwnership(nodes)
+      const rootSuffix = subagentsModule.usageSuffixFor(nodes[0], rollups)
+      assert.match(rootSuffix, /· 1\.0k tok \$0\.0100/)
+      assert.match(rootSuffix, /\(tree: 3\.0k tok \$0\.0300\)/)
+      assert.ok(!rootSuffix.includes('coverage'))
+
+      const leafSuffix = subagentsModule.usageSuffixFor(nodes[1], rollups)
+      assert.match(leafSuffix, /· 2\.0k tok \$0\.0200/)
+      assert.ok(!leafSuffix.includes('tree:'))
+    })
+
+    it('flags unavailable usage instead of inventing numbers', () => {
+      const nodes = [usageNode('lone', '/s/lone.jsonl', null, null)]
+      const rollups = rollupUsageByOwnership(nodes)
+      const suffix = subagentsModule.usageSuffixFor(nodes[0], rollups)
+      assert.match(suffix, /usage unavailable/)
+    })
+
+    it('flags incomplete coverage on a subtree gap', () => {
+      const nodes = [
+        usageNode('root', '/s/root.jsonl', null, summaryOf(100, 0, 0)),
+        usageNode('child', '/s/child.jsonl', '/s/root.jsonl', null),
+      ]
+      const rollups = rollupUsageByOwnership(nodes)
+      const suffix = subagentsModule.usageSuffixFor(nodes[0], rollups)
+      assert.match(suffix, /coverage incomplete/)
+    })
+  })
+
+  describe('widget usage display (PMR-874G)', () => {
+    function usageAgent(id: string, name: string, tokens: number) {
+      return {
+        id,
+        name,
+        task: '',
+        surface: `pane-${id}`,
+        paneId: `w1:p${id}`,
+        startTime: 900_000,
+        sessionFile: `sess-${id}`,
+        interactive: false,
+        usage: {
+          totals: {
+            input: tokens,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.01,
+          },
+          sawUsage: true,
+        },
+        statusState: createStatusState({
+          source: 'pi' as const,
+          startTimeMs: 900_000,
+        }),
+      }
+    }
+
+    it('appends per-row usage and a header aggregate when available', () => {
+      const { renderSupervisionRows } = subagentsModule
+      const rendered = renderSupervisionRows(
+        [usageAgent('a1', 'Worker', 1500), usageAgent('a2', 'Scout', 2500)],
+        1_000_000,
+      )
+      assert.match(rendered.lines[0], /4\.0k tok \$0\.0200/)
+      assert.match(rendered.lines[1], /Worker · .* 1\.5k tok \$0\.0100/)
+      assert.match(rendered.lines[2], /Scout · .* 2\.5k tok \$0\.0100/)
+    })
+
+    it('omits usage entirely when no child saw usage (no invented zeros)', () => {
+      const { renderSupervisionRows } = subagentsModule
+      const agent = usageAgent('a1', 'Worker', 0)
+      agent.usage = { totals: agent.usage.totals, sawUsage: false }
+      const rendered = renderSupervisionRows([agent], 1_000_000)
+      assert.ok(!rendered.lines[0].includes('tok'))
+      assert.ok(!rendered.lines[1].includes('tok'))
+    })
   })
 })

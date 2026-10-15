@@ -40,6 +40,7 @@ import {
   type AssignmentStatus,
   assignmentPath,
   listAssignments,
+  recordAssignmentUsage,
   removeAssignment,
   updateAssignmentStatus,
   writeAssignment,
@@ -109,6 +110,21 @@ import {
   sendEscape,
   shellEscape,
 } from './surface.ts'
+import {
+  createSessionUsageTracker,
+  createUsageSummary,
+  formatUsageCompact,
+  readSessionParentFile,
+  readSessionUsage,
+  rollupUsageByOwnership,
+  type SessionUsageTracker,
+  totalTokens,
+  type UsageOwnershipNode,
+  type UsageRollup,
+  type UsageSummary,
+  type UsageTotals,
+  updateSessionUsageTracker,
+} from './usage.ts'
 import {
   createSubagentWorktree,
   deriveWorktreeBranch,
@@ -651,6 +667,9 @@ export interface SubagentResult {
   /** Provider/agent error message when auto-retry exhausted (overload, rate limit, etc.). */
   errorMessage?: string
   ping?: { name: string; message: string }
+  /** Session-accumulated token/cost totals (PMR-874G); absent when the
+   * session's usage was unavailable — never a guessed zero. */
+  usage?: UsageTotals
 }
 
 /**
@@ -701,6 +720,11 @@ export interface RunningSubagent {
   /** Last status persisted to the durable assignment record (PMR-Z5KR) —
    * transition writes happen only on change. */
   assignmentStatus?: AssignmentStatus
+  /** Live usage accounting (PMR-874G): the 1s status loop advances the
+   * incremental tracker over the child session jsonl; `usage` is the
+   * display-ready summary the widget row reads. */
+  usage?: UsageSummary
+  usageTracker?: SessionUsageTracker
 }
 
 /** All currently running subagents, keyed by id — shared via globalThis (see RUNNING_KEY). */
@@ -760,6 +784,33 @@ export function statusKindOf(
   return 'working'
 }
 
+/**
+ * Per-assignment usage suffix for subagents_list (PMR-874G): self totals,
+ * `tree:` totals when descendants add more, and an explicit coverage flag
+ * when any node in the subtree lacked usage data. Pure — exported for tests.
+ */
+export function usageSuffixFor(
+  node: UsageOwnershipNode,
+  rollups: Map<string, UsageRollup>,
+): string {
+  const rollup = rollups.get(node.childId)
+  if (!node.summary || !rollup) return ' · usage unavailable'
+  let suffix = ''
+  if (node.summary.sawUsage) {
+    suffix = ` · ${formatUsageCompact(node.summary.totals)}`
+  }
+  const descendantsAdd =
+    totalTokens(rollup.totals) > totalTokens(node.summary.totals) ||
+    rollup.totals.cost > node.summary.totals.cost
+  if (descendantsAdd) {
+    suffix += ` (tree: ${formatUsageCompact(rollup.totals)})`
+  }
+  if (rollup.incomplete) {
+    suffix += ' (coverage incomplete)'
+  }
+  return suffix
+}
+
 /** A clickable region of a rendered row. `from`/`to` are visible columns. */
 export interface HitRegion {
   row: number
@@ -811,8 +862,14 @@ function formatAgentRow(
   const elapsed = formatElapsed(Math.floor((now - running.startTime) / 1000))
   const labelFrom = visibleWidth(`${marker} `)
   const labelTo = labelFrom + visibleWidth(label)
+  // PMR-874G: one-liner usage suffix, only when real usage blocks were seen
+  // (coverage discipline — never an invented zero).
+  let usagePart = ''
+  if (running.usage?.sawUsage) {
+    usagePart = ` · ${formatUsageCompact(running.usage.totals)}`
+  }
   const line = truncateToWidth(
-    `${marker} ${label} · ${status} ${elapsed}`,
+    `${marker} ${label} · ${status} ${elapsed}${usagePart}`,
     Number.MAX_SAFE_INTEGER,
   )
   return { line, labelFrom, labelTo }
@@ -842,6 +899,21 @@ export function renderSupervisionRows(
   if (blocked > 0) header += ` · ${blocked} blocked`
   if (stalled > 0) header += ` · ${stalled} attention`
   if (stale) header += ' · stale'
+  // PMR-874G: header aggregate of the direct children's live usage (same
+  // cached summaries the rows show — no extra file IO in render).
+  const aggregate = createUsageSummary()
+  for (const agent of ordered) {
+    if (!agent.usage?.sawUsage) continue
+    aggregate.sawUsage = true
+    aggregate.totals.input += agent.usage.totals.input
+    aggregate.totals.output += agent.usage.totals.output
+    aggregate.totals.cacheRead += agent.usage.totals.cacheRead
+    aggregate.totals.cacheWrite += agent.usage.totals.cacheWrite
+    aggregate.totals.cost += agent.usage.totals.cost
+  }
+  if (aggregate.sawUsage) {
+    header += ` · ${formatUsageCompact(aggregate.totals)}`
+  }
 
   const lines: string[] = [header]
   const hits: HitRegion[] = []
@@ -1320,6 +1392,15 @@ function startStatusRefresh(pi: ExtensionAPI) {
         shouldRefreshWidget = true
       }
       running.statusState = nextState
+      // PMR-874G: advance the incremental usage tracker over the child
+      // session jsonl (append-only — only new bytes are reparsed per tick).
+      if (running.cli !== 'claude' && running.sessionFile) {
+        if (!running.usageTracker) {
+          running.usageTracker = createSessionUsageTracker()
+        }
+        updateSessionUsageTracker(running.usageTracker, running.sessionFile)
+        running.usage = running.usageTracker.summary
+      }
       // PMR-Z5KR: persist coarse status transitions (blocked/interrupted/
       // stalled/working) to the durable assignment record, on change only.
       syncAssignmentStatus(running, statusKindOf(running, now))
@@ -2124,6 +2205,20 @@ async function watchSubagent(
           : 'Sub-agent exited without output'
     }
 
+    // PMR-874G: settle-time accounting — full-file read (the incremental
+    // tracker may lag the final writes). Recorded onto the durable
+    // assignment record BEFORE settlement (it survives as evidence when the
+    // record is kept 'lost') and returned on the result so the result
+    // record carries the same totals.
+    let settledUsage: UsageTotals | undefined
+    const usageSummary = readSessionUsage(sessionFile)
+    if (usageSummary?.sawUsage) {
+      settledUsage = usageSummary.totals
+      try {
+        recordAssignmentUsage(running.id, settledUsage)
+      } catch {}
+    }
+
     closeSurface(surface, running.tabId)
     runningSubagents.delete(running.id)
     settleAssignment(running.id, verifiedExit)
@@ -2137,6 +2232,7 @@ async function watchSubagent(
       elapsed,
       ping: result.ping,
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+      ...(settledUsage ? { usage: settledUsage } : {}),
     }
   } catch (err: any) {
     if (!signal.aborted && getModuleAbortSignal().aborted) {
@@ -2309,6 +2405,7 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
             name: running.name,
             summary: result.summary,
             sessionFile: result.sessionFile ?? null,
+            ...(result.usage ? { usage: result.usage } : {}),
           })
           const ref = allocateSemanticRef(
             running.name,
@@ -2338,6 +2435,7 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
               ...(result.errorMessage
                 ? { errorMessage: result.errorMessage }
                 : {}),
+              ...(result.usage ? { usage: result.usage } : {}),
               ...(result.claudeSessionId
                 ? { claudeSessionId: result.claudeSessionId }
                 : {}),
@@ -2716,7 +2814,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         if (list.length === 0 && assignments.length === 0) {
           return {
             content: [{ type: 'text', text: 'No subagent definitions found.' }],
-            details: { agents: [], assignments: [] },
+            details: { agents: [], assignments: [], usageSuffixes: {} },
           }
         }
 
@@ -2727,19 +2825,46 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           return `• ${a.name}${badge}${model}${desc}`
         })
 
+        const usageSuffixes: Record<string, string> = {}
         if (assignments.length > 0) {
           lines.push('', 'Assignments (durable — survive parent restart):')
+          // PMR-874G: transitive token/cost rollup over the ownership graph
+          // (child session `parentSession` headers). Settled usage on the
+          // record wins; live sessions are re-read. Coverage gaps are
+          // flagged, never filled with invented numbers.
+          const usageNodes: UsageOwnershipNode[] = []
+          for (const view of assignments) {
+            if (view.state === 'unknown') continue
+            let summary: UsageSummary | null = null
+            if (view.record.usage) {
+              summary = { totals: view.record.usage, sawUsage: true }
+            } else {
+              summary = readSessionUsage(view.record.sessionFile)
+            }
+            usageNodes.push({
+              childId: view.record.childId,
+              sessionFile: view.record.sessionFile,
+              parentSessionFile: readSessionParentFile(view.record.sessionFile),
+              summary,
+            })
+          }
+          const rollups = rollupUsageByOwnership(usageNodes)
+          for (const node of usageNodes) {
+            usageSuffixes[node.childId] = usageSuffixFor(node, rollups)
+          }
           for (const view of assignments) {
             if (view.state === 'unknown') {
               lines.push(
                 `• ${view.childId} — unknown (unreadable assignment record; no action taken)`,
               )
             } else if (view.state === 'owned') {
+              const usage = usageSuffixes[view.record.childId] ?? ''
               lines.push(
-                `• ${view.record.name} [${view.record.childId}] — running (${view.record.status})`,
+                `• ${view.record.name} [${view.record.childId}] — running (${view.record.status})${usage}`,
               )
             } else {
-              let line = `• ${view.record.name} [${view.record.childId}] — ORPHANED (parent process gone, child tab may still be running)`
+              const usage = usageSuffixes[view.record.childId] ?? ''
+              let line = `• ${view.record.name} [${view.record.childId}] — ORPHANED (parent process gone, child tab may still be running)${usage}`
               if (view.resumeHint) {
                 line += ` — resume with ${view.resumeHint}`
               }
@@ -2750,7 +2875,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
         return {
           content: [{ type: 'text', text: lines.join('\n') }],
-          details: { agents: list, assignments },
+          details: { agents: list, assignments, usageSuffixes },
         }
       },
 
@@ -2758,6 +2883,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const details = result.details as any
         const agents = details?.agents ?? []
         const assignments = details?.assignments ?? []
+        const usageSuffixes = details?.usageSuffixes ?? {}
         if (agents.length === 0 && assignments.length === 0) {
           return new Text(
             theme.fg('dim', 'No subagent definitions found.'),
@@ -2785,12 +2911,14 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                 `  ${theme.fg('dim', `${view.childId} — unknown (unreadable record)`)}`,
               )
             } else if (view.state === 'owned') {
+              const usage = usageSuffixes[view.childId] ?? ''
               lines.push(
-                `  ${theme.fg('toolTitle', theme.bold(view.record.name))}${theme.fg('dim', ` [${view.childId}] — running (${view.record.status})`)}`,
+                `  ${theme.fg('toolTitle', theme.bold(view.record.name))}${theme.fg('dim', ` [${view.childId}] — running (${view.record.status})${usage}`)}`,
               )
             } else {
+              const usage = usageSuffixes[view.childId] ?? ''
               lines.push(
-                `  ${theme.fg('toolTitle', theme.bold(view.record.name))}${theme.fg('warning', ` [${view.childId}] — ORPHANED`)}${theme.fg('dim', ', resume: subagent_resume')}`,
+                `  ${theme.fg('toolTitle', theme.bold(view.record.name))}${theme.fg('warning', ` [${view.childId}] — ORPHANED`)}${theme.fg('dim', `${usage}, resume: subagent_resume`)}`,
               )
             }
           }

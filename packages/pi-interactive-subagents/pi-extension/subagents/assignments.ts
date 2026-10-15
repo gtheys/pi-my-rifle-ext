@@ -23,6 +23,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { ensureSubagentsDataDir, subagentsDataRoot } from './dataroot.ts'
+import type { UsageTotals } from './usage.ts'
 
 /** Coarse lifecycle status persisted on the record. Mirrors WidgetStateKind. */
 export type AssignmentStatus =
@@ -58,6 +59,8 @@ export interface AssignmentRecord {
    * machinery (lock.ts) is deliberately not coupled in here.
    */
   claim: { pid: number; id: string }
+  /** Session-accumulated token/cost totals (PMR-874G), recorded at settlement. */
+  usage?: UsageTotals
   createdAt: string
   updatedAt: string
 }
@@ -174,6 +177,25 @@ export function removeAssignment(childId: string, root?: string): void {
   try {
     unlinkSync(assignmentPath(childId, root))
   } catch {}
+}
+
+// AIDEV-NOTE (PMR-874G): settle-time usage snapshot. Same read-modify-write
+// discipline as updateAssignmentStatus — a missing record is a no-op. On the
+// verified-completion path the record is removed right after, so this
+// primarily keeps the accounting on records that SURVIVE (lost/orphaned),
+// where it is the only durable usage evidence.
+export function recordAssignmentUsage(
+  childId: string,
+  usage: UsageTotals,
+  root?: string,
+): void {
+  const record = readAssignment(childId, root)
+  if (!record) return
+  writeRecordAtomic(assignmentPath(childId, root), {
+    ...record,
+    usage,
+    updatedAt: new Date().toISOString(),
+  })
 }
 
 function pidAlive(pid: number): boolean {
