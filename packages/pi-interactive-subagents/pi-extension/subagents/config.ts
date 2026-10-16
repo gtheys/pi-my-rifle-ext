@@ -19,8 +19,26 @@ const SubagentsConfigSchema = Type.Object(
     ),
     // AIDEV-NOTE (PMR-1EC3): off by default — context retirement changes what
     // the model sees, so it is an explicit opt-in. Absent = disabled.
+    // AIDEV-NOTE (PMR-Y4PV): reserveTokens / keepRecentTokens /
+    // backgroundTokens are RESERVED, not yet implemented — accepted so tuning
+    // configs written against pi-durable's settings.compaction vocabulary
+    // ({ enabled, reserveTokens, keepRecentTokens, backgroundTokens }) stay
+    // valid. Semantics map onto our finish-and-hand-off retirement model
+    // (not squeeze-and-continue compaction): reserveTokens = headroom that
+    // triggers hand-off, keepRecentTokens = recent context preserved into
+    // the hand-off, backgroundTokens = budget for background pre-retirement
+    // summarization. When pi core lands native compaction settings,
+    // migrating is a rename, not a redesign.
     contextRetirement: Type.Optional(
-      Type.Object({ enabled: Type.Boolean() }, { additionalProperties: false }),
+      Type.Object(
+        {
+          enabled: Type.Boolean(),
+          reserveTokens: Type.Optional(Type.Number()),
+          keepRecentTokens: Type.Optional(Type.Number()),
+          backgroundTokens: Type.Optional(Type.Number()),
+        },
+        { additionalProperties: false },
+      ),
     ),
   },
   { additionalProperties: false },

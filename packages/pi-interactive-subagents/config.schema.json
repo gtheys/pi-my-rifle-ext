@@ -24,6 +24,18 @@
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "reserveTokens": {
+          "type": "number",
+          "description": "RESERVED (unimplemented). Mirrors pi-durable settings.compaction.reserveTokens: token headroom that triggers retirement hand-off. Adopted so a future migration to pi-core-native compaction settings is a rename, not a redesign."
+        },
+        "keepRecentTokens": {
+          "type": "number",
+          "description": "RESERVED (unimplemented). Mirrors pi-durable settings.compaction.keepRecentTokens: recent context preserved into the finish-and-hand-off summary."
+        },
+        "backgroundTokens": {
+          "type": "number",
+          "description": "RESERVED (unimplemented). Mirrors pi-durable settings.compaction.backgroundTokens: budget for background pre-retirement summarization."
         }
       }
     }

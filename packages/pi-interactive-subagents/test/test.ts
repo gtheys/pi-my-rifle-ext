@@ -5305,6 +5305,37 @@ describe('config.ts contextRetirement (PMR-1EC3)', () => {
     )
   })
 
+  it('accepts reserved pi-durable compaction knob names (PMR-Y4PV)', () => {
+    // Forward-compat only: reserveTokens / keepRecentTokens /
+    // backgroundTokens are reserved (unimplemented) but validate, so tuning
+    // configs written against pi-durable's vocabulary stay loadable.
+    assert.deepEqual(
+      validateSubagentsConfig(
+        {
+          status: { enabled: true },
+          contextRetirement: { enabled: true, reserveTokens: 4096 },
+        },
+        't',
+      ),
+      {
+        status: { enabled: true },
+        contextRetirement: { enabled: true, reserveTokens: 4096 },
+      },
+    )
+    // unknown knob names still rejected
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          {
+            status: { enabled: true },
+            contextRetirement: { enabled: true, maxTokens: 1 },
+          },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+  })
+
   it('scaffolded global config carries the disabled default', () => {
     const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
     const path = scaffoldGlobalSubagentsConfig(agentDir)
