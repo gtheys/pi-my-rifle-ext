@@ -44,12 +44,14 @@ function sanitizeChildId(childId: string): string {
   return safe
 }
 
+/** Asks directory (PMR-YJC5): the aggregate snapshot fold readdirs this. */
+export function asksDir(root?: string): string {
+  return ensureSubagentsDataDir('asks', root ?? subagentsDataRoot())
+}
+
 /** Durable ask record path: `<dataRoot>/asks/<childId>.json`. */
 export function askRecordPath(childId: string, root?: string): string {
-  return join(
-    ensureSubagentsDataDir('asks', root ?? subagentsDataRoot()),
-    `${sanitizeChildId(childId)}.json`,
-  )
+  return join(asksDir(root), `${sanitizeChildId(childId)}.json`)
 }
 
 /** Durable reply record path: `<dataRoot>/asks/<childId>.reply.json`. */

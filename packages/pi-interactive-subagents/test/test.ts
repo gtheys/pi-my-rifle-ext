@@ -2627,6 +2627,7 @@ describe('plan dispatch', () => {
 
 import { randomUUID } from 'node:crypto'
 import { basename, relative, sep } from 'node:path'
+import { asksDir } from '../pi-extension/subagents/asks.ts'
 import {
   DEFAULT_SUBAGENTS_CONFIG,
   globalSubagentsConfigPath,
@@ -2673,6 +2674,10 @@ import {
   resolvePeer,
   sendPeerMessage,
 } from '../pi-extension/subagents/peers.ts'
+import {
+  buildAggregateSnapshot,
+  defaultSnapshotReadIo,
+} from '../pi-extension/subagents/snapshot.ts'
 import {
   allocateSpawnIdentity,
   deriveChildId,
@@ -5660,5 +5665,150 @@ describe('replay-safe spawn identity (PMR-YKAC)', () => {
     )
     assert.equal(anon.replay, null)
     assert.match(anon.childId, /^[0-9a-f]{8}$/)
+  })
+})
+
+describe('snapshot.ts (PMR-YJC5 aggregate snapshot)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'subagents-snapshot-'))
+  const owner = 'parent-snap-1'
+  const childA = deriveChildId(owner, 1)
+  const childB = deriveChildId(owner, 2)
+  const childC = deriveChildId(owner, 3)
+
+  // Counting reader — injectable SnapshotReadIo proves per-tick read counts.
+  const countingIo = () => {
+    let reads = 0
+    const count = <T>(fn: () => T): T => {
+      reads += 1
+      return fn()
+    }
+    return {
+      io: {
+        readdir: (path: string) => count(() => readdirSync(path)),
+        readFile: (path: string) => count(() => readFileSync(path, 'utf8')),
+      },
+      get reads() {
+        return reads
+      },
+    }
+  }
+
+  it('folds asks + owner inbox into one childId-keyed snapshot in a single pass', () => {
+    const ask: AskRecord = {
+      askId: 'ask-1',
+      childId: childA,
+      question: 'proceed?',
+      sessionFile: '/tmp/a.jsonl',
+      createdAt: new Date().toISOString(),
+    }
+    writeAskRecord(ask, root)
+    sendOwnerMessage({
+      parentSessionId: owner,
+      childId: childA,
+      message: 'from A',
+      root,
+    })
+    sendOwnerMessage({
+      parentSessionId: owner,
+      childId: childB,
+      message: 'from B',
+      root,
+    })
+
+    const counter = countingIo()
+    const snap = buildAggregateSnapshot({
+      ownerSessionId: owner,
+      childIds: [childA, childB, childC],
+      root,
+      io: counter.io,
+      includeAsks: true,
+    })
+
+    const a = snap.children.get(childA)
+    const b = snap.children.get(childB)
+    const c = snap.children.get(childC)
+    assert.ok(a && b && c)
+    assert.equal(a.owner, owner)
+    assert.equal(a.askPending?.askId, 'ask-1')
+    assert.equal(a.inboxPending, 1)
+    assert.equal(b.askPending, null)
+    assert.equal(b.inboxPending, 1)
+    assert.equal(c.askPending, null)
+    assert.equal(c.inboxPending, 0)
+
+    // Drain input: both entries (readOwnerInbox parity — filename order).
+    assert.deepEqual(
+      snap.inboxEntries.map((entry) => entry.message.message).sort(),
+      ['from A', 'from B'],
+    )
+
+    // 3-child fan-out read count: 1 asks readdir + 1 ask read + 1 inbox
+    // readdir + 2 inbox reads = 5. Scattered per-child reads would be
+    // 3 readAskRecord + readOwnerInbox(1 + 2) = 6 — and scale worse: each
+    // new record type plugs in as one fold step, not a per-child read loop.
+    assert.equal(snap.reads, 5)
+    assert.equal(counter.reads, 5)
+  })
+
+  it('fails closed on malformed records and missing dirs', () => {
+    removeAskRecord(childA, root) // first test's ask record shares the root
+    writeFileSync(join(asksDir(root), 'bogus.json'), '{nope', 'utf8')
+    sendOwnerMessage({
+      parentSessionId: 'parent-snap-2',
+      childId: childA,
+      message: 'ok',
+      root,
+    })
+    writeFileSync(
+      join(ownerInboxDir('parent-snap-2', root), 'x-childA-999999.json'),
+      '{broken',
+      'utf8',
+    )
+
+    const snap = buildAggregateSnapshot({
+      ownerSessionId: 'parent-snap-2',
+      childIds: [childA],
+      root,
+      io: defaultSnapshotReadIo,
+      includeAsks: true,
+    })
+    assert.equal(snap.children.get(childA)?.askPending, null)
+    assert.equal(snap.children.get(childA)?.inboxPending, 1)
+    assert.equal(snap.inboxEntries.length, 1)
+
+    // Unknown owner: empty snapshot, no throw.
+    const empty = buildAggregateSnapshot({
+      ownerSessionId: 'parent-never-existed',
+      childIds: [childA],
+      root,
+      io: defaultSnapshotReadIo,
+    })
+    assert.equal(empty.inboxEntries.length, 0)
+    assert.equal(empty.children.get(childA)?.inboxPending, 0)
+  })
+
+  it('skips the asks fold unless a consumer opts in', () => {
+    const ask: AskRecord = {
+      askId: 'ask-opt-out',
+      childId: childB,
+      question: 'unconsumed',
+      sessionFile: '/tmp/b.jsonl',
+      createdAt: new Date().toISOString(),
+    }
+    writeAskRecord(ask, root)
+    const counter = countingIo()
+    const snap = buildAggregateSnapshot({
+      ownerSessionId: owner,
+      childIds: [childB],
+      root,
+      io: counter.io,
+    })
+    // No consumer → no asks readdir, askPending stays null even though the
+    // record exists on disk.
+    assert.equal(snap.children.get(childB)?.askPending, null)
+    // Only the inbox fold ran: 1 readdir (+ reads for leftover inbox
+    // records from earlier tests in this shared root).
+    assert.equal(snap.reads, 1 + snap.inboxEntries.length)
+    removeAskRecord(childB, root)
   })
 })

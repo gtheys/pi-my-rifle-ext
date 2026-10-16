@@ -26,7 +26,7 @@ import { join } from 'node:path'
 import { ensureSubagentsDataDir, subagentsDataRoot } from './dataroot.ts'
 import { capStatusLines } from './status.ts'
 
-const MESSAGE_VERSION = 1
+export const MESSAGE_VERSION = 1
 export const OWNER_MESSAGE_MAX_BYTES = 8192
 
 export interface OwnerMessage {

@@ -60,11 +60,7 @@ import {
 } from './control.ts'
 import { hasDelivered, markDelivered } from './delivered.ts'
 import { herdrAgentFocus, herdrAgentGet, herdrPreflight } from './herdr.ts'
-import {
-  coalesceOwnerMessages,
-  readOwnerInbox,
-  removeOwnerMessage,
-} from './inbox.ts'
+import { coalesceOwnerMessages, removeOwnerMessage } from './inbox.ts'
 import { sendPeerMessage } from './peers.ts'
 import {
   retireSettledSubagentPayloads,
@@ -75,6 +71,7 @@ import {
   getNewEntries,
   seedSubagentSessionFile,
 } from './session.ts'
+import { type AggregateSnapshot, buildAggregateSnapshot } from './snapshot.ts'
 import {
   canFocusAgent,
   type HerdrSpawnedTab,
@@ -1491,6 +1488,24 @@ function startStatusRefresh(pi: ExtensionAPI) {
     const now = Date.now()
     let shouldRefreshWidget = false
 
+    // PMR-YJC5: one aggregated snapshot per tick — the owner-inbox fold is
+    // the drain input below. Folds are opt-in per consumer (see snapshot.ts):
+    // the asks fold stays off until a tick consumer for askPending arrives.
+    // New record types plug in as one fold step, not a new per-tick read loop.
+    let tickSnapshot: AggregateSnapshot | null = null
+    if (ownerSessionId) {
+      tickSnapshot = buildAggregateSnapshot({
+        ownerSessionId,
+        childIds: Array.from(runningSubagents.keys()),
+      })
+      // Debug metric (acceptance: count per-tick reads before/after).
+      if (process.env.PI_SUBAGENTS_SNAPSHOT_DEBUG) {
+        console.error(
+          `[subagents-snapshot] tick reads=${tickSnapshot.reads} children=${runningSubagents.size} inbox=${tickSnapshot.inboxEntries.length}`,
+        )
+      }
+    }
+
     for (const running of runningSubagents.values()) {
       observeRunningSubagent(running, now)
       const { nextState, snapshot, transition } = advanceStatusState(
@@ -1627,7 +1642,7 @@ function startStatusRefresh(pi: ExtensionAPI) {
     // re-delivers the same messages next tick (duplicate turn, worst case).
     if (ownerSessionId) {
       try {
-        const allEntries = readOwnerInbox(ownerSessionId)
+        const allEntries = tickSnapshot?.inboxEntries ?? []
         // AIDEV-NOTE (PMR-KY0E): exactly-once guard — records already injected
         // (crash after send, before unlink) are dropped here, not steered
         // again. Coalescing still applies to the FRESH records only, so a
