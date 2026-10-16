@@ -99,6 +99,18 @@ non-blocking. When all relevant checks complete, it automatically triggers
 `/pr-quality`. Interval is cleaned up on `session_shutdown` (`index.ts:499`) so it
 doesn't leak across sessions.
 
+## RPIV integration: review gates validate
+
+Review is no longer a standalone post-step: inside the RPIV flow
+(`packages/pi-flow`), `/validate` ends with a **review gate**. After the
+environment/human gate passes, `/review` runs on the change and its verdict
+is written as a machine-readable artifact — exactly one `blockers_count: <N>`
+line plus `- blocker: <description>` lines. `0` → land (work: PR + Jira
+comment; personal: push to main); `> 0` → blockers recorded as aven notes
+and the flow routes back to `/implement`. Parsing is strict: a missing or
+malformed count is an error and forces a `/review` re-run — never a silent
+0 (that would auto-land broken code). See `docs/rpiv-flow.md` §3.4.
+
 ## Recommended loop
 
 ```

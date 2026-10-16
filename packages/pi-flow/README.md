@@ -1,21 +1,24 @@
 # pi-flow
 
-RPIV flow orchestrator skeleton — thin command/skill routing over
-pi-planning, pi-review, and pi-interactive-subagents (no cross-package
-runtime imports). Phase routing is wired by the phase tickets; this package
-ships the foundation:
+RPIV flow extension — `/research /plan /implement /validate /feedback`
+phase commands plus the `/flow` orchestrator, routed over pi-planning,
+pi-review, and pi-interactive-subagents (no cross-package runtime imports).
+Canonical flow documentation: [`docs/rpiv-flow.md`](../../docs/rpiv-flow.md).
 
-- **Work-mode detection** — `resolveMode(pi)` runs `git rev-parse
-  --show-toplevel` on the session cwd; a toplevel under any `workRoots`
-  prefix is `work` mode, anything else is `personal`. Pure logic lives in
-  `work-mode.ts` (`modeForToplevel`, path-segment aware prefix match).
-- **Phase-state vocabulary** — `phase-state.ts` exports the lifecycle labels
-  (`researched → planned → active → review-passed → done`) and type labels
-  (`bug`, `oneshot`, `plan`). On `session_start` the extension best-effort
-  runs `aven label create <name>` for each label so they exist before first
-  use.
-- **Slash commands** — `/research` (implemented: dual flow + ticket gate), `/plan`, `/implement`, `/validate`,
-  `/feedback`, `/flow` reply "not implemented yet".
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `/research <topic \| symptom>` | Question loop + scouts → artifact in `notes/research/` → ticket-creation gate (explicit confirm; work: Jira, personal: aven). Debug symptoms route through the user's `debug` skill to a root cause. |
+| `/plan <ref>` | Work: `feature-plan-aven` skill (epic tree, plan-state approval). Personal: size check → human-confirmed oneshot vs plan split; plan.md + epic/subtasks for plans. Ends with status `todo` + `planned` label. |
+| `/implement <ref>` | Gate: `planned` required; missing `researched` needs `--skip-research`. Routes bug / plan / oneshot. Worktree isolation, per-task implement→test→commit, retry budget 3 then blocked + escalate. |
+| `/validate <ref>` | Work: ordered cluster gate (minikube → connectivity → queues → deploy → manual tests → Jira evidence comment). Personal: human runs the test. Then the review gate: `/review` → `blockers_count` artifact; 0 → land, >0 → back to `/implement`. |
+| `/feedback <ref>` | Work: `/sonarqube` + `/pr-quality` triage (mechanical fixes committed, behavioral findings become new tasks). Personal: re-review + outcome summary note; only then `done`. |
+| `/flow <ref> [--skip-research]` | Runs the remaining phases via the phase commands, so all gates and confirmations stay intact. Resume = first phase whose completion label is missing; stop-on-fail with a halt note. |
+
+Lifecycle labels on the aven ticket are the run state:
+`researched → planned → active → review-passed → done`; type labels
+`bug` / `oneshot` / `plan` route `/implement`.
 
 ## Configuration
 

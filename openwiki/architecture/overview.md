@@ -82,7 +82,7 @@ test-runner agent through it) and `pi-review` (spawns its reviewer agent and ocr
 scout through it). Everything else still coordinates without imports:
 - **aven** as external planning state (`feature-plan-aven` / `implement-plan-aven`
   skills drive the aven CLI; `pi-planning` only resolves paths and branches) —
-  see `workflows/planning-and-implementation.md` and `docs/aven-feature-flow.md`.
+  see `workflows/planning-and-implementation.md` and `docs/rpiv-flow.md`.
 - **git/gh CLI** as external state (`pi-review`'s three commands all shell out to `gh`
   and `git`).
 - **pi's own event bus** (`session_start`, `agent_end`) for cross-cutting concerns like
@@ -117,5 +117,5 @@ for 3 exec calls).
 
 - [Extension reference](extensions.md) for a deep dive per package.
 - [Planning workflow](../workflows/planning-and-implementation.md) for the aven
-data model behind `feature-plan-aven` / `implement-plan-aven` (canonical flow:
-  `docs/aven-feature-flow.md`).
+data model behind the work-mode plan/implement phases (canonical flow:
+  `docs/rpiv-flow.md`).

@@ -1,5 +1,12 @@
 # Aven feature flow: plan → implement
 
+> **SUPERSEDED** by [`rpiv-flow.md`](rpiv-flow.md) — the RPIV flow
+> (`/research /plan /implement /validate /feedback /flow`, packages/pi-flow)
+> is now canonical. This doc remains for history and for the contracts still
+> used inside the work-mode plan/implement phases: the aven epic tree
+> contract, the plan-state approval gate, the Jira-synced pull-in script,
+> and the aven quick command reference.
+
 How personal-project features move through aven: from ticket, through
 planning (`feature-plan-aven`), to execution (`implement-plan-aven`).
 
