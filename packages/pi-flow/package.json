@@ -1,0 +1,64 @@
+{
+  "name": "@gtheys/pi-flow",
+  "version": "0.1.0",
+  "description": "Pi extension — RPIV flow orchestrator skeleton (work-mode detection, phase-state labels, stub phase commands)",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-flow"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "flow/args.ts",
+    "flow/orchestrate.ts",
+    "flow/prompt.ts",
+    "research/args.ts",
+    "research/artifact.ts",
+    "research/paths.ts",
+    "research/prompt.ts",
+    "research/ticket-gate.ts",
+    "gates.ts",
+    "implement/args.ts",
+    "implement/prompt.ts",
+    "implement/retry.ts",
+    "implement/routing.ts",
+    "plan/args.ts",
+    "plan/paths.ts",
+    "plan/prompt.ts",
+    "plan/size-check.ts",
+    "plan/split-gate.ts",
+    "validate/args.ts",
+    "validate/gate.ts",
+    "validate/paths.ts",
+    "validate/personal.ts",
+    "validate/prompt.ts",
+    "validate/review-gate.ts",
+    "feedback/args.ts",
+    "feedback/triage.ts",
+    "feedback/prompt.ts",
+    "work-mode.ts",
+    "phase-state.ts",
+    "config.schema.json",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

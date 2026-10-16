@@ -98,7 +98,7 @@ pi's own packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, 
   `packages/` does, its tools/commands, and key implementation notes.
 - [Planning & implementation workflow](workflows/planning-and-implementation.md) —
   how an aven ticket → plan.md → epic/dep tree → phased implementation works
-  (canonical flow doc: `docs/aven-feature-flow.md`).
+  (canonical flow doc: `docs/rpiv-flow.md`).
 - [Code review workflow](workflows/code-review.md) — `/review`, `/sonarqube`,
   `/pr-quality`, `/pr-watch`.
 - [Skills & prompts](domain/skills-and-prompts.md) — inventory of `SKILL.md` files and

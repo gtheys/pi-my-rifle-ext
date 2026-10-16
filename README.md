@@ -48,6 +48,7 @@ pi-my-rifle-ext/
 │   ├── pi-aven-context/       # aven workspace state session-start context
 │   ├── pi-teams-transcript/ # teams_transcript tool (MS Graph)
 │   └── pi-pr-digest/        # pr_digest tool + /pr-digest command (gh CLI)
+│   ├── pi-flow/             # RPIV flow orchestrator skeleton (work-mode, phase stubs)
 ├── skills/            # Skills (each in a subdirectory with SKILL.md)
 │   ├── engineering/
 │   └── tools/
@@ -151,6 +152,7 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-aven-context`](packages/pi-aven-context/) | Session-start injection of live aven workspace state (`aven prime` tail: open issues, active/ready/blocked) as hidden custom-message context; non-fatal, idempotent | Context |
 | [`pi-teams-transcript`](packages/pi-teams-transcript/) | `teams_transcript` tool — list/download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth) ⚠️ *work in progress* | Integrations |
 | [`pi-pr-digest`](packages/pi-pr-digest/) | `pr_digest` tool + `/pr-digest` command — outstanding GitHub PRs in an org with human comment/review status (bots filtered) and reviewer-request table | Integrations |
+| [`pi-flow`](packages/pi-flow/) | RPIV flow skeleton — work-mode detection (`resolveMode` via workRoots config), phase-state label vocabulary with aven `ensure-labels` bootstrap, stub `/research /plan /implement /validate /feedback /flow` commands (routing wired by phase tickets) | Workflow |
 | [`pi-worktree`](packages/pi-worktree/) | `worktree` tool — create/list/remove Herdr worktree workspaces with branch derivation, lockfile-based dependency bootstrap, `.env` snapshots, and a pi agent state dashboard | Git Workflow |
 
 ### Companion Packages (installed separately)

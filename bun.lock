@@ -71,6 +71,14 @@
         "typebox": "*",
       },
     },
+    "packages/pi-flow": {
+      "name": "@gtheys/pi-flow",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": "*",
+        "typebox": "*",
+      },
+    },
     "packages/pi-herdr-title": {
       "name": "@gtheys/pi-herdr-title",
       "version": "0.1.0",
@@ -373,6 +381,8 @@
     "@gtheys/pi-desktop-notify": ["@gtheys/pi-desktop-notify@workspace:packages/pi-desktop-notify"],
 
     "@gtheys/pi-fastcontext": ["@gtheys/pi-fastcontext@workspace:packages/pi-fastcontext"],
+
+    "@gtheys/pi-flow": ["@gtheys/pi-flow@workspace:packages/pi-flow"],
 
     "@gtheys/pi-herdr-title": ["@gtheys/pi-herdr-title@workspace:packages/pi-herdr-title"],
 

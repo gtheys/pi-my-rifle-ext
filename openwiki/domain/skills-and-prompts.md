@@ -49,7 +49,7 @@ slimmed `pi-planning` tools (`resolve_spec_path`, `resolve_feature_path`,
 extension in [Extension reference](../architecture/extensions.md) for the exact
 implementation. The full dependency map (commands → skills → tools → subagents)
 lives in `README.md` "How Extensions and Skills Fit Together"; the canonical
-planning flow doc is `docs/aven-feature-flow.md`.
+planning flow doc is `docs/rpiv-flow.md`.
 
 ## Prompts (`prompts/`)
 

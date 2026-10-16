@@ -1,0 +1,39 @@
+# pi-flow
+
+RPIV flow extension — `/research /plan /implement /validate /feedback`
+phase commands plus the `/flow` orchestrator, routed over pi-planning,
+pi-review, and pi-interactive-subagents (no cross-package runtime imports).
+Canonical flow documentation: [`docs/rpiv-flow.md`](../../docs/rpiv-flow.md).
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `/research <topic \| symptom>` | Question loop + scouts → artifact in `notes/research/` → ticket-creation gate (explicit confirm; work: Jira, personal: aven). Debug symptoms route through the user's `debug` skill to a root cause. |
+| `/plan <ref>` | Work: `feature-plan-aven` skill (epic tree, plan-state approval). Personal: size check → human-confirmed oneshot vs plan split; plan.md + epic/subtasks for plans. Ends with status `todo` + `planned` label. |
+| `/implement <ref>` | Gate: `planned` required; missing `researched` needs `--skip-research`. Routes bug / plan / oneshot. Worktree isolation, per-task implement→test→commit, retry budget 3 then blocked + escalate. |
+| `/validate <ref>` | Work: ordered cluster gate (minikube → connectivity → queues → deploy → manual tests → Jira evidence comment). Personal: human runs the test. Then the review gate: `/review` → `blockers_count` artifact; 0 → land, >0 → back to `/implement`. |
+| `/feedback <ref>` | Work: `/sonarqube` + `/pr-quality` triage (mechanical fixes committed, behavioral findings become new tasks). Personal: re-review + outcome summary note; only then `done`. |
+| `/flow <ref> [--skip-research]` | Runs the remaining phases via the phase commands, so all gates and confirmations stay intact. Resume = first phase whose completion label is missing; stop-on-fail with a halt note. |
+
+Lifecycle labels on the aven ticket are the run state:
+`researched → planned → active → review-passed → done`; type labels
+`bug` / `oneshot` / `plan` route `/implement`.
+
+## Configuration
+
+Global config lives at `~/.pi/agent/pi-flow/config.json` (schema:
+[`config.schema.json`](config.schema.json)).
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `workRoots` | `string[]` | `[]` | Absolute path prefixes; a git toplevel under any prefix is `work` mode |
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/gtheys/pi-my-rifle-ext/main/packages/pi-flow/config.schema.json",
+  "workRoots": [
+    "/home/geert/Code/salaryhero"
+  ]
+}
+```
