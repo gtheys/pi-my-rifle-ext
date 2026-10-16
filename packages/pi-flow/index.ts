@@ -8,6 +8,9 @@ import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
 import { parseFeedbackArgs } from './feedback/args.ts'
 import { buildFeedbackPrompt } from './feedback/prompt.ts'
+import { parseFlowArgs } from './flow/args.ts'
+import { nextPhase, remainingPhases } from './flow/orchestrate.ts'
+import { buildFlowPrompt } from './flow/prompt.ts'
 import { parseImplementArgs } from './implement/args.ts'
 import { buildImplementPrompt } from './implement/prompt.ts'
 import { routeFor } from './implement/routing.ts'
@@ -331,11 +334,74 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.registerCommand('flow', {
-    description: 'RPIV flow overview (stub)',
-    handler: async (_args, ctx) => {
-      ctx.ui.notify(
-        '/flow: not implemented yet — wired by the phase tickets. Phases: research, plan, implement, validate, feedback.',
-        'info',
+    description:
+      'RPIV run-all. Usage: /flow <jira-id | aven-ref> [--skip-research]',
+    // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
+    // failure aborts, never starts from research by accident). nextPhase()
+    // resolves the first phase whose completion label is missing; the
+    // orchestrator prompt invokes the phase commands as a human would with
+    // stop-on-fail at every boundary.
+    handler: async (args, ctx) => {
+      const parsed = parseFlowArgs(args)
+      if (parsed.kind === 'help') {
+        ctx.ui.notify(
+          'Usage: /flow <jira-id | aven-ref> [--skip-research]',
+          'info',
+        )
+        return
+      }
+      const mode = await resolveMode(pi)
+      let ref: string
+      if (parsed.kind === 'jira') {
+        ref = parsed.jiraId
+      } else {
+        ref = parsed.ref
+      }
+      let labels: string[] = []
+      try {
+        const { stdout } = await execFileAsync(
+          'aven',
+          ['show', ref, '--json'],
+          {
+            timeout: AVEN_TIMEOUT_MS,
+          },
+        )
+        const parsedTicket: unknown = JSON.parse(stdout)
+        if (
+          typeof parsedTicket === 'object' &&
+          parsedTicket !== null &&
+          Array.isArray((parsedTicket as { labels?: unknown }).labels)
+        ) {
+          labels = (parsedTicket as { labels: unknown[] }).labels.filter(
+            (l): l is string => typeof l === 'string',
+          )
+        }
+      } catch {
+        ctx.ui.notify(
+          `/flow ${ref}: cannot read aven labels — aborting (fail-closed). Check that the ref exists and aven is available.`,
+          'warning',
+        )
+        return
+      }
+      const next = nextPhase(labels, parsed.skipResearch)
+      if (next.kind === 'done') {
+        ctx.ui.notify(
+          `/flow ${ref}: all phase labels present (done) — nothing to run.`,
+          'info',
+        )
+        return
+      }
+      const commands = remainingPhases(next.phase).map(
+        (phase) => `/${phase} ${ref}`,
+      )
+      pi.sendUserMessage(
+        buildFlowPrompt({
+          mode,
+          ref,
+          startPhase: next.phase,
+          commands,
+          researchSkip: next.researchSkip === true,
+        }),
       )
     },
   })

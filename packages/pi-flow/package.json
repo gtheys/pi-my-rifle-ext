@@ -20,6 +20,9 @@
   },
   "files": [
     "index.ts",
+    "flow/args.ts",
+    "flow/orchestrate.ts",
+    "flow/prompt.ts",
     "research/args.ts",
     "research/artifact.ts",
     "research/paths.ts",
