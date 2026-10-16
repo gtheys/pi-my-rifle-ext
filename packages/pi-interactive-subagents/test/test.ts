@@ -2625,7 +2625,7 @@ describe('plan dispatch', () => {
 // --- Phase 0: durable foundation ---
 
 import { randomUUID } from 'node:crypto'
-import { basename } from 'node:path'
+import { basename, relative, sep } from 'node:path'
 import {
   DEFAULT_SUBAGENTS_CONFIG,
   globalSubagentsConfigPath,
@@ -2638,6 +2638,11 @@ import {
   ensureSubagentsDataDir,
   subagentsDataRoot,
 } from '../pi-extension/subagents/dataroot.ts'
+import {
+  deliveredMarkerPath,
+  hasDelivered,
+  markDelivered,
+} from '../pi-extension/subagents/delivered.ts'
 import {
   coalesceOwnerMessages,
   OWNER_MESSAGE_MAX_BYTES,
@@ -5470,5 +5475,61 @@ describe('rolePrefixWithoutAgent guardrail (PMR-J2V5)', () => {
 
   it('returns null for undefined name', () => {
     assert.equal(rolePrefixWithoutAgent(undefined, undefined), null)
+  })
+})
+
+describe('delivered.ts exactly-once dedup (PMR-KY0E)', () => {
+  let root: string
+
+  before(() => {
+    root = join(mkdtempSync(join(tmpdir(), 'delivered-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('delivers a duplicate requestId once, different requestIds both', () => {
+    assert.equal(markDelivered('child-a', 'req-1', root), true)
+    assert.equal(hasDelivered('child-a', 'req-1', root), true)
+    // crash-and-redelivery of the same record: suppressed
+    assert.equal(markDelivered('child-a', 'req-1', root), false)
+    // a different requestId still delivers
+    assert.equal(markDelivered('child-a', 'req-2', root), true)
+  })
+
+  it('scopes are isolated per child', () => {
+    assert.equal(hasDelivered('child-b', 'req-1', root), false)
+    assert.equal(markDelivered('child-b', 'req-1', root), true)
+  })
+
+  it('sanitizes hostile scope/requestId path components', () => {
+    const marker = deliveredMarkerPath('../../etc', 'x/y', root)
+    const rel = relative(join(root, 'delivered'), marker)
+    assert.ok(!rel.split(sep).includes('..'))
+    assert.equal(markDelivered('../../etc', 'x/y', root), true)
+  })
+
+  it('suppresses a redelivered owner-inbox record (drain pattern)', () => {
+    const dir = ownerInboxDir('parent-s', root)
+    const record = JSON.stringify({
+      version: 1,
+      messageId: 'dup-1',
+      childId: 'child-a',
+      message: 'hello',
+      sentAt: new Date().toISOString(),
+    })
+    writeFileSync(join(dir, 'child-a-000001.json'), record)
+    writeFileSync(join(dir, 'child-a-000002.json'), record) // same requestId
+    const entries = readOwnerInbox('parent-s', root)
+    const fresh: string[] = []
+    for (const entry of entries) {
+      if (!hasDelivered('parent-s', entry.message.messageId, root)) {
+        fresh.push(entry.message.messageId)
+        markDelivered('parent-s', entry.message.messageId, root)
+      }
+    }
+    assert.equal(fresh.length, 1) // duplicate delivered once
+    for (const entry of entries) removeOwnerMessage(entry.path)
+    assert.equal(readOwnerInbox('parent-s', root).length, 0)
   })
 })

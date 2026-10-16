@@ -29,6 +29,7 @@ import {
   writeAckSidecar,
 } from './control.ts'
 import { ensureSubagentsDataDir } from './dataroot.ts'
+import { hasDelivered, markDelivered } from './delivered.ts'
 import { sendOwnerMessage } from './inbox.ts'
 import {
   type ChildIdentity,
@@ -340,6 +341,24 @@ export default function (pi: ExtensionAPI) {
         return
       }
       if (!reply || !record) return // unreachable per decideReplyDelivery
+      // AIDEV-NOTE (PMR-KY0E): exactly-once guard — a crash after sendMessage
+      // but before the record unlink would re-deliver the same answer; the
+      // delivered marker suppresses that. Window note: the marker is written
+      // AFTER sendMessage succeeds, so a crash in the send→mark gap can still
+      // duplicate (tiny); marking earlier would risk LOSING the answer on a
+      // failed send, which is worse than a rare duplicate.
+      if (hasDelivered(childId, reply.askId)) {
+        // Already injected — finish the idempotent cleanup only.
+        writeAckSidecar(sessionFile, {
+          requestId: reply.askId,
+          accepted: true,
+          code: 'idle',
+          message: 'answer already delivered (dedup)',
+        })
+        removeReplyRecord(childId)
+        removeAskRecord(childId)
+        return
+      }
       pi.sendMessage(
         {
           customType: 'subagent-answer',
@@ -351,6 +370,7 @@ export default function (pi: ExtensionAPI) {
         },
         { triggerTurn: true },
       )
+      markDelivered(childId, reply.askId)
       writeAckSidecar(sessionFile, {
         requestId: reply.askId,
         accepted: true,
@@ -468,6 +488,13 @@ export default function (pi: ExtensionAPI) {
         if (entry.message.resultRef !== undefined) {
           details.resultRef = entry.message.resultRef
         }
+        // AIDEV-NOTE (PMR-KY0E): exactly-once guard, same pattern as
+        // pumpReplies — hasDelivered BEFORE the turn, markDelivered only
+        // after sendMessage succeeded.
+        if (hasDelivered(identity.childId, entry.message.messageId)) {
+          removeInboxEntry(entry.path)
+          continue
+        }
         pi.sendMessage(
           {
             customType: 'subagent-peer-message',
@@ -479,6 +506,7 @@ export default function (pi: ExtensionAPI) {
           },
           { triggerTurn: true },
         )
+        markDelivered(identity.childId, entry.message.messageId)
         removeInboxEntry(entry.path)
       }
     } catch {

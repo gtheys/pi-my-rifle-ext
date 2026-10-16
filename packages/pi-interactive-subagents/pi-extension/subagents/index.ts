@@ -58,6 +58,7 @@ import {
   removeControlRecord,
   writeControlRecord,
 } from './control.ts'
+import { hasDelivered, markDelivered } from './delivered.ts'
 import { herdrAgentFocus, herdrAgentGet, herdrPreflight } from './herdr.ts'
 import {
   coalesceOwnerMessages,
@@ -1553,6 +1554,10 @@ function startStatusRefresh(pi: ExtensionAPI) {
                 running.sessionFile,
                 running.id,
               )
+              // AIDEV-NOTE (PMR-KY0E): mark the requestId delivered at ack
+              // application — any future re-apply/reattach path must consult
+              // hasDelivered before re-applying the request.
+              markDelivered(`control:${running.id}`, pending.requestId)
               shouldRefreshWidget = true
               if (pending.kind === 'answer') {
                 // AIDEV-NOTE: child confirmed ingestion — drop the durable
@@ -1621,7 +1626,15 @@ function startStatusRefresh(pi: ExtensionAPI) {
     // re-delivers the same messages next tick (duplicate turn, worst case).
     if (ownerSessionId) {
       try {
-        const entries = readOwnerInbox(ownerSessionId)
+        const allEntries = readOwnerInbox(ownerSessionId)
+        // AIDEV-NOTE (PMR-KY0E): exactly-once guard — records already injected
+        // (crash after send, before unlink) are dropped here, not steered
+        // again. Coalescing still applies to the FRESH records only, so a
+        // mixed tick sends one steer over the new messages. Marker written
+        // AFTER the steer send succeeds (see pumpReplies window note).
+        const entries = allEntries.filter(
+          (entry) => !hasDelivered(ownerSessionId, entry.message.messageId),
+        )
         if (entries.length > 0) {
           const coalesced = coalesceOwnerMessages(
             entries,
@@ -1649,8 +1662,11 @@ function startStatusRefresh(pi: ExtensionAPI) {
             { triggerTurn: true, deliverAs: 'steer' },
           )
           for (const entry of entries) {
-            removeOwnerMessage(entry.path)
+            markDelivered(ownerSessionId, entry.message.messageId)
           }
+        }
+        for (const entry of allEntries) {
+          removeOwnerMessage(entry.path)
         }
       } catch {}
     }
