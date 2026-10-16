@@ -8,7 +8,7 @@
     },
     "workRoots": {
       "type": "array",
-      "description": "Git toplevels under any prefix are \"work\" mode",
+      "description": "Git toplevels under any prefix are \"work\" mode. The first entry is also the parent of the sh-devctl repo: the /validate gate resolves its scripts as <workRoot>/sh-devctl/scripts.",
       "items": {
         "type": "string",
         "description": "Absolute path prefix of a work repo root"

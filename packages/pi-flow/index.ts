@@ -16,6 +16,9 @@ import { buildPlanPrompt } from './plan/prompt.ts'
 import { parseResearchArgs } from './research/args.ts'
 import { researchArtifactPath, resolveResearchDir } from './research/paths.ts'
 import { buildResearchPrompt } from './research/prompt.ts'
+import { parseValidateArgs } from './validate/args.ts'
+import { resolveDevctlScriptsDir } from './validate/paths.ts'
+import { buildValidatePrompt } from './validate/prompt.ts'
 import { modeForToplevel, type WorkMode } from './work-mode.ts'
 
 const execFileAsync = promisify(execFile)
@@ -283,6 +286,42 @@ export default function (pi: ExtensionAPI) {
           researchSkip: routed.researchSkip,
         }),
       )
+    },
+  })
+
+  pi.registerCommand('validate', {
+    description: 'RPIV validate phase. Usage: /validate <jira-id | aven-ref>',
+    // AIDEV-NOTE: Work mode resolves the sh-devctl scripts dir from the first
+    // configured workRoot (validate/paths.ts) and hands off via
+    // sendUserMessage. Personal mode is an explicit PMR-8449 seam, not a
+    // silent fallthrough. Missing workRoots config fails loudly in work mode.
+    handler: async (args, ctx) => {
+      const parsed = parseValidateArgs(args)
+      if (parsed.kind === 'help') {
+        ctx.ui.notify('Usage: /validate <jira-id | aven-ref>', 'info')
+        return
+      }
+      const mode = await resolveMode(pi)
+      let ref: string
+      if (parsed.kind === 'jira') {
+        ref = parsed.jiraId
+      } else {
+        ref = parsed.ref
+      }
+      if (mode === 'work') {
+        const config = await loadConfig(process.cwd())
+        const scriptsDir = resolveDevctlScriptsDir(config.workRoots)
+        if (scriptsDir === null) {
+          ctx.ui.notify(
+            `/validate ${ref}: no workRoots configured — cannot resolve the sh-devctl scripts dir. Set workRoots in pi-flow config.json.`,
+            'warning',
+          )
+          return
+        }
+        pi.sendUserMessage(buildValidatePrompt({ mode, ref, scriptsDir }))
+        return
+      }
+      pi.sendUserMessage(buildValidatePrompt({ mode, ref, scriptsDir: null }))
     },
   })
 
