@@ -37,6 +37,24 @@ export function remainingPhases(phase: Phase): readonly Phase[] {
   return PHASE_ORDER.slice(idx)
 }
 
+// AIDEV-NOTE: PMR-7HDW — --skip-research is appended to the IMPLEMENT entry
+// only. The implement gate (routing.ts) reads labels + the CLI flag, never
+// aven notes, so without this propagation /flow <ref> --skip-research halts
+// at implement and re-running deadlocks. Other phases must NOT carry the
+// flag: their arg parsers treat extra tokens as help.
+export function phaseCommands(
+  phase: Phase,
+  ref: string,
+  skipResearch: boolean,
+): readonly string[] {
+  return remainingPhases(phase).map((p) => {
+    if (p === 'implement' && skipResearch) {
+      return `/implement ${ref} --skip-research`
+    }
+    return `/${p} ${ref}`
+  })
+}
+
 export function nextPhase(
   labels: readonly string[],
   skipResearch: boolean,

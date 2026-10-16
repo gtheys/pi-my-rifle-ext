@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parseFlowArgs } from '../flow/args.ts'
-import { nextPhase, PHASE_LABEL } from '../flow/orchestrate.ts'
+import { nextPhase, PHASE_LABEL, phaseCommands } from '../flow/orchestrate.ts'
+import { buildFlowPrompt } from '../flow/prompt.ts'
 
 // --- parseFlowArgs ---
 
@@ -113,4 +114,55 @@ test('PHASE_LABEL maps every phase to its lifecycle label', () => {
   assert.equal(PHASE_LABEL.implement, 'active')
   assert.equal(PHASE_LABEL.validate, 'review-passed')
   assert.equal(PHASE_LABEL.feedback, 'done')
+})
+
+// --- phaseCommands (PMR-7HDW: --skip-research propagation) ---
+
+test('phaseCommands: skipResearch flags the implement entry only', () => {
+  const commands = phaseCommands('research', 'PMR-abc', true)
+  assert.deepEqual(commands, [
+    '/research PMR-abc',
+    '/plan PMR-abc',
+    '/implement PMR-abc --skip-research',
+    '/validate PMR-abc',
+    '/feedback PMR-abc',
+  ])
+})
+
+test('phaseCommands: no flag anywhere when skipResearch is false', () => {
+  for (const cmd of phaseCommands('research', 'PMR-abc', false)) {
+    assert.equal(cmd.includes('--skip-research'), false)
+  }
+})
+
+test('phaseCommands: starting at implement still gets the flag', () => {
+  const commands = phaseCommands('implement', 'DP-71', true)
+  assert.deepEqual(commands, [
+    '/implement DP-71 --skip-research',
+    '/validate DP-71',
+    '/feedback DP-71',
+  ])
+})
+
+test('buildFlowPrompt: skip-research run carries the flagged implement command', () => {
+  // Full /flow wiring as the handler composes it: nextPhase decides the
+  // start phase, phaseCommands builds the list, buildFlowPrompt renders it.
+  const next = nextPhase([], true)
+  assert.equal(next.kind, 'phase')
+  if (next.kind !== 'phase') return
+  const prompt = buildFlowPrompt({
+    mode: 'personal',
+    ref: 'PMR-abc',
+    startPhase: next.phase,
+    commands: [
+      ...phaseCommands(next.phase, 'PMR-abc', next.researchSkip === true),
+    ],
+    researchSkip: next.researchSkip === true,
+  })
+  assert.match(prompt, /\/implement PMR-abc --skip-research/)
+  // Every other phase command stays flag-free (their parsers treat extra
+  // tokens as help).
+  assert.match(prompt, /- \/plan PMR-abc\n/)
+  assert.match(prompt, /- \/validate PMR-abc\n/)
+  assert.match(prompt, /- \/feedback PMR-abc\n/)
 })

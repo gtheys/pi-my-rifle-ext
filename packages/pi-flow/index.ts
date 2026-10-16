@@ -9,7 +9,7 @@ import { Value } from 'typebox/value'
 import { parseFeedbackArgs } from './feedback/args.ts'
 import { buildFeedbackPrompt } from './feedback/prompt.ts'
 import { parseFlowArgs } from './flow/args.ts'
-import { nextPhase, remainingPhases } from './flow/orchestrate.ts'
+import { nextPhase, phaseCommands } from './flow/orchestrate.ts'
 import { buildFlowPrompt } from './flow/prompt.ts'
 import { parseImplementArgs } from './implement/args.ts'
 import { buildImplementPrompt } from './implement/prompt.ts'
@@ -391,15 +391,17 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const commands = remainingPhases(next.phase).map(
-        (phase) => `/${phase} ${ref}`,
+      const commands = phaseCommands(
+        next.phase,
+        ref,
+        next.researchSkip === true,
       )
       pi.sendUserMessage(
         buildFlowPrompt({
           mode,
           ref,
           startPhase: next.phase,
-          commands,
+          commands: [...commands],
           researchSkip: next.researchSkip === true,
         }),
       )
