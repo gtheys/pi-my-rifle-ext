@@ -6,6 +6,9 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
+import { parseImplementArgs } from './implement/args.ts'
+import { buildImplementPrompt } from './implement/prompt.ts'
+import { routeFor } from './implement/routing.ts'
 import { ALL_LABELS } from './phase-state.ts'
 import { parsePlanArgs } from './plan/args.ts'
 import { resolvePlanDir } from './plan/paths.ts'
@@ -208,6 +211,76 @@ export default function (pi: ExtensionAPI) {
           mode,
           ref,
           planPath,
+        }),
+      )
+    },
+  })
+
+  pi.registerCommand('implement', {
+    description:
+      'RPIV implement phase. Usage: /implement <jira-id | aven-ref> [--skip-research]',
+    // AIDEV-NOTE: Gate wiring lives in implement/routing.ts (canImplement /
+    // needsResearchSkip). This handler resolves args/mode/labels, then hands
+    // off via sendUserMessage. Refusal and skip-required are surfaced to the
+    // user; the handler NEVER bypasses a gate. Note: labels are fetched via
+    // aven CLI; best-effort — aven failure means empty labels, which the gate
+    // then refuses (fail-closed).
+    handler: async (args, ctx) => {
+      const parsed = parseImplementArgs(args)
+      if (parsed.kind === 'help') {
+        ctx.ui.notify(
+          'Usage: /implement <jira-id | aven-ref> [--skip-research]',
+          'info',
+        )
+        return
+      }
+      const mode = await resolveMode(pi)
+      let ref: string
+      if (parsed.kind === 'jira') {
+        ref = parsed.jiraId
+      } else {
+        ref = parsed.ref
+      }
+      let labels: string[] = []
+      try {
+        const { stdout } = await execFileAsync(
+          'aven',
+          ['show', ref, '--json'],
+          {
+            timeout: AVEN_TIMEOUT_MS,
+          },
+        )
+        const parsedTicket: unknown = JSON.parse(stdout)
+        if (
+          typeof parsedTicket === 'object' &&
+          parsedTicket !== null &&
+          Array.isArray((parsedTicket as { labels?: unknown }).labels)
+        ) {
+          labels = (parsedTicket as { labels: unknown[] }).labels.filter(
+            (l): l is string => typeof l === 'string',
+          )
+        }
+      } catch {
+        // fail-closed: empty labels -> routing refuses below
+      }
+      const routed = routeFor(parsed.kind, labels, parsed.skipResearch)
+      if (routed.kind === 'refuse') {
+        ctx.ui.notify(`/implement ${ref}: ${routed.reason}`, 'warning')
+        return
+      }
+      if (routed.kind === 'skip-required') {
+        ctx.ui.notify(
+          `/implement ${ref}: research not done. Re-run with --skip-research to explicitly skip (recorded as an aven note).`,
+          'warning',
+        )
+        return
+      }
+      pi.sendUserMessage(
+        buildImplementPrompt({
+          mode,
+          ref,
+          route: routed.route,
+          researchSkip: routed.researchSkip,
         }),
       )
     },
