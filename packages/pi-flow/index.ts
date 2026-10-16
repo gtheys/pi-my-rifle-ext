@@ -7,6 +7,9 @@ import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
 import { ALL_LABELS } from './phase-state.ts'
+import { parseResearchArgs } from './research/args.ts'
+import { researchArtifactPath, resolveResearchDir } from './research/paths.ts'
+import { buildResearchPrompt } from './research/prompt.ts'
 import { modeForToplevel, type WorkMode } from './work-mode.ts'
 
 const execFileAsync = promisify(execFile)
@@ -101,6 +104,7 @@ export default function (pi: ExtensionAPI) {
   })
 
   for (const phase of STUB_PHASES) {
+    if (phase === 'research') continue // implemented below
     pi.registerCommand(phase, {
       description: `RPIV flow: ${phase} phase (stub)`,
       handler: async (_args, ctx) => {
@@ -111,6 +115,57 @@ export default function (pi: ExtensionAPI) {
       },
     })
   }
+
+  pi.registerCommand('research', {
+    description:
+      'RPIV research phase. Usage: /research <topic> | /research --debug <symptom>',
+    // AIDEV-NOTE: Command resolves args/mode/artifact path synchronously, then
+    // hands off to the agent via sendUserMessage (same pattern as pr-digest).
+    // The ticket-creation gate lives in the agent prompt — the command itself
+    // never creates tickets. See research/ticket-gate.ts for the pure gate.
+    handler: async (args, ctx) => {
+      const parsed = parseResearchArgs(args)
+      if (parsed.kind === 'help') {
+        ctx.ui.notify(
+          'Usage: /research <topic> | /research --debug <symptom>',
+          'info',
+        )
+        return
+      }
+      const mode = await resolveMode(pi)
+      let input: string
+      if (parsed.kind === 'debug') {
+        input = parsed.symptom
+      } else {
+        input = parsed.topic
+      }
+      const { stdout } = await pi.exec(
+        'git',
+        ['rev-parse', '--show-toplevel'],
+        {},
+      )
+      const toplevel = stdout.trim()
+      const repoName = toplevel.split('/').pop() ?? 'unknown'
+      const dir = resolveResearchDir(
+        process.env.LLM_NOTES_ROOT,
+        repoName,
+        toplevel,
+      )
+      const artifactPath = researchArtifactPath(
+        dir,
+        input,
+        new Date().toISOString().slice(0, 10),
+      )
+      pi.sendUserMessage(
+        buildResearchPrompt({
+          kind: parsed.kind,
+          input,
+          artifactPath,
+          mode,
+        }),
+      )
+    },
+  })
 
   pi.registerCommand('flow', {
     description: 'RPIV flow overview (stub)',

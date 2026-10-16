@@ -14,7 +14,7 @@ ships the foundation:
   (`bug`, `oneshot`, `plan`). On `session_start` the extension best-effort
   runs `aven label create <name>` for each label so they exist before first
   use.
-- **Stub slash commands** — `/research`, `/plan`, `/implement`, `/validate`,
+- **Slash commands** — `/research` (implemented: dual flow + ticket gate), `/plan`, `/implement`, `/validate`,
   `/feedback`, `/flow` reply "not implemented yet".
 
 ## Configuration
