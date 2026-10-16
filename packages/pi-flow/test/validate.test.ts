@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { describe, it, test } from 'node:test'
 import { parseValidateArgs } from '../validate/args.ts'
 import {
   GATE_STEPS,
@@ -10,6 +10,7 @@ import {
   stepSucceeds,
 } from '../validate/gate.ts'
 import { DEVCTL_REPO_NAME, resolveDevctlScriptsDir } from '../validate/paths.ts'
+import { composeHumanTest, routePersonalOutcome } from '../validate/personal.ts'
 import { buildValidatePrompt } from '../validate/prompt.ts'
 
 // --- args ---
@@ -147,11 +148,92 @@ test('buildValidatePrompt: work mode lists all gate steps in order', () => {
   assert.ok(p.includes('/x/sh-devctl/scripts'))
 })
 
-test('buildValidatePrompt: personal mode is a PMR-8449 seam', () => {
+// --- personal mode (PMR-8449) ---
+
+describe('composeHumanTest', () => {
+  it('returns insufficient-context when all sections are empty', () => {
+    const r = composeHumanTest({
+      whatChanged: '',
+      planValidationNotes: '',
+      researchFindings: '',
+    })
+    assert.equal(r.ok, false)
+    if (!r.ok) assert.match(r.reason, /insufficient/i)
+  })
+  it('returns insufficient-context when sections are whitespace only', () => {
+    const r = composeHumanTest({
+      whatChanged: '  ',
+      planValidationNotes: '\n',
+      researchFindings: '',
+    })
+    assert.equal(r.ok, false)
+  })
+  it('composes runnable steps from whatChanged + validation notes', () => {
+    const r = composeHumanTest({
+      whatChanged: 'Added gate.ts state machine to validate/.',
+      planValidationNotes: 'Run: bun test validate. Expect all tests green.',
+      researchFindings: 'Gate must never advance past a failure.',
+    })
+    assert.equal(r.ok, true)
+    if (!r.ok) return
+    assert.ok(r.steps.length >= 2)
+    assert.ok(r.steps.some((s) => s.includes('bun test validate')))
+    assert.ok(r.expectedOutcome.includes('all tests green'))
+    // whatChanged and research findings appear as context steps
+    const joined = r.steps.join('\n')
+    assert.ok(joined.includes('Added gate.ts'))
+  })
+  it('missing validation notes still composes but expected outcome comes from research', () => {
+    const r = composeHumanTest({
+      whatChanged: 'Rewired /validate personal branch.',
+      planValidationNotes: '',
+      researchFindings: 'Human runs the flow and answers pass/fail.',
+    })
+    assert.equal(r.ok, true)
+    if (!r.ok) return
+    assert.ok(r.expectedOutcome.includes('pass/fail'))
+  })
+})
+
+describe('routePersonalOutcome', () => {
+  it('pass completes with a dated aven note', () => {
+    const r = routePersonalOutcome({ kind: 'pass' }, '2026-10-16')
+    assert.deepEqual(r, {
+      action: 'complete',
+      avenNote: 'validated by human, 2026-10-16',
+    })
+  })
+  it('fail routes back to /implement with the failure note and retry reset', () => {
+    const r = routePersonalOutcome(
+      { kind: 'fail', description: 'gate froze after step 2' },
+      '2026-10-16',
+    )
+    assert.deepEqual(r, {
+      action: 'reimplement',
+      avenNote: 'gate froze after step 2',
+      route: '/implement',
+      retryBudgetReset: true,
+    })
+  })
+  it('fail without description is refused', () => {
+    const r = routePersonalOutcome(
+      { kind: 'fail', description: '   ' },
+      '2026-10-16',
+    )
+    assert.equal(r.action, 'invalid')
+  })
+})
+
+test('buildValidatePrompt: personal mode asks for artifacts, ask_user_question, routing', () => {
   const p = buildValidatePrompt({
     mode: 'personal',
     ref: 'PMR-F7YM',
     scriptsDir: null,
   })
-  assert.ok(p.includes('PMR-8449'))
+  assert.ok(p.includes('PMR-F7YM'))
+  assert.ok(p.includes('ask_user_question'))
+  assert.ok(p.includes('/implement'))
+  assert.ok(p.includes('validated by human'))
+  assert.ok(!p.includes('PMR-8449'))
+  assert.ok(!p.includes('minikube'))
 })

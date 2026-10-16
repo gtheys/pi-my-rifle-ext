@@ -293,8 +293,9 @@ export default function (pi: ExtensionAPI) {
     description: 'RPIV validate phase. Usage: /validate <jira-id | aven-ref>',
     // AIDEV-NOTE: Work mode resolves the sh-devctl scripts dir from the first
     // configured workRoot (validate/paths.ts) and hands off via
-    // sendUserMessage. Personal mode is an explicit PMR-8449 seam, not a
-    // silent fallthrough. Missing workRoots config fails loudly in work mode.
+    // sendUserMessage. Personal mode (PMR-8449) hands off via the same prompt
+    // builder; validate/prompt.ts branches on mode and never falls through to
+    // the work gate. Missing workRoots config fails loudly in work mode.
     handler: async (args, ctx) => {
       const parsed = parseValidateArgs(args)
       if (parsed.kind === 'help') {

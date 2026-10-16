@@ -3,8 +3,10 @@
 // in validate/gate.ts order via bash, bounded minikube poll, deploy via the
 // user's devctl skill BY NAME, manual-test results collected via
 // ask_user_question, evidence comment posted via acli. Validation passes ONLY
-// after the Jira comment lands. Personal mode is a clean seam: its flow is
-// wired by ticket PMR-8449 and is never silently treated as work mode.
+// after the Jira comment lands. Personal mode (PMR-8449): the human runs the
+// test themselves — the agent locates the artifacts, composes instructions via
+// validate/personal.ts, asks pass/fail via ask_user_question, then records and
+// routes per routePersonalOutcome. Personal mode is never treated as work mode.
 
 import { DEFAULT_POLL_CONFIG } from './gate.ts'
 
@@ -18,8 +20,26 @@ export function buildValidatePrompt(input: ValidatePromptInput): string {
   const header = `Validate phase (RPIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
   if (input.mode === 'personal') {
     return `${header}
-Personal-mode validation is wired by ticket PMR-8449 and is not implemented yet.
-Record this on ${input.ref} as an aven note ("validate: personal flow pending (PMR-8449)") and stop — do NOT run the work-mode gate.`
+Personal-mode validation: there is no cluster — the human is the test
+environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli).
+
+1. Locate the ticket's plan/research artifacts for ${input.ref} (the plan-path
+   metadata / research dir from earlier phases) and extract: what changed,
+   the plan's validation notes, and the research findings.
+2. Compose concrete runnable test instructions from those sections using the
+   rules in validate/personal.ts (composeHumanTest): numbered steps the human
+   can literally run, plus the expected outcome. If ALL sections are empty,
+   STOP and tell the human the artifacts are missing — never invent generic
+   filler steps.
+3. Present the instructions to the human via ask_user_question with exactly
+   two options: "pass" and "fail". WAIT for the answer — do not proceed until
+   the human has run the steps and replied.
+4. On "pass": record an aven note on ${input.ref} reading
+   "validated by human, <today's date>" and report validation complete (the
+   review gate runs next).
+5. On "fail": ask the human for a short failure description, record it as an
+   aven note on ${input.ref}, and route back to /implement ${input.ref} — the
+   retry budget resets for the new attempt.`
   }
   const scripts = input.scriptsDir
   return `${header}
