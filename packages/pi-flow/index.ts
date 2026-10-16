@@ -6,6 +6,8 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
+import { parseFeedbackArgs } from './feedback/args.ts'
+import { buildFeedbackPrompt } from './feedback/prompt.ts'
 import { parseImplementArgs } from './implement/args.ts'
 import { buildImplementPrompt } from './implement/prompt.ts'
 import { routeFor } from './implement/routing.ts'
@@ -99,31 +101,10 @@ export async function ensureLabels(): Promise<void> {
   }
 }
 
-const STUB_PHASES = [
-  'research',
-  'plan',
-  'implement',
-  'validate',
-  'feedback',
-] as const
-
 export default function (pi: ExtensionAPI) {
   pi.on('session_start', async () => {
     await ensureLabels()
   })
-
-  for (const phase of STUB_PHASES) {
-    if (phase === 'research' || phase === 'plan') continue // implemented below
-    pi.registerCommand(phase, {
-      description: `RPIV flow: ${phase} phase (stub)`,
-      handler: async (_args, ctx) => {
-        ctx.ui.notify(
-          `/flow ${phase}: not implemented yet — wired by its phase ticket.`,
-          'info',
-        )
-      },
-    })
-  }
 
   pi.registerCommand('research', {
     description:
@@ -323,6 +304,29 @@ export default function (pi: ExtensionAPI) {
         return
       }
       pi.sendUserMessage(buildValidatePrompt({ mode, ref, scriptsDir: null }))
+    },
+  })
+
+  pi.registerCommand('feedback', {
+    description: 'RPIV feedback phase. Usage: /feedback <jira-id | aven-ref>',
+    // AIDEV-NOTE: Same handoff pattern as /validate. Work mode runs the
+    // /sonarqube + /pr-quality gate via the prompt; personal mode runs
+    // /review + the outcome-summary-then-done flow. All gating rules live
+    // in the pure feedback/triage.ts and the prompt text.
+    handler: async (args, ctx) => {
+      const parsed = parseFeedbackArgs(args)
+      if (parsed.kind === 'help') {
+        ctx.ui.notify('Usage: /feedback <jira-id | aven-ref>', 'info')
+        return
+      }
+      const mode = await resolveMode(pi)
+      let ref: string
+      if (parsed.kind === 'jira') {
+        ref = parsed.jiraId
+      } else {
+        ref = parsed.ref
+      }
+      pi.sendUserMessage(buildFeedbackPrompt({ mode, ref }))
     },
   })
 
