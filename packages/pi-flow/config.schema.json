@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pi-flow Extension Config",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "workRoots": {
+      "type": "array",
+      "description": "Git toplevels under any prefix are \"work\" mode",
+      "items": {
+        "type": "string",
+        "description": "Absolute path prefix of a work repo root"
+      },
+      "minItems": 0
+    }
+  },
+  "required": ["workRoots"],
+  "additionalProperties": false
+}
