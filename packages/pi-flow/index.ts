@@ -7,6 +7,9 @@ import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
 import { ALL_LABELS } from './phase-state.ts'
+import { parsePlanArgs } from './plan/args.ts'
+import { resolvePlanDir } from './plan/paths.ts'
+import { buildPlanPrompt } from './plan/prompt.ts'
 import { parseResearchArgs } from './research/args.ts'
 import { researchArtifactPath, resolveResearchDir } from './research/paths.ts'
 import { buildResearchPrompt } from './research/prompt.ts'
@@ -104,7 +107,7 @@ export default function (pi: ExtensionAPI) {
   })
 
   for (const phase of STUB_PHASES) {
-    if (phase === 'research') continue // implemented below
+    if (phase === 'research' || phase === 'plan') continue // implemented below
     pi.registerCommand(phase, {
       description: `RPIV flow: ${phase} phase (stub)`,
       handler: async (_args, ctx) => {
@@ -162,6 +165,49 @@ export default function (pi: ExtensionAPI) {
           input,
           artifactPath,
           mode,
+        }),
+      )
+    },
+  })
+
+  pi.registerCommand('plan', {
+    description: 'RPIV plan phase. Usage: /plan <jira-id | aven-ref>',
+    // AIDEV-NOTE: Same handoff pattern as /research. Work mode routes to the
+    // user's feature-plan-aven skill by name; personal mode runs the size-check
+    // flow. Decomposition only via plan/split-gate.ts after explicit confirm.
+    handler: async (args, ctx) => {
+      const parsed = parsePlanArgs(args)
+      if (parsed.kind === 'help') {
+        ctx.ui.notify('Usage: /plan <jira-id | aven-ref>', 'info')
+        return
+      }
+      const mode = await resolveMode(pi)
+      let ref: string
+      if (parsed.kind === 'jira') {
+        ref = parsed.jiraId
+      } else {
+        ref = parsed.ref
+      }
+      const { stdout } = await pi.exec(
+        'git',
+        ['rev-parse', '--show-toplevel'],
+        {},
+      )
+      const toplevel = stdout.trim()
+      const repoName = toplevel.split('/').pop() ?? 'unknown'
+      const dir = resolvePlanDir(
+        process.env.PERSONAL_FEATURES,
+        repoName,
+        toplevel,
+        new Date().toISOString().slice(0, 10),
+        ref,
+      )
+      const planPath = path.join(dir, 'plan.md')
+      pi.sendUserMessage(
+        buildPlanPrompt({
+          mode,
+          ref,
+          planPath,
         }),
       )
     },
