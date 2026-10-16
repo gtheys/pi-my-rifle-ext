@@ -9,6 +9,42 @@
 // routes per routePersonalOutcome. Personal mode is never treated as work mode.
 
 import { DEFAULT_POLL_CONFIG } from './gate.ts'
+import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
+
+// AIDEV-NOTE: Review gate section (PMR-JTAM) — appended to BOTH validate
+// prompts. Runs after the env/human gate passes: /review (fresh-context
+// reviewer, pi-review) -> parse blockers_count artifact -> route. The
+// blockers_count contract lives in review-gate.ts (pi-review does not emit
+// it yet, so the prompt tells the agent to write the line itself).
+function buildReviewGateSection(
+  mode: 'work' | 'personal',
+  ref: string,
+): string {
+  let landing: string
+  if (mode === 'work') {
+    landing = `LANDING (work mode): push the branch and create a PR via
+   pi-review's PR tooling BY NAME (gh CLI), then post a Jira comment on
+   ${ref} linking the PR URL.`
+  } else {
+    landing = `LANDING (personal mode): push the branch straight to main —
+   the standing no-PR rule on own repos. No PR, no Jira link step.`
+  }
+  return `
+Review gate — run ONLY after validation has fully passed:
+
+7. Run /review on this change (the fresh-context reviewer). When it returns,
+   write the review artifact's verdict as machine-readable lines — exactly
+   one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
+   0 when clean) plus one "- blocker: <description>" line per blocker:
+${REVIEW_CONTRACT_PROMPT}
+8. Read the count. NEVER treat a missing or malformed count as 0 — a
+   malformed artifact means re-run /review, not silent landing.
+9. If blockers_count is 0: proceed to landing.
+   ${landing}
+10. If blockers_count > 0: record each blocker as an aven note on ${ref},
+   route back to /implement ${ref} (retry budget applies), and STOP — do
+   not land.`
+}
 
 export interface ValidatePromptInput {
   mode: 'work' | 'personal'
@@ -39,7 +75,8 @@ environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli
    review gate runs next).
 5. On "fail": ask the human for a short failure description, record it as an
    aven note on ${input.ref}, and route back to /implement ${input.ref} — the
-   retry budget resets for the new attempt.`
+   retry budget resets for the new attempt.
+${buildReviewGateSection('personal', input.ref)}`
   }
   const scripts = input.scriptsDir
   return `${header}
@@ -68,5 +105,6 @@ landed. Track progress against the ordered gate steps
 
 On ANY step failure: STOP. Write the failing step's name and its full failing
 output as an aven note on ${input.ref}, and report the failure to the human.
-Never continue past a failed step, never mark the phase validated.`
+Never continue past a failed step, never mark the phase validated.
+${buildReviewGateSection('work', input.ref)}`
 }
