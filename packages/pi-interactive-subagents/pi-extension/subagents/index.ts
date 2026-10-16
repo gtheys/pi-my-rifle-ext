@@ -85,6 +85,7 @@ import {
   pickRollbackTabs,
   waitShellReady,
 } from './spawn.ts'
+import { allocateSpawnIdentity } from './spawnseq.ts'
 import {
   advanceStatusState,
   applyPendingAck,
@@ -1632,8 +1633,11 @@ function startStatusRefresh(pi: ExtensionAPI) {
         // again. Coalescing still applies to the FRESH records only, so a
         // mixed tick sends one steer over the new messages. Marker written
         // AFTER the steer send succeeds (see pumpReplies window note).
+        // AIDEV-NOTE: const alias — TS narrowing doesn't survive the arrow
+        // callback below.
+        const ownerId = ownerSessionId
         const entries = allEntries.filter(
-          (entry) => !hasDelivered(ownerSessionId, entry.message.messageId),
+          (entry) => !hasDelivered(ownerId, entry.message.messageId),
         )
         if (entries.length > 0) {
           const coalesced = coalesceOwnerMessages(
@@ -1905,11 +1909,12 @@ function resolveHerdrWorkspaceId(): string | null {
  */
 const sparedAssignments = new Set<string>()
 
-// AIDEV-NOTE (PMR-Z5KR): the durable assignment is the authority, written
-// AFTER a successful spawn (a failed spawn leaves no record — nothing to
-// clean up). A write failure must not fail the spawn (same at-least-once
-// discipline as the result store): the in-memory entry + watcher still
-// deliver the result.
+// AIDEV-NOTE (PMR-Z5KR): the durable assignment is the authority. Since
+// PMR-YKAC the record is written record-FIRST (status 'starting') before
+// spawn side effects; this post-spawn write upgrades it to the full
+// 'working' picture (paneId/tabId/workspaceId). A write failure must not
+// fail the spawn (same at-least-once discipline as the result store): the
+// in-memory entry + watcher still deliver the result.
 function persistAssignment(
   running: RunningSubagent,
   cwd: string,
@@ -1994,13 +1999,30 @@ async function launchSubagent(
   ctx: ExtensionContext,
 ): Promise<RunningSubagent> {
   const startTime = Date.now()
-  const id = Math.random().toString(16).slice(2, 10)
 
   // Programmatic callers (e.g. pi-test-runner) do not go through the subagent
   // tool, so make sure the UI context and refresh loops are initialized.
   if (!latestCtx) {
     latestCtx = ctx
   }
+
+  const sessionFile = ctx.sessionManager.getSessionFile()
+  if (!sessionFile) throw new Error('No session file')
+  const sessionId = ctx.sessionManager.getSessionId()
+
+  // AIDEV-NOTE (PMR-YKAC): replay-safe spawn — lookup BEFORE any side
+  // effect. A 'starting' assignment record from this parent session with the
+  // same name+task is a spawn that crashed after its record write but before
+  // tab create: reuse its childId/sessionFile/worktree instead of
+  // duplicating. Fresh spawns get a deterministic childId from
+  // (parentSessionId, durable spawnSeq) — see spawnseq.ts.
+  const spawnIdentity = allocateSpawnIdentity({
+    parentSessionId: sessionId ?? null,
+    name: params.name,
+    task: params.task,
+  })
+  const id = spawnIdentity.childId
+  const replayed = spawnIdentity.replay
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null
   const driftRole = rolePrefixWithoutAgent(params.name, params.agent)
@@ -2023,6 +2045,9 @@ async function launchSubagent(
   // state (the worktree itself, if created, is never auto-removed). The
   // worktree path then becomes the child cwd for session dir, agent
   // discovery, and `tab create --cwd`.
+  // AIDEV-NOTE (PMR-YKAC): on replay the crashed spawn's branch/path are
+  // reused; the `git worktree add` is skipped when the recorded path already
+  // exists (no duplicate worktree for the retried spawn).
   let worktree: { path: string; branch: string } | null = null
   if (params.worktree) {
     if (params.cwd) {
@@ -2034,16 +2059,18 @@ async function launchSubagent(
     if (typeof params.worktree === 'object') {
       base = params.worktree.base
     }
-    worktree = createSubagentWorktree({
-      cwd: ctx.cwd,
-      branch: deriveWorktreeBranch(params.name, id),
-      base,
-    })
+    const branch = replayed?.branch ?? deriveWorktreeBranch(params.name, id)
+    if (replayed?.worktree && existsSync(replayed.worktree)) {
+      worktree = { path: replayed.worktree, branch }
+    } else {
+      worktree = createSubagentWorktree({
+        cwd: ctx.cwd,
+        branch,
+        base,
+      })
+    }
   }
 
-  const sessionFile = ctx.sessionManager.getSessionFile()
-  if (!sessionFile) throw new Error('No session file')
-  const sessionId = ctx.sessionManager.getSessionId()
   const artifactDir = getArtifactDir(
     ctx.sessionManager.getSessionDir(),
     sessionId,
@@ -2068,7 +2095,37 @@ async function launchSubagent(
     Math.random().toString(16).slice(2, 10),
     Math.random().toString(16).slice(2, 6),
   ].join('-')
-  const subagentSessionFile = join(sessionDir, `${timestamp}_${uuid}.jsonl`)
+  // Replay: adopt the crashed spawn's session file so resume/attach paths
+  // keep pointing at one file.
+  const subagentSessionFile =
+    replayed?.sessionFile ?? join(sessionDir, `${timestamp}_${uuid}.jsonl`)
+
+  // AIDEV-NOTE (PMR-YKAC): record-first — the durable 'starting' assignment
+  // is written BEFORE the remaining spawn side effects (seed, tab create).
+  // This inverts the old "failed spawn leaves no record" rule on purpose: a
+  // crash now leaves a resumable record that allocateSpawnIdentity replays,
+  // and orphan discovery can distinguish it (status 'starting', no paneId).
+  // persistAssignment still upgrades the record to 'working' after a
+  // successful spawn. Write failure must not fail the spawn (at-least-once
+  // discipline, same as persistAssignment below).
+  const activityFile = getSubagentActivityFile(artifactDir, id)
+  if (!replayed) {
+    try {
+      writeAssignment({
+        childId: id,
+        name: params.name,
+        task: params.task,
+        agent: params.agent,
+        sessionFile: subagentSessionFile,
+        activityFile,
+        cwd: targetCwdForSession,
+        worktree: worktree?.path,
+        branch: worktree?.branch,
+        status: 'starting',
+        claim: { pid: process.pid, id: sessionId ?? 'unknown' },
+      })
+    } catch {}
+  }
 
   const launchBehavior = resolveLaunchBehavior(params, agentDefs)
 
@@ -2081,7 +2138,6 @@ async function launchSubagent(
     })
   }
 
-  const activityFile = getSubagentActivityFile(artifactDir, id)
   mkdirSync(dirname(activityFile), { recursive: true })
   const { inheritsConversationContext } = launchBehavior
 
@@ -2286,6 +2342,13 @@ async function launchSubagent(
     })
   } catch (err) {
     runningSubagents.delete(id)
+    // AIDEV-NOTE (PMR-YKAC): a CLEAN spawn failure (throw, not crash) retires
+    // the 'starting' record as 'lost' so a retry allocates fresh instead of
+    // replaying a spawn whose inputs may be broken. A crash (no throw) keeps
+    // the record 'starting' — that is the replay path.
+    try {
+      updateAssignmentStatus(id, 'lost')
+    } catch {}
     updateWidget()
     throw err
   }

@@ -39,6 +39,7 @@ import {
 import {
   assignmentPath,
   findAssignmentByBranch,
+  findStartingAssignment,
   listAssignments,
   readAssignment,
   recordAssignmentUsage,
@@ -2672,6 +2673,11 @@ import {
   resolvePeer,
   sendPeerMessage,
 } from '../pi-extension/subagents/peers.ts'
+import {
+  allocateSpawnIdentity,
+  deriveChildId,
+  nextSpawnSeq,
+} from '../pi-extension/subagents/spawnseq.ts'
 import {
   createSubagentWorktree,
   deriveWorktreeBranch,
@@ -5531,5 +5537,128 @@ describe('delivered.ts exactly-once dedup (PMR-KY0E)', () => {
     assert.equal(fresh.length, 1) // duplicate delivered once
     for (const entry of entries) removeOwnerMessage(entry.path)
     assert.equal(readOwnerInbox('parent-s', root).length, 0)
+  })
+})
+
+describe('replay-safe spawn identity (PMR-YKAC)', () => {
+  let root: string
+
+  before(() => {
+    root = join(mkdtempSync(join(tmpdir(), 'spawnseq-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('allocates durable, strictly increasing seqs per parent', () => {
+    assert.equal(nextSpawnSeq('parent-a', root), 1)
+    assert.equal(nextSpawnSeq('parent-a', root), 2)
+    assert.equal(nextSpawnSeq('parent-a', root), 3)
+  })
+
+  it('isolates seqs per parent session (no cross-parent collision)', () => {
+    assert.equal(nextSpawnSeq('parent-b', root), 1)
+    const a = deriveChildId('parent-a', 1)
+    const b = deriveChildId('parent-b', 1)
+    assert.notEqual(a, b)
+  })
+
+  it('derives deterministic 8-hex childIds from (parent, seq)', () => {
+    const id = deriveChildId('parent-a', 2)
+    assert.match(id, /^[0-9a-f]{8}$/)
+    assert.equal(id, deriveChildId('parent-a', 2))
+    assert.notEqual(id, deriveChildId('parent-a', 3))
+  })
+
+  function startingDraft(
+    childId: string,
+    overrides?: Partial<Parameters<typeof writeAssignment>[0]>,
+  ) {
+    return {
+      childId,
+      name: 'worker: x',
+      task: 'do the thing',
+      sessionFile: `/tmp/${childId}.jsonl`,
+      cwd: '/tmp',
+      status: 'starting' as const,
+      claim: { pid: 4194304, id: 'parent-a' }, // dead pid: a crashed parent
+      ...overrides,
+    }
+  }
+
+  it('findStartingAssignment matches only same parent + name + task + starting', () => {
+    writeAssignment(startingDraft('st-1'), root)
+    const hit = findStartingAssignment(
+      { parentSessionId: 'parent-a', name: 'worker: x', task: 'do the thing' },
+      root,
+    )
+    assert.equal(hit?.childId, 'st-1')
+    // different task: no match
+    assert.equal(
+      findStartingAssignment(
+        { parentSessionId: 'parent-a', name: 'worker: x', task: 'other' },
+        root,
+      ),
+      null,
+    )
+    // different parent: no match
+    assert.equal(
+      findStartingAssignment(
+        {
+          parentSessionId: 'parent-b',
+          name: 'worker: x',
+          task: 'do the thing',
+        },
+        root,
+      ),
+      null,
+    )
+    // already-spawned (working) record: no match
+    writeAssignment(startingDraft('st-2', { status: 'working' }), root)
+    assert.equal(
+      findStartingAssignment(
+        {
+          parentSessionId: 'parent-a',
+          name: 'worker: x',
+          task: 'do the thing',
+        },
+        root,
+      )?.childId,
+      'st-1',
+    )
+  })
+
+  it('allocateSpawnIdentity replays a crashed spawn instead of duplicating', () => {
+    // crash AFTER the 'starting' record write, BEFORE tab create: st-1 above
+    const first = allocateSpawnIdentity(
+      { parentSessionId: 'parent-a', name: 'worker: x', task: 'do the thing' },
+      root,
+    )
+    assert.equal(first.replay?.childId, 'st-1')
+    assert.equal(first.childId, 'st-1') // same child reused, no new seq burned
+    assert.equal(nextSpawnSeq('parent-c', root), 1) // untouched parent unaffected
+  })
+
+  it('allocateSpawnIdentity allocates deterministically when no replay exists', () => {
+    const fresh = allocateSpawnIdentity(
+      { parentSessionId: 'parent-d', name: 'worker: y', task: 't' },
+      root,
+    )
+    assert.equal(fresh.replay, null)
+    assert.equal(fresh.childId, deriveChildId('parent-d', 1))
+    const second = allocateSpawnIdentity(
+      { parentSessionId: 'parent-d', name: 'worker: z', task: 't2' },
+      root,
+    )
+    assert.equal(second.childId, deriveChildId('parent-d', 2))
+  })
+
+  it('falls back to a random id without a parent session id', () => {
+    const anon = allocateSpawnIdentity(
+      { parentSessionId: null, name: 'n', task: 't' },
+      root,
+    )
+    assert.equal(anon.replay, null)
+    assert.match(anon.childId, /^[0-9a-f]{8}$/)
   })
 })

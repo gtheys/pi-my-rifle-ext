@@ -254,12 +254,45 @@ export function listAssignments(root?: string): AssignmentView[] {
       record,
     }
     if (record.sessionFile) {
-      view.resumeHint = `subagent_resume({ sessionPath: "${record.sessionFile}" })`
+      // AIDEV-NOTE (PMR-YKAC): a 'starting' record with no paneId is a spawn
+      // that crashed between record-write and tab-create — its session file
+      // likely never started, so a resume hint would point at nothing. Tell
+      // the parent to re-issue the spawn; allocateSpawnIdentity will reuse
+      // this record.
+      if (record.status === 'starting' && !record.paneId) {
+        view.resumeHint =
+          'spawn crashed before tab create — re-issue the same spawn; the record will be reused'
+      } else {
+        view.resumeHint = `subagent_resume({ sessionPath: "${record.sessionFile}" })`
+      }
     }
     views.push(view)
   }
   views.sort((a, b) => a.childId.localeCompare(b.childId))
   return views
+}
+
+// AIDEV-NOTE (PMR-YKAC): replay lookup for spawn identity — the 'starting'
+// record this parent wrote before its crashed spawn's tab create. Matches on
+// parent session + name + task so a retried tool call finds its half-spawn;
+// 'working'/'lost' records and other parents/tasks never match. Most recent
+// wins when several match (shouldn't happen — one in-flight spawn per
+// name+task — but fail toward the newest evidence).
+export function findStartingAssignment(
+  options: { parentSessionId: string; name: string; task: string },
+  root?: string,
+): AssignmentRecord | null {
+  let best: AssignmentRecord | null = null
+  for (const view of listAssignments(root)) {
+    if (view.state === 'unknown') continue
+    const record = view.record
+    if (record.status !== 'starting') continue
+    if (record.claim.id !== options.parentSessionId) continue
+    if (record.name !== options.name) continue
+    if (record.task !== options.task) continue
+    if (!best || record.createdAt > best.createdAt) best = record
+  }
+  return best
 }
 
 // AIDEV-NOTE: branch-keyed authority lookup (herdsman ADR 0017). Exactly one
