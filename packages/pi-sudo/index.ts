@@ -23,7 +23,8 @@
  *   - Output truncated to 50 KB / 2000 lines.
  */
 
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { basename } from 'node:path'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -328,6 +329,43 @@ function showSudoPrompt(
   })
 }
 
+// ── Attention notifications ─────────────────────────────────────────────────
+// AIDEV-NOTE: fired when the prompt starts waiting on the user — desktop
+// (notify-send) + herdr (when inside a herdr session). Best-effort and
+// fire-and-forget: a missing daemon/server must never block the prompt.
+function notifyAttention(command: string, cwd: string): void {
+  const summary = `pi needs attention — ${basename(cwd)}`
+  const firstLine = command.split('\n')[0] ?? ''
+  const body =
+    firstLine.length > 120 ? `${firstLine.slice(0, 120)}…` : firstLine
+  execFile(
+    'notify-send',
+    [
+      '--app-name=pi',
+      '--icon=utilities-terminal',
+      '--urgency=critical',
+      summary,
+      `Root approval: ${body}`,
+    ],
+    () => {},
+  ).unref()
+  if (process.env.HERDR_ENV === '1') {
+    execFile(
+      'herdr',
+      [
+        'notification',
+        'show',
+        summary,
+        '--body',
+        `Root approval: ${body}`,
+        '--sound',
+        'request',
+      ],
+      () => {},
+    ).unref()
+  }
+}
+
 // ── Extension entry point ─────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI): void {
@@ -384,6 +422,8 @@ export default function (pi: ExtensionAPI): void {
         content: [{ type: 'text', text: 'Awaiting root approval…' }],
         details: makeDetails(command, reason, { outcome: 'awaiting-approval' }),
       })
+
+      notifyAttention(command, ctx.cwd)
 
       const overlay = await withUILock(() =>
         showSudoPrompt(ctx, command, reason),

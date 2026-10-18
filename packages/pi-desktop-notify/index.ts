@@ -110,6 +110,25 @@ export default function (pi: ExtensionAPI) {
     } catch (_e) {
       // Silently ignore — notification daemon may not be running
     }
+
+    // AIDEV-NOTE: herdr channel mirrors the desktop one — same enabled flag,
+    // same best-effort semantics. Gated on HERDR_ENV so we don't spawn herdr
+    // outside a herdr session.
+    if (process.env.HERDR_ENV === '1') {
+      try {
+        await execFileAsync('herdr', [
+          'notification',
+          'show',
+          summary,
+          '--body',
+          fullBody,
+          '--sound',
+          'done',
+        ])
+      } catch (_e) {
+        // Silently ignore — herdr server may not be running
+      }
+    }
   })
 
   pi.registerCommand('notify', {

@@ -10,4 +10,4 @@ Pi extension that sends a desktop notification (via `notify-send`) when Pi finis
 /notify idle <s>   — set idle threshold in seconds (default 30)
 ```
 
-Notifications are sent only when the idle timer exceeds the threshold, preventing noise during rapid exchanges.
+Notifications are sent only when the idle timer exceeds the threshold, preventing noise during rapid exchanges. When running inside a [herdr](https://herdr.dev) session (`HERDR_ENV=1`), a herdr notification with the `done` sound is shown alongside the desktop one.
