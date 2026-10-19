@@ -36,7 +36,7 @@ with `unknown-ref`.
 flowchart TD
   A[Ticket in aven inbox/todo] --> B["aven show REF --full + aven context REF"]
   B --> C[scout subagent -> scout-context.md]
-  C --> D[interview: one round<br/>Goal / Behavior / Done when / Out of scope]
+  C --> D[interview: one round<br/>Goal / Behavior / Done when<br/>Constraints / Verification / Out of scope]
   D --> E["resolve_feature_path tool -> plan.md path"]
   E --> F[interactive planner subagent writes plan.md]
   F --> G["aven edit REF --epic on --status todo<br/>--metadata plan-path=ABS, plan-state=draft→review"]
@@ -155,7 +155,10 @@ hand-roll it, never shorten it, never `mkdir notes/` yourself.
 
 Ask only what you can't infer from scout findings, grouped in a single message.
 Aim for 3–6 questions (behavior, scope, trigger/UX, constraints, edge cases,
-boundaries). Always offer the out: "...or say 'use your judgment' and I'll pick
+boundaries). Two answers are mandatory: **done-when** (observable success
+criteria) and **verification** (the command or check that proves it — test
+runner, script, or manual step). Everything else can default. Always offer
+the out: "...or say 'use your judgment' and I'll pick
 sensible defaults." If the user defers, pick defaults and mark them as
 assumptions.
 
@@ -173,6 +176,8 @@ aven note <REF> --stdin <<'EOF'
 Goal: ...
 Behavior: ...
 Done when: ...
+Constraints: ...
+Verification: ...
 Out of scope: ...
 EOF
 
@@ -210,7 +215,7 @@ subagent({
     "<scout-context summary or path>",
     "",
     "Interview answers:",
-    "<Goal/Behavior/Done when/Out of scope>",
+    "<Goal/Behavior/Done when/Constraints/Verification/Out of scope>",
     "",
     "Write the final plan to: <absolute plan.md path>",
     "",
@@ -239,6 +244,9 @@ later, in stage 2. Design points the plan must satisfy:
   plus an explicit **Acceptance criteria** checklist. Stage 2 copies this
   text into the ticket `--description` verbatim — write it so a worker who
   never opens plan.md still knows exactly what to build and when it's done.
+- **Acceptance criteria must be checkable** — each phase's criteria end with
+  the verification command (test runner, script, or manual check) captured in
+  the interview, so a worker proves the phase done instead of guessing.
 - **Phases must be testable blocks**: the planner designs each phase so the repo
   is left green at its end — tests pass, then one commit scoped to that phase.
   A phase that can't end with `tests → commit` is too big or too small; split

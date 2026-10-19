@@ -249,6 +249,26 @@ function buildAgentPrompt(
     'You have two data sources below. Triage first, then fix immediately. Do NOT write a plan file.',
   )
   lines.push('')
+  // AIDEV-NOTE: Success-criteria preamble added from workflow-hygiene review
+  // 2026-10 — every /pr-quality session lacked explicit done-when/verification.
+  lines.push('### Success criteria (read first)')
+  lines.push('')
+  lines.push(
+    '- **Goal:** every unresolved review thread is fixed or resolved, and all BLOCKER/CRITICAL SonarCloud issues are fixed.',
+  )
+  lines.push(
+    '- **Constraints:** fix only what the two data sources flag — no drive-by refactors. Follow repo lint/style rules. Never resolve a thread as INVALID without a one-line justification.',
+  )
+  lines.push(
+    '- **Done when:** VALID threads fixed, INVALID threads resolved, BLOCKER/CRITICAL issues fixed or explicitly skipped with a reason, tests pass, fixes committed referencing the PR.',
+  )
+  lines.push(
+    '- **Verification:** run the repo test suite (its documented runner) after fixes; `git diff --stat` shows only intended files.',
+  )
+  lines.push(
+    '- **Circuit breaker:** if the same command or API call fails 3 times in a row, stop retrying — report what failed and what remains.',
+  )
+  lines.push('')
   lines.push('### Task A — Triage & Fix GitHub Review Comments')
   lines.push('')
   lines.push(
@@ -297,7 +317,10 @@ function buildAgentPrompt(
   lines.push('After all fixes are applied and tests pass:')
   lines.push('  - Run `git diff --stat` to confirm scope of changes.')
   lines.push(
-    '  - Present a short summary of what was fixed and what (if anything) was skipped and why.',
+    '  - Present the final summary in three lists: **Fixed** (item → what changed),',
+  )
+  lines.push(
+    '    **Resolved as INVALID** (thread → one-line justification), **Skipped** (item → why).',
   )
   lines.push(
     '  - Commit the fixes with a clear message referencing the PR number.',
