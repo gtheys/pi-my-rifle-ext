@@ -48,6 +48,31 @@ You will receive a prompt to execute a task. Once the task is finished provide a
 
 ---
 
+## Task hygiene #workflow-hygiene
+
+Drafted from the 2026-10 workflow-hygiene review (61 sessions, avg score 94.2,
+prompt maturity D). Aim is consistency, not rescue. Confirm, trim, or delete
+after piloting.
+
+1. **Preamble before non-trivial work.** State (or ask for) four things up
+   front: goal, constraints, done-when, verification command. If the prompt is
+   a bare ticket link or log request, ask for the missing pieces first —
+   sessions with an unstructured start score ~8.5 lower.
+2. **Investigation order for prod/staging debugging.** Work the observability
+   ladder — logs, then metrics/traces, then DB, then code. Handle auth/timeout
+   failures per the tool's docs; never retry-hammer a flaky endpoint.
+3. **Tool-failure circuit breaker.** Three consecutive failures of the same
+   command or API call → stop retrying, summarize what failed and what
+   remains, ask the user. Same for repeated identical edits (edit churn).
+4. **Plan before editing.** Name the exact file/endpoint the change will touch
+   before the first edit. If an approach fails, re-plan — don't patch around
+   it.
+5. **Split long sessions.** When compaction is approaching or the
+   investigation spans topics, close with a handoff summary (findings, state,
+   next step) and continue in a fresh session.
+
+---
+
 ## Memory (epimetheus / Hindsight)
 
 Flush guard is OFF (`requireExtraContextBeforeFlush: false`) — per-session-ID state
