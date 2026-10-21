@@ -34,7 +34,7 @@ representative tool registration.
 
 ## Workspace layout and dependency direction
 
-All packages are published to npm under `@gtheys/*` (e.g. `@gtheys/pi-fastcontext`).
+All packages are published to npm under `@gtheys/*` (e.g. `@gtheys/pi-sem`).
 Each `package.json` has a `files` allowlist shipping only TypeScript source —
 no build step, no `dist/`. Use `make release-dry-run` to verify tarballs before
 publishing.
@@ -45,7 +45,6 @@ packages/
 ├── pi-ask-user-question/     ask_user_question tool (interactive TUI dialogs), standalone
 ├── pi-prompt-snippets/       one-shot prompt snippet toggles (alt+s / /snippets), standalone
 ├── pi-desktop-notify/        /notify command, standalone
-├── pi-fastcontext/           fast_context_search tool + /fastcontext, standalone
 ├── pi-tool-pills/            wraps ls/read/find/grep/bash/write/edit tool RENDERING only
 ├── pi-interactive-subagents/ subagent tool + /plan dispatch; vendored, exports
 │                             programmatic launchSubagent/watchSubagent API
@@ -106,7 +105,6 @@ for 3 exec calls).
 | `pi-review/review` | `git`, `gh`, optional `ocr`, + reviewer agent & ocr scout via `pi-interactive-subagents` | checkout PRs, diff branches/commits, ocr second opinion |
 | `pi-review/sonarqube` | SonarCloud REST API (`sonarFetch`) | coverage + issues |
 | `pi-review/pr-quality` | `gh api graphql`, SonarCloud API | unresolved review threads + Sonar issues in one pass |
-| `pi-fastcontext` | local FastContext server (llama.cpp, `127.0.0.1:8772`) | fast semantic code search without a full agent turn |
 | `pi-interactive-subagents` | multiplexer CLI (cmux/tmux/zellij/wezterm/herdr) | sub-agents run in real terminal panes, results steer back into the session |
 | `pi-test-runner` | test scripts via the `pi-interactive-subagents` API | isolate test runs in a `test-runner` agent so they don't block the conversation |
 | `pi-pr-digest` | `gh` CLI | PR author/comment/review status across an org |

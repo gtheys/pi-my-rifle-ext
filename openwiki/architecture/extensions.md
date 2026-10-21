@@ -105,25 +105,6 @@ non-obvious implementation decisions worth knowing before you touch it.
   scanning entries backward on `session_start`.
 - **Commands:** `/notify`, `/notify on|off`, `/notify idle [seconds]`.
 
-## pi-fastcontext
-
-- **File:** `packages/pi-fastcontext/index.ts` (1015 lines — largest single file)
-- **Registers:** `fast_context_search` tool; `/fastcontext` command; `session_start` handler that scaffolds `config.schema.json` on first startup.
-- **What:** Read-only codebase search backed by a **local** FastContext model server
-  (llama.cpp, OpenAI-compatible API, default `http://127.0.0.1:8772/v1`, default model
-  `FastContext-1.0-4B-RL-Q4_K_M.gguf`). It's a lightweight agent loop that gives the
-  small local model its own read/grep/glob tools capped tightly (`MAX_READ_LINES=120`,
-  `MAX_GREP_RESULTS=40`, `MAX_TOOL_CHARS=5000`) and forces it to finalize within
-  `maxTurns` (default 6), returning compact `file:line` citations instead of full file
-  contents to the calling (larger, more expensive) model.
-- **Config:** TypeBox schema (`FastContextConfigSchema`) validates `JSON.parse` →
-  `unknown` at the boundary; `Value.Check()` rejects malformed files gracefully.
-  `config.schema.json` is checked-in and refreshed at startup when missing.
-  Config resolution order: built-in defaults → `getAgentDir()/fastcontext.json` →
-  `<cwd>/.pi/fastcontext.json` → `FASTCONTEXT_*` env vars (last wins).
-- **Why it exists:** avoid burning the primary model's context/turns on broad
-  exploratory search when a cheap local model can return citations instead.
-
 ## pi-tool-pills
 
 - **Files:** `packages/pi-tool-pills/index.ts`, `pill.ts`, `diff-renderer.ts`

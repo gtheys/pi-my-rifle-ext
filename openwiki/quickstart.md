@@ -64,7 +64,7 @@ All packages are published under the `@gtheys` scope on npm. Each package has:
 ```bash
 make release          # publish all packages
 make release-dry-run  # verify tarballs before publishing
-npm publish -w packages/pi-fastcontext --access public  # publish one package
+npm publish -w packages/pi-sem --access public  # publish one package
 ```
 
 Bump versions manually in each `packages/*/package.json` before releasing.
@@ -75,7 +75,7 @@ Bump versions manually in each `packages/*/package.json` before releasing.
 pi-my-rifle-ext/
 ├── packages/       # bun workspace packages — one per pi extension group
 │                   #   (ask-user-question, prompt-snippets, interactive-subagents,
-│                   #    planning, review, test-runner, fastcontext, sem, tool-pills,
+│                   #    planning, review, test-runner, sem, tool-pills,
 │                   #    desktop-notify, teams-transcript, pr-digest, worktree,
 │                   #    bootstrap, sudo, aven-context)
 ├── skills/         # SKILL.md-driven agent skills (engineering/tools)

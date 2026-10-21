@@ -30,7 +30,6 @@
       "./packages/pi-review/pr-quality/index.ts",
       "./packages/pi-test-runner/index.ts",
       "./packages/pi-interactive-subagents/pi-extension/subagents/index.ts",
-      "./packages/pi-fastcontext/index.ts",
       "./packages/pi-planning/plan-tools/index.ts",
       "./packages/pi-planning/implement-plan/index.ts",
       "./packages/pi-sem/index.ts",

@@ -35,7 +35,6 @@ not this file.
 | Term | Meaning |
 |---|---|
 | **Pill** | A colored badge label pi-tool-pills renders in front of tool output (e.g. for `ls`, `read`, `bash`) — purely visual, defined in `packages/pi-tool-pills/pill.ts`. |
-| **FastContext** | A local llama.cpp-served small model (`FastContext-1.0-4B-RL-Q4_K_M.gguf` by default) used by `pi-fastcontext` for cheap read-only codebase search, distinct from the primary conversation model. |
 | **sem** | The external `@ataraxy-labs/sem` CLI providing entity-level (function/class/method) git analysis, wrapped by the `pi-sem` extension's tools (`sem_diff`, `sem_impact`, `sem_context`, `sem_log`, `sem_entities`, `sem_blame`, `sem_eval`). |
 | **Subagent (pi-interactive-subagents)** | An agent (`scout`, `worker`, `planner`, `reviewer`, `test-runner`, …) spawned in a real multiplexer pane (cmux/tmux/zellij/WezTerm/Herdr). Fully async: `launchSubagent`/`watchSubagent` return immediately; results steer back into the main session as a new turn. Bundled agent definitions resolve project-local `.pi/agents/` → `~/.pi/agent/agents/` → bundled copy. Epimetheus memory is disabled inside subagent sessions (orphaned queue markers — see extensions.md). |
 | **ocr / OpenCodeReview** | External `ocr` CLI used by `/review` for a second opinion: pure-runner scout subagents write `ocr <args> --format json --output <tmpfile>` results back as `ocr_result` steers. `ocr delegate preview`/`rule` emit the LLM-free spec + rules the "Review with ocr delegate rules" preset applies host-side. |

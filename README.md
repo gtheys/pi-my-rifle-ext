@@ -40,7 +40,6 @@ pi-my-rifle-ext/
 │   ├── pi-review/           # review + sonarqube + pr-quality
 │   ├── pi-test-runner/      # run_tests tool + /test-runner command
 │   ├── pi-interactive-subagents/ # subagent orchestration (scout/worker/planner/…)
-│   ├── pi-fastcontext/      # fast_context_search tool + /fastcontext
 │   ├── pi-planning/         # plan-tools + implement-plan
 │   ├── pi-sem/              # pi-sem semantic code tools
 │   ├── pi-tool-pills/       # tool pill badges + Shiki diff rendering
@@ -146,7 +145,6 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-desktop-notify`](packages/pi-desktop-notify/) | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
 | [`pi-test-runner`](packages/pi-test-runner/) | `run_tests` tool + `/test-runner` command — runs JS/TS tests from `package.json` in an isolated pi-interactive-subagents worker; visible in the orchestrator's subagents widget; results injected back when done ⚠️ *experimental/WIP* | Testing |
 | [`pi-interactive-subagents`](packages/pi-interactive-subagents/) | `subagent` tool + `/plan` dispatch command — spawn scout/worker/planner sub-agents in cmux/tmux/zellij/wezterm/herdr panes, with a live status widget and programmatic `launchSubagent`/`watchSubagent` API; `/plan` routes to the create-plan/feature-plan skills (bundled generic workflow as fallback) | Orchestration |
-| [`pi-fastcontext`](packages/pi-fastcontext/) | `fast_context_search` tool + `/fastcontext` command — fast read-only codebase search via local Microsoft FastContext (llama.cpp); returns compact `file:line` citations | Code Search |
 | [`pi-planning`](packages/pi-planning/) (plan-tools) | Aven-era planning helpers: `resolve_spec_path`, `resolve_feature_path`, `open_in_pane` tools + `/review-spec` command | Planning |
 | [`pi-planning`](packages/pi-planning/) (implement-plan) | `jira_create_branch` tool for Jira-synced tickets (the old ungated `/implement` command was removed — it collided with pi-flow's gated RPIV `/implement`; the implement-plan-aven skill is invoked via phrases or `/skill:implement-plan-aven`) | Planning |
 | [`pi-aven-context`](packages/pi-aven-context/) | Session-start injection of live aven workspace state (`aven prime` tail: open issues, active/ready/blocked) as hidden custom-message context; non-fatal, idempotent | Context |
