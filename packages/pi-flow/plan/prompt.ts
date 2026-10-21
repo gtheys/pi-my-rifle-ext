@@ -11,7 +11,14 @@ export interface PlanPromptInput {
 }
 
 const WORK_SUFFIX = `
-Then set the ticket status to "todo" and ensure it carries the "planned" label.`
+When the skill workflow is FULLY complete — including the user's explicit
+approval and the aven phase/subtask hierarchy — set the ticket status to
+"todo" and ensure it carries the "planned" label. The "planned" label lands
+ONLY after approval: /implement routes oneshot vs plan from the type labels,
+and a premature "planned" would misroute the run. If the user does not
+approve during this phase, leave the ticket at plan-state "review" WITHOUT
+the "planned" label and end the phase — the flow halts and resumes at plan
+via /flow once the tree exists.`
 
 export function buildPlanPrompt(input: PlanPromptInput): string {
   const header = `Plan phase (RPIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`

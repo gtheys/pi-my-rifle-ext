@@ -90,7 +90,12 @@ Questions first, code second, ticket only after confirmation — both modes.
   epic tree, plan-state approval gate — see
   [aven-feature-flow.md](aven-feature-flow.md) for those contracts
   unchanged). Jira IDs get the pull-in there. Afterwards: status `todo` +
-  `planned` label.
+  `planned` label — and only THEN: `planned` lands after the approval-gated
+  tree stage (stage 2), not after plan.md alone. `/implement` routes
+  oneshot vs plan from the type labels, so a premature `planned` would
+  misroute the run. If approval does not happen during the phase, the
+  ticket stays at plan-state `review` without `planned`; the flow halts at
+  plan and `/flow` resumes there once the tree exists.
 - **Personal mode**: size check then human-confirmed decomposition.
   1. Fetch the aven ticket + its notes; run the size heuristic: single-file /
      one-module change with one test surface → `oneshot`; data-model,
