@@ -4,9 +4,12 @@
 // the same phase) and no-duplicated-commits (label present -> phase skipped).
 // The table below is the ONLY place the phase<->label lifecycle is mapped;
 // reconcile with phase-state.ts LIFECYCLE_LABELS before renaming labels.
-// Research is special: with --skip-research the missing 'researched' label is
-// not a reason to run research — the orchestrator records the skip note and
-// moves straight to plan (implement's own gate then accepts the recorded skip).
+// Research is special: it is satisfied by 'researched', by the durable
+// 'research-skipped' label, or by the skipResearch flag. The SAME rule must
+// govern /flow start AND loop advance — resolving "first missing" over the
+// full order while research is only flag-satisfied would re-run completed
+// phases. researchSkip=true only when a skip needs RECORDING (flag given,
+// neither label present).
 
 export type Phase = 'research' | 'plan' | 'implement' | 'validate' | 'feedback'
 
@@ -31,19 +34,37 @@ const PHASE_ORDER: readonly Phase[] = [
   'feedback',
 ]
 
+// AIDEV-NOTE: research is satisfied by either durable label or the flag —
+// keep in sync with needsResearchSkip in gates.ts (inverted predicate).
+export function researchSatisfied(
+  labels: readonly string[],
+  skipResearch: boolean,
+): boolean {
+  return (
+    labels.includes(PHASE_LABEL.research) ||
+    labels.includes('research-skipped') ||
+    skipResearch
+  )
+}
+
 export function nextPhase(
   labels: readonly string[],
   skipResearch: boolean,
 ): NextPhase {
-  const first = PHASE_ORDER.find(
+  if (!researchSatisfied(labels, skipResearch)) {
+    return { kind: 'phase', phase: 'research' }
+  }
+  const first = PHASE_ORDER.slice(1).find(
     (phase) => !labels.includes(PHASE_LABEL[phase]),
   )
   if (first === undefined) return { kind: 'done' }
-  if (first === 'research') {
-    if (skipResearch) {
-      return { kind: 'phase', phase: 'plan', researchSkip: true }
-    }
-    return { kind: 'phase', phase: 'research' }
+  const researchSkip =
+    skipResearch &&
+    !labels.includes(PHASE_LABEL.research) &&
+    !labels.includes('research-skipped')
+  return {
+    kind: 'phase',
+    phase: first,
+    ...(researchSkip ? { researchSkip } : {}),
   }
-  return { kind: 'phase', phase: first }
 }

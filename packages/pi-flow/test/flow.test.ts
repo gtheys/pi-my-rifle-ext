@@ -100,6 +100,42 @@ test('nextPhase: mid-flow kill resumes at implement without duplicates', () => {
   assert.deepEqual(second, { kind: 'phase', phase: 'implement' })
 })
 
+test('nextPhase: skip flag with plan done advances to implement (no plan loop)', () => {
+  assert.deepEqual(nextPhase(['planned'], true), {
+    kind: 'phase',
+    phase: 'implement',
+    researchSkip: true,
+  })
+})
+
+test('nextPhase: research-skipped label satisfies research without the flag', () => {
+  assert.deepEqual(nextPhase(['research-skipped'], false), {
+    kind: 'phase',
+    phase: 'plan',
+  })
+  assert.deepEqual(nextPhase(['planned', 'research-skipped'], false), {
+    kind: 'phase',
+    phase: 'implement',
+  })
+})
+
+test('nextPhase: research-skipped plus all lifecycle labels is done', () => {
+  assert.deepEqual(
+    nextPhase(
+      ['research-skipped', 'planned', 'active', 'review-passed', 'done'],
+      false,
+    ),
+    { kind: 'done' },
+  )
+})
+
+test('nextPhase: skip flag with skip label present does not re-flag the skip', () => {
+  assert.deepEqual(nextPhase(['planned', 'research-skipped'], true), {
+    kind: 'phase',
+    phase: 'implement',
+  })
+})
+
 test('nextPhase: skipResearch is irrelevant once researched', () => {
   assert.deepEqual(nextPhase(['researched'], true), {
     kind: 'phase',

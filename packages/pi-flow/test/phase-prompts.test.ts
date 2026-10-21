@@ -53,6 +53,14 @@ test('implement: no researched label without skip -> skip-required block', async
   assert.match(result.reason, /--skip-research/)
 })
 
+test('implement: research-skipped label satisfies the research gate', async () => {
+  const result = await buildPhasePrompt('implement', {
+    ...BASE,
+    labels: ['planned', 'research-skipped'],
+  })
+  assert.equal(result.kind, 'send')
+})
+
 test('implement: planned + researched (or skip) -> send', async () => {
   for (const labels of [
     ['planned', 'researched'],

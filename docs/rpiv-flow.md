@@ -117,8 +117,8 @@ Gate (`gates.ts` + `implement/routing.ts`):
 
 - No `planned` label → refuse ("run /plan first").
 - No `researched` label → requires the explicit `--skip-research` flag; the
-  skip is recorded as an aven note ("research skip confirmed by user, no
-  researched label") before work starts.
+  skip is recorded durably as the `research-skipped` label (plus an aven
+  note) before work starts, so later invocations never re-demand the flag.
 
 Route by type label: `bug` → reproduce-first bug flow; `plan` →
 `implement-plan-aven` skill BY NAME; default → oneshot single cycle.
@@ -208,8 +208,11 @@ wander. The loop injects ONE phase prompt at a time via `flow/phase-prompts.ts`
   whose completion label is absent on the ref is the one to run. Label
   present → phase skipped; label absent → (re-)run it. Killing the flow
   mid-phase resumes cleanly at that phase. All labels present → done.
-- `--skip-research`: the loop records the skip note itself (deterministic)
-  and starts at plan; implement's gate accepts the recorded skip.
+- `--skip-research`: the loop records the skip itself (deterministic) as the
+  durable `research-skipped` label + aven note and starts at plan; the SAME
+  satisfied-rule (researched OR research-skipped OR flag) governs both /flow
+  start and loop advance, and implement's gate accepts the recorded skip —
+  manual `/implement <ref>` works without retyping the flag.
 - After each settled phase turn, the loop re-reads the ref's labels
   (`aven show`) and only advances when the phase's completion label has
   landed. Blocking gates (`ask_user_question`) keep the run in flight, so
@@ -274,7 +277,7 @@ Slug rule: lowercase, strip non-alphanumeric, max 5 words, dashes.
 | --- | --- |
 | Full run, resume-aware | `/flow <ref> [--skip-research]` |
 | Single phases | `/research <topic>` · `/plan <ref>` · `/implement <ref>` · `/validate <ref>` · `/feedback <ref>` |
-| Skip research explicitly | `/implement <ref> --skip-research` (note recorded) |
+| Skip research explicitly | `/implement <ref> --skip-research` (`research-skipped` label + note recorded) |
 | Current run state | `aven show <ref> --full` — lifecycle labels are the phase ledger |
 | Live run viewer (Herdr) | `/flow-view <ref> [right\|below\|left\|above\|tab]` — renders the run-state journal |
 | Link the Herdr plugin | `/herdr-sync` (explicit, idempotent) |

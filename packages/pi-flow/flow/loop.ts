@@ -18,6 +18,8 @@ export interface FlowLoopDeps {
   readLabels(ref: string): Promise<string[] | null>
   /** Write an aven note on the ref; false = write failed. */
   avenNote(ref: string, text: string): Promise<boolean>
+  /** Set an aven label on the ref; false = write failed. */
+  avenSetLabel(ref: string, label: string): Promise<boolean>
   sendPrompt(prompt: string): void
 }
 
@@ -102,11 +104,22 @@ class FlowLoopImpl implements FlowLoop {
     await this.advanceAfter(phase, labels)
   }
 
+  // AIDEV-NOTE: the skip must be durable LABEL state (research-skipped),
+  // not just a note — gates and the phase resolver read labels only. Label
+  // write failure is best-effort: notify, keep running; /implement with the
+  // CLI flag still works as fallback.
   private async recordResearchSkip(ref: string): Promise<void> {
     const reason =
       'research skip confirmed by user (--skip-research), no researched label'
     this.deps.journal({ kind: 'phase-skip', at: now(), ref, reason })
     await this.deps.avenNote(ref, reason)
+    const labeled = await this.deps.avenSetLabel(ref, 'research-skipped')
+    if (!labeled) {
+      this.deps.notify(
+        `/flow ${ref}: could not set the research-skipped label — /implement will ask for --skip-research`,
+        'warning',
+      )
+    }
   }
 
   private async halt(phase: Phase, reason: string): Promise<void> {

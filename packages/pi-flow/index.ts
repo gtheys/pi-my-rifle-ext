@@ -22,6 +22,7 @@ import {
   type PhasePromptInput,
   type ResearchOverride,
 } from './flow/phase-prompts.ts'
+import { needsResearchSkip } from './gates.ts'
 import { syncHerdrPlugin } from './herdr/sync.ts'
 import {
   FlowHerdrViewer,
@@ -69,6 +70,20 @@ export async function writeAvenNote(
 ): Promise<boolean> {
   try {
     await execFileAsync('aven', ['note', ref, text], {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function writeAvenLabel(
+  ref: string,
+  label: string,
+): Promise<boolean> {
+  try {
+    await execFileAsync('aven', ['edit', ref, '--label', label], {
       timeout: AVEN_TIMEOUT_MS,
     })
     return true
@@ -237,6 +252,7 @@ export default function (pi: ExtensionAPI) {
     },
     readLabels: (ref) => readAvenLabels(ref),
     avenNote: (ref, text) => writeAvenNote(ref, text),
+    avenSetLabel: (ref, label) => writeAvenLabel(ref, label),
     sendPrompt: (prompt) => {
       pi.sendUserMessage(prompt)
     },
@@ -339,6 +355,11 @@ export default function (pi: ExtensionAPI) {
       const mode = await resolveMode(pi)
       const ref = await resolvePhaseRef(parsed, mode)
       const labels = (await readAvenLabels(ref)) ?? []
+      // AIDEV-NOTE: --skip-research must leave durable label state — gates
+      // read labels, never notes — so later invocations never re-demand it.
+      if (parsed.skipResearch && needsResearchSkip(labels)) {
+        await writeAvenLabel(ref, 'research-skipped')
+      }
       const result = await buildPhasePrompt(
         'implement',
         await commandPhaseInput(pi, mode, ref, parsed.skipResearch, labels),

@@ -2,7 +2,9 @@
 // ticket's labels — the /implement ticket wires these; shipped here with tests
 // only. canImplement refuses tickets without 'planned';
 // needsResearchSkip flags the missing-'researched' case, which requires an
-// explicit recorded skip before implementing.
+// explicit recorded skip before implementing. research-skipped is that
+// durable record: with it present no explicit skip is needed again — keep in
+// sync with researchSatisfied in flow/orchestrate.ts.
 
 export interface GateResult {
   ok: boolean
@@ -20,5 +22,5 @@ export function canImplement(labels: readonly string[]): GateResult {
 }
 
 export function needsResearchSkip(labels: readonly string[]): boolean {
-  return !labels.includes('researched')
+  return !labels.includes('researched') && !labels.includes('research-skipped')
 }

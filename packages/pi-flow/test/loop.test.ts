@@ -7,6 +7,7 @@ interface Harness {
   deps: FlowLoopDeps
   sent: string[]
   notes: { ref: string; text: string }[]
+  labelsSet: { ref: string; label: string }[]
   events: FlowRunEvent[]
   notifications: { message: string; level: string }[]
   labels: string[] | null
@@ -16,6 +17,7 @@ function makeHarness(labels: string[] | null = []): Harness {
   const h: Harness = {
     sent: [],
     notes: [],
+    labelsSet: [],
     events: [],
     notifications: [],
     labels,
@@ -31,6 +33,10 @@ function makeHarness(labels: string[] | null = []): Harness {
     readLabels: async () => h.labels,
     avenNote: async (ref, text) => {
       h.notes.push({ ref, text })
+      return true
+    },
+    avenSetLabel: async (ref, label) => {
+      h.labelsSet.push({ ref, label })
       return true
     },
     sendPrompt: (prompt) => {
@@ -168,6 +174,37 @@ test('researchSkip at start: skip journal + aven note, no research prompt', asyn
     ['phase-skip', 'phase-start'],
   )
   assert.match(h.notes[0].text, /research skip confirmed by user/)
+  assert.deepEqual(h.labelsSet, [{ ref: 'TP-1', label: 'research-skipped' }])
+})
+
+test('skip flow: plan completing advances to implement, not plan again', async () => {
+  const h = makeHarness(['planned', 'research-skipped'])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({
+    ...startInput(),
+    phase: 'plan',
+    skipResearch: true,
+    researchSkip: true,
+  })
+  await loop.onSettled()
+  assert.equal(h.sent.length, 2)
+  assert.match(h.sent[1], /Implement phase/)
+  // no second skip note/label on advance
+  assert.equal(h.notes.length, 1)
+  assert.equal(h.labelsSet.length, 1)
+})
+
+test('skip flow: resume via research-skipped label without the flag', async () => {
+  const h = makeHarness(['planned', 'research-skipped'])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({
+    ...startInput(),
+    phase: 'implement',
+    skipResearch: false,
+    researchSkip: false,
+  })
+  assert.match(h.sent[0], /Implement phase/)
+  assert.equal(h.labelsSet.length, 0)
 })
 
 test('implement gate block at start: halt note, nothing sent', async () => {
