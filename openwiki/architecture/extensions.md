@@ -316,6 +316,24 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
   silently skips; idempotent across resume/fork/reload via an existing-entry
   check on the session branch.
 
+## pi-flow (Herdr integration subset)
+
+- **Files:** `packages/pi-flow/run-state.ts`, `herdr/viewer.ts`, `herdr/sync.ts`
+  (+ tests), root `herdr-plugin.toml`, `plugins/herdr/flow-viewer.mjs`.
+- **Registers:** `/flow-view <ref> [right|below|left|above|tab]`, `/herdr-sync`.
+- **What:** The repo doubles as a Herdr plugin (root manifest + pane launcher).
+  `/flow` journals run events to `~/.pi/agent/pi-flow/runs/<ref>.json`
+  (append-only `<ref>.journal.jsonl` alongside); `/flow-view` opens/focuses a
+  Herdr pane rendering that state (dedupe by pane label `flow · <ref>` via
+  `herdr api snapshot` — survives Pi reloads); `/herdr-sync` links the plugin
+  explicitly and idempotently (preflight enforces manifest/package version
+  equality). Aven labels remain the gate source of truth; the journal is an
+  evidence record only. Full design:
+  [`docs/herdr-flow-integration.md`](../../docs/herdr-flow-integration.md).
+- **Invariants:** no polling/daemon/state-store on the Pi side; public herdr
+  verbs only; 5s exec timeouts + bounded JSON parsing; panes resolve nothing
+  from PATH (session passes `PI_FLOW_REF`/`PI_FLOW_RUN_FILE` via `--env`).
+
 ## Next
 
 - [Planning & implementation workflow](../workflows/planning-and-implementation.md)

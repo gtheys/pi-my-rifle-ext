@@ -49,6 +49,9 @@
     "feedback/prompt.ts",
     "work-mode.ts",
     "phase-state.ts",
+    "run-state.ts",
+    "herdr/viewer.ts",
+    "herdr/sync.ts",
     "config.schema.json",
     "README.md"
   ],

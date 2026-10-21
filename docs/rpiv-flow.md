@@ -249,11 +249,16 @@ Slug rule: lowercase, strip non-alphanumeric, max 5 words, dashes.
 | Single phases | `/research <topic>` · `/plan <ref>` · `/implement <ref>` · `/validate <ref>` · `/feedback <ref>` |
 | Skip research explicitly | `/implement <ref> --skip-research` (note recorded) |
 | Current run state | `aven show <ref> --full` — lifecycle labels are the phase ledger |
+| Live run viewer (Herdr) | `/flow-view <ref> [right\|below\|left\|above\|tab]` — renders the run-state journal |
+| Link the Herdr plugin | `/herdr-sync` (explicit, idempotent) |
 | Jira-synced ticket pull-in (work) | handled inside `/plan` via `feature-plan-aven` — see [aven-feature-flow.md §1](aven-feature-flow.md) |
 | Config | `~/.pi/agent/pi-flow/config.json` (`workRoots`) |
 
 ## See also
 
+- [herdr-flow-integration.md](herdr-flow-integration.md) — the Herdr viewer
+  plugin, `/flow-view` / `/herdr-sync`, and the run-state journal
+  (`~/.pi/agent/pi-flow/runs/`) that renders in the viewer pane.
 - `openwiki/workflows/planning-and-implementation.md` — summary map.
 - [aven-feature-flow.md](aven-feature-flow.md) — superseded; retains the
   aven tree contract, plan-state gate, Jira pull-in script, and quick aven

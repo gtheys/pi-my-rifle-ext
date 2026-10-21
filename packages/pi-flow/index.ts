@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
@@ -11,6 +12,12 @@ import { buildFeedbackPrompt } from './feedback/prompt.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { nextPhase, phaseCommands } from './flow/orchestrate.ts'
 import { buildFlowPrompt } from './flow/prompt.ts'
+import { syncHerdrPlugin } from './herdr/sync.ts'
+import {
+  FlowHerdrViewer,
+  isValidRef,
+  parseViewerPlacement,
+} from './herdr/viewer.ts'
 import { parseImplementArgs } from './implement/args.ts'
 import { buildImplementPrompt } from './implement/prompt.ts'
 import { routeFor } from './implement/routing.ts'
@@ -21,6 +28,7 @@ import { buildPlanPrompt } from './plan/prompt.ts'
 import { parseResearchArgs } from './research/args.ts'
 import { researchArtifactPath, resolveResearchDir } from './research/paths.ts'
 import { buildResearchPrompt } from './research/prompt.ts'
+import { recordRunEvent, runStatePath } from './run-state.ts'
 import { parseValidateArgs } from './validate/args.ts'
 import { resolveDevctlScriptsDir } from './validate/paths.ts'
 import { buildValidatePrompt } from './validate/prompt.ts'
@@ -88,6 +96,18 @@ export async function resolveMode(pi: ExtensionAPI): Promise<WorkMode> {
   const toplevel = stdout.trim()
   const config = await loadConfig(process.cwd())
   return modeForToplevel(toplevel, config.workRoots)
+}
+
+// AIDEV-NOTE: Best-effort journal write — run-state recording must never
+// break a flow phase; aven labels remain the gate source of truth.
+async function journal(
+  event: Parameters<typeof recordRunEvent>[1],
+): Promise<void> {
+  try {
+    await recordRunEvent(getAgentDir(), event)
+  } catch {
+    // best-effort by design
+  }
 }
 
 // AIDEV-NOTE: Best-effort label bootstrap — "already exists" and any other
@@ -391,6 +411,28 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
+      const now = new Date().toISOString()
+      await journal({
+        kind: 'run-start',
+        at: now,
+        ref,
+        mode,
+        skipResearch: parsed.skipResearch,
+      })
+      if (next.researchSkip === true) {
+        await journal({
+          kind: 'phase-skip',
+          at: now,
+          ref,
+          reason: 'research skip confirmed by user (--skip-research)',
+        })
+      }
+      await journal({
+        kind: 'phase-start',
+        at: now,
+        ref,
+        phase: next.phase,
+      })
       const commands = phaseCommands(
         next.phase,
         ref,
@@ -405,6 +447,99 @@ export default function (pi: ExtensionAPI) {
           researchSkip: next.researchSkip === true,
         }),
       )
+    },
+  })
+
+  pi.registerCommand('herdr-sync', {
+    description:
+      'Link this repo as a Herdr plugin (idempotent). Usage: /herdr-sync',
+    // AIDEV-NOTE: Explicit-only plugin registration — never during
+    // session_start. Preflight validates herdr-plugin.toml against the
+    // package version; herdr absent = graceful skip. Port of pi-workflows'
+    // `pi-workflows herdr sync` discipline.
+    handler: async (_args, ctx) => {
+      const repoRoot = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..',
+        '..',
+      )
+      let result: Awaited<ReturnType<typeof syncHerdrPlugin>>
+      try {
+        result = await syncHerdrPlugin(repoRoot)
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(`/herdr-sync failed: ${msg}`, 'warning')
+        return
+      }
+      const level = result.status === 'unavailable' ? 'info' : 'info'
+      ctx.ui.notify(
+        `${result.message}${result.runningPiProcessesNeedReload ? ' Running Pi processes need a reload to pick up plugin panes.' : ''}`,
+        level,
+      )
+    },
+  })
+
+  pi.registerCommand('flow-view', {
+    description:
+      'Open the flow run-state viewer in a Herdr pane. Usage: /flow-view <ref> [right|below|left|above|tab]',
+    // AIDEV-NOTE: Herdr-gated viewer opener. Requires an existing run-state
+    // file (i.e. /flow must have started at least once for the ref). Dedupes
+    // by pane label ("flow · <ref>") via herdr api snapshot — survives Pi
+    // reloads without any state of our own.
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/).filter(Boolean)
+      const ref = parts[0]
+      const placementArg = parts[1]
+      if (ref === undefined || !isValidRef(ref)) {
+        ctx.ui.notify(
+          'Usage: /flow-view <ref> [right|below|left|above|tab]',
+          'info',
+        )
+        return
+      }
+      const placement =
+        placementArg === undefined
+          ? 'right'
+          : parseViewerPlacement(placementArg)
+      if (placement === undefined) {
+        ctx.ui.notify(
+          `Unknown placement "${placementArg}". Use right|below|left|above|tab.`,
+          'warning',
+        )
+        return
+      }
+      const viewer = new FlowHerdrViewer(pi.exec)
+      const capability = await viewer.probe()
+      if (!capability.available) {
+        ctx.ui.notify(`/flow-view: ${capability.reason}`, 'warning')
+        return
+      }
+      const runFile = runStatePath(getAgentDir(), ref)
+      if (runFile === null) {
+        ctx.ui.notify(`/flow-view: invalid ref "${ref}".`, 'warning')
+        return
+      }
+      try {
+        await fs.access(runFile)
+      } catch {
+        ctx.ui.notify(
+          `/flow-view ${ref}: no run state yet — run /flow ${ref} first.`,
+          'warning',
+        )
+        return
+      }
+      try {
+        const opened = await viewer.open(ref, placement)
+        ctx.ui.notify(
+          opened.reused
+            ? `Focused existing flow viewer for ${ref}.`
+            : `Opened flow viewer for ${ref} (${placement}).`,
+          'info',
+        )
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(`/flow-view ${ref}: ${msg}`, 'warning')
+      }
     },
   })
 }

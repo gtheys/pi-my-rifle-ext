@@ -1,0 +1,12 @@
+id = "gtheys.pi-my-rifle-ext"
+name = "pi-my-rifle-ext"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Open the RPIV flow run-state viewer for a ticket in a managed Herdr pane."
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "flow"
+title = "flow"
+placement = "split"
+command = ["node", "plugins/herdr/flow-viewer.mjs"]
