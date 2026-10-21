@@ -128,6 +128,22 @@ test('buildPlanPrompt: personal mode instructs size check + confirm gate', () =>
   assert.match(prompt, /todo/)
   assert.match(prompt, /PMR-F7YM/)
   assert.match(prompt, /\/x\/plan\.md/)
+  assert.match(prompt, /open_in_pane/)
+})
+
+// AIDEV-NOTE: personal-mode plan must open the review pane — parity with
+// feature-plan-aven (work mode), which opens plan.md via open_in_pane itself.
+test('buildPlanPrompt: personal mode opens plan.md in a herdr review pane', () => {
+  const prompt = buildPlanPrompt({
+    mode: 'personal',
+    ref: 'PMR-F7YM',
+    planPath: '/x/plan.md',
+  })
+  assert.match(
+    prompt,
+    /write the plan\.md to: \/x\/plan\.md[\s\S]*open_in_pane tool with that path/,
+  )
+  assert.match(prompt, /never block/)
 })
 
 // --- W76D gates ---

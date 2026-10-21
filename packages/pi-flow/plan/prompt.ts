@@ -47,6 +47,9 @@ Personal aven flow. Steps:
    - aven epic create for the ticket, decompose into subtasks (aven epic add),
    - set the "plan" label on the epic; subtasks inherit via epic membership,
    - write the plan.md to: ${input.planPath}
+   - call the open_in_pane tool with that path to open it with nvim in a
+     herdr review pane for the user to review. Skippable if herdr is
+     unavailable or the user declines — never block on it.
 6. Either way: set the ticket status to "todo" and ensure the "planned" label.
 
 NEVER create an epic or subtasks before the explicit confirm answer.`
