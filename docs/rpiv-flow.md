@@ -192,23 +192,34 @@ Landing happens only after the review gate reports `blockers_count: 0`.
 
 ## 5. `/flow <ref>` — the orchestrator
 
-`/flow` runs the REMAINING phases by invoking each phase command exactly as
-a human would (`/research <ref>`, `/plan <ref>`, …), so every phase keeps
-its own gates and human confirmations.
+`/flow` runs the REMAINING phases through an **extension-owned loop**
+(`flow/loop.ts`), not a driver agent: an agent cannot invoke slash commands,
+so a prompt asking it to "run /research like a human" just made the agent
+wander. The loop injects ONE phase prompt at a time via `flow/phase-prompts.ts`
+(the exact builders the phase commands use), then advances on the
+`agent_settled` event — code sequences the phases, never the model.
 
 - **Resume = first missing label** (`flow/orchestrate.ts`): the first phase
   whose completion label is absent on the ref is the one to run. Label
   present → phase skipped; label absent → (re-)run it. Killing the flow
   mid-phase resumes cleanly at that phase. All labels present → done.
-- `--skip-research`: record the skip note, start at `/plan`.
-- After each phase, verify its label actually landed (`aven show`) before
-  advancing — label absent = phase failed.
-- **Stop-on-fail**: any phase that fails, is refused, or is gate-blocked →
-  aven note "flow halted at <phase>: <reason>", labels untouched (ref stays
-  at its last good label), STOP. No phase-skipping, no gate bypass, no
-  workarounds. The user re-runs `/flow`; it resumes at the failed phase.
-- Gates stay with the human — the orchestrator never answers a confirmation
-  on the user's behalf.
+- `--skip-research`: the loop records the skip note itself (deterministic)
+  and starts at plan; implement's gate accepts the recorded skip.
+- After each settled phase turn, the loop re-reads the ref's labels
+  (`aven show`) and only advances when the phase's completion label has
+  landed. Blocking gates (`ask_user_question`) keep the run in flight, so
+  they are never raced.
+- **Stop-on-fail as code**: label missing after settle, a blocked phase
+  gate (e.g. implement without `planned`), or aven unreadable → the loop
+  writes the aven note "flow halted at <phase>: <reason>", leaves labels
+  untouched (ref stays at its last good label), and stops. No
+  phase-skipping, no gate bypass. The user re-runs `/flow`; it resumes at
+  the failed phase.
+- Gates stay with the human — each phase prompt asks for its own
+  confirmations; the loop never answers on the user's behalf.
+- Run state is per-session (in-memory) + the journal on disk
+  (`~/.pi/agent/pi-flow/runs/`); labels remain the durable state, so a
+  session killed mid-flow just re-runs `/flow`.
 
 Example runs:
 

@@ -8,10 +8,14 @@ import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
 import { parseFeedbackArgs } from './feedback/args.ts'
-import { buildFeedbackPrompt } from './feedback/prompt.ts'
 import { parseFlowArgs } from './flow/args.ts'
-import { nextPhase, phaseCommands } from './flow/orchestrate.ts'
-import { buildFlowPrompt } from './flow/prompt.ts'
+import { createFlowLoop } from './flow/loop.ts'
+import { nextPhase } from './flow/orchestrate.ts'
+import {
+  buildPhasePrompt,
+  type PhasePrompt,
+  type PhasePromptInput,
+} from './flow/phase-prompts.ts'
 import { syncHerdrPlugin } from './herdr/sync.ts'
 import {
   FlowHerdrViewer,
@@ -19,23 +23,53 @@ import {
   parseViewerPlacement,
 } from './herdr/viewer.ts'
 import { parseImplementArgs } from './implement/args.ts'
-import { buildImplementPrompt } from './implement/prompt.ts'
-import { routeFor } from './implement/routing.ts'
 import { ALL_LABELS } from './phase-state.ts'
 import { parsePlanArgs } from './plan/args.ts'
-import { resolvePlanDir } from './plan/paths.ts'
-import { buildPlanPrompt } from './plan/prompt.ts'
 import { parseResearchArgs } from './research/args.ts'
-import { researchArtifactPath, resolveResearchDir } from './research/paths.ts'
-import { buildResearchPrompt } from './research/prompt.ts'
 import { recordRunEvent, runStatePath } from './run-state.ts'
 import { parseValidateArgs } from './validate/args.ts'
-import { resolveDevctlScriptsDir } from './validate/paths.ts'
-import { buildValidatePrompt } from './validate/prompt.ts'
 import { modeForToplevel, type WorkMode } from './work-mode.ts'
 
 const execFileAsync = promisify(execFile)
 const AVEN_TIMEOUT_MS = 5_000
+
+// AIDEV-NOTE: Shared aven helpers (labels are the run state, notes are the
+// halt record). Used by the /implement and /flow command handlers and by the
+// flow loop deps — one parsing path, fail-closed (null/[] on any failure).
+export async function readAvenLabels(ref: string): Promise<string[] | null> {
+  try {
+    const { stdout } = await execFileAsync('aven', ['show', ref, '--json'], {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    const parsedTicket: unknown = JSON.parse(stdout)
+    if (
+      typeof parsedTicket === 'object' &&
+      parsedTicket !== null &&
+      Array.isArray((parsedTicket as { labels?: unknown }).labels)
+    ) {
+      return (parsedTicket as { labels: unknown[] }).labels.filter(
+        (l): l is string => typeof l === 'string',
+      )
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export async function writeAvenNote(
+  ref: string,
+  text: string,
+): Promise<boolean> {
+  try {
+    await execFileAsync('aven', ['note', ref, text], {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
 
 // AIDEV-NOTE: TypeBox schema is the source of truth for config shape;
 // config.schema.json (checked in) mirrors it. Malformed config throws a
@@ -124,18 +158,88 @@ export async function ensureLabels(): Promise<void> {
   }
 }
 
+// AIDEV-NOTE: Shared per-invocation inputs for buildPhasePrompt — the phase
+// commands and (via /flow) the loop build identical inputs from the same env,
+// so a human-invoked phase and a flow-driven phase can never drift.
+async function commandPhaseInput(
+  pi: ExtensionAPI,
+  mode: WorkMode,
+  ref: string,
+  skipResearch: boolean = false,
+  labels: readonly string[] = [],
+): Promise<PhasePromptInput> {
+  const { stdout } = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
+  const config = await loadConfig(process.cwd())
+  return {
+    mode,
+    ref,
+    skipResearch,
+    gitRoot: stdout.trim(),
+    workRoots: config.workRoots,
+    labels,
+  }
+}
+
 export default function (pi: ExtensionAPI) {
-  pi.on('session_start', async () => {
-    await ensureLabels()
+  // AIDEV-NOTE: ui.notify holder — command and event handlers each get their
+  // own ctx; the loop needs one stable notify. session_start fires before any
+  // command or agent_settled event, so the holder is always populated by then.
+  let notifyUser:
+    | ((message: string, level: 'info' | 'warning') => void)
+    | null = null
+
+  const loop = createFlowLoop({
+    notify: (message, level) => {
+      if (notifyUser !== null) {
+        notifyUser(message, level)
+      } else {
+        console.log(`[pi-flow] ${level}: ${message}`)
+      }
+    },
+    journal: (event) => {
+      void journal(event)
+    },
+    readLabels: (ref) => readAvenLabels(ref),
+    avenNote: (ref, text) => writeAvenNote(ref, text),
+    sendPrompt: (prompt) => {
+      pi.sendUserMessage(prompt)
+    },
+  })
+
+  // AIDEV-NOTE: shared handler tail — one block/send path for every phase
+  // command, so notify wording cannot drift between phases.
+  function sendOrNotify(
+    ctx: { ui: { notify: (m: string, l: 'info' | 'warning') => void } },
+    name: string,
+    ref: string,
+    result: PhasePrompt,
+  ): void {
+    if (result.kind === 'block') {
+      ctx.ui.notify(`/${name} ${ref}: ${result.reason}`, 'warning')
+      return
+    }
+    pi.sendUserMessage(result.prompt)
+  }
+
+  pi.on('session_start', (_event, ctx) => {
+    notifyUser = (message, level) => ctx.ui.notify(message, level)
+    void ensureLabels()
+  })
+
+  // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
+  // fully settles (blocking ask_user_question gates keep the run in flight,
+  // so gates are never raced). The loop re-reads aven labels and either
+  // injects the next phase prompt or halts — advancement is code, not model.
+  pi.on('agent_settled', () => {
+    void loop.onSettled()
   })
 
   pi.registerCommand('research', {
     description:
       'RPIV research phase. Usage: /research <topic> | /research --debug <symptom>',
-    // AIDEV-NOTE: Command resolves args/mode/artifact path synchronously, then
-    // hands off to the agent via sendUserMessage (same pattern as pr-digest).
-    // The ticket-creation gate lives in the agent prompt — the command itself
-    // never creates tickets. See research/ticket-gate.ts for the pure gate.
+    // AIDEV-NOTE: Prompt prep lives in flow/phase-prompts.ts (shared with the
+    // /flow loop). The ticket-creation gate lives in the agent prompt — the
+    // command itself never creates tickets. See research/ticket-gate.ts.
     handler: async (args, ctx) => {
       const parsed = parseResearchArgs(args)
       if (parsed.kind === 'help') {
@@ -146,37 +250,15 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      let input: string
-      if (parsed.kind === 'debug') {
-        input = parsed.symptom
-      } else {
-        input = parsed.topic
-      }
-      const { stdout } = await pi.exec(
-        'git',
-        ['rev-parse', '--show-toplevel'],
-        {},
-      )
-      const toplevel = stdout.trim()
-      const repoName = toplevel.split('/').pop() ?? 'unknown'
-      const dir = resolveResearchDir(
-        process.env.LLM_NOTES_ROOT,
-        repoName,
-        toplevel,
-      )
-      const artifactPath = researchArtifactPath(
-        dir,
-        input,
-        new Date().toISOString().slice(0, 10),
-      )
-      pi.sendUserMessage(
-        buildResearchPrompt({
-          kind: parsed.kind,
-          input,
-          artifactPath,
-          mode,
-        }),
-      )
+      const research =
+        parsed.kind === 'debug'
+          ? { kind: 'debug' as const, text: parsed.symptom }
+          : { kind: 'feature' as const, text: parsed.topic }
+      const result = await buildPhasePrompt('research', {
+        ...(await commandPhaseInput(pi, mode, research.text)),
+        research,
+      })
+      sendOrNotify(ctx, 'research', research.text, result)
     },
   })
 
@@ -192,46 +274,23 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      let ref: string
-      if (parsed.kind === 'jira') {
-        ref = parsed.jiraId
-      } else {
-        ref = parsed.ref
-      }
-      const { stdout } = await pi.exec(
-        'git',
-        ['rev-parse', '--show-toplevel'],
-        {},
+      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const result = await buildPhasePrompt(
+        'plan',
+        await commandPhaseInput(pi, mode, ref),
       )
-      const toplevel = stdout.trim()
-      const repoName = toplevel.split('/').pop() ?? 'unknown'
-      const dir = resolvePlanDir(
-        process.env.PERSONAL_FEATURES,
-        repoName,
-        toplevel,
-        new Date().toISOString().slice(0, 10),
-        ref,
-      )
-      const planPath = path.join(dir, 'plan.md')
-      pi.sendUserMessage(
-        buildPlanPrompt({
-          mode,
-          ref,
-          planPath,
-        }),
-      )
+      sendOrNotify(ctx, 'plan', ref, result)
     },
   })
 
   pi.registerCommand('implement', {
     description:
       'RPIV implement phase. Usage: /implement <jira-id | aven-ref> [--skip-research]',
-    // AIDEV-NOTE: Gate wiring lives in implement/routing.ts (canImplement /
-    // needsResearchSkip). This handler resolves args/mode/labels, then hands
-    // off via sendUserMessage. Refusal and skip-required are surfaced to the
-    // user; the handler NEVER bypasses a gate. Note: labels are fetched via
-    // aven CLI; best-effort — aven failure means empty labels, which the gate
-    // then refuses (fail-closed).
+    // AIDEV-NOTE: Gate wiring lives in implement/routing.ts via
+    // buildPhasePrompt('implement'). This handler resolves args/mode/labels,
+    // then hands off via sendUserMessage; refuse/skip-required surface as a
+    // block reason notification. Labels fetched fail-closed (aven failure ->
+    // empty labels -> routing refuses).
     handler: async (args, ctx) => {
       const parsed = parseImplementArgs(args)
       if (parsed.kind === 'help') {
@@ -242,64 +301,21 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      let ref: string
-      if (parsed.kind === 'jira') {
-        ref = parsed.jiraId
-      } else {
-        ref = parsed.ref
-      }
-      let labels: string[] = []
-      try {
-        const { stdout } = await execFileAsync(
-          'aven',
-          ['show', ref, '--json'],
-          {
-            timeout: AVEN_TIMEOUT_MS,
-          },
-        )
-        const parsedTicket: unknown = JSON.parse(stdout)
-        if (
-          typeof parsedTicket === 'object' &&
-          parsedTicket !== null &&
-          Array.isArray((parsedTicket as { labels?: unknown }).labels)
-        ) {
-          labels = (parsedTicket as { labels: unknown[] }).labels.filter(
-            (l): l is string => typeof l === 'string',
-          )
-        }
-      } catch {
-        // fail-closed: empty labels -> routing refuses below
-      }
-      const routed = routeFor(parsed.kind, labels, parsed.skipResearch)
-      if (routed.kind === 'refuse') {
-        ctx.ui.notify(`/implement ${ref}: ${routed.reason}`, 'warning')
-        return
-      }
-      if (routed.kind === 'skip-required') {
-        ctx.ui.notify(
-          `/implement ${ref}: research not done. Re-run with --skip-research to explicitly skip (recorded as an aven note).`,
-          'warning',
-        )
-        return
-      }
-      pi.sendUserMessage(
-        buildImplementPrompt({
-          mode,
-          ref,
-          route: routed.route,
-          researchSkip: routed.researchSkip,
-        }),
+      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const labels = (await readAvenLabels(ref)) ?? []
+      const result = await buildPhasePrompt(
+        'implement',
+        await commandPhaseInput(pi, mode, ref, parsed.skipResearch, labels),
       )
+      sendOrNotify(ctx, 'implement', ref, result)
     },
   })
 
   pi.registerCommand('validate', {
     description: 'RPIV validate phase. Usage: /validate <jira-id | aven-ref>',
     // AIDEV-NOTE: Work mode resolves the sh-devctl scripts dir from the first
-    // configured workRoot (validate/paths.ts) and hands off via
-    // sendUserMessage. Personal mode (PMR-8449) hands off via the same prompt
-    // builder; validate/prompt.ts branches on mode and never falls through to
-    // the work gate. Missing workRoots config fails loudly in work mode.
+    // configured workRoot (validate/paths.ts) inside buildPhasePrompt; missing
+    // workRoots blocks loudly. Personal mode (PMR-8449) never hits the work gate.
     handler: async (args, ctx) => {
       const parsed = parseValidateArgs(args)
       if (parsed.kind === 'help') {
@@ -307,26 +323,12 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      let ref: string
-      if (parsed.kind === 'jira') {
-        ref = parsed.jiraId
-      } else {
-        ref = parsed.ref
-      }
-      if (mode === 'work') {
-        const config = await loadConfig(process.cwd())
-        const scriptsDir = resolveDevctlScriptsDir(config.workRoots)
-        if (scriptsDir === null) {
-          ctx.ui.notify(
-            `/validate ${ref}: no workRoots configured — cannot resolve the sh-devctl scripts dir. Set workRoots in pi-flow config.json.`,
-            'warning',
-          )
-          return
-        }
-        pi.sendUserMessage(buildValidatePrompt({ mode, ref, scriptsDir }))
-        return
-      }
-      pi.sendUserMessage(buildValidatePrompt({ mode, ref, scriptsDir: null }))
+      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const result = await buildPhasePrompt(
+        'validate',
+        await commandPhaseInput(pi, mode, ref),
+      )
+      sendOrNotify(ctx, 'validate', ref, result)
     },
   })
 
@@ -343,13 +345,12 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      let ref: string
-      if (parsed.kind === 'jira') {
-        ref = parsed.jiraId
-      } else {
-        ref = parsed.ref
-      }
-      pi.sendUserMessage(buildFeedbackPrompt({ mode, ref }))
+      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const result = await buildPhasePrompt(
+        'feedback',
+        await commandPhaseInput(pi, mode, ref),
+      )
+      sendOrNotify(ctx, 'feedback', ref, result)
     },
   })
 
@@ -358,9 +359,11 @@ export default function (pi: ExtensionAPI) {
       'RPIV run-all. Usage: /flow <jira-id | aven-ref> [--skip-research]',
     // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
     // failure aborts, never starts from research by accident). nextPhase()
-    // resolves the first phase whose completion label is missing; the
-    // orchestrator prompt invokes the phase commands as a human would with
-    // stop-on-fail at every boundary.
+    // resolves the first phase whose completion label is missing, then the
+    // extension-owned loop (flow/loop.ts) takes over: it injects ONE phase
+    // prompt at a time (same builder the phase commands use) and advances on
+    // agent_settled when the phase label lands. No driver agent — the model
+    // never sequences phases.
     handler: async (args, ctx) => {
       const parsed = parseFlowArgs(args)
       if (parsed.kind === 'help') {
@@ -371,32 +374,9 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      let ref: string
-      if (parsed.kind === 'jira') {
-        ref = parsed.jiraId
-      } else {
-        ref = parsed.ref
-      }
-      let labels: string[] = []
-      try {
-        const { stdout } = await execFileAsync(
-          'aven',
-          ['show', ref, '--json'],
-          {
-            timeout: AVEN_TIMEOUT_MS,
-          },
-        )
-        const parsedTicket: unknown = JSON.parse(stdout)
-        if (
-          typeof parsedTicket === 'object' &&
-          parsedTicket !== null &&
-          Array.isArray((parsedTicket as { labels?: unknown }).labels)
-        ) {
-          labels = (parsedTicket as { labels: unknown[] }).labels.filter(
-            (l): l is string => typeof l === 'string',
-          )
-        }
-      } catch {
+      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const labels = await readAvenLabels(ref)
+      if (labels === null) {
         ctx.ui.notify(
           `/flow ${ref}: cannot read aven labels — aborting (fail-closed). Check that the ref exists and aven is available.`,
           'warning',
@@ -411,42 +391,25 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const now = new Date().toISOString()
       await journal({
         kind: 'run-start',
-        at: now,
+        at: new Date().toISOString(),
         ref,
         mode,
         skipResearch: parsed.skipResearch,
       })
-      if (next.researchSkip === true) {
-        await journal({
-          kind: 'phase-skip',
-          at: now,
-          ref,
-          reason: 'research skip confirmed by user (--skip-research)',
-        })
-      }
-      await journal({
-        kind: 'phase-start',
-        at: now,
+      await loop.start({
         ref,
         phase: next.phase,
-      })
-      const commands = phaseCommands(
-        next.phase,
-        ref,
-        next.researchSkip === true,
-      )
-      pi.sendUserMessage(
-        buildFlowPrompt({
+        skipResearch: parsed.skipResearch,
+        researchSkip: next.researchSkip === true,
+        promptInput: await commandPhaseInput(
+          pi,
           mode,
           ref,
-          startPhase: next.phase,
-          commands: [...commands],
-          researchSkip: next.researchSkip === true,
-        }),
-      )
+          parsed.skipResearch,
+        ),
+      })
     },
   })
 
