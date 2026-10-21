@@ -278,6 +278,15 @@ existing plan.md). On approval:
 aven edit <REF> --metadata plan-state=approved --label plan
 ```
 
+Then publish the approved plan: run `/spec-publish <REF>` (pi-flow command,
+requires the pi-flow /spec-review extension installed). It commits and pushes
+plan.md to the notes repo (`$PERSONAL_FEATURES` personal / `$LLM_NOTES_ROOT`
+work, project-repo fallback). If the command is unavailable (extension not
+installed), publish manually: in the notes repo root, `git fetch` +
+`git pull --ff-only`, `git add <plan file only>`, commit
+`docs(<repo>): publish <REF> plan`, push. A publish failure never rolls back
+the approval.
+
 Then materialize the tree by running the **Aven output contract** below
 verbatim, one phase at a time. Finish with verification:
 
@@ -315,7 +324,10 @@ metadata from JSON output (upgrade to JSON when aven gains
 - `plan-state=draft` → read the ticket note (interview answers), finish the
   plan with the planner, then set `plan-state=review`.
 - `plan-state=review` → read plan.md fully, load it for the user, iterate
-  until they approve or discard.
+  until they approve or discard. On approval, after setting
+  `plan-state=approved`, publish as in stage 2: run `/spec-publish <REF>`
+  (pi-flow command; if the extension is not installed, publish manually per
+  the stage 2 instructions). A publish failure never rolls back the approval.
 - `plan-state=approved` → tree missing → stage 2; tree exists → route to
   `implement-plan-aven`.
 
