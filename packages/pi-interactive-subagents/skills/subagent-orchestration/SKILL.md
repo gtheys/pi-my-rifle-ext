@@ -14,6 +14,12 @@ them — keep working or end your turn, the harness wakes you.
 
 - **Independent investigations** → fan out `scout` agents in parallel, one per
   area. Synthesize when results steer back.
+  - AIDEV-NOTE: if the codegraph MCP is connected, run `codegraph sync` in
+    the target repo BEFORE fanning out scouts — parallel scouts never sync
+    (or init) the index themselves (lock races). If sync fails with
+    "CodeGraph not initialized", run `codegraph init -y` then sync. Name
+    `mcp__codegraph__codegraph_explore` in each scout task as the preferred
+    code-search tool.
 - **Implementation while you continue** → `worker` in the background; review
   when the result lands.
 - **Any code-writing subagent in the main checkout** → `worktree: true` —

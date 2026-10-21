@@ -37,6 +37,18 @@ one — carries the "researched" label (aven edit <ref> --label researched).
 The RPIV flow advances by reading lifecycle labels; without "researched" the
 flow halts at research. If the gate declined ticket creation, skip this.`
 
+// AIDEV-NOTE: scout fan-out contract — codegraph MCP, when available, must
+// be initialized and fresh (codegraph init on "not initialized", then sync)
+// and named in scout tasks so scouts use codegraph_explore instead of a
+// ripgrep-only sweep.
+const CODEGRAPH_INSTRUCTIONS = `
+CODEGRAPH — before spawning scouts: if the mcp__codegraph__codegraph_explore
+tool is available, run "codegraph sync" (bash) in the repo so the index is
+current. If sync fails with "CodeGraph not initialized", run "codegraph init
+-y" once, then sync again. Then mention in each scout task that
+codegraph_explore is available and preferred for code search. If the tool is
+not available, skip this and let scouts fall back to ripgrep.`
+
 export function buildResearchPrompt(input: PromptInput): string {
   const header = `Research phase (RPIV flow). Mode: ${input.mode}.`
   if (input.kind === 'debug') {
@@ -50,6 +62,7 @@ you need information from the user.
 When the root cause is understood:
 1. Optionally spawn scout subagents (subagent tool, parallel) to gather
    evidence from the codebase.
+${CODEGRAPH_INSTRUCTIONS}
 2. Write a markdown artifact to: ${input.artifactPath}
    Sections: Questions, Findings, Hypothesis chain (ordered hypotheses with
    the root cause marked), Evidence (logs, traces, code refs).
@@ -63,6 +76,7 @@ Understand the mechanism before proposing anything:
    mechanism, scope, and constraints are understood.
 2. Spawn scout subagents (subagent tool, in parallel) to map the relevant code
    and report findings.
+${CODEGRAPH_INSTRUCTIONS}
 3. Write a markdown artifact to: ${input.artifactPath}
    Sections: Questions (with answers), Findings, Diagrams (mermaid code fences
    for architecture/data/flow diagrams), Ticket implications (what the future
