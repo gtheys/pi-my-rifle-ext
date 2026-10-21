@@ -92,6 +92,29 @@ test('validate: work mode without workRoots blocks loudly', async () => {
   assert.match(result.reason, /workRoots/)
 })
 
+test('implement: oneshot route with open epic children forces plan route', async () => {
+  const result = await buildPhasePrompt('implement', {
+    ...BASE,
+    labels: ['planned', 'research-skipped'],
+    epicHasOpenChildren: true,
+  })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  assert.match(result.prompt, /implement-plan-aven/)
+  assert.match(result.prompt, /Route: plan/)
+})
+
+test('implement: oneshot route without children stays oneshot', async () => {
+  const result = await buildPhasePrompt('implement', {
+    ...BASE,
+    labels: ['planned', 'research-skipped'],
+    epicHasOpenChildren: false,
+  })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  assert.match(result.prompt, /Oneshot flow/)
+})
+
 test('feedback: always sends', async () => {
   const result = await buildPhasePrompt('feedback', BASE)
   assert.equal(result.kind, 'send')

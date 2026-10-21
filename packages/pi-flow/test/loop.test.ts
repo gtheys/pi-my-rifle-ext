@@ -11,6 +11,7 @@ interface Harness {
   events: FlowRunEvent[]
   notifications: { message: string; level: string }[]
   labels: string[] | null
+  openChildren?: boolean
 }
 
 function makeHarness(labels: string[] | null = []): Harness {
@@ -39,6 +40,7 @@ function makeHarness(labels: string[] | null = []): Harness {
       h.labelsSet.push({ ref, label })
       return true
     },
+    epicHasOpenChildren: async () => h.openChildren ?? false,
     sendPrompt: (prompt) => {
       h.sent.push(prompt)
     },
@@ -214,4 +216,19 @@ test('implement gate block at start: halt note, nothing sent', async () => {
   assert.equal(h.sent.length, 0)
   assert.equal(loop.isActive(), false)
   assert.match(h.notes[0].text, /flow halted at implement/)
+})
+
+test('implement injection with open epic children forces the plan route', async () => {
+  const h = makeHarness(['planned', 'research-skipped', 'plan'])
+  h.openChildren = true
+  const loop = createFlowLoop(h.deps)
+  await loop.start({
+    ...startInput(),
+    phase: 'implement',
+    skipResearch: false,
+    researchSkip: false,
+  })
+  assert.equal(h.sent.length, 1)
+  assert.match(h.sent[0], /implement-plan-aven/)
+  assert.match(h.sent[0], /Route: plan/)
 })

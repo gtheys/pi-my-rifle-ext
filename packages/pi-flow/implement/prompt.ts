@@ -12,12 +12,16 @@ export interface ImplementPromptInput {
   researchSkip?: boolean
 }
 
-const COMMON_RULES = `
+function commonRules(ref: string): string {
+  return `
 Hard rules for every task in this phase:
 - Implement ONLY inside an isolated git worktree (PMR-NJYY rule). The main checkout is read-only.
 - Retry budget: at most 3 attempts per task. If a test still fails after 3 attempts: STOP. Write the failure evidence as an aven note on the task (commands run, last error, hypothesis), set the task status to "blocked", and escalate to the human. NEVER silently continue past a red test.
 - Each task = implement -> run tests -> commit. A task is done only when its test run is green AND the commit landed in the worktree.
-- Follow the repo's commit discipline; use conventional commit subjects.`
+- Follow the repo's commit discipline; use conventional commit subjects.
+- PHASE COMPLETION LABEL: when ALL work for this phase is green and committed, set the "active" LABEL on ${ref} (aven edit ${ref} --label active). The flow's advance gate reads this label — status alone never advances the flow. NEVER set the ticket status to "done" in this phase; later phases own that.
+`
+}
 
 const BRANCH_RULES = `
 Branch derivation:
@@ -35,10 +39,10 @@ export function buildImplementPrompt(input: ImplementPromptInput): string {
     return `${header}
 Invoke the user's implement-plan-aven skill (engineering:implement-plan-aven)
 for ${input.ref} and follow its workflow exactly.
-${BRANCH_RULES}${COMMON_RULES}
+${BRANCH_RULES}${commonRules(input.ref)}
 - Walk the epic's subtasks IN ORDER (aven epic list).
 - EACH subtask gets its own test run + commit; mark it done only then.
-- Keep working until ALL subtasks are done; mark the epic done ONLY when all children are done.${skip}`
+- Keep working until ALL subtasks are done (each marked done only after its own test run + commit); then set the "active" label on ${input.ref} — never mark the epic status done in this phase.${skip}`
   }
 
   if (input.route === 'bug') {
@@ -47,13 +51,13 @@ Reproduce-first bug flow for ${input.ref}:
 1. Read the research artifact's evidence and REPRODUCE the bug first — write a failing test that demonstrates it.
 2. Fix the bug; the test must turn green and prove the fix.
 3. Run the full test suite, then commit.
-${BRANCH_RULES}${COMMON_RULES}${skip}`
+${BRANCH_RULES}${commonRules(input.ref)}${skip}`
   }
 
   return `${header}
 Oneshot flow for ${input.ref}:
 1. Implement the change in a single implement -> test -> commit cycle.
 2. Run the test suite; it must be green before the commit lands.
-3. Mark the task done once tests are green AND the commit landed.
-${BRANCH_RULES}${COMMON_RULES}${skip}`
+3. Once tests are green AND the commit landed, apply the PHASE COMPLETION LABEL rule above (the "active" label).
+${BRANCH_RULES}${commonRules(input.ref)}${skip}`
 }

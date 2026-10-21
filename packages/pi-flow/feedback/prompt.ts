@@ -36,7 +36,9 @@ function workSection(ref: string): string {
    rules; reply to comments you escalated, linking the new task).
 
 Completion rule: every finding is fixed-and-committed or escalated as a new
-task. Report the final counts in your reply.`
+task. Report the final counts in your reply, then transition ${ref} to status
+done AND set the "done" label on ${ref} (aven edit ${ref} --label done) — the
+flow's advance gate reads the label.`
 }
 
 function personalSection(ref: string): string {
@@ -50,7 +52,9 @@ function personalSection(ref: string): string {
    test evidence, and the review verdict (use the outcomeSummary shape:
    "## Outcome summary" with "### What shipped", "### Test evidence",
    "### Review verdict" sections).
-3. ONLY once the outcome summary note exists, transition ${ref} to done.
+3. ONLY once the outcome summary note exists, transition ${ref} to status
+   done AND set the "done" label on ${ref} (aven edit ${ref} --label done) —
+   the flow's advance gate reads the label.
 
 Completion rule: the ticket is NEVER marked done without the outcome summary
 note on it. If a section has no content, STOP and ask the human — never

@@ -39,7 +39,10 @@ Review gate — run ONLY after validation has fully passed:
 ${REVIEW_CONTRACT_PROMPT}
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
    malformed artifact means re-run /review, not silent landing.
-9. If blockers_count is 0: proceed to landing.
+9. If blockers_count is 0: proceed to landing, THEN set the
+   "review-passed" label on ${ref} (aven edit ${ref} --label
+   review-passed) — the flow's advance gate reads this label; without it
+   the flow halts at validate.
    ${landing}
 10. If blockers_count > 0: record each blocker as an aven note on ${ref},
    route back to /implement ${ref} (retry budget applies), and STOP — do

@@ -36,6 +36,10 @@ export interface PhasePromptInput {
   workRoots: readonly string[]
   /** Current aven labels on the ref; implement routing gates on them. */
   labels: readonly string[]
+  /** True when the ref is an epic with open children — forces the plan route
+   *  (an oneshot route over an open tree is always a misroute: the whole
+   *  tree gets executed as one batch without per-task workers). */
+  epicHasOpenChildren?: boolean
   /** /research override: explicit kind + topic/symptom (flow defaults to feature+ref). */
   research?: ResearchOverride
 }
@@ -113,12 +117,20 @@ function implementPrompt(input: PhasePromptInput): PhasePrompt {
         'research not done — re-run with --skip-research to explicitly skip',
     }
   }
+  // AIDEV-NOTE: structural routing guard — labels are the routing contract,
+  // but a tree with open children is plan-route work no matter what the type
+  // labels say (legacy approvals, manual label edits). An oneshot prompt over
+  // an open tree batches the whole tree into one cycle with no workers.
+  const route =
+    routed.route === 'oneshot' && input.epicHasOpenChildren === true
+      ? 'plan'
+      : routed.route
   return {
     kind: 'send',
     prompt: buildImplementPrompt({
       mode: input.mode,
       ref: input.ref,
-      route: routed.route,
+      route,
       researchSkip: routed.researchSkip,
     }),
   }

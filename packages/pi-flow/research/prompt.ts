@@ -28,7 +28,14 @@ TICKET CREATION GATE — after the artifact is written:
    destination <destination>"; for Jira tickets append a line
    "> confirmed by user, destination <destination>" to the artifact header.
 5. If the user declines, create nothing and say so.
-NEVER call acli or aven create before the explicit confirm answer.`
+NEVER call acli or aven create before the explicit confirm answer.
+
+COMPLETION LABEL — when the research phase is fully done (artifact written,
+gate answered): ensure the ticket this research ran against — the one
+confirmed at the gate, or the existing ticket when the flow already provided
+one — carries the "researched" label (aven edit <ref> --label researched).
+The RPIV flow advances by reading lifecycle labels; without "researched" the
+flow halts at research. If the gate declined ticket creation, skip this.`
 
 export function buildResearchPrompt(input: PromptInput): string {
   const header = `Research phase (RPIV flow). Mode: ${input.mode}.`

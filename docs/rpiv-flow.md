@@ -111,6 +111,14 @@ Questions first, code second, ticket only after confirmation — both modes.
 
 Gate precondition for later phases: the `planned` label.
 
+**Completion labels are the advance gate.** Every phase prompt instructs the
+agent to set its lifecycle label on completion — `researched`, `planned`,
+`active`, `review-passed`, `done` — because the /flow loop advances by
+reading labels, never status. Implement additionally FORCES the plan route
+when the ref is an epic with open children, even if the type labels say
+oneshot: an oneshot prompt over an open tree batches the whole tree into one
+cycle with no per-task workers.
+
 ### 3.3 `/implement <ref>`
 
 Gate (`gates.ts` + `implement/routing.ts`):

@@ -78,6 +78,32 @@ export async function writeAvenNote(
   }
 }
 
+// AIDEV-NOTE: Structural input for the implement routing guard — an open
+// epic tree is plan-route work regardless of type labels. Fail-open on aven
+// errors (label-based routing stays the primary contract).
+export async function epicHasOpenChildren(ref: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(
+      'aven',
+      ['epic', 'list', ref, '--json'],
+      { timeout: AVEN_TIMEOUT_MS },
+    )
+    const parsed: unknown = JSON.parse(stdout)
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      Array.isArray((parsed as { children?: unknown }).children)
+    ) {
+      return (parsed as { children: { open?: unknown }[] }).children.some(
+        (c) => c.open === true,
+      )
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 export async function writeAvenLabel(
   ref: string,
   label: string,
@@ -253,6 +279,7 @@ export default function (pi: ExtensionAPI) {
     readLabels: (ref) => readAvenLabels(ref),
     avenNote: (ref, text) => writeAvenNote(ref, text),
     avenSetLabel: (ref, label) => writeAvenLabel(ref, label),
+    epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),
     sendPrompt: (prompt) => {
       pi.sendUserMessage(prompt)
     },
@@ -360,10 +387,16 @@ export default function (pi: ExtensionAPI) {
       if (parsed.skipResearch && needsResearchSkip(labels)) {
         await writeAvenLabel(ref, 'research-skipped')
       }
-      const result = await buildPhasePrompt(
-        'implement',
-        await commandPhaseInput(pi, mode, ref, parsed.skipResearch, labels),
-      )
+      const result = await buildPhasePrompt('implement', {
+        ...(await commandPhaseInput(
+          pi,
+          mode,
+          ref,
+          parsed.skipResearch,
+          labels,
+        )),
+        epicHasOpenChildren: await epicHasOpenChildren(ref),
+      })
       sendOrNotify(ctx, 'implement', ref, result)
     },
   })

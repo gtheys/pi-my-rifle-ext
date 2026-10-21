@@ -20,6 +20,8 @@ export interface FlowLoopDeps {
   avenNote(ref: string, text: string): Promise<boolean>
   /** Set an aven label on the ref; false = write failed. */
   avenSetLabel(ref: string, label: string): Promise<boolean>
+  /** True when the ref is an epic with open children (implement routing guard). */
+  epicHasOpenChildren(ref: string): Promise<boolean>
   sendPrompt(prompt: string): void
 }
 
@@ -141,6 +143,13 @@ class FlowLoopImpl implements FlowLoop {
     const result = await buildPhasePrompt(phase, {
       ...this.state.promptInput,
       labels,
+      ...(phase === 'implement'
+        ? {
+            epicHasOpenChildren: await this.deps.epicHasOpenChildren(
+              this.state.ref,
+            ),
+          }
+        : {}),
     })
     if (result.kind === 'block') {
       await this.halt(phase, result.reason)

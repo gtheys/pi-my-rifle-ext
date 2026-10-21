@@ -133,7 +133,8 @@ describe('buildImplementPrompt', () => {
     })
     assert.match(p, /implement-plan-aven/)
     assert.match(p, /IN ORDER/)
-    assert.match(p, /all children are done/)
+    assert.match(p, /ALL subtasks are done/)
+    assert.match(p, /"active" label/)
   })
   it('bug prompt requires reproduce-first', () => {
     const p = buildImplementPrompt({ mode: 'work', ref: 'DP-72', route: 'bug' })
