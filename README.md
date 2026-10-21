@@ -147,8 +147,8 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-test-runner`](packages/pi-test-runner/) | `run_tests` tool + `/test-runner` command — runs JS/TS tests from `package.json` in an isolated pi-interactive-subagents worker; visible in the orchestrator's subagents widget; results injected back when done ⚠️ *experimental/WIP* | Testing |
 | [`pi-interactive-subagents`](packages/pi-interactive-subagents/) | `subagent` tool + `/plan` dispatch command — spawn scout/worker/planner sub-agents in cmux/tmux/zellij/wezterm/herdr panes, with a live status widget and programmatic `launchSubagent`/`watchSubagent` API; `/plan` routes to the create-plan/feature-plan skills (bundled generic workflow as fallback) | Orchestration |
 | [`pi-fastcontext`](packages/pi-fastcontext/) | `fast_context_search` tool + `/fastcontext` command — fast read-only codebase search via local Microsoft FastContext (llama.cpp); returns compact `file:line` citations | Code Search |
-| [`pi-planning`](packages/pi-planning/) (plan-tools) | Taskwarrior tools for spec/plan creation (`tw_get_ticket`, `tw_get_spec_task`, `tw_get_phases`, `tw_get_impl_tasks`, `resolve_spec_path`, `resolve_feature_path`, `tw_create_spec_task`, `tw_create_phase`, `tw_create_impl_task`, `jira_create_branch`) | Planning |
-| [`pi-planning`](packages/pi-planning/) (implement-plan) | `/implement` command + taskwarrior tools (`tw_execution_plan` — by Jira ID **or** feature UUID, `tw_advance_task`, `tw_phase_checkpoint`) for driving implementation from a spec or feature tree | Planning |
+| [`pi-planning`](packages/pi-planning/) (plan-tools) | Aven-era planning helpers: `resolve_spec_path`, `resolve_feature_path`, `open_in_pane` tools + `/review-spec` command | Planning |
+| [`pi-planning`](packages/pi-planning/) (implement-plan) | `jira_create_branch` tool for Jira-synced tickets (the old ungated `/implement` command was removed — it collided with pi-flow's gated RPIV `/implement`; the implement-plan-aven skill is invoked via phrases or `/skill:implement-plan-aven`) | Planning |
 | [`pi-aven-context`](packages/pi-aven-context/) | Session-start injection of live aven workspace state (`aven prime` tail: open issues, active/ready/blocked) as hidden custom-message context; non-fatal, idempotent | Context |
 | [`pi-teams-transcript`](packages/pi-teams-transcript/) | `teams_transcript` tool — list/download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth) ⚠️ *work in progress* | Integrations |
 | [`pi-pr-digest`](packages/pi-pr-digest/) | `pr_digest` tool + `/pr-digest` command — outstanding GitHub PRs in an org with human comment/review status (bots filtered) and reviewer-request table | Integrations |
@@ -231,14 +231,12 @@ feature-plan ──uses──> resolve_feature_path, tw_execution_plan (pi-plann
     ├─uses──> scout + planner subagents                      (pi-interactive-subagents)
     └─writes──> taskwarrior hierarchy + plan.md ($PERSONAL_FEATURES or .pi/plans)
 
-iterate-plan ──uses──> same tool set as create-plan
+implement-plan-aven skill (skills/engineering/implement-plan-aven)
+    └─ uses──> jira_create_branch                 (pi-planning implement-plan)
+    └─ uses──> worker subagents                   (pi-interactive-subagents)
 
-implement-plan ──uses──> tw_execution_plan (jira_id or feature_uuid),
-    │                     tw_advance_task, tw_phase_checkpoint (pi-planning)
-    └─uses──> worker subagents                               (pi-interactive-subagents)
-
-/implement command (pi-planning implement-plan/index.ts)
-    └─ pre-populates the execution plan for the implement-plan skill
+Reaching the skill: natural phrases ("implement PMR-ZTVG") or
+/skill:implement-plan-aven <ref> — or pi-flow's gated /implement phase.
 
 feature-ticket ──uses──> raw `task` CLI only (no extension dependency)
 ```
