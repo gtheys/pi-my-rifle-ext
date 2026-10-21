@@ -41,7 +41,7 @@ flowchart TD
   E --> F[interactive planner subagent writes plan.md]
   F --> G["aven edit REF --epic on --status todo<br/>--metadata plan-path=ABS, plan-state=draft→review"]
   G --> GATE{user approves?<br/>possibly a later session}  GATE -->|iterate| F
-  GATE -->|"approve REF → plan-state=approved"| H["aven add 'N. Phase: name' --label phase --label impl<br/>--metadata plan-path=ABS --description 'summary + AC'"]
+  GATE -->|"approve REF → plan-state=approved<br/>+ --label plan (pi-flow /implement routes on it)"| H["aven add 'N. Phase: name' --label phase --label impl<br/>--metadata plan-path=ABS --description 'summary + AC'"]
   H --> H2["aven epic add PHASE REF"]
   H2 --> H2b["aven dep add PHASE PREV_PHASE<br/>(order guarantee: one phase ready at a time)"]
   H2b --> I["aven add 'N.M title' --label impl<br/>--metadata plan-path=ABS --description 'summary + AC'"]
@@ -271,7 +271,11 @@ not approved; offer to iterate instead (back to stage 1's planner with the
 existing plan.md). On approval:
 
 ```bash
-aven edit <REF> --metadata plan-state=approved
+# --label plan is the routing contract with pi-flow /implement: the epic's
+# type labels (bug/oneshot/plan) pick the implement route; without it a
+# plan-split epic falls through to the oneshot route. Personal mode's /plan
+# sets the same label (plan/prompt.ts step 5).
+aven edit <REF> --metadata plan-state=approved --label plan
 ```
 
 Then materialize the tree by running the **Aven output contract** below

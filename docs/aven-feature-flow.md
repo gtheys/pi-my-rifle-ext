@@ -228,8 +228,9 @@ with `unknown-ref`, check routing with `aven doctor`.
      `todo`.
 
 7. **Stage 2 — create the tree (after approval)** — user says
-   "approve <REF>" → `aven edit <REF> --metadata plan-state=approved`, then
-   run the contract verbatim, one phase at a time: `aven epic list <REF> --json`, sort by prefix, present tree
+   "approve <REF>" → `aven edit <REF> --metadata plan-state=approved --label plan`
+   (the `plan` type label is the routing contract for pi-flow `/implement`),
+   then run the contract verbatim, one phase at a time: `aven epic list <REF> --json`, sort by prefix, present tree
    + plan.md to the user for review. Fixups via the contract commands.
 
 8. **Fallback (no subagent tool)** — do scout work in-session
