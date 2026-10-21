@@ -50,6 +50,14 @@
     "work-mode.ts",
     "phase-state.ts",
     "run-state.ts",
+    "spec-review/args.ts",
+    "spec-review/aven-spec.ts",
+    "spec-review/approve.ts",
+    "spec-review/open-in-pane.ts",
+    "spec-review/picker.ts",
+    "spec-review/prompt.ts",
+    "spec-review/publish.ts",
+    "spec-review/publish-args.ts",
     "herdr/viewer.ts",
     "herdr/sync.ts",
     "config.schema.json",
@@ -63,5 +71,8 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
+  },
+  "dependencies": {
+    "@gtheys/pi-interactive-subagents": "workspace:*"
   }
 }

@@ -74,6 +74,9 @@
     "packages/pi-flow": {
       "name": "@gtheys/pi-flow",
       "version": "0.1.0",
+      "dependencies": {
+        "@gtheys/pi-interactive-subagents": "workspace:*",
+      },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "typebox": "*",

@@ -39,6 +39,12 @@ import { listSpecsInReview, readPlanPath } from './spec-review/aven-spec.ts'
 import { openFileInPane } from './spec-review/open-in-pane.ts'
 import { pickSpecs } from './spec-review/picker.ts'
 import { buildReviewPrompt } from './spec-review/prompt.ts'
+import {
+  buildPublishWorkerTask,
+  resolvePublishRoot,
+  spawnPublishWorker,
+} from './spec-review/publish.ts'
+import { parseSpecPublishArgs } from './spec-review/publish-args.ts'
 import { parseValidateArgs } from './validate/args.ts'
 import { modeForToplevel, type WorkMode } from './work-mode.ts'
 
@@ -616,6 +622,83 @@ export default function (pi: ExtensionAPI) {
         return
       }
       pi.sendUserMessage(buildReviewPrompt(outcome.picked))
+    },
+  })
+
+  // AIDEV-NOTE: /spec-publish (PMR-MR36 subtask PMR-2D2X). Shared publish
+  // for /spec-review approvals and feature-plan-aven sessions. Resolution +
+  // task text are pure (publish.ts); the actual git work runs in a subagent
+  // worker — push failure never rolls back an approval, it only notifies.
+  pi.registerCommand('spec-publish', {
+    description: 'Publish an approved spec plan. Usage: /spec-publish <REF>',
+    handler: async (args, ctx) => {
+      const parsed = parseSpecPublishArgs(args)
+      if (parsed.kind === 'help') {
+        ctx.ui.notify('Usage: /spec-publish <REF>', 'info')
+        return
+      }
+      let toplevel = ''
+      try {
+        const out = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
+        toplevel = out.stdout.trim()
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(`/spec-publish: not a git repo (${msg})`, 'warning')
+        return
+      }
+      const plan = await readPlanPath(avenExec, parsed.ref)
+      if (plan.kind === 'error') {
+        ctx.ui.notify(`/spec-publish: ${plan.reason}`, 'warning')
+        return
+      }
+      if (plan.kind === 'none') {
+        ctx.ui.notify(
+          `/spec-publish: ${parsed.ref} has no plan-path metadata`,
+          'warning',
+        )
+        return
+      }
+      if (!existsSync(plan.planPath)) {
+        ctx.ui.notify(
+          `/spec-publish: plan file missing: ${plan.planPath}`,
+          'warning',
+        )
+        return
+      }
+      const config = await loadConfig(process.cwd())
+      const mode = modeForToplevel(toplevel, config.workRoots)
+      const resolved = resolvePublishRoot({
+        repo: path.basename(toplevel),
+        mode,
+        planPath: plan.planPath,
+        toplevel,
+      })
+      if (resolved.kind === 'error') {
+        ctx.ui.notify(`/spec-publish: ${resolved.reason}`, 'warning')
+        return
+      }
+      const outcome = await spawnPublishWorker(ctx, {
+        ref: parsed.ref,
+        repo: path.basename(toplevel),
+        root: resolved.root,
+        planFile: resolved.planFile,
+        name: `spec-publish: ${parsed.ref}`,
+        cwd: toplevel,
+        task: buildPublishWorkerTask({
+          ref: parsed.ref,
+          repo: path.basename(toplevel),
+          root: resolved.root,
+          planFile: resolved.planFile,
+          isFallback: resolved.isFallback,
+        }),
+      })
+      const ok =
+        outcome.includes('exited with code 0') &&
+        !outcome.includes('PUBLISH FAILED') &&
+        !outcome.includes('Publish manually')
+      let severity: 'info' | 'warning' = 'info'
+      if (!ok) severity = 'warning'
+      ctx.ui.notify(outcome, severity)
     },
   })
 
