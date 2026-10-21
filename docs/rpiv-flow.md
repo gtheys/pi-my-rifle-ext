@@ -220,6 +220,17 @@ wander. The loop injects ONE phase prompt at a time via `flow/phase-prompts.ts`
 - Run state is per-session (in-memory) + the journal on disk
   (`~/.pi/agent/pi-flow/runs/`); labels remain the durable state, so a
   session killed mid-flow just re-runs `/flow`.
+- **Jira IDs (work mode)**: `/flow DP-71` resolves the local epic first
+  (`flow/jira-ref.ts`): `jira-ref=DP-71` metadata lookup — one hit → run on
+  that epic ref; none → find-or-create pull-in (`aven add --epic` +
+  `--metadata jira-ref=…`, dep-linked to the synced ticket found via
+  `jira-key=…`); ambiguous (multiple epics) or not aven-managed → abort
+  with the reason. The research topic stays the Jira ID; every aven label,
+  journal, and halt note uses the epic ref. Personal mode refuses Jira IDs.
+  The phase commands resolve read-only: an existing epic replaces the Jira
+  ID (so `/implement DP-71` reads the epic's labels), a miss passes the ID
+  through to the prompt unchanged — `/plan DP-71` cold still lets the
+  feature-plan-aven skill do its own pull-in.
 
 Example runs:
 

@@ -9,12 +9,18 @@ import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
 import { parseFeedbackArgs } from './feedback/args.ts'
 import { parseFlowArgs } from './flow/args.ts'
+import {
+  type AvenRunner,
+  findJiraEpic,
+  resolveJiraEpic,
+} from './flow/jira-ref.ts'
 import { createFlowLoop } from './flow/loop.ts'
 import { nextPhase } from './flow/orchestrate.ts'
 import {
   buildPhasePrompt,
   type PhasePrompt,
   type PhasePromptInput,
+  type ResearchOverride,
 } from './flow/phase-prompts.ts'
 import { syncHerdrPlugin } from './herdr/sync.ts'
 import {
@@ -69,6 +75,36 @@ export async function writeAvenNote(
   } catch {
     return false
   }
+}
+
+// AIDEV-NOTE: aven runner for the Jira-ID resolver (flow/jira-ref.ts) —
+// execFileAsync throws on spawn failure / non-zero exit; aven's own errors
+// (exit 0, text on stdout) are classified inside the resolver.
+const avenExec: AvenRunner = async (args) => {
+  const { stdout, stderr } = await execFileAsync('aven', [...args], {
+    timeout: AVEN_TIMEOUT_MS,
+  })
+  return { stdout, stderr }
+}
+
+// AIDEV-NOTE: Option B — phase-command Jira resolution is read-only: an
+// existing pulled-in epic (jira-ref metadata) replaces the Jira ID so label
+// gates read the epic; a miss passes the Jira ID through unchanged (the
+// feature-plan-aven skill handles the cold pull-in itself). Only /flow
+// creates the epic (it needs a real ref before any phase can run).
+async function resolvePhaseRef(
+  parsed: { kind: 'jira'; jiraId: string } | { kind: 'aven'; ref: string },
+  mode: WorkMode,
+): Promise<string> {
+  if (parsed.kind === 'aven' || mode !== 'work') return refOf(parsed)
+  const found = await findJiraEpic(parsed.jiraId, avenExec)
+  return found.kind === 'found' ? found.ref : parsed.jiraId
+}
+
+function refOf(
+  parsed: { kind: 'jira'; jiraId: string } | { kind: 'aven'; ref: string },
+): string {
+  return parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
 }
 
 // AIDEV-NOTE: TypeBox schema is the source of truth for config shape;
@@ -274,7 +310,7 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const ref = await resolvePhaseRef(parsed, mode)
       const result = await buildPhasePrompt(
         'plan',
         await commandPhaseInput(pi, mode, ref),
@@ -301,7 +337,7 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const ref = await resolvePhaseRef(parsed, mode)
       const labels = (await readAvenLabels(ref)) ?? []
       const result = await buildPhasePrompt(
         'implement',
@@ -323,7 +359,7 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const ref = await resolvePhaseRef(parsed, mode)
       const result = await buildPhasePrompt(
         'validate',
         await commandPhaseInput(pi, mode, ref),
@@ -345,7 +381,7 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      const ref = await resolvePhaseRef(parsed, mode)
       const result = await buildPhasePrompt(
         'feedback',
         await commandPhaseInput(pi, mode, ref),
@@ -374,7 +410,34 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const mode = await resolveMode(pi)
-      const ref = parsed.kind === 'jira' ? parsed.jiraId : parsed.ref
+      let ref: string
+      let research: ResearchOverride | undefined
+      if (parsed.kind === 'jira') {
+        if (mode !== 'work') {
+          ctx.ui.notify(
+            `/flow ${parsed.jiraId}: Jira IDs are work-mode only (this repo is personal) — use an aven ref`,
+            'warning',
+          )
+          return
+        }
+        const resolved = await resolveJiraEpic(parsed.jiraId, avenExec)
+        if (resolved.kind === 'abort') {
+          ctx.ui.notify(`/flow ${parsed.jiraId}: ${resolved.reason}`, 'warning')
+          return
+        }
+        ref = resolved.ref
+        // Research topic stays the human-readable Jira ID; aven labels live
+        // on the epic ref.
+        research = { kind: 'feature', text: parsed.jiraId }
+        if (resolved.created) {
+          ctx.ui.notify(
+            `/flow ${parsed.jiraId}: pulled in local epic ${resolved.ref}`,
+            'info',
+          )
+        }
+      } else {
+        ref = parsed.ref
+      }
       const labels = await readAvenLabels(ref)
       if (labels === null) {
         ctx.ui.notify(
@@ -403,12 +466,10 @@ export default function (pi: ExtensionAPI) {
         phase: next.phase,
         skipResearch: parsed.skipResearch,
         researchSkip: next.researchSkip === true,
-        promptInput: await commandPhaseInput(
-          pi,
-          mode,
-          ref,
-          parsed.skipResearch,
-        ),
+        promptInput: {
+          ...(await commandPhaseInput(pi, mode, ref, parsed.skipResearch)),
+          research,
+        },
       })
     },
   })
