@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -34,6 +34,11 @@ import { ALL_LABELS } from './phase-state.ts'
 import { parsePlanArgs } from './plan/args.ts'
 import { parseResearchArgs } from './research/args.ts'
 import { recordRunEvent, runStatePath } from './run-state.ts'
+import { parseSpecReviewArgs } from './spec-review/args.ts'
+import { listSpecsInReview, readPlanPath } from './spec-review/aven-spec.ts'
+import { openFileInPane } from './spec-review/open-in-pane.ts'
+import { pickSpecs } from './spec-review/picker.ts'
+import { buildReviewPrompt } from './spec-review/prompt.ts'
 import { parseValidateArgs } from './validate/args.ts'
 import { modeForToplevel, type WorkMode } from './work-mode.ts'
 
@@ -525,6 +530,92 @@ export default function (pi: ExtensionAPI) {
           research,
         },
       })
+    },
+  })
+
+  // AIDEV-NOTE: /spec-review (PMR-MR36). ctx.ui.select is modal and blocks
+  // the handler, so the picker collects a BATCH and ONE combined
+  // sendUserMessage lands after the handler returns — review prompts never
+  // interleave. Repo name = basename of the git toplevel (aven project).
+  // Approval is never done here: the injected prompt makes the session the
+  // reviewer and gates approval on the user's explicit "approve <REF>".
+  pi.registerCommand('spec-review', {
+    description:
+      'Review specs in plan-state=review. Usage: /spec-review [--workspace <name>]',
+    handler: async (args, ctx) => {
+      const parsed = parseSpecReviewArgs(args)
+      if (parsed.kind === 'help') {
+        ctx.ui.notify(
+          'Usage: /spec-review [--workspace <name>] | /spec-review help',
+          'info',
+        )
+        return
+      }
+      let toplevel = ''
+      try {
+        const out = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
+        toplevel = out.stdout.trim()
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(`/spec-review: not a git repo (${msg})`, 'warning')
+        return
+      }
+      const project = path.basename(toplevel)
+      const listed = await listSpecsInReview(avenExec, {
+        project,
+        workspace: parsed.workspace,
+      })
+      if (listed.kind === 'error') {
+        ctx.ui.notify(`/spec-review: ${listed.reason}`, 'warning')
+        return
+      }
+      if (listed.specs.length === 0) {
+        ctx.ui.notify('no specs awaiting review', 'info')
+        return
+      }
+      const outcome = await pickSpecs({
+        specs: listed.specs,
+        select: (title, options) => ctx.ui.select(title, options),
+        resolvePlanPath: async (ref) => {
+          const plan = await readPlanPath(avenExec, ref)
+          if (plan.kind === 'error') return { ok: false, reason: plan.reason }
+          if (plan.kind === 'none') {
+            return {
+              ok: false,
+              reason: `${ref}: no plan-path metadata — skipped`,
+            }
+          }
+          if (!existsSync(plan.planPath)) {
+            return {
+              ok: false,
+              reason: `${ref}: plan file missing: ${plan.planPath}`,
+            }
+          }
+          return { ok: true, planPath: plan.planPath }
+        },
+        onPicked: async (spec) => {
+          const pane = await openFileInPane(pi, spec.planPath)
+          if (!pane.details.ok) {
+            const text = pane.content.map((c) => c.text).join('\n')
+            ctx.ui.notify(`/spec-review: ${text}`, 'warning')
+          }
+        },
+        onSkipped: (spec, reason) => {
+          ctx.ui.notify(
+            `/spec-review skipped ${spec.ref}: ${reason}`,
+            'warning',
+          )
+        },
+      })
+      if (outcome.kind === 'error') {
+        ctx.ui.notify(`/spec-review: ${outcome.reason}`, 'warning')
+        return
+      }
+      if (outcome.picked.length === 0) {
+        ctx.ui.notify('no specs selected for review', 'info')
+        return
+      }
+      pi.sendUserMessage(buildReviewPrompt(outcome.picked))
     },
   })
 
