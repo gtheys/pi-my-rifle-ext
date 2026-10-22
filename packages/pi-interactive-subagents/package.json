@@ -32,7 +32,7 @@
     "config.schema.json"
   ],
   "scripts": {
-    "test": "node --test test/test.ts",
+    "test": "node --test test/test.ts test/herdr-stderr.test.ts",
     "test:integration": "node --test --test-concurrency=1 --test-force-exit test/integration/*.test.ts"
   },
   "peerDependencies": {

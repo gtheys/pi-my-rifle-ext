@@ -43,8 +43,15 @@ interface HerdrEnvelope<T> {
  * on nonzero exit (stderr included) — never parses here.
  */
 export function runHerdr(args: readonly string[], timeoutMs?: number): string {
-  const opts: { encoding: BufferEncoding; timeout?: number } = {
+  // AIDEV-NOTE: stdio must be piped. execFileSync inherits stderr by default,
+  // so a CAUGHT herdr failure (tab close after pane close already removed the
+  // tab, pane-get liveness probes on dead panes) still printed herdr's raw
+  // {"error":{"code":"tab_not_found"...}} JSON into the parent TUI, and
+  // HerdrError.stderr stayed empty. Observed 2026-10-22, 8 tab.close + 8
+  // pane.get expected failures per day.
+  const opts: { encoding: BufferEncoding; timeout?: number; stdio: 'pipe' } = {
     encoding: 'utf8',
+    stdio: 'pipe',
   }
   if (timeoutMs !== undefined) {
     opts.timeout = timeoutMs
