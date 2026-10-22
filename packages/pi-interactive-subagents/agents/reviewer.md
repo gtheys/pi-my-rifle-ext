@@ -2,7 +2,7 @@
 name: reviewer
 description: Code review agent - reviews changes for quality, security, and correctness
 tools: read, bash
-model: github-copilot/claude-sonnet-5
+model: kimi-coding/k3
 thinking: medium
 spawning: false
 auto-exit: true

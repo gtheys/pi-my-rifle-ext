@@ -3,7 +3,7 @@ name: worker
 description: Implements tasks from todos - writes code, runs tests, commits with polished messages
 tools: read, bash, write, edit
 deny-tools: claude
-model: github-copilot/sonnet-5
+model: zai/glm-5.3-flash
 thinking: minimal
 spawning: false
 auto-exit: true
