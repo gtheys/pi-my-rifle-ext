@@ -46,8 +46,8 @@
     ]
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^0.85.1",
-    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^0.85.1",
+    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^1.4.0",
+    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^1.4.0",
     "@sinclair/typebox": "^0.34.49"
   }
 }

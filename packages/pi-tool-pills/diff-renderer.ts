@@ -16,7 +16,7 @@ import type {
   AgentToolResult,
   AgentToolUpdateCallback,
   ExtensionAPI,
-  ExtensionContext,
+  ExtensionToolContext,
   Theme,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
@@ -1362,8 +1362,8 @@ interface RenderCtx {
   invalidate(): void
 }
 
-/** Execute ctx is ExtensionContext, but diff-renderer stashes render state on it. */
-type ExecCtx = ExtensionContext & { state?: DiffState }
+/** Execute ctx is ExtensionToolContext (pi >= 1.4), but diff-renderer stashes render state on it. */
+type ExecCtx = ExtensionToolContext & { state?: DiffState }
 
 type DiffDetails =
   | {
@@ -1486,7 +1486,7 @@ export function registerDiffTools(pi: ExtensionAPI): void {
         params,
         sig,
         upd,
-        ctxr as ExtensionContext,
+        ctxr as ExtensionToolContext,
       )) as MutableResult
       const content = (params.content as string | undefined) ?? ''
 
@@ -1780,7 +1780,7 @@ export function registerDiffTools(pi: ExtensionAPI): void {
         params,
         sig,
         upd,
-        ctxr as ExtensionContext,
+        ctxr as ExtensionToolContext,
       )) as MutableResult
 
       if (operations.length === 0) return result
