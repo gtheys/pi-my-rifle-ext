@@ -256,6 +256,7 @@ async function commandPhaseInput(
   ref: string,
   skipResearch: boolean = false,
   labels: readonly string[] = [],
+  notifyResearchFallback?: (jiraId: string) => void,
 ): Promise<PhasePromptInput> {
   const { stdout } = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
   const config = await loadConfig(process.cwd())
@@ -268,10 +269,13 @@ async function commandPhaseInput(
     labels,
     // AIDEV-NOTE: read-only epic lookup for ticket research — an existing
     // pulled-in epic (jira-ref metadata) replaces the acli fallback; errors
-    // and misses degrade to the acli branch of the research prompt.
+    // and misses degrade to the acli branch of the research prompt. The
+    // fallback is announced via notifyResearchFallback so an acli-first run
+    // never looks like the aven check was skipped.
     findEpicRef: async (jiraId: string): Promise<string | null> => {
       const found = await findJiraEpic(jiraId, avenExec)
       if (found.kind === 'found') return found.ref
+      notifyResearchFallback?.(jiraId)
       return null
     },
   }
@@ -361,7 +365,19 @@ export default function (pi: ExtensionAPI) {
         research = { kind: 'feature', text: parsed.topic, refHint: 'explicit' }
       }
       const result = await buildPhasePrompt('research', {
-        ...(await commandPhaseInput(pi, mode, research.text)),
+        ...(await commandPhaseInput(
+          pi,
+          mode,
+          research.text,
+          false,
+          [],
+          (jiraId) => {
+            ctx.ui.notify(
+              `/research ${jiraId}: no local aven epic found (jira-ref lookup empty) — research falls back to the Jira ticket via acli`,
+              'info',
+            )
+          },
+        )),
         research,
       })
       sendOrNotify(ctx, 'research', research.text, result)
@@ -583,7 +599,19 @@ export default function (pi: ExtensionAPI) {
         skipResearch: parsed.skipResearch,
         researchSkip: next.researchSkip === true,
         promptInput: {
-          ...(await commandPhaseInput(pi, mode, ref, parsed.skipResearch)),
+          ...(await commandPhaseInput(
+            pi,
+            mode,
+            ref,
+            parsed.skipResearch,
+            [],
+            (jiraId) => {
+              ctx.ui.notify(
+                `/flow ${jiraId}: no local aven epic (jira-ref lookup empty) — research phase uses the acli fallback`,
+                'info',
+              )
+            },
+          )),
           research,
         },
       })
