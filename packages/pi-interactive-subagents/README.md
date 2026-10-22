@@ -189,6 +189,8 @@ Discovery precedence: **project-local** (`.pi/agents/`) > **global** (`~/.pi/age
 
 ### Agent frontmatter
 
+Full field reference with defaults, valid values, and recipes: [`docs/agent-frontmatter.md`](../docs/agent-frontmatter.md).
+
 ```markdown
 ---
 name: my-agent
