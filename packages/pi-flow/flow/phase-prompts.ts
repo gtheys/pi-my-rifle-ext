@@ -52,9 +52,12 @@ export interface PhasePromptInput {
   epicHasOpenChildren?: boolean
   /** /research override: explicit kind + topic/symptom (flow defaults to feature+ref). */
   research?: ResearchOverride
-  /** Aven epic lookup for ticket research (jira-ref metadata). Absent = no
-   *  aven access from this entrypoint; the ticket prompt falls back to acli. */
-  findEpicRef?: (jiraId: string) => Promise<string | null>
+  /** Aven ticket lookup for ticket research (jira-ref epic, then jira-key
+   *  synced ticket). Null = neither exists — the prompt falls back to acli. */
+  findTicketRef?: (jiraId: string) => Promise<{
+    kind: 'epic' | 'synced'
+    ref: string
+  } | null>
 }
 
 export async function buildPhasePrompt(
@@ -96,15 +99,15 @@ async function researchPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
     mode: input.mode,
   })
   if (research.kind === 'feature' && target.kind === 'ticket') {
-    let epicRef: string | null = null
-    if (input.findEpicRef !== undefined) {
-      epicRef = await input.findEpicRef(target.jiraId)
+    let resolved: { kind: 'epic' | 'synced'; ref: string } | null = null
+    if (input.findTicketRef !== undefined) {
+      resolved = await input.findTicketRef(target.jiraId)
     }
     return {
       kind: 'send',
       prompt: buildTicketResearchPrompt({
         jiraId: target.jiraId,
-        epicRef,
+        target: resolved,
         artifactPath: researchArtifactPath(dir, target.jiraId, today),
         mode: input.mode,
       }),

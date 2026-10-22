@@ -12,6 +12,7 @@ import { parseFlowArgs } from './flow/args.ts'
 import {
   type AvenRunner,
   findJiraEpic,
+  findTicketResearchTarget,
   resolveJiraEpic,
 } from './flow/jira-ref.ts'
 import { createFlowLoop } from './flow/loop.ts'
@@ -267,15 +268,17 @@ async function commandPhaseInput(
     gitRoot: stdout.trim(),
     workRoots: config.workRoots,
     labels,
-    // AIDEV-NOTE: read-only epic lookup for ticket research — an existing
-    // pulled-in epic (jira-ref metadata) replaces the acli fallback; errors
-    // and misses degrade to the acli branch of the research prompt. The
-    // fallback is announced via notifyResearchFallback so an acli-first run
-    // never looks like the aven check was skipped.
-    findEpicRef: async (jiraId: string): Promise<string | null> => {
-      const found = await findJiraEpic(jiraId, avenExec)
-      if (found.kind === 'found') return found.ref
-      notifyResearchFallback?.(jiraId)
+    // AIDEV-NOTE: read-only ticket lookup for ticket research — jira-ref epic
+    // first (labels land there, /flow resumes clean), then the jira-key synced
+    // ticket (no acli needed). Neither → acli branch, announced via
+    // notifyResearchFallback so an acli-first run never looks like aven was
+    // skipped.
+    findTicketRef: async (jiraId) => {
+      const found = await findTicketResearchTarget(jiraId, avenExec)
+      if (found.kind === 'none') notifyResearchFallback?.(jiraId)
+      if (found.kind === 'epic' || found.kind === 'synced') {
+        return { kind: found.kind, ref: found.ref }
+      }
       return null
     },
   }
@@ -373,7 +376,7 @@ export default function (pi: ExtensionAPI) {
           [],
           (jiraId) => {
             ctx.ui.notify(
-              `/research ${jiraId}: no local aven epic found (jira-ref lookup empty) — research falls back to the Jira ticket via acli`,
+              `/research ${jiraId}: no aven epic or synced ticket found — research falls back to the Jira ticket via acli`,
               'info',
             )
           },
@@ -607,7 +610,7 @@ export default function (pi: ExtensionAPI) {
             [],
             (jiraId) => {
               ctx.ui.notify(
-                `/flow ${jiraId}: no local aven epic (jira-ref lookup empty) — research phase uses the acli fallback`,
+                `/flow ${jiraId}: no aven epic or synced ticket — research phase uses the acli fallback`,
                 'info',
               )
             },

@@ -94,6 +94,31 @@ export async function findJiraEpic(
   return { kind: 'found', ref: refs[0] as string }
 }
 
+export type TicketResearchTarget =
+  | { kind: 'epic'; ref: string }
+  | { kind: 'synced'; ref: string }
+  | { kind: 'none' }
+  | { kind: 'error'; reason: string }
+
+// AIDEV-NOTE: Research-time ticket resolution, strictest source first: the
+// local epic (jira-ref) — labels land there and /flow resumes clean; else
+// the synced ticket (jira-key) — full Jira content is already in aven, no
+// acli needed; else acli fallback. Default `aven list` is workspace-scoped
+// (reaches all projects of the routed workspace), verified 2026-02-09:
+// a jira-key hit for a dp-project ticket from a flexben cwd.
+export async function findTicketResearchTarget(
+  jiraId: string,
+  aven: AvenRunner,
+): Promise<TicketResearchTarget> {
+  const epic = await findJiraEpic(jiraId, aven)
+  if (epic.kind === 'error') return epic
+  if (epic.kind === 'found') return { kind: 'epic', ref: epic.ref }
+  const synced = await findSyncedTicket(jiraId, aven)
+  if (synced !== null && 'kind' in synced) return synced
+  if (synced === null) return { kind: 'none' }
+  return { kind: 'synced', ref: synced.ref }
+}
+
 interface SyncedTicket {
   ref: string
   title: string

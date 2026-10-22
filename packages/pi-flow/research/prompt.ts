@@ -15,8 +15,12 @@ export interface PromptInput {
 
 export interface TicketPromptInput {
   jiraId: string
-  /** Resolved local epic ref; null when the ticket is not aven-managed. */
-  epicRef: string | null
+  /** Where the ticket content lives. epic = local epic (jira-ref) — the
+   *  researched label lands there and /flow resumes past research. synced =
+   *  aven synced ticket (jira-key) — label lands on it and the artifact
+   *  marker lets a later /flow epic inherit research. null = not aven-
+   *  managed, acli fallback. */
+  target: { kind: 'epic' | 'synced'; ref: string } | null
   artifactPath: string
   mode: 'work' | 'personal'
 }
@@ -107,22 +111,41 @@ NOT create anything.
 
 Brief: fetch the research subject FIRST. Quote its summary/description in the
 artifact's Ticket section.`
-  if (input.epicRef !== null) {
-    return `${header}
-The ticket exists as local epic ${input.epicRef} (jira-ref metadata,
+  if (input.target !== null) {
+    const isEpic = input.target.kind === 'epic'
+    const source = isEpic
+      ? `The ticket exists as local epic ${input.target.ref} (jira-ref metadata,
 dep-linked to the synced Jira ticket).
 ${noCreate}
-Run \`aven show ${input.epicRef} --json\` for the epic and, when more detail
-helps, \`acli jira workitem view ${input.jiraId}\` for the synced ticket.
+Run \`aven show ${input.target.ref} --json\` and take the dep-linked synced
+ticket ref from \`epic_children\`, then \`aven show <synced-ref> --full\` for
+its description — plain --json output has no description field.
+\`acli jira workitem view ${input.jiraId}\` also works when you want the live
+Jira view.`
+      : `The ticket exists as synced aven ticket ${input.target.ref} (jira-key
+metadata — the Jira content was synced into it).
+${noCreate}
+Run \`aven show ${input.target.ref} --full\` — the synced description is in
+there (plain --json output has no description field). The content is already
+in aven — no Jira fetch needed.`
+    const completion = isEpic
+      ? `COMPLETION LABEL — this phase advances the RPIV flow. When the artifact is
+written, run \`aven edit ${input.target.ref} --label researched\`. Without the
+label /flow halts at research.`
+      : `COMPLETION — run \`aven edit ${input.target.ref} --label researched\` AND append
+the line "> researched by pi-flow on <today's date>" to the artifact header.
+A later \`/flow ${input.jiraId}\` creates the local epic and inherits research
+from that artifact marker.`
+    return `${header}
+${source}
 
 ${featureSteps(input.artifactPath)}
 
-COMPLETION LABEL — this phase advances the RPIV flow. When the artifact is
-written, run \`aven edit ${input.epicRef} --label researched\`. Without the
-label /flow halts at research.`
+${completion}`
   }
   return `${header}
-The ticket exists in Jira but is not aven-managed (no local epic).
+The ticket exists in Jira but is not aven-managed (no local epic and no
+synced ticket).
 ${noCreate}
 Run \`acli jira workitem view ${input.jiraId}\`. If that fails, stop and
 report the failure — do not guess the contents and do not create any ticket.

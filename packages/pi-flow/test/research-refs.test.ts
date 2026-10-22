@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import { type AvenRunner, findTicketResearchTarget } from '../flow/jira-ref.ts'
 import { buildPhasePrompt } from '../flow/phase-prompts.ts'
 import { parseResearchArgs } from '../research/args.ts'
 import { findResearchedArtifact } from '../research/artifact.ts'
@@ -87,21 +88,39 @@ test('classify: non-jira text stays topic everywhere', () => {
 test('ticket prompt: epic branch labels the epic and forbids creation', () => {
   const p = buildTicketResearchPrompt({
     jiraId: 'DP-257',
-    epicRef: 'PMR-ABC1',
+    target: { kind: 'epic', ref: 'PMR-ABC1' },
     artifactPath: '/tmp/r.md',
     mode: 'work',
   })
   assert.match(p, /aven show PMR-ABC1 --json/)
+  assert.match(p, /epic_children/)
+  assert.match(p, /aven show <synced-ref> --full/)
   assert.match(p, /acli jira workitem view DP-257/)
   assert.match(p, /aven edit PMR-ABC1 --label researched/)
   assert.match(p, /Do NOT run the ticket-creation gate/)
   assert.doesNotMatch(p, /TICKET CREATION GATE/)
 })
 
+test('ticket prompt: synced branch targets the aven ticket, no acli, marker for later epic', () => {
+  const p = buildTicketResearchPrompt({
+    jiraId: 'DP-247',
+    target: { kind: 'synced', ref: 'DPX-TFZH' },
+    artifactPath: '/tmp/r.md',
+    mode: 'work',
+  })
+  assert.match(p, /synced aven ticket DPX-TFZH/)
+  assert.match(p, /aven show DPX-TFZH --full/)
+  assert.doesNotMatch(p, /acli/)
+  assert.match(p, /aven edit DPX-TFZH --label researched/)
+  assert.match(p, /researched by pi-flow/)
+  assert.match(p, /creates the local epic and inherits/)
+  assert.doesNotMatch(p, /TICKET CREATION GATE/)
+})
+
 test('ticket prompt: acli fallback stops on view failure, no label possible', () => {
   const p = buildTicketResearchPrompt({
     jiraId: 'DP-257',
-    epicRef: null,
+    target: null,
     artifactPath: '/tmp/r.md',
     mode: 'work',
   })
@@ -184,15 +203,15 @@ const BASE = {
   labels: [] as string[],
 }
 
-test('phase-prompts: explicit jira-shaped research resolves via findEpicRef', async () => {
+test('phase-prompts: explicit jira-shaped research resolves via findTicketRef', async () => {
   const seen: string[] = []
   const result = await buildPhasePrompt('research', {
     ...BASE,
     mode: 'work',
     research: { kind: 'feature', text: 'DP-257', refHint: 'explicit' },
-    findEpicRef: async (jiraId) => {
+    findTicketRef: async (jiraId) => {
       seen.push(jiraId)
-      return 'PMR-ABC1'
+      return { kind: 'epic', ref: 'PMR-ABC1' }
     },
   })
   assert.equal(result.kind, 'send')
@@ -202,12 +221,25 @@ test('phase-prompts: explicit jira-shaped research resolves via findEpicRef', as
   assert.doesNotMatch(result.prompt, /TICKET CREATION GATE/)
 })
 
-test('phase-prompts: findEpicRef miss falls back to the acli branch', async () => {
+test('phase-prompts: synced ticket resolves without acli', async () => {
+  const result = await buildPhasePrompt('research', {
+    ...BASE,
+    mode: 'work',
+    research: { kind: 'feature', text: 'DP-247', refHint: 'force' },
+    findTicketRef: async () => ({ kind: 'synced', ref: 'DPX-TFZH' }),
+  })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  assert.match(result.prompt, /aven show DPX-TFZH --full/)
+  assert.doesNotMatch(result.prompt, /acli/)
+})
+
+test('phase-prompts: findTicketRef miss falls back to the acli branch', async () => {
   const result = await buildPhasePrompt('research', {
     ...BASE,
     mode: 'work',
     research: { kind: 'feature', text: 'DP-257', refHint: 'force' },
-    findEpicRef: async () => null,
+    findTicketRef: async () => null,
   })
   assert.equal(result.kind, 'send')
   if (result.kind !== 'send') return
@@ -231,10 +263,40 @@ test('phase-prompts: debug symptoms never take the ticket path', async () => {
     ...BASE,
     mode: 'work',
     research: { kind: 'debug', text: 'DP-257 crashes' },
-    findEpicRef: async () => 'PMR-ABC1',
+    findTicketRef: async () => ({ kind: 'epic', ref: 'PMR-ABC1' }),
   })
   assert.equal(result.kind, 'send')
   if (result.kind !== 'send') return
   assert.match(result.prompt, /Debug flow/)
   assert.doesNotMatch(result.prompt, /aven show PMR-ABC1/)
+})
+
+// --- jira-ref target resolution ---
+
+test('findTicketResearchTarget: epic beats synced; synced found via jira-key; miss = none', async () => {
+  const scripted = (responses: Record<string, string>) =>
+    (async (args: readonly string[]) => {
+      const key = args.join(' ')
+      for (const [needle, body] of Object.entries(responses)) {
+        if (key.includes(needle)) return { stdout: body, stderr: '' }
+      }
+      return { stdout: '[]', stderr: '' }
+    }) as AvenRunner
+
+  const epicAndSynced = scripted({
+    'jira-ref=DP-1': '[{"ref":"PMR-E1","is_epic":true}]',
+    'jira-key=DP-1': '[{"ref":"DPX-S1","is_epic":false}]',
+  })
+  const t1 = await findTicketResearchTarget('DP-1', epicAndSynced)
+  assert.deepEqual(t1, { kind: 'epic', ref: 'PMR-E1' })
+
+  const syncedOnly = scripted({
+    'jira-key=DP-2': '[{"ref":"DPX-S2","is_epic":false}]',
+  })
+  const t2 = await findTicketResearchTarget('DP-2', syncedOnly)
+  assert.deepEqual(t2, { kind: 'synced', ref: 'DPX-S2' })
+
+  const neither = scripted({})
+  const t3 = await findTicketResearchTarget('DP-3', neither)
+  assert.deepEqual(t3, { kind: 'none' })
 })
