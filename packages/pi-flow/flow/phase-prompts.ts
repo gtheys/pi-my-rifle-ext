@@ -11,7 +11,11 @@ import { routeFor } from '../implement/routing.ts'
 import { resolvePlanDir } from '../plan/paths.ts'
 import { buildPlanPrompt } from '../plan/prompt.ts'
 import { researchArtifactPath, resolveResearchDir } from '../research/paths.ts'
-import { buildResearchPrompt } from '../research/prompt.ts'
+import {
+  buildResearchPrompt,
+  buildTicketResearchPrompt,
+} from '../research/prompt.ts'
+import { classifyResearchTarget } from '../research/refs.ts'
 import { resolveDevctlScriptsDir } from '../validate/paths.ts'
 import { buildValidatePrompt } from '../validate/prompt.ts'
 import type { WorkMode } from '../work-mode.ts'
@@ -24,6 +28,12 @@ export type PhasePrompt =
 export interface ResearchOverride {
   kind: 'feature' | 'debug'
   text: string
+  /** Provenance of text — decides ticket-ref resolution
+   *  (research/refs.ts classifyResearchTarget): 'force' = known Jira ID
+   *  (/flow jira kind or ID= prefix), 'explicit' = bare /research topic
+   *  (ticket path only when jira-shaped AND work mode). Undefined = default
+   *  ref-as-topic; never the ticket path (an aven ref must not hit acli). */
+  refHint?: 'force' | 'explicit'
 }
 
 export interface PhasePromptInput {
@@ -42,6 +52,9 @@ export interface PhasePromptInput {
   epicHasOpenChildren?: boolean
   /** /research override: explicit kind + topic/symptom (flow defaults to feature+ref). */
   research?: ResearchOverride
+  /** Aven epic lookup for ticket research (jira-ref metadata). Absent = no
+   *  aven access from this entrypoint; the ticket prompt falls back to acli. */
+  findEpicRef?: (jiraId: string) => Promise<string | null>
 }
 
 export async function buildPhasePrompt(
@@ -62,7 +75,10 @@ export async function buildPhasePrompt(
   }
 }
 
-function researchPrompt(input: PhasePromptInput): PhasePrompt {
+// AIDEV-NOTE: async so ticket research can resolve the local epic via
+// findEpicRef before the prompt is built — /flow and /research share this
+// one path. Debug symptoms never take the ticket branch.
+async function researchPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
   const research = input.research ?? {
     kind: 'feature' as const,
     text: input.ref,
@@ -73,11 +89,28 @@ function researchPrompt(input: PhasePromptInput): PhasePrompt {
     repoName,
     input.gitRoot,
   )
-  const artifactPath = researchArtifactPath(
-    dir,
-    research.text,
-    new Date().toISOString().slice(0, 10),
-  )
+  const today = new Date().toISOString().slice(0, 10)
+  const target = classifyResearchTarget(research.text, {
+    force: research.refHint === 'force',
+    explicit: research.refHint === 'explicit',
+    mode: input.mode,
+  })
+  if (research.kind === 'feature' && target.kind === 'ticket') {
+    let epicRef: string | null = null
+    if (input.findEpicRef !== undefined) {
+      epicRef = await input.findEpicRef(target.jiraId)
+    }
+    return {
+      kind: 'send',
+      prompt: buildTicketResearchPrompt({
+        jiraId: target.jiraId,
+        epicRef,
+        artifactPath: researchArtifactPath(dir, target.jiraId, today),
+        mode: input.mode,
+      }),
+    }
+  }
+  const artifactPath = researchArtifactPath(dir, research.text, today)
   return {
     kind: 'send',
     prompt: buildResearchPrompt({

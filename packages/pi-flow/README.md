@@ -9,7 +9,7 @@ Canonical flow documentation: [`docs/rpiv-flow.md`](../../docs/rpiv-flow.md).
 
 | Command | What it does |
 | --- | --- |
-| `/research <topic \| symptom>` | Question loop + scouts → artifact in `notes/research/` → ticket-creation gate (explicit confirm; work: Jira, personal: aven). Debug symptoms route through the user's `debug` skill to a root cause. |
+| `/research <topic \| ID=<jira-id> \| symptom>` | Question loop + scouts → artifact in `notes/research/` → ticket-creation gate (explicit confirm; work: Jira, personal: aven). `ID=<jira-id>` (or a bare jira-shaped topic in work mode) researches the existing ticket instead: aven local epic first (`jira-ref` metadata), `acli jira workitem view` fallback; no creation gate, `researched` label lands on the epic. Debug symptoms route through the user's `debug` skill to a root cause. |
 | `/plan <ref>` | Work: `feature-plan-aven` skill (epic tree, plan-state approval). Personal: size check → human-confirmed oneshot vs plan split; plan.md + epic/subtasks for plans. Ends with status `todo` + `planned` label — work mode: only after the approval-gated tree stage (premature `planned` would misroute `/implement`). |
 | `/implement <ref>` | Gate: `planned` required; missing `researched` needs `--skip-research` (recorded durably as the `research-skipped` label — never asked twice). Routes bug / plan / oneshot. Worktree isolation, per-task implement→test→commit, retry budget 3 then blocked + escalate. |
 | `/validate <ref>` | Work: ordered cluster gate (minikube → connectivity → queues → deploy → manual tests → Jira evidence comment). Personal: human runs the test. Then the review gate: `/review` → `blockers_count` artifact; 0 → land, >0 → back to `/implement`. |

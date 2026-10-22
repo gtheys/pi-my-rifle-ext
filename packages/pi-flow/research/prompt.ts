@@ -3,10 +3,20 @@
 // (ask_user_question), scouts (subagent tool from pi-interactive-subagents),
 // writes the artifact, then runs the ticket-creation gate. Routing-only reuse
 // of the user's debug skill (referenced by name, never imported).
+// Ticket research (research/refs.ts classified a jira-shaped ref) SKIPS the
+// creation gate: the ticket exists — aven epic first, acli fallback.
 
 export interface PromptInput {
   kind: 'feature' | 'debug'
   input: string
+  artifactPath: string
+  mode: 'work' | 'personal'
+}
+
+export interface TicketPromptInput {
+  jiraId: string
+  /** Resolved local epic ref; null when the ticket is not aven-managed. */
+  epicRef: string | null
   artifactPath: string
   mode: 'work' | 'personal'
 }
@@ -49,6 +59,20 @@ current. If sync fails with "CodeGraph not initialized", run "codegraph init
 codegraph_explore is available and preferred for code search. If the tool is
 not available, skip this and let scouts fall back to ripgrep.`
 
+// AIDEV-NOTE: shared feature steps so the topic flow and the ticket flow can
+// never drift on the loop/scouts/artifact instructions.
+function featureSteps(artifactPath: string): string {
+  return `1. Use the ask_user_question tool in a loop, one question at a time, until the
+   mechanism, scope, and constraints are understood.
+2. Spawn scout subagents (subagent tool, in parallel) to map the relevant code
+   and report findings.
+${CODEGRAPH_INSTRUCTIONS}
+3. Write a markdown artifact to: ${artifactPath}
+   Sections: Questions (with answers), Findings, Diagrams (mermaid code fences
+   for architecture/data/flow diagrams), Ticket implications (what the future
+   ticket must contain: scope, risks, touched areas).`
+}
+
 export function buildResearchPrompt(input: PromptInput): string {
   const header = `Research phase (RPIV flow). Mode: ${input.mode}.`
   if (input.kind === 'debug') {
@@ -72,14 +96,41 @@ ${GATE_INSTRUCTIONS}`
 Feature flow: topic = "${input.input}".
 
 Understand the mechanism before proposing anything:
-1. Use the ask_user_question tool in a loop, one question at a time, until the
-   mechanism, scope, and constraints are understood.
-2. Spawn scout subagents (subagent tool, in parallel) to map the relevant code
-   and report findings.
-${CODEGRAPH_INSTRUCTIONS}
-3. Write a markdown artifact to: ${input.artifactPath}
-   Sections: Questions (with answers), Findings, Diagrams (mermaid code fences
-   for architecture/data/flow diagrams), Ticket implications (what the future
-   ticket must contain: scope, risks, touched areas).
+${featureSteps(input.artifactPath)}
 ${GATE_INSTRUCTIONS}`
+}
+
+export function buildTicketResearchPrompt(input: TicketPromptInput): string {
+  const header = `Research phase (RPIV flow). Mode: ${input.mode}. Ticket: ${input.jiraId}.`
+  const noCreate = `The ticket already exists. Do NOT run the ticket-creation gate and do
+NOT create anything.
+
+Brief: fetch the research subject FIRST. Quote its summary/description in the
+artifact's Ticket section.`
+  if (input.epicRef !== null) {
+    return `${header}
+The ticket exists as local epic ${input.epicRef} (jira-ref metadata,
+dep-linked to the synced Jira ticket).
+${noCreate}
+Run \`aven show ${input.epicRef} --json\` for the epic and, when more detail
+helps, \`acli jira workitem view ${input.jiraId}\` for the synced ticket.
+
+${featureSteps(input.artifactPath)}
+
+COMPLETION LABEL — this phase advances the RPIV flow. When the artifact is
+written, run \`aven edit ${input.epicRef} --label researched\`. Without the
+label /flow halts at research.`
+  }
+  return `${header}
+The ticket exists in Jira but is not aven-managed (no local epic).
+${noCreate}
+Run \`acli jira workitem view ${input.jiraId}\`. If that fails, stop and
+report the failure — do not guess the contents and do not create any ticket.
+
+${featureSteps(input.artifactPath)}
+
+COMPLETION — no aven ref exists, so no "researched" label can land. Append a
+line "> researched by pi-flow on <today's date>" to the artifact header, and
+note under Ticket implications that a later \`/flow ${input.jiraId}\` will
+create the local epic and re-run research once.`
 }

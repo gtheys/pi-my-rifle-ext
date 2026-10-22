@@ -33,6 +33,7 @@ import { parseImplementArgs } from './implement/args.ts'
 import { ALL_LABELS } from './phase-state.ts'
 import { parsePlanArgs } from './plan/args.ts'
 import { parseResearchArgs } from './research/args.ts'
+import { findResearchedArtifact } from './research/artifact.ts'
 import { recordRunEvent, runStatePath } from './run-state.ts'
 import { parseSpecReviewArgs } from './spec-review/args.ts'
 import { listSpecsInReview, readPlanPath } from './spec-review/aven-spec.ts'
@@ -265,6 +266,14 @@ async function commandPhaseInput(
     gitRoot: stdout.trim(),
     workRoots: config.workRoots,
     labels,
+    // AIDEV-NOTE: read-only epic lookup for ticket research — an existing
+    // pulled-in epic (jira-ref metadata) replaces the acli fallback; errors
+    // and misses degrade to the acli branch of the research prompt.
+    findEpicRef: async (jiraId: string): Promise<string | null> => {
+      const found = await findJiraEpic(jiraId, avenExec)
+      if (found.kind === 'found') return found.ref
+      return null
+    },
   }
 }
 
@@ -326,24 +335,31 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('research', {
     description:
-      'RPIV research phase. Usage: /research <topic> | /research --debug <symptom>',
+      'RPIV research phase. Usage: /research <topic> | /research ID=<jira-id> | /research --debug <symptom>',
     // AIDEV-NOTE: Prompt prep lives in flow/phase-prompts.ts (shared with the
     // /flow loop). The ticket-creation gate lives in the agent prompt — the
     // command itself never creates tickets. See research/ticket-gate.ts.
+    // Ticket refs (ID=<jira-id>, or bare jira-shaped in work mode) resolve
+    // aven-first via findEpicRef and skip the creation gate — see
+    // research/refs.ts.
     handler: async (args, ctx) => {
       const parsed = parseResearchArgs(args)
       if (parsed.kind === 'help') {
         ctx.ui.notify(
-          'Usage: /research <topic> | /research --debug <symptom>',
+          'Usage: /research <topic> | /research ID=<jira-id> | /research --debug <symptom>',
           'info',
         )
         return
       }
       const mode = await resolveMode(pi)
-      const research =
-        parsed.kind === 'debug'
-          ? { kind: 'debug' as const, text: parsed.symptom }
-          : { kind: 'feature' as const, text: parsed.topic }
+      let research: ResearchOverride
+      if (parsed.kind === 'debug') {
+        research = { kind: 'debug', text: parsed.symptom }
+      } else if (parsed.forceRef === true) {
+        research = { kind: 'feature', text: parsed.topic, refHint: 'force' }
+      } else {
+        research = { kind: 'feature', text: parsed.topic, refHint: 'explicit' }
+      }
       const result = await buildPhasePrompt('research', {
         ...(await commandPhaseInput(pi, mode, research.text)),
         research,
@@ -492,13 +508,48 @@ export default function (pi: ExtensionAPI) {
         }
         ref = resolved.ref
         // Research topic stays the human-readable Jira ID; aven labels live
-        // on the epic ref.
-        research = { kind: 'feature', text: parsed.jiraId }
+        // on the epic ref. refHint 'force': the research prompt resolves the
+        // epic (research/refs.ts) instead of running the creation gate.
+        research = { kind: 'feature', text: parsed.jiraId, refHint: 'force' }
         if (resolved.created) {
           ctx.ui.notify(
             `/flow ${parsed.jiraId}: pulled in local epic ${resolved.ref}`,
             'info',
           )
+          // AIDEV-NOTE: pure-Jira research (acli fallback, no aven ref)
+          // cannot land the "researched" label; inherit it from the prior
+          // artifact so /flow resumes past research. Best-effort: a failed
+          // label write just means flow halts at research as before.
+          const { stdout: toplevel } = await pi.exec(
+            'git',
+            ['rev-parse', '--show-toplevel'],
+            {},
+          )
+          const gitRoot = toplevel.trim()
+          const artifact = await findResearchedArtifact(
+            process.env.LLM_NOTES_ROOT,
+            path.basename(gitRoot),
+            gitRoot,
+            parsed.jiraId,
+          )
+          if (artifact !== null) {
+            const labeled = await writeAvenLabel(ref, 'researched')
+            if (labeled) {
+              await writeAvenNote(
+                ref,
+                `research inherited from prior pure-Jira artifact ${path.basename(artifact)} (no aven ref existed at research time)`,
+              )
+              ctx.ui.notify(
+                `/flow ${parsed.jiraId}: prior research artifact ${path.basename(artifact)} found — marked ${ref} researched`,
+                'info',
+              )
+            } else {
+              ctx.ui.notify(
+                `/flow ${parsed.jiraId}: prior research artifact ${path.basename(artifact)} found but the researched label write failed — flow halts at research`,
+                'warning',
+              )
+            }
+          }
         }
       } else {
         ref = parsed.ref
