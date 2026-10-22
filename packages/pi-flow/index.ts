@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
+import { hasLiveAssignmentForParent } from '@gtheys/pi-interactive-subagents'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
 import { parseFeedbackArgs } from './feedback/args.ts'
@@ -307,6 +308,7 @@ export default function (pi: ExtensionAPI) {
     avenNote: (ref, text) => writeAvenNote(ref, text),
     avenSetLabel: (ref, label) => writeAvenLabel(ref, label),
     epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),
+    hasInFlightSubagent: () => hasLiveAssignmentForParent(process.pid),
     sendPrompt: (prompt) => {
       pi.sendUserMessage(prompt)
     },
@@ -334,8 +336,11 @@ export default function (pi: ExtensionAPI) {
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
   // fully settles (blocking ask_user_question gates keep the run in flight,
-  // so gates are never raced). The loop re-reads aven labels and either
-  // injects the next phase prompt or halts — advancement is code, not model.
+  // so gates are never raced). Fire-and-forget subagents DO settle the run
+  // mid-phase — their result arrives later as a steer — so the loop's
+  // hasInFlightSubagent guard keeps those settles from halting the flow.
+  // The loop re-reads aven labels and either injects the next phase prompt
+  // or halts — advancement is code, not model.
   pi.on('agent_settled', () => {
     void loop.onSettled()
   })

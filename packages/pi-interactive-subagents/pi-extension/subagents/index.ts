@@ -4164,6 +4164,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   })
 }
 
+export { hasLiveAssignmentForParent } from './assignments.ts'
 // AIDEV-NOTE: Public programmatic API for other extensions that want to spawn
 // subagents directly. Consumers import launchSubagent/watchSubagent instead of
 // sending a user message to the `subagent` tool.

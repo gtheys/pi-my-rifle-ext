@@ -272,6 +272,27 @@ export function listAssignments(root?: string): AssignmentView[] {
   return views
 }
 
+/**
+ * True while the given parent pid has at least one in-flight child: an
+ * assignment record owned by that pid with a status other than 'lost'.
+ * Cross-extension guard (pi-flow's /flow loop) — records are removed only
+ * on verified completion, so presence means the child can still steer its
+ * parent. 'lost' fails closed to not-in-flight: a lost child never steers,
+ * so waiting on it would hang the caller's gate.
+ */
+export function hasLiveAssignmentForParent(
+  pid: number,
+  root?: string,
+): boolean {
+  for (const view of listAssignments(root)) {
+    if (view.state !== 'owned') continue
+    if (view.record.claim.pid !== pid) continue
+    if (view.record.status === 'lost') continue
+    return true
+  }
+  return false
+}
+
 // AIDEV-NOTE (PMR-YKAC): replay lookup for spawn identity — the 'starting'
 // record this parent wrote before its crashed spawn's tab create. Matches on
 // parent session + name + task so a retried tool call finds its half-spawn;

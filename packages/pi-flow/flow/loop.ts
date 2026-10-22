@@ -5,7 +5,11 @@
 // buildPhasePrompt the phase commands use, then advances on the
 // agent_settled event: label landed -> next phase prompt; label missing,
 // abort, or aven failure -> deterministic stop-on-fail (aven note + halt).
-// The model never sequences phases — extension code does.
+// Exception: a settle while a subagent is still in flight is a mid-phase
+// async wait (fire-and-forget scouts/planners steer back as a later run),
+// not a phase outcome — the loop stays armed and re-checks on the next
+// settle (hasInFlightSubagent guard). The model never sequences phases —
+// extension code does.
 import type { FlowRunEvent } from '../run-state.ts'
 import { nextPhase, PHASE_LABEL, type Phase } from './orchestrate.ts'
 import { buildPhasePrompt, type PhasePromptInput } from './phase-prompts.ts'
@@ -22,6 +26,8 @@ export interface FlowLoopDeps {
   avenSetLabel(ref: string, label: string): Promise<boolean>
   /** True when the ref is an epic with open children (implement routing guard). */
   epicHasOpenChildren(ref: string): Promise<boolean>
+  /** True while this session has an in-flight subagent (mid-phase async wait). */
+  hasInFlightSubagent(): boolean
   sendPrompt(prompt: string): void
 }
 
@@ -97,6 +103,19 @@ class FlowLoopImpl implements FlowLoop {
     }
     const label = PHASE_LABEL[phase]
     if (!labels.includes(label)) {
+      if (this.deps.hasInFlightSubagent()) {
+        const state = this.state
+        if (state !== null) {
+          state.awaitingOutcome = true
+          this.deps.journal({
+            kind: 'note',
+            at: now(),
+            ref: state.ref,
+            text: `settled at ${phase} without the "${label}" label but a subagent is in flight — flow stays armed`,
+          })
+        }
+        return
+      }
       await this.halt(
         phase,
         `phase completed without landing the "${label}" label`,

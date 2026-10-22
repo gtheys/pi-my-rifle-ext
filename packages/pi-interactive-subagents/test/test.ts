@@ -40,6 +40,7 @@ import {
   assignmentPath,
   findAssignmentByBranch,
   findStartingAssignment,
+  hasLiveAssignmentForParent,
   listAssignments,
   readAssignment,
   recordAssignmentUsage,
@@ -4555,6 +4556,23 @@ describe('assignments.ts durable branch-owned assignments (PMR-Z5KR)', () => {
     if (view.state === 'owned') {
       assert.equal(view.record.name, 'agent-live-1')
     }
+  })
+
+  it('hasLiveAssignmentForParent: true for a live claim pid with a working child', () => {
+    const isolated = join(root, 'inflight-true')
+    writeAssignment(draft('inflight-1'), isolated)
+    assert.equal(hasLiveAssignmentForParent(process.pid, isolated), true)
+  })
+
+  it('hasLiveAssignmentForParent: false for another pid, dead pids, and lost children', () => {
+    const isolated = join(root, 'inflight-false')
+    writeAssignment(
+      draft('other-1', { claim: { pid: 4194304, id: 'x' } }),
+      isolated,
+    )
+    writeAssignment(draft('lost-1', { status: 'lost' }), isolated)
+    assert.equal(hasLiveAssignmentForParent(process.pid, isolated), false)
+    assert.equal(hasLiveAssignmentForParent(4194304, isolated), false)
   })
 
   it('listAssignments marks dead claim pids as orphaned with a resume hint', () => {

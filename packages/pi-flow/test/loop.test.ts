@@ -12,6 +12,7 @@ interface Harness {
   notifications: { message: string; level: string }[]
   labels: string[] | null
   openChildren?: boolean
+  inFlight?: boolean
 }
 
 function makeHarness(labels: string[] | null = []): Harness {
@@ -41,6 +42,7 @@ function makeHarness(labels: string[] | null = []): Harness {
       return true
     },
     epicHasOpenChildren: async () => h.openChildren ?? false,
+    hasInFlightSubagent: () => h.inFlight ?? false,
     sendPrompt: (prompt) => {
       h.sent.push(prompt)
     },
@@ -115,6 +117,37 @@ test('settled after an aborted turn (label never landed): halts', async () => {
   await loop.start(startInput())
   await loop.onSettled()
   assert.equal(h.sent.length, 1)
+  assert.match(h.notes[0].text, /without landing the "researched" label/)
+})
+
+test('settled without label but a subagent is in flight: stays armed, no halt, re-checks next settle', async () => {
+  const h = makeHarness([])
+  h.inFlight = true
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled()
+  assert.equal(h.notes.length, 0)
+  assert.equal(h.sent.length, 1)
+  assert.equal(loop.isActive(), true)
+  assert.equal(h.events.at(-1)?.kind, 'note')
+  // child steers back, turn settles again with the label landed: advances
+  h.inFlight = false
+  h.labels = ['researched']
+  await loop.onSettled()
+  assert.equal(h.sent.length, 2)
+  assert.match(h.sent[1], /plan\.md|Plan phase/)
+})
+
+test('settled without label once the subagent is gone: halts', async () => {
+  const h = makeHarness([])
+  h.inFlight = true
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled()
+  assert.equal(loop.isActive(), true)
+  h.inFlight = false
+  await loop.onSettled()
+  assert.equal(loop.isActive(), false)
   assert.match(h.notes[0].text, /without landing the "researched" label/)
 })
 
