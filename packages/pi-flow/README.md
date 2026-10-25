@@ -30,12 +30,31 @@ Global config lives at `~/.pi/agent/pi-flow/config.json` (schema:
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `workRoots` | `string[]` | `[]` | Absolute path prefixes; a git toplevel under any prefix is `work` mode |
+| `avenWorkspace` | `string` | unset | Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and the search fallback) |
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/gtheys/pi-my-rifle-ext/main/packages/pi-flow/config.schema.json",
   "workRoots": [
     "/home/geert/Code/salaryhero"
-  ]
+  ],
+  "avenWorkspace": "personal"
 }
+```
+
+### Aven ref resolution
+
+Aven resolves refs against the workspace inferred from the current
+directory via project path mappings. On a checkout without such a mapping,
+pi-flow falls back automatically: `aven show <ref> --json` first, then an
+exact-ref `aven search` in the active workspace, then a sweep of every
+workspace from `aven workspace list`; the resolved workspace is pinned for
+all later calls on that ref. If nothing matches, the failure names the
+fix. Two one-time remedies:
+
+```sh
+# map this checkout to its aven project (recommended)
+aven project path add pi-my-rifle-ext /path/to/this/checkout
+
+# or pin the workspace explicitly in pi-flow config.json (see avenWorkspace)
 ```

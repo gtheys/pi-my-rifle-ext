@@ -31,13 +31,33 @@ Config: global JSON at `~/.pi/agent/pi-flow/config.json`
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/gtheys/pi-my-rifle-ext/main/packages/pi-flow/config.schema.json",
-  "workRoots": ["/home/geert/Code/salaryhero"]
+  "workRoots": ["/home/geert/Code/salaryhero"],
+  "avenWorkspace": "personal"
 }
 ```
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `workRoots` | `string[]` | `[]` | Absolute path prefixes; a git toplevel under any prefix is work mode |
+| `avenWorkspace` | `string` | unset | Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and the search fallback) |
+
+### Aven ref resolution
+
+Aven infers the workspace from the cwd via project path mappings. On a
+checkout with no mapping, pi-flow resolves refs deterministically: plain
+`aven show <ref> --json` first; on `unknown-ref`, an exact-ref
+`aven search` in the active workspace; then a sweep of every workspace
+from `aven workspace list` (search per workspace, then re-show with
+`--workspace <ws>`). The resolved workspace is memoized per ref for the
+process. If nothing matches, the failure message names the exact fix —
+never a bare `unknown-ref`:
+
+```sh
+# one-time mapping (recommended)
+aven project path add pi-my-rifle-ext /path/to/this/checkout
+
+# or force a workspace via the avenWorkspace config key above
+```
 
 Consequences of mode: research tickets land in Jira (work) vs aven
 (personal); plan/implement route to the `feature-plan-aven` /

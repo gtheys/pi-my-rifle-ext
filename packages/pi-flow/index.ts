@@ -10,6 +10,7 @@ import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
 import { parseFeedbackArgs } from './feedback/args.ts'
 import { parseFlowArgs } from './flow/args.ts'
+import { resolveAvenRef } from './flow/aven-resolve-exec.ts'
 import {
   type AvenRunner,
   findJiraEpic,
@@ -54,12 +55,60 @@ import { modeForToplevel, type WorkMode } from './work-mode.ts'
 const execFileAsync = promisify(execFile)
 const AVEN_TIMEOUT_MS = 5_000
 
+// AIDEV-NOTE: PMR-5900 — aven ref resolution must not depend on implicit
+// cwd inference. The first ref-scoped aven call per ref resolves the
+// workspace (see flow/aven-resolve-exec.ts) and memoizes it; later calls
+// for the same ref reuse it. `avenWorkspace` config overrides everything.
+const resolvedRefWorkspaces = new Map<string, string | undefined>()
+let avenWorkspaceOverride: string | undefined
+let overrideLoaded = false
+let lastAvenFailure: string | undefined
+
+export function lastAvenResolutionFailure(): string | undefined {
+  return lastAvenFailure
+}
+
+function recordAvenFailure(error: unknown): void {
+  lastAvenFailure = error instanceof Error ? error.message : String(error)
+}
+
+async function avenOverrideArg(): Promise<string[]> {
+  if (!overrideLoaded) {
+    overrideLoaded = true
+    const config = await loadConfig(process.cwd())
+    avenWorkspaceOverride = config.avenWorkspace
+  }
+  if (avenWorkspaceOverride !== undefined) {
+    return ['--workspace', avenWorkspaceOverride]
+  }
+  return []
+}
+
+async function avenArgsWithWorkspace(
+  args: string[],
+  ref: string,
+): Promise<string[]> {
+  const override = await avenOverrideArg()
+  if (override.length > 0) return [...args, ...override]
+  if (!resolvedRefWorkspaces.has(ref)) {
+    const resolved = await resolveAvenRef(ref, avenExec)
+    if (!resolved.ok) throw new Error(resolved.reason)
+    resolvedRefWorkspaces.set(ref, resolved.workspace)
+  }
+  const workspace = resolvedRefWorkspaces.get(ref)
+  if (workspace !== undefined) {
+    return [...args, '--workspace', workspace]
+  }
+  return args
+}
+
 // AIDEV-NOTE: Shared aven helpers (labels are the run state, notes are the
 // halt record). Used by the /implement and /flow command handlers and by the
 // flow loop deps — one parsing path, fail-closed (null/[] on any failure).
 export async function readAvenLabels(ref: string): Promise<string[] | null> {
   try {
-    const { stdout } = await execFileAsync('aven', ['show', ref, '--json'], {
+    const args = await avenArgsWithWorkspace(['show', ref, '--json'], ref)
+    const { stdout } = await execFileAsync('aven', args, {
       timeout: AVEN_TIMEOUT_MS,
     })
     const parsedTicket: unknown = JSON.parse(stdout)
@@ -73,7 +122,8 @@ export async function readAvenLabels(ref: string): Promise<string[] | null> {
       )
     }
     return null
-  } catch {
+  } catch (error: unknown) {
+    recordAvenFailure(error)
     return null
   }
 }
@@ -83,11 +133,13 @@ export async function writeAvenNote(
   text: string,
 ): Promise<boolean> {
   try {
-    await execFileAsync('aven', ['note', ref, text], {
+    const args = await avenArgsWithWorkspace(['note', ref, text], ref)
+    await execFileAsync('aven', args, {
       timeout: AVEN_TIMEOUT_MS,
     })
     return true
-  } catch {
+  } catch (error: unknown) {
+    recordAvenFailure(error)
     return false
   }
 }
@@ -97,23 +149,25 @@ export async function writeAvenNote(
 // errors (label-based routing stays the primary contract).
 export async function epicHasOpenChildren(ref: string): Promise<boolean> {
   try {
-    const { stdout } = await execFileAsync(
-      'aven',
+    const args = await avenArgsWithWorkspace(
       ['epic', 'list', ref, '--json'],
-      { timeout: AVEN_TIMEOUT_MS },
+      ref,
     )
+    const { stdout } = await execFileAsync('aven', args, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
     const parsed: unknown = JSON.parse(stdout)
     if (
       typeof parsed === 'object' &&
       parsed !== null &&
       Array.isArray((parsed as { children?: unknown }).children)
-    ) {
+    )
       return (parsed as { children: { open?: unknown }[] }).children.some(
         (c) => c.open === true,
       )
-    }
     return false
-  } catch {
+  } catch (error: unknown) {
+    recordAvenFailure(error)
     return false
   }
 }
@@ -123,11 +177,16 @@ export async function writeAvenLabel(
   label: string,
 ): Promise<boolean> {
   try {
-    await execFileAsync('aven', ['edit', ref, '--label', label], {
+    const args = await avenArgsWithWorkspace(
+      ['edit', ref, '--label', label],
+      ref,
+    )
+    await execFileAsync('aven', args, {
       timeout: AVEN_TIMEOUT_MS,
     })
     return true
-  } catch {
+  } catch (error: unknown) {
+    recordAvenFailure(error)
     return false
   }
 }
@@ -141,7 +200,6 @@ const avenExec: AvenRunner = async (args) => {
   })
   return { stdout, stderr }
 }
-
 // AIDEV-NOTE: Option B — phase-command Jira resolution is read-only: an
 // existing pulled-in epic (jira-ref metadata) replaces the Jira ID so label
 // gates read the epic; a miss passes the Jira ID through unchanged (the
@@ -172,6 +230,12 @@ const PiFlowConfigSchema = Type.Object({
       description: 'Git toplevels under any prefix are "work" mode',
       minItems: 0,
     },
+  ),
+  avenWorkspace: Type.Optional(
+    Type.String({
+      description:
+        'Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and search fallback)',
+    }),
   ),
 })
 
@@ -238,9 +302,15 @@ async function journal(
 // AIDEV-NOTE: Best-effort label bootstrap — "already exists" and any other
 // aven failure are tolerated; label creation must never break startup.
 export async function ensureLabels(): Promise<void> {
+  let override: string[]
+  try {
+    override = await avenOverrideArg()
+  } catch {
+    override = []
+  }
   for (const label of ALL_LABELS) {
     try {
-      await execFileAsync('aven', ['label', 'create', label], {
+      await execFileAsync('aven', ['label', 'create', label, ...override], {
         timeout: AVEN_TIMEOUT_MS,
       })
     } catch {
@@ -580,8 +650,11 @@ export default function (pi: ExtensionAPI) {
       }
       const labels = await readAvenLabels(ref)
       if (labels === null) {
+        const detail =
+          lastAvenResolutionFailure() ??
+          'Check that the ref exists and aven is available.'
         ctx.ui.notify(
-          `/flow ${ref}: cannot read aven labels — aborting (fail-closed). Check that the ref exists and aven is available.`,
+          `/flow ${ref}: cannot read aven labels — aborting (fail-closed). ${detail}`,
           'warning',
         )
         return

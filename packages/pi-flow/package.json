@@ -21,6 +21,8 @@
   "files": [
     "index.ts",
     "flow/args.ts",
+    "flow/aven-resolve.ts",
+    "flow/aven-resolve-exec.ts",
     "flow/jira-ref.ts",
     "flow/loop.ts",
     "flow/orchestrate.ts",
