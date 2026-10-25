@@ -121,6 +121,17 @@ Deltas from the local flow:
   list). Legacy trees planned directly on a synced epic still work — step 1
   filters `is_epic` out of the synced lookup.
 
+**Publish root (`/spec-publish`)** — derived from the `planPath` prefix
+(PMR-7FEP), independent of work/personal mode:
+
+- plan under `PERSONAL_FEATURES/<repo>/` or `LLM_NOTES_ROOT/<repo>/` → that
+  notes repo's `<repo>/` dir (boundary match on `<root>/<repo>/`, so
+  prefix-colliding sibling repos don't false-match); trailing slash on the
+  env var is normalized.
+- plan under neither (e.g. `<toplevel>/.pi/plans/`) → the project repo
+  toplevel itself (fallback publish).
+- neither env set and no toplevel → `/spec-publish` errors.
+
 ## 2. Lifecycle overview
 
 ```text

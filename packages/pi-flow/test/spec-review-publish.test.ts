@@ -51,54 +51,83 @@ describe('parseSpecPublishArgs', () => {
 })
 
 describe('resolvePublishRoot', () => {
-  const base = {
-    repo: 'pi-my-rifle-ext',
-    planPath: '/plan/dir/plan.md',
-  }
-  it('personal mode uses PERSONAL_FEATURES when set', () => {
+  // AIDEV-NOTE: PMR-7FEP — root derives from the planPath prefix, not the
+  // repo toplevel mode: local (non-Jira) plans live under a notes root in ANY
+  // mode. Each case must match on the <root>/<repo>/ boundary.
+  const repo = 'pi-my-rifle-ext'
+  const planUnder = (notesRoot: string) => `${notesRoot}/${repo}/plan.md`
+  it('publishes a plan under PERSONAL_FEATURES/<repo> there', () => {
     const result = resolvePublishRoot({
-      ...base,
-      mode: 'personal',
+      repo,
+      planPath: planUnder('/home/x/features'),
       env: { PERSONAL_FEATURES: '/home/x/features' },
     })
     assert.deepEqual(result, {
       kind: 'ok',
       root: '/home/x/features/pi-my-rifle-ext',
-      planFile: '/plan/dir/plan.md',
+      planFile: planUnder('/home/x/features'),
       isFallback: false,
     })
   })
-  it('work mode uses LLM_NOTES_ROOT when set', () => {
+  it('publishes a plan under LLM_NOTES_ROOT/<repo> there (work mode too)', () => {
     const result = resolvePublishRoot({
-      ...base,
-      mode: 'work',
+      repo,
+      planPath: planUnder('/home/x/notes'),
       env: { LLM_NOTES_ROOT: '/home/x/notes' },
     })
     assert.deepEqual(result, {
       kind: 'ok',
       root: '/home/x/notes/pi-my-rifle-ext',
-      planFile: '/plan/dir/plan.md',
+      planFile: planUnder('/home/x/notes'),
       isFallback: false,
     })
   })
-  it('personal mode falls back to project toplevel when env unset', () => {
+  it('ignores a trailing slash on the notes root env var', () => {
     const result = resolvePublishRoot({
-      ...base,
-      mode: 'personal',
+      repo,
+      planPath: planUnder('/home/x/features'),
+      env: { PERSONAL_FEATURES: '/home/x/features/' },
+    })
+    assert.equal(result.kind, 'ok')
+    if (result.kind === 'ok') {
+      assert.equal(result.root, '/home/x/features/pi-my-rifle-ext')
+      assert.equal(result.isFallback, false)
+    }
+  })
+  it('does not match a sibling repo with a prefix-colliding name', () => {
+    const result = resolvePublishRoot({
+      repo: 'my-rifle-ext',
+      planPath: '/home/x/notes/pi-my-rifle-ext/plan.md',
       toplevel: '/repo/toplevel',
-      env: {},
+      env: { LLM_NOTES_ROOT: '/home/x/notes' },
+    })
+    assert.equal(result.kind, 'ok')
+    if (result.kind === 'ok') {
+      assert.equal(result.root, '/repo/toplevel')
+      assert.equal(result.isFallback, true)
+    }
+  })
+  it('falls back to project toplevel when planPath is under neither root', () => {
+    const result = resolvePublishRoot({
+      repo,
+      planPath: '/repo/toplevel/.pi/plans/plan.md',
+      toplevel: '/repo/toplevel',
+      env: {
+        PERSONAL_FEATURES: '/home/x/features',
+        LLM_NOTES_ROOT: '/home/x/notes',
+      },
     })
     assert.deepEqual(result, {
       kind: 'ok',
       root: '/repo/toplevel',
-      planFile: '/plan/dir/plan.md',
+      planFile: '/repo/toplevel/.pi/plans/plan.md',
       isFallback: true,
     })
   })
-  it('work mode falls back to project toplevel when env unset', () => {
+  it('falls back to project toplevel when both env vars are unset', () => {
     const result = resolvePublishRoot({
-      ...base,
-      mode: 'work',
+      repo,
+      planPath: '/repo/toplevel/.pi/plans/plan.md',
       toplevel: '/repo/toplevel',
       env: {},
     })
@@ -110,8 +139,8 @@ describe('resolvePublishRoot', () => {
   })
   it('fallback without toplevel is an error', () => {
     const result = resolvePublishRoot({
-      ...base,
-      mode: 'personal',
+      repo,
+      planPath: '/somewhere/else/plan.md',
       env: {},
     })
     assert.equal(result.kind, 'error')
@@ -120,7 +149,10 @@ describe('resolvePublishRoot', () => {
     const old = process.env.PERSONAL_FEATURES
     process.env.PERSONAL_FEATURES = '/env/features'
     try {
-      const result = resolvePublishRoot({ ...base, mode: 'personal' })
+      const result = resolvePublishRoot({
+        repo,
+        planPath: planUnder('/env/features'),
+      })
       assert.equal(result.kind, 'ok')
       if (result.kind === 'ok') {
         assert.equal(result.root, '/env/features/pi-my-rifle-ext')

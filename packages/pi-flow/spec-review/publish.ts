@@ -5,11 +5,9 @@
 // unrelated dirty state, so the worker must add the plan file ONLY.
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { launchSubagent, watchSubagent } from '@gtheys/pi-interactive-subagents'
-import type { WorkMode } from '../work-mode.ts'
 
 export interface PublishRootInput {
   repo: string
-  mode: WorkMode
   planPath: string
   // Project git toplevel — only needed for the env-unset fallback.
   toplevel?: string
@@ -20,28 +18,32 @@ export type PublishRootResult =
   | { kind: 'ok'; root: string; planFile: string; isFallback: boolean }
   | { kind: 'error'; reason: string }
 
-// AIDEV-NOTE: env-unset fallback publishes into the project repo itself —
-// the plan file already lives there, so root = toplevel and the plan path is
-// used as-is.
+// AIDEV-NOTE: PMR-7FEP — the root derives from the planPath prefix, not the
+// repo toplevel mode: local (non-Jira) plans live under PERSONAL_FEATURES or
+// LLM_NOTES_ROOT in ANY mode, so matching on mode git-adds files outside the
+// chosen root. Match on the <root>/<repo>/ boundary (sibling repos with
+// prefix-colliding names must not match). The toplevel fallback covers plans
+// under <toplevel>/.pi/plans/.
 export function resolvePublishRoot(input: PublishRootInput): PublishRootResult {
   const env = input.env ?? process.env
-  const notesRoot =
-    input.mode === 'personal' ? env.PERSONAL_FEATURES : env.LLM_NOTES_ROOT
-  if (notesRoot !== undefined && notesRoot !== '') {
-    return {
-      kind: 'ok',
-      root: `${notesRoot.replace(/\/$/, '')}/${input.repo}`,
-      planFile: input.planPath,
-      isFallback: false,
+  const candidates = [env.PERSONAL_FEATURES, env.LLM_NOTES_ROOT]
+  for (const notesRoot of candidates) {
+    if (notesRoot === undefined || notesRoot === '') continue
+    const prefix = `${notesRoot.replace(/\/$/, '')}/${input.repo}/`
+    if (input.planPath.startsWith(prefix)) {
+      return {
+        kind: 'ok',
+        root: prefix.slice(0, -1),
+        planFile: input.planPath,
+        isFallback: false,
+      }
     }
   }
   if (input.toplevel === undefined || input.toplevel === '') {
     return {
       kind: 'error',
       reason:
-        input.mode === 'personal'
-          ? 'PERSONAL_FEATURES is not set and no project toplevel available'
-          : 'LLM_NOTES_ROOT is not set and no project toplevel available',
+        'plan is under neither PERSONAL_FEATURES nor LLM_NOTES_ROOT and no project toplevel available',
     }
   }
   return {

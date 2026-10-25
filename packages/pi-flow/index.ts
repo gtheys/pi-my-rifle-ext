@@ -1373,11 +1373,8 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const config = await loadConfig(ctx.cwd)
-      const mode = modeForToplevel(toplevel, config.workRoots)
       const resolved = resolvePublishRoot({
         repo: path.basename(toplevel),
-        mode,
         planPath: plan.planPath,
         toplevel,
       })
