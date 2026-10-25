@@ -23,6 +23,7 @@
     "flow/args.ts",
     "flow/aven-resolve.ts",
     "flow/aven-resolve-exec.ts",
+    "flow/ensure-labels.ts",
     "flow/jira-ref.ts",
     "flow/loop.ts",
     "flow/orchestrate.ts",

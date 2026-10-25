@@ -11,6 +11,7 @@ import { Value } from 'typebox/value'
 import { parseFeedbackArgs } from './feedback/args.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { resolveAvenRef } from './flow/aven-resolve-exec.ts'
+import { classifyLabelFailure } from './flow/ensure-labels.ts'
 import {
   type AvenRunner,
   findJiraEpic,
@@ -299,23 +300,45 @@ async function journal(
   }
 }
 
-// AIDEV-NOTE: Best-effort label bootstrap — "already exists" and any other
-// aven failure are tolerated; label creation must never break startup.
-export async function ensureLabels(): Promise<void> {
+// AIDEV-NOTE: Best-effort label bootstrap — label creation must never break
+// startup (PMR-SE93). Failures are classified (flow/ensure-labels.ts):
+// aven-missing → one visible warning; already-exists → silent; anything else
+// → surfaced warning with stderr. The override targets the same workspace the
+// ref-resolution path uses when `avenWorkspace` is configured; without it,
+// cwd inference is the only option here (no ref is known at session_start).
+export async function ensureLabels(
+  notify?: (message: string, level: 'info' | 'warning' | 'error') => void,
+): Promise<void> {
   let override: string[]
   try {
     override = await avenOverrideArg()
   } catch {
     override = []
   }
+  let avenMissing = false
+  const otherFailures: string[] = []
   for (const label of ALL_LABELS) {
     try {
       await execFileAsync('aven', ['label', 'create', label, ...override], {
         timeout: AVEN_TIMEOUT_MS,
       })
-    } catch {
-      // already exists, aven missing, or timeout — fine
+    } catch (error: unknown) {
+      const failure = classifyLabelFailure(error)
+      if (failure.kind === 'aven-missing') {
+        avenMissing = true
+      } else if (failure.detail !== undefined) {
+        otherFailures.push(`aven label create ${label}: ${failure.detail}`)
+      }
     }
+  }
+  if (avenMissing) {
+    notify?.(
+      'phase labels unavailable; gates will fail-closed until aven is on PATH',
+      'warning',
+    )
+  }
+  for (const failure of otherFailures) {
+    notify?.(failure, 'warning')
   }
 }
 
@@ -401,7 +424,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('session_start', (_event, ctx) => {
     notifyUser = (message, level) => ctx.ui.notify(message, level)
-    void ensureLabels()
+    void ensureLabels(notifyUser)
   })
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
