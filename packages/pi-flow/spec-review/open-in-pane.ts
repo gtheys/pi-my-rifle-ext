@@ -18,6 +18,11 @@ export async function openFileInPane(
   command = 'nvim',
 ): Promise<OpenInPaneResult> {
   const absFile = resolve(file)
+  // AIDEV-NOTE: shell-quote for herdr pane send-text — the pane's shell
+  // parses the text, so single quotes in the path must be escaped
+  // (same one-liner as shellEscape in pi-interactive-subagents surface.ts;
+  // duplicate on purpose — no cross-package imports).
+  const quotedFile = absFile.replace(/'/g, "'\\''")
 
   if (!existsSync(absFile)) {
     return {
@@ -60,7 +65,7 @@ export async function openFileInPane(
 
     await pi.exec(
       'herdr',
-      ['pane', 'send-text', paneId, `${command} '${absFile}'`],
+      ['pane', 'send-text', paneId, `${command} '${quotedFile}'`],
       {},
     )
     await pi.exec('herdr', ['pane', 'send-keys', paneId, 'return'], {})
@@ -74,7 +79,7 @@ export async function openFileInPane(
       content: [
         {
           type: 'text',
-          text: `${absFile}\nherdr unavailable — open manually: nvim ${absFile}`,
+          text: `${absFile}\nherdr unavailable — open manually: nvim ${quotedFile}`,
         },
       ],
       details: { ok: false },

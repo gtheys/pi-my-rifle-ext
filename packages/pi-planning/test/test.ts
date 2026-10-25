@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { resolveFeaturePath, slugify } from '../plan-tools/helpers.ts'
+import { openFileInPane } from '../plan-tools/open-in-pane.ts'
 
 const GIT_TOPLEVEL = '/home/dev/Code/acme/widgets'
 
@@ -32,6 +36,35 @@ test('resolveFeaturePath: $PERSONAL_FEATURES set → repo/date/slug dir under it
     if (prev === undefined) delete process.env.PERSONAL_FEATURES
     else process.env.PERSONAL_FEATURES = prev
   }
+})
+
+test('openFileInPane: send-text argv is shell-quoted for apostrophe paths', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'open-in-pane-'))
+  const file = join(dir, "it's.md")
+  writeFileSync(file, 'hello')
+
+  const calls: Array<{ cmd: string; args: string[] }> = []
+  const fakePi = {
+    exec: async (cmd: string, args: string[]) => {
+      calls.push({ cmd, args })
+      if (args[0] === 'pane' && args[1] === 'split') {
+        return {
+          stdout: JSON.stringify({
+            result: { pane: { pane_id: 'pane-1' } },
+          }),
+          stderr: '',
+        }
+      }
+      return { stdout: '', stderr: '' }
+    },
+  } as unknown as ExtensionAPI
+
+  const result = await openFileInPane(fakePi, file)
+  assert.equal(result.details.ok, true)
+  const sendText = calls.find((c) => c.args[1] === 'send-text')
+  assert.ok(sendText)
+  const escaped = file.replace(/'/g, "'\\''")
+  assert.equal(sendText.args[3], `nvim '${escaped}'`)
 })
 
 test('resolveFeaturePath: $PERSONAL_FEATURES unset → .pi/plans under git toplevel', async () => {
