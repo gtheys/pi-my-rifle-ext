@@ -20,7 +20,16 @@ export async function findResearchedArtifact(
   gitToplevel: string,
   jiraId: string,
 ): Promise<string | null> {
-  const dir = resolveResearchDir(notesRoot, repoName, gitToplevel)
+  // AIDEV-NOTE: the only caller (/flow Jira pull-in, index.ts) is work-mode
+  // only — Jira IDs are rejected in personal repos — so this always resolves
+  // against the work branch of resolveResearchDir.
+  const dir = resolveResearchDir(
+    'work',
+    notesRoot,
+    undefined,
+    repoName,
+    gitToplevel,
+  )
   let entries: string[]
   try {
     entries = await readdir(dir)

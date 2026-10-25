@@ -42,13 +42,41 @@ test('slugify matches plan-tools contract', () => {
   )
 })
 
-test('resolveResearchDir: LLM_NOTES_ROOT set → notes-root branch', () => {
-  const dir = resolveResearchDir('/nr', 'myrepo', '/home/x/repo')
+test('resolveResearchDir: work mode, LLM_NOTES_ROOT set → notes-root branch', () => {
+  const dir = resolveResearchDir('work', '/nr', '/pf', 'myrepo', '/home/x/repo')
   assert.equal(dir, '/nr/myrepo/notes/research')
 })
 
-test('resolveResearchDir: LLM_NOTES_ROOT unset → repo-local branch', () => {
-  const dir = resolveResearchDir(undefined, 'myrepo', '/home/x/repo')
+test('resolveResearchDir: work mode, LLM_NOTES_ROOT unset → repo-local branch', () => {
+  const dir = resolveResearchDir(
+    'work',
+    undefined,
+    '/pf',
+    'myrepo',
+    '/home/x/repo',
+  )
+  assert.equal(dir, '/home/x/repo/notes/research')
+})
+
+test('resolveResearchDir: personal mode, PERSONAL_FEATURES set → features branch', () => {
+  const dir = resolveResearchDir(
+    'personal',
+    '/nr',
+    '/pf',
+    'myrepo',
+    '/home/x/repo',
+  )
+  assert.equal(dir, '/pf/myrepo/notes/research')
+})
+
+test('resolveResearchDir: personal mode, PERSONAL_FEATURES unset → repo-local branch', () => {
+  const dir = resolveResearchDir(
+    'personal',
+    '/nr',
+    undefined,
+    'myrepo',
+    '/home/x/repo',
+  )
   assert.equal(dir, '/home/x/repo/notes/research')
 })
 
