@@ -132,3 +132,35 @@ test('pickSpecs: pick all until list is empty -> done without Done pick', async 
   assert.equal(outcome.picked.length, 2)
   assert.equal(seen.length, 2)
 })
+
+test('pickSpecs: awaits async onPicked before next select call', async () => {
+  const events: string[] = []
+  let call = 0
+  const select = async (_title: string, options: string[]) => {
+    events.push(`select:${options.length}`)
+    const pick = ['PMR-AAAA First spec', 'PMR-BBBB Second spec'][call]
+    call += 1
+    return pick
+  }
+  const outcome = await pickSpecs({
+    specs: SPECS,
+    select,
+    resolvePlanPath: async (ref) => ({
+      ok: true,
+      planPath: `/plans/${ref}.md`,
+    }),
+    onPicked: async (spec) => {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      events.push(`picked:${spec.ref}`)
+    },
+  })
+  assert.equal(outcome.kind, 'done')
+  // AIDEV-NOTE: ordering proves the loop awaits each async onPicked — if it
+  // were fire-and-forget, all select events would appear before any picked.
+  assert.deepEqual(events, [
+    'select:3',
+    'picked:PMR-AAAA',
+    'select:2',
+    'picked:PMR-BBBB',
+  ])
+})

@@ -66,10 +66,13 @@ export interface PublishWorkerTaskInput {
 // Fetch+pull must be ff-only with NO conflict resolution; the retry cap (2)
 // bounds a flaky network, not a broken repo state.
 export function buildPublishWorkerTask(input: PublishWorkerTaskInput): string {
-  const fallbackNote =
-    input.isFallback === true
-      ? 'This is a project-repo fallback publish (notes root env var was unset).'
-      : 'This publishes into a shared notes repo.'
+  let fallbackNote: string
+  if (input.isFallback === true) {
+    fallbackNote =
+      'This is a project-repo fallback publish (notes root env var was unset).'
+  } else {
+    fallbackNote = 'This publishes into a shared notes repo.'
+  }
   return [
     `Publish the approved spec plan ${input.ref} to ${input.root}. ${fallbackNote}`,
     "Run these steps IN ORDER from that directory and report each step's outcome:",

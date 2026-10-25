@@ -9,6 +9,7 @@
 // carries aven's raw output.
 
 import type { AvenRunner } from '../flow/jira-ref.ts'
+import { escapeRegExp } from './escape-regexp.ts'
 
 export type ApproveResult =
   | { kind: 'ok'; ref: string }
@@ -74,7 +75,9 @@ export async function approveSpec(
     const msg = error instanceof Error ? error.message : String(error)
     return { kind: 'error', reason: `aven edit ${ref} failed: ${msg}` }
   }
-  const updated = new RegExp(`^updated ${ref}(\\s|$)`, 'm').test(stdout)
+  const updated = new RegExp(`^updated ${escapeRegExp(ref)}(\\s|$)`, 'm').test(
+    stdout,
+  )
   if (!updated) {
     const raw = [stdout.trim(), stderr.trim()]
       .filter((s) => s !== '')

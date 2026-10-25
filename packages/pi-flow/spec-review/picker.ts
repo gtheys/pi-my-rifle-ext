@@ -5,7 +5,9 @@
 // path (missing -> skipped with a notice) and re-presents the remaining
 // entries plus Done; the caller sends one combined review prompt after Done
 // so review prompts never interleave. A cancel (undefined selection)
-// behaves like Done. When the last spec is picked the loop ends without
+// behaves like Done. onPicked may be async (the caller opens the file in a
+// pane, which awaits) and the loop awaits it before the next select; onSkipped
+// stays synchronous. When the last spec is picked the loop ends without
 // requiring a final Done.
 
 import type { SpecInReview } from './aven-spec.ts'
@@ -32,7 +34,7 @@ export async function pickSpecs(opts: {
   specs: SpecInReview[]
   select: (title: string, options: string[]) => Promise<string | undefined>
   resolvePlanPath: (ref: string) => Promise<PlanPathProbe>
-  onPicked?: (spec: PickedSpec) => void
+  onPicked?: (spec: PickedSpec) => void | Promise<void>
   onSkipped?: (spec: SpecInReview, reason: string) => void
 }): Promise<PickerOutcome> {
   const remaining = [...opts.specs]
@@ -66,7 +68,7 @@ export async function pickSpecs(opts: {
       planPath: probe.planPath,
     }
     picked.push(entry)
-    opts.onPicked?.(entry)
+    await opts.onPicked?.(entry)
   }
   return { kind: 'done', picked }
 }

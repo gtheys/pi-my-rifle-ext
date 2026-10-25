@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { AvenRunner } from '../flow/jira-ref.ts'
 import { approveSpec } from '../spec-review/approve.ts'
-import { listSpecsInReview, readPlanPath } from '../spec-review/aven-spec.ts'
+import {
+  listSpecsInReview,
+  parseMetadataBlock,
+  readPlanPath,
+} from '../spec-review/aven-spec.ts'
 
 type Call = readonly string[]
 
@@ -318,4 +322,22 @@ test('approveSpec: spawn failure -> error', async () => {
   const { aven } = runner([new Error('edit blew up')])
   const result = await approveSpec(aven, 'PMR-X')
   assert.equal(result.kind, 'error')
+})
+
+// --- escapeRegExp (defensive: metacharacters in refs/keys must stay literal) ---
+
+test('approveSpec: ref with regex metacharacters matches literally', async () => {
+  const { aven } = runner([
+    { stdout: JSON.stringify({ labels: ['plan'] }) },
+    { stdout: 'updated PMR-X(7)\n' },
+  ])
+  const result = await approveSpec(aven, 'PMR-X(7)')
+  assert.deepEqual(result, { kind: 'ok', ref: 'PMR-X(7)' })
+})
+
+test('parseMetadataBlock: key with regex metacharacters matches literally', () => {
+  const text =
+    'metadata field_id=abc key=plan.path\nvalue<<EOF\n/plans/x.md\nEOF\n'
+  assert.equal(parseMetadataBlock(text, 'plan.path'), '/plans/x.md')
+  assert.equal(parseMetadataBlock(text, 'plan$'), null)
 })

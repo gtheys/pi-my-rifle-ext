@@ -6,6 +6,7 @@
 import { type SpawnSyncReturns, spawnSync } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { escapeRegExp } from '../spec-review/escape-regexp.ts'
 
 export const HERDR_PLUGIN_ID = 'gtheys.pi-my-rifle-ext'
 
@@ -47,7 +48,7 @@ type InstalledPlugin = {
 /** Minimal TOML string reader for the keys preflight checks (port of pi-workflows). */
 export function tomlString(text: string, key: string): string | undefined {
   const match = new RegExp(
-    String.raw`^\s*${key}\s*=\s*"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$`,
+    String.raw`^\s*${escapeRegExp(key)}\s*=\s*"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$`,
     'mu',
   ).exec(text)
   return match?.[1]

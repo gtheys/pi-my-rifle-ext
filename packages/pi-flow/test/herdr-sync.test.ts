@@ -240,3 +240,9 @@ test('syncHerdrPlugin: herdr list failure surfaces bounded error', async () => {
   await assert.rejects(() => syncHerdrPlugin(root, spawn), /boom/)
   await fs.rm(root, { recursive: true, force: true })
 })
+
+test('tomlString: key with regex metacharacters matches literally', () => {
+  assert.equal(tomlString('a.b = "x"', 'a.b'), 'x')
+  assert.equal(tomlString('axb = "y"', 'a.b'), undefined)
+  assert.equal(tomlString('a+b = "z"', 'a+b'), 'z')
+})

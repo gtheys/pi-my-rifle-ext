@@ -8,6 +8,7 @@
 // blocks (description text may contain the words "plan-path").
 
 import type { AvenRunner } from '../flow/jira-ref.ts'
+import { escapeRegExp } from './escape-regexp.ts'
 
 export interface SpecInReview {
   ref: string
@@ -100,7 +101,7 @@ export async function listSpecsInReview(
 // description mentioning "plan-path") is ignored.
 export function parseMetadataBlock(text: string, key: string): string | null {
   const re = new RegExp(
-    `^metadata field_id=\\S+ key=${key}$\\n^value<<EOF$\\n([\\s\\S]*?)\\n^EOF$`,
+    `^metadata field_id=\\S+ key=${escapeRegExp(key)}$\\n^value<<EOF$\\n([\\s\\S]*?)\\n^EOF$`,
     'm',
   )
   const match = re.exec(text)
