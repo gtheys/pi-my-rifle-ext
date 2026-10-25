@@ -91,10 +91,16 @@ function recordAvenFailure(error: unknown): void {
   lastAvenFailure = error instanceof Error ? error.message : String(error)
 }
 
-async function avenOverrideArg(): Promise<string[]> {
+// AIDEV-NOTE: cwd param = Pi session cwd (ctx.cwd). The project override
+// must resolve from the session, never process.cwd() — they can differ and
+// the work/personal mode would flip silently (PMR-QE1R).
+async function avenOverrideArg(cwd?: string): Promise<string[]> {
   if (!overrideLoaded) {
     overrideLoaded = true
-    const config = await loadConfig(process.cwd())
+    // AIDEV-NOTE: callers without ctx (e.g. ensureLabels from session_start
+    // internals) cannot supply a session cwd; process.cwd() is the documented
+    // fallback there. Command handlers always pass ctx.cwd.
+    const config = await loadConfig(cwd ?? process.cwd())
     avenWorkspaceOverride = config.avenWorkspace
   }
   if (avenWorkspaceOverride !== undefined) {
@@ -299,10 +305,14 @@ export async function loadConfig(cwd: string): Promise<PiFlowConfig> {
   return merged
 }
 
-export async function resolveMode(pi: ExtensionAPI): Promise<WorkMode> {
+export async function resolveMode(
+  pi: ExtensionAPI,
+  cwd?: string,
+): Promise<WorkMode> {
   const { stdout } = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
   const toplevel = stdout.trim()
-  const config = await loadConfig(process.cwd())
+  // AIDEV-NOTE: session cwd, not process.cwd() — see avenOverrideArg note.
+  const config = await loadConfig(cwd ?? process.cwd())
   return modeForToplevel(toplevel, config.workRoots)
 }
 
@@ -367,12 +377,13 @@ async function commandPhaseInput(
   pi: ExtensionAPI,
   mode: WorkMode,
   ref: string,
+  cwd?: string,
   skipResearch: boolean = false,
   labels: readonly string[] = [],
   notifyResearchFallback?: (jiraId: string) => void,
 ): Promise<PhasePromptInput> {
   const { stdout } = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
-  const config = await loadConfig(process.cwd())
+  const config = await loadConfig(cwd ?? process.cwd())
   return {
     mode,
     ref,
@@ -796,7 +807,7 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const mode = await resolveMode(pi)
+      const mode = await resolveMode(pi, ctx.cwd)
       let research: ResearchOverride
       if (parsed.kind === 'debug') {
         research = { kind: 'debug', text: parsed.symptom }
@@ -810,6 +821,7 @@ export default function (pi: ExtensionAPI) {
           pi,
           mode,
           research.text,
+          ctx.cwd,
           false,
           [],
           (jiraId) => {
@@ -840,11 +852,11 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const mode = await resolveMode(pi)
+      const mode = await resolveMode(pi, ctx.cwd)
       const ref = await resolvePhaseRef(parsed, mode)
       const result = await buildPhasePrompt(
         'plan',
-        await commandPhaseInput(pi, mode, ref),
+        await commandPhaseInput(pi, mode, ref, ctx.cwd),
       )
       sendOrNotify(ctx, 'plan', ref, result)
     },
@@ -867,7 +879,7 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const mode = await resolveMode(pi)
+      const mode = await resolveMode(pi, ctx.cwd)
       const ref = await resolvePhaseRef(parsed, mode)
       const labels = (await readAvenLabels(ref)) ?? []
       // AIDEV-NOTE: --skip-research must leave durable label state — gates
@@ -880,6 +892,7 @@ export default function (pi: ExtensionAPI) {
           pi,
           mode,
           ref,
+          ctx.cwd,
           parsed.skipResearch,
           labels,
         )),
@@ -904,11 +917,11 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const mode = await resolveMode(pi)
+      const mode = await resolveMode(pi, ctx.cwd)
       const ref = await resolvePhaseRef(parsed, mode)
       const result = await buildPhasePrompt(
         'validate',
-        await commandPhaseInput(pi, mode, ref),
+        await commandPhaseInput(pi, mode, ref, ctx.cwd),
       )
       sendOrNotify(ctx, 'validate', ref, result)
     },
@@ -930,11 +943,11 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const mode = await resolveMode(pi)
+      const mode = await resolveMode(pi, ctx.cwd)
       const ref = await resolvePhaseRef(parsed, mode)
       const result = await buildPhasePrompt(
         'feedback',
-        await commandPhaseInput(pi, mode, ref),
+        await commandPhaseInput(pi, mode, ref, ctx.cwd),
       )
       sendOrNotify(ctx, 'feedback', ref, result)
     },
@@ -959,7 +972,7 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const mode = await resolveMode(pi)
+      const mode = await resolveMode(pi, ctx.cwd)
       let ref: string
       let research: ResearchOverride | undefined
       if (parsed.kind === 'jira') {
@@ -1059,6 +1072,7 @@ export default function (pi: ExtensionAPI) {
             pi,
             mode,
             ref,
+            ctx.cwd,
             parsed.skipResearch,
             [],
             (jiraId) => {
@@ -1200,7 +1214,7 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const config = await loadConfig(process.cwd())
+      const config = await loadConfig(ctx.cwd)
       const mode = modeForToplevel(toplevel, config.workRoots)
       const resolved = resolvePublishRoot({
         repo: path.basename(toplevel),
