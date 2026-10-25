@@ -59,6 +59,7 @@ import {
   buildSemReviewGuidance,
   getSemToolAvailability,
 } from './sem-guidance.mjs'
+import { REVIEW_VERDICT_INSTRUCTIONS } from './verdict.ts'
 
 // State to track fresh session review (where we branched from).
 // Module-level state means only one review can be active at a time.
@@ -258,6 +259,7 @@ Provide your findings in a clear, structured format:
 4. At the end, provide an overall verdict: "correct" (no blocking issues) or "needs attention" (has blocking issues).
 5. Ignore trivial style issues unless they obscure meaning or violate documented standards.
 6. Do not generate a full PR fix — only flag issues and optionally provide short suggestion blocks.
+${REVIEW_VERDICT_INSTRUCTIONS}
 
 Output all findings the author would fix if they knew about them. If there are no qualifying findings, explicitly state the code looks good. Don't stop at the first finding - list every qualifying issue.`
 

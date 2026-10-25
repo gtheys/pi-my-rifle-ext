@@ -3,14 +3,18 @@
 // artifact is parsed here. PURE only: no /review invocation, no aven/Jira/git
 // I/O — the handoff prompt (validate/prompt.ts) owns all side effects.
 //
-// AIDEV-NOTE: blockers_count artifact contract (DEFINED HERE — pi-review does
-// NOT currently emit it; /review's reviewer output is prose. The validate
-// prompt instructs the agent to append the contract line to the review
-// artifact, and pi-review should adopt this convention verbatim):
+// AIDEV-NOTE: blockers_count artifact contract (DEFINED HERE — pi-review
+// emits it natively since PMR-5PCB: its review rubric ends every /review
+// artifact with a "## Verdict" section carrying exactly these lines, via
+// pi-review's review/verdict.ts). The validate prompt still restates the
+// contract so hand-written artifacts match too:
 //   - exactly one line matching `blockers_count: <integer >= 0>`
 //   - optional blocker descriptions as lines starting with `- blocker: `
-// Parsing is STRICT: missing, duplicated, non-integer or negative counts are
-// explicit errors — never a silent 0 (a silent 0 would auto-land broken code).
+// Parsing is scoped to the verdict section (a fenced block or headed
+// section containing the count) so contract text QUOTED elsewhere in the
+// review cannot false-positive. Parsing is STRICT: missing, duplicated,
+// non-integer or negative counts are explicit errors — never a silent 0 (a
+// silent 0 would auto-land broken code).
 
 export type LandingRoute = 'pr' | 'push-main'
 
@@ -26,10 +30,39 @@ export type ReviewArtifact =
 const COUNT_RE = /^blockers_count:\s*(\d+)\s*$/
 const BLOCKER_RE = /^- blocker:\s*(.+)$/
 
+// AIDEV-NOTE: Scopes parsing to the verdict section so a review that merely
+// QUOTES the contract (e.g. while discussing the gate) does not double-count.
+// Preference order: the LAST fenced block containing a count line, else the
+// text after the LAST "## Verdict"-style heading (up to the next heading),
+// else the whole artifact (legacy fallback for hand-written artifacts).
+export function extractVerdictSection(artifact: string): string {
+  const fences = [...artifact.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)]
+  for (let i = fences.length - 1; i >= 0; i--) {
+    const body = fences[i]?.[1]
+    if (body !== undefined && /^blockers_count:\s*\d+\s*$/m.test(body)) {
+      return body
+    }
+  }
+  const headings = [
+    ...artifact.matchAll(/^[ \t]*#{1,6}[ \t]+verdict\b[^\n]*$/gim),
+  ]
+  const lastHeading = headings[headings.length - 1]
+  if (lastHeading !== undefined) {
+    const start = (lastHeading.index ?? 0) + lastHeading[0].length
+    const rest = artifact.slice(start)
+    const nextHeading = /^[ \t]*#{1,6}[ \t]+\S/m.exec(rest)
+    if (nextHeading?.index !== undefined) {
+      return rest.slice(0, nextHeading.index)
+    }
+    return rest
+  }
+  return artifact
+}
+
 export function parseReviewArtifact(artifact: string): ReviewArtifact {
   const counts: number[] = []
   const blockers: string[] = []
-  for (const rawLine of artifact.split('\n')) {
+  for (const rawLine of extractVerdictSection(artifact).split('\n')) {
     const line = rawLine.trim()
     const countMatch = COUNT_RE.exec(line)
     if (countMatch !== null) {

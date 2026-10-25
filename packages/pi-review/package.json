@@ -17,6 +17,7 @@
   },
   "files": [
     "review/review.ts",
+    "review/verdict.ts",
     "review/sem-guidance.mjs",
     "review/sem-guidance.d.mts",
     "sonarqube/sonarqube.ts",

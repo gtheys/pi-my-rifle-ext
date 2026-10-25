@@ -14,8 +14,9 @@ import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
 // AIDEV-NOTE: Review gate section (PMR-JTAM) — appended to BOTH validate
 // prompts. Runs after the env/human gate passes: /review (fresh-context
 // reviewer, pi-review) -> parse blockers_count artifact -> route. The
-// blockers_count contract lives in review-gate.ts (pi-review does not emit
-// it yet, so the prompt tells the agent to write the line itself).
+// contract wording lives in review-gate.ts; pi-review emits the verdict
+// section natively (PMR-5PCB), and this prompt restates it for artifacts
+// written by hand.
 function buildReviewGateSection(
   mode: 'work' | 'personal',
   ref: string,

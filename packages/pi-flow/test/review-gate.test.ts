@@ -61,6 +61,63 @@ test('parseReviewArtifact: extracts blocker note lines', () => {
   }
 })
 
+// --- verdict-section scoping (quoted contract must not false-positive) ---
+
+test('parseReviewArtifact: quoted contract in prose does not trip multiple-counts', () => {
+  const artifact = [
+    'The gate requires the contract:',
+    '```',
+    '   blockers_count: 0',
+    '   - blocker: <description> (omit this line entirely when N is 0)',
+    '```',
+    '## Findings',
+    '- blocker: auth token not validated',
+    '## Verdict',
+    'blockers_count: 1',
+    '- blocker: auth token not validated',
+  ].join('\n')
+  const result = parseReviewArtifact(artifact)
+  assert.ok(result.ok)
+  if (result.ok) {
+    assert.equal(result.blockersCount, 1)
+    assert.deepEqual(result.blockers, ['auth token not validated'])
+  }
+})
+
+test('parseReviewArtifact: quoted contract in prose without a fence still parses verdict heading', () => {
+  const artifact = [
+    'Per the gate, the artifact must end with:',
+    '   blockers_count: 0',
+    '   - blocker: <description> (omit this line entirely when N is 0)',
+    '## Verdict',
+    'blockers_count: 2',
+    '- blocker: missing test coverage',
+  ].join('\n')
+  const result = parseReviewArtifact(artifact)
+  assert.ok(result.ok)
+  if (result.ok) assert.equal(result.blockersCount, 2)
+})
+
+test('parseReviewArtifact: fenced verdict block wins over earlier fences', () => {
+  const artifact = [
+    '```',
+    'blockers_count: 0',
+    '```',
+    'Some discussion.',
+    '## Verdict',
+    '```',
+    'blockers_count: 3',
+    '- blocker: sql injection in search',
+    '```',
+  ].join('\n')
+  const result = parseReviewArtifact(artifact)
+  assert.ok(result.ok)
+  if (result.ok) {
+    assert.equal(result.blockersCount, 3)
+    assert.deepEqual(result.blockers, ['sql injection in search'])
+  }
+})
+
 // --- decideReviewRoute (pure gate decision) ---
 
 test('decideReviewRoute: zero blockers, work mode -> PR landing', () => {
