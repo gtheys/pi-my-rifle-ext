@@ -59,7 +59,12 @@ import { findResearchedArtifact } from './research/artifact.ts'
 import { recordRunEvent, runStatePath } from './run-state.ts'
 import { approveSpec } from './spec-review/approve.ts'
 import { parseSpecReviewArgs } from './spec-review/args.ts'
-import { listSpecsInReview, readPlanPath } from './spec-review/aven-spec.ts'
+import {
+  avenErrorText,
+  listSpecsInReview,
+  parseMetadataBlock,
+  readPlanPath,
+} from './spec-review/aven-spec.ts'
 import { openFileInPane } from './spec-review/open-in-pane.ts'
 import { pickSpecs } from './spec-review/picker.ts'
 import { buildReviewPrompt } from './spec-review/prompt.ts'
@@ -250,6 +255,25 @@ export async function epicHasOpenChildren(ref: string): Promise<boolean> {
   } catch (error: unknown) {
     recordAvenFailure(error)
     return false
+  }
+}
+
+// AIDEV-NOTE: PMR-W60H — plan-state reader for the flow loop's
+// awaiting-approval gate. Reads the same `aven show <ref> --full` metadata
+// blocks /spec-review uses, with the same workspace threading as
+// readAvenLabels. null = aven failed OR the field is absent — the loop
+// treats both as "no gate" (the failure-halt path is unchanged); only an
+// explicit plan-state=review triggers the graceful pause.
+export async function readPlanState(ref: string): Promise<string | null> {
+  try {
+    const args = await avenArgsWithWorkspace(['show', ref, '--full'], ref)
+    const { stdout, stderr } = await execFileAsync('aven', args, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    if (avenErrorText(stdout, stderr) !== null) return null
+    return parseMetadataBlock(stdout, 'plan-state')
+  } catch {
+    return null
   }
 }
 
@@ -487,6 +511,7 @@ export default function (pi: ExtensionAPI) {
       void journal(event)
     },
     readLabels: (ref) => readAvenLabels(ref),
+    readPlanState: (ref) => readPlanState(ref),
     avenNote: (ref, text) => writeAvenNote(ref, text),
     avenSetLabel: (ref, label) => writeAvenLabel(ref, label),
     epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),

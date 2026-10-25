@@ -11,6 +11,7 @@ interface Harness {
   events: FlowRunEvent[]
   notifications: { message: string; level: string }[]
   labels: string[] | null
+  planState: string | null
   openChildren?: boolean
   inFlight?: boolean
 }
@@ -23,6 +24,7 @@ function makeHarness(labels: string[] | null = []): Harness {
     events: [],
     notifications: [],
     labels,
+    planState: null,
     deps: undefined as unknown as FlowLoopDeps,
   }
   h.deps = {
@@ -33,6 +35,7 @@ function makeHarness(labels: string[] | null = []): Harness {
       h.events.push(event)
     },
     readLabels: async () => h.labels,
+    readPlanState: async () => h.planState,
     avenNote: async (ref, text) => {
       h.notes.push({ ref, text })
       return true
@@ -149,6 +152,67 @@ test('settled without label once the subagent is gone: halts', async () => {
   await loop.onSettled()
   assert.equal(loop.isActive(), false)
   assert.match(h.notes[0].text, /without landing the "researched" label/)
+})
+
+test('plan settles without "planned" while plan-state=review: awaiting-approval pause, no failure halt', async () => {
+  const h = makeHarness([])
+  h.planState = 'review'
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'plan' })
+  await loop.onSettled()
+  assert.equal(h.sent.length, 1) // no implement prompt
+  assert.equal(loop.isActive(), false)
+  assert.equal(h.notes.length, 1)
+  assert.match(h.notes[0].text, /awaiting spec approval/)
+  assert.doesNotMatch(h.notes[0].text, /halted/)
+  const last = h.notifications.at(-1)
+  assert.equal(last?.level, 'info')
+  assert.match(last?.message ?? '', /awaiting spec approval/)
+  assert.equal(h.events.at(-1)?.kind, 'note')
+})
+
+test('plan settles without label and plan-state not in review: failure halt as before', async () => {
+  const h = makeHarness([])
+  h.planState = 'approved'
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'plan' })
+  await loop.onSettled()
+  assert.match(
+    h.notes[0].text,
+    /flow halted at plan: phase completed without landing the "planned" label/,
+  )
+})
+
+test('plan settles without label and plan-state read fails (null): failure halt, gate never triggers', async () => {
+  const h = makeHarness([])
+  h.planState = null
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'plan' })
+  await loop.onSettled()
+  assert.match(
+    h.notes[0].text,
+    /flow halted at plan: phase completed without landing the "planned" label/,
+  )
+})
+
+test('resume after approval: /flow re-enters plan, refreshed prompt run lands the label and completes the phase', async () => {
+  const h = makeHarness([])
+  h.planState = 'review'
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'plan' })
+  await loop.onSettled()
+  assert.equal(loop.isActive(), false)
+  // spec approved meanwhile (plan-state=approved); a later /flow re-enters plan
+  h.planState = 'approved'
+  await loop.start({ ...startInput(), phase: 'plan' })
+  assert.match(h.sent.at(-1), /plan\.md|Plan phase/)
+  h.labels = ['researched', 'planned'] // refreshed plan prompt run lands "planned"
+  await loop.onSettled()
+  assert.match(h.sent.at(-1), /Implement phase/)
+  assert.deepEqual(
+    h.events.map((e) => e.kind),
+    ['phase-start', 'note', 'phase-start', 'phase-complete', 'phase-start'],
+  )
 })
 
 test('settled with aven failure: halts fail-closed', async () => {

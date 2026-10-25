@@ -20,6 +20,12 @@ export interface FlowLoopDeps {
   journal(event: FlowRunEvent): void
   /** Current aven labels on the ref; null = aven unavailable/failed. */
   readLabels(ref: string): Promise<string[] | null>
+  /**
+   * Aven `plan-state` metadata value on the ref (e.g. 'review', 'approved').
+   * null = aven failed OR the field is absent — the two are deliberately not
+   * distinguished; a null never triggers the awaiting-approval gate.
+   */
+  readPlanState(ref: string): Promise<string | null>
   /** Write an aven note on the ref; false = write failed. */
   avenNote(ref: string, text: string): Promise<boolean>
   /** Set an aven label on the ref; false = write failed. */
@@ -122,6 +128,25 @@ class FlowLoopImpl implements FlowLoop {
           })
         }
         return
+      }
+      // AIDEV-NOTE: PMR-W60H — a plan settle without "planned" while the
+      // spec is at plan-state=review is the expected approval gate, not a
+      // failure: pause with clear wording (info, no "halted" note) so the
+      // failure-style halt stays reserved for real misses. aven failure or
+      // a missing field keeps the fail-closed halt. Resume: a later /flow
+      // re-enters plan; after spec approval the refreshed prompt completes
+      // the phase.
+      if (phase === 'plan') {
+        const planState = await this.deps.readPlanState(this.state.ref)
+        if (planState === 'review') {
+          const ref = this.state.ref
+          const text = `flow paused at plan: awaiting spec approval (plan-state=review) — approve via the spec_approve tool or /spec-review, then rerun /flow ${ref}`
+          await this.deps.avenNote(ref, text)
+          this.deps.journal({ kind: 'note', at: now(), ref, text })
+          this.deps.notify(`/flow ${ref}: ${text}`, 'info')
+          this.state = null
+          return
+        }
       }
       await this.halt(
         phase,

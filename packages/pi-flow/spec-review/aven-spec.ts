@@ -31,7 +31,9 @@ export type PlanPathResult =
 // fail with exit 0; classify by text and fail loud. unknown-metadata-field is
 // NOT special-cased here: for plan-state=review the field should exist by the
 // time /spec-review runs, so treat it as a real error rather than "empty".
-function avenErrorText(stdout: string, stderr: string): string | null {
+// AIDEV-NOTE: exported for readPlanState (flow loop's awaiting-approval gate,
+// PMR-W60H) — same parsing path, one metadata contract.
+export function avenErrorText(stdout: string, stderr: string): string | null {
   const lines = [...stdout.split('\n'), ...stderr.split('\n')]
   const bad = lines.find((line) => /^(Error:|error\s)/.test(line.trim()))
   if (bad !== undefined) {
@@ -96,7 +98,7 @@ export async function listSpecsInReview(
 // AIDEV-NOTE: only trust `metadata field_id=... key=<k>` blocks followed by a
 // value<<EOF ... EOF heredoc; anything else in the output (including a
 // description mentioning "plan-path") is ignored.
-function parseMetadataBlock(text: string, key: string): string | null {
+export function parseMetadataBlock(text: string, key: string): string | null {
   const re = new RegExp(
     `^metadata field_id=\\S+ key=${key}$\\n^value<<EOF$\\n([\\s\\S]*?)\\n^EOF$`,
     'm',
