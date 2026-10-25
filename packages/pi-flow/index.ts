@@ -79,8 +79,14 @@ const AVEN_TIMEOUT_MS = 5_000
 // workspace (see flow/aven-resolve-exec.ts) and memoizes it; later calls
 // for the same ref reuse it. `avenWorkspace` config overrides everything.
 const resolvedRefWorkspaces = new Map<string, string | undefined>()
-let avenWorkspaceOverride: string | undefined
-let overrideLoaded = false
+// AIDEV-NOTE: PMR-8JZA — session cwd for every aven call. Set once from
+// session_start (ctx.cwd); command handlers and the flow loop all share it,
+// so the project-level avenWorkspace resolves from the session cwd even when
+// process.cwd() differs (worktree sessions, --cwd launches). Memoized per
+// resolved cwd, so two sessions in one process with different cwds each
+// load their own project config.
+let avenSessionCwd: string | undefined
+const avenWorkspaceOverrideByCwd = new Map<string, string | undefined>()
 let lastAvenFailure: string | undefined
 
 export function lastAvenResolutionFailure(): string | undefined {
@@ -91,18 +97,18 @@ function recordAvenFailure(error: unknown): void {
   lastAvenFailure = error instanceof Error ? error.message : String(error)
 }
 
-// AIDEV-NOTE: cwd param = Pi session cwd (ctx.cwd). The project override
-// must resolve from the session, never process.cwd() — they can differ and
-// the work/personal mode would flip silently (PMR-QE1R).
-async function avenOverrideArg(cwd?: string): Promise<string[]> {
-  if (!overrideLoaded) {
-    overrideLoaded = true
-    // AIDEV-NOTE: callers without ctx (e.g. ensureLabels from session_start
-    // internals) cannot supply a session cwd; process.cwd() is the documented
-    // fallback there. Command handlers always pass ctx.cwd.
-    const config = await loadConfig(cwd ?? process.cwd())
-    avenWorkspaceOverride = config.avenWorkspace
+// AIDEV-NOTE: cwd resolution: avenSessionCwd (set by session_start) wins;
+// process.cwd() is only the fallback for direct library use before any
+// session starts. Previously this memoized once on the first caller's cwd
+// (ensureLabels at session_start), silently pinning process.cwd() for the
+// whole process (PMR-8JZA).
+async function avenOverrideArg(): Promise<string[]> {
+  const cwd = avenSessionCwd ?? process.cwd()
+  if (!avenWorkspaceOverrideByCwd.has(cwd)) {
+    const config = await loadConfig(cwd)
+    avenWorkspaceOverrideByCwd.set(cwd, config.avenWorkspace)
   }
+  const avenWorkspaceOverride = avenWorkspaceOverrideByCwd.get(cwd)
   if (avenWorkspaceOverride !== undefined) {
     return ['--workspace', avenWorkspaceOverride]
   }
@@ -328,6 +334,10 @@ async function journal(
   }
 }
 
+export function setAvenSessionCwd(cwd: string | undefined): void {
+  avenSessionCwd = cwd
+}
+
 // AIDEV-NOTE: Best-effort label bootstrap — label creation must never break
 // startup (PMR-SE93). Failures are classified (flow/ensure-labels.ts):
 // aven-missing → one visible warning; already-exists → silent; anything else
@@ -453,6 +463,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('session_start', (_event, ctx) => {
     notifyUser = (message, level) => ctx.ui.notify(message, level)
+    setAvenSessionCwd(ctx.cwd)
     void ensureLabels(notifyUser)
   })
 
