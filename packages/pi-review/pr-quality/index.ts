@@ -18,7 +18,12 @@
  *   /pr-quality 283      — explicit PR number
  */
 
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type {
+  AgentToolResult,
+  ExtensionAPI,
+  ExtensionToolContext,
+} from '@earendil-works/pi-coding-agent'
+import { Type } from 'typebox'
 import {
   analyzeCoverage,
   analyzeIssues,
@@ -37,7 +42,7 @@ import {
 
 // ── GitHub types ──────────────────────────────────────────────────────────────
 
-interface CheckRun {
+export interface CheckRun {
   name: string
   status: string // "QUEUED" | "IN_PROGRESS" | "COMPLETED"
   conclusion: string | null // "SUCCESS" | "FAILURE" | "CANCELLED" | "SKIPPED" | ...
@@ -60,7 +65,7 @@ interface GhReviewThread {
   comments: GhComment[]
 }
 
-interface GhPrData {
+export interface GhPrData {
   pr_title: string
   pr_url: string
   total_review_threads: number
@@ -453,6 +458,231 @@ function buildAgentPrompt(
   return lines.join('\n')
 }
 
+// ── Shared quality core ───────────────────────────────────────────────────────
+
+export type PrQualityErrorKind =
+  | 'token'
+  | 'pr'
+  | 'ci-pending'
+  | 'config'
+  | 'fetch'
+
+// AIDEV-NOTE: Classified failure so the /pr-quality command and the pr_quality
+// tool can map the same error to their own surfaces (notify vs isError result).
+// The 'ci-pending' kind is deliberately NOT a hard failure for the command —
+// it warns and returns — while the tool reports it as an isError result with
+// the pending check names.
+export class PrQualityError extends Error {
+  kind: PrQualityErrorKind
+  pending: CheckRun[]
+  cause?: Error
+
+  constructor(
+    kind: PrQualityErrorKind,
+    message: string,
+    pending: CheckRun[] = [],
+    cause?: Error,
+  ) {
+    super(message)
+    this.kind = kind
+    this.pending = pending
+    this.cause = cause
+  }
+}
+
+export interface PrQualityOptions {
+  cwd: string
+  prNumber?: string
+  signal?: AbortSignal
+  // AIDEV-NOTE: progress feed so the command keeps its original notify
+  // updates; the tool leaves it unset.
+  onProgress?: (message: string) => void
+}
+
+// Structured summary for the tool's `details` field — prompt text stays the
+// single source of truth for the agent.
+export interface PrQualityDetails {
+  prNumber: string
+  prTitle: string
+  prUrl: string
+  unresolvedCount: number
+  issuesTotal: number
+  issuesBySeverity: Record<string, number>
+  projectKey: string
+}
+
+export interface PrQualityResult {
+  prompt: string
+  prNumber: string
+  prData: GhPrData
+  sonarConfig: SonarConfig
+  coverage: ReturnType<typeof analyzeCoverage>
+  issues: IssuesAnalysis
+  details: PrQualityDetails
+}
+
+// AIDEV-NOTE: Shared pending-check formatter so the command's warning notify
+// and the tool's isError text stay identical.
+function describePending(pending: CheckRun[]): string {
+  return pending
+    .map((c) => {
+      let wf: string
+      if (c.workflowName) {
+        wf = `${c.workflowName} / `
+      } else {
+        wf = ''
+      }
+      return `${wf}${c.name} (${c.status.toLowerCase()})`
+    })
+    .join(', ')
+}
+
+// AIDEV-NOTE: Shared core extracted from the /pr-quality command handler.
+// Token guard → PR detect → CI guard → SonarCloud config → parallel fetch →
+// analyze → buildAgentPrompt. The command sends the prompt via
+// sendUserMessage; the pr_quality tool returns it as content. Errors are
+// classified via PrQualityError.kind so each caller maps them to its own
+// surface.
+export async function gatherPrQualityData(
+  options: PrQualityOptions,
+): Promise<PrQualityResult> {
+  const { cwd, signal, onProgress } = options
+  const token = process.env.SONARQUBE_TOKEN
+  if (!token) {
+    throw new PrQualityError(
+      'token',
+      'SONARQUBE_TOKEN is not set. Get a token at https://sonarcloud.io/account/security',
+    )
+  }
+
+  let prNumber: string
+  if (options.prNumber) {
+    prNumber = options.prNumber
+  } else {
+    try {
+      prNumber = await detectPrNumber('/pr-quality')
+    } catch (err) {
+      throw new PrQualityError(
+        'pr',
+        String((err as Error).message),
+        [],
+        err as Error,
+      )
+    }
+  }
+
+  if (onProgress) {
+    onProgress(`PR Quality: analyzing PR #${prNumber}...`)
+  }
+
+  let actionsStatus: ActionsStatus
+  try {
+    actionsStatus = await checkActionsComplete(prNumber, cwd)
+  } catch (err) {
+    throw new PrQualityError(
+      'pr',
+      `Could not check Actions status: ${(err as Error).message}`,
+      [],
+      err as Error,
+    )
+  }
+
+  if (!actionsStatus.complete) {
+    throw new PrQualityError(
+      'ci-pending',
+      `PR #${prNumber} CI not done yet — ${actionsStatus.pending.length} check(s) still running: ${describePending(actionsStatus.pending)}`,
+      actionsStatus.pending,
+    )
+  }
+
+  let sonarConfig: SonarConfig
+  try {
+    sonarConfig = await detectSonarConfig(cwd)
+  } catch (err) {
+    throw new PrQualityError(
+      'config',
+      String((err as Error).message),
+      [],
+      err as Error,
+    )
+  }
+
+  if (onProgress) {
+    onProgress('Fetching GitHub threads + SonarCloud data...')
+  }
+
+  // AIDEV-NOTE: GitHub and SonarCloud calls are independent — run them
+  // concurrently to reduce total wall-clock time.
+  let prData: GhPrData
+  let coverageRaw: CoverageResponse
+  let rawIssues: { issues: SonarIssue[]; total: number }
+  try {
+    ;[prData, coverageRaw, rawIssues] = await Promise.all([
+      fetchUnresolvedThreads(prNumber),
+      sonarFetch(
+        sonarConfig.baseUrl,
+        token,
+        'measures/component',
+        {
+          component: sonarConfig.projectKey,
+          pullRequest: prNumber,
+          metricKeys:
+            'coverage,new_coverage,new_line_coverage,uncovered_lines,lines_to_cover,branch_coverage,new_branch_coverage,new_lines_to_cover',
+        },
+        signal,
+      ).then((d) => d as CoverageResponse),
+      fetchAllIssues(
+        sonarConfig.baseUrl,
+        token,
+        sonarConfig.projectKey,
+        prNumber,
+        signal,
+      ),
+    ])
+  } catch (err) {
+    throw new PrQualityError(
+      'fetch',
+      `Fetch failed: ${(err as Error).message}`,
+      [],
+      err as Error,
+    )
+  }
+
+  const coverage = analyzeCoverage(coverageRaw)
+  const issues = analyzeIssues(rawIssues)
+  const prompt = buildAgentPrompt(
+    prNumber,
+    prData,
+    sonarConfig,
+    issues,
+    coverage,
+  )
+
+  if (onProgress) {
+    onProgress(
+      `Fetched ${prData.unresolved_count} unresolved threads, ${issues.total} SonarCloud issues. Starting triage...`,
+    )
+  }
+
+  return {
+    prompt,
+    prNumber,
+    prData,
+    sonarConfig,
+    coverage,
+    issues,
+    details: {
+      prNumber,
+      prTitle: prData.pr_title,
+      prUrl: prData.pr_url,
+      unresolvedCount: prData.unresolved_count,
+      issuesTotal: issues.total,
+      issuesBySeverity: issues.bySeverity,
+      projectKey: sonarConfig.projectKey,
+    },
+  }
+}
+
 // ── Extension ─────────────────────────────────────────────────────────────────
 
 // AIDEV-NOTE: Tracks active poll intervals keyed by PR number so we can
@@ -544,142 +774,127 @@ export default function prQuality(pi: ExtensionAPI) {
   pi.registerCommand('pr-quality', {
     description:
       'Triage unresolved PR review comments + SonarCloud issues and fix them immediately',
+    // AIDEV-NOTE: Human surface — keeps the original behavior (token guard
+    // multi-line notify, CI-pending warn+return, setStatus during fetch,
+    // sendUserMessage(prompt)) over the shared gatherPrQualityData core.
     handler: async (args, ctx) => {
-      // ── 1. Guard: SONARQUBE_TOKEN ────────────────────────────────────
-      const token = process.env.SONARQUBE_TOKEN
-      if (!token) {
-        ctx.ui.notify(
-          [
-            'SONARQUBE_TOKEN is not set.',
-            'Get a token at https://sonarcloud.io/account/security',
-            'Then run: export SONARQUBE_TOKEN=<your_token>',
-            'Add it to your shell profile (~/.bashrc / ~/.zshrc) to persist it.',
-          ].join('  '),
-          'error',
-        )
-        return
-      }
-
-      // ── 2. Detect PR number ──────────────────────────────────────────
       const parsed = parseArgs(args)
-      let prNumber: string
-      try {
-        prNumber = parsed.prNumber ?? (await detectPrNumber('/pr-quality'))
-      } catch (err) {
-        ctx.ui.notify(String((err as Error).message), 'error')
-        return
-      }
-
-      ctx.ui.notify(`PR Quality: analyzing PR #${prNumber}...`, 'info')
-
-      // ── 3. Guard: GH Actions must be complete ───────────────────────
-      let actionsStatus: ActionsStatus
-      try {
-        actionsStatus = await checkActionsComplete(prNumber)
-      } catch (err) {
-        ctx.ui.notify(
-          `Could not check Actions status: ${(err as Error).message}`,
-          'error',
-        )
-        return
-      }
-
-      if (!actionsStatus.complete) {
-        const names = actionsStatus.pending
-          .map((c) => {
-            let wf: string
-            if (c.workflowName) {
-              wf = `${c.workflowName} / `
-            } else {
-              wf = ''
-            }
-            return `${wf}${c.name} (${c.status.toLowerCase()})`
-          })
-          .join(', ')
-        ctx.ui.notify(
-          `PR #${prNumber} CI not done yet — ${actionsStatus.pending.length} check(s) still running: ${names}`,
-          'warning',
-        )
-        return
-      }
-
-      // ── 4. Detect SonarCloud config ──────────────────────────────────
-      let sonarConfig: SonarConfig
-      try {
-        sonarConfig = await detectSonarConfig(ctx.cwd)
-      } catch (err) {
-        ctx.ui.notify(
-          [
-            String((err as Error).message),
-            'Either create sonar-project.properties with sonar.projectKey and sonar.organization,',
-            'or set SONAR_PROJECT_KEY and SONAR_ORGANIZATION env vars.',
-          ].join('  '),
-          'error',
-        )
-        return
-      }
-
-      // ── 5. Fetch in parallel ─────────────────────────────────────────
-      // AIDEV-NOTE: GitHub and SonarCloud calls are independent — run them
-      // concurrently to reduce total wall-clock time.
       ctx.ui.setStatus(
         'pr-quality',
         'Fetching GitHub threads + SonarCloud data...',
       )
 
-      let prData: GhPrData
-      let coverageRaw: CoverageResponse
-      let rawIssues: { issues: SonarIssue[]; total: number }
-
+      let result: PrQualityResult
       try {
-        ;[prData, coverageRaw, rawIssues] = await Promise.all([
-          fetchUnresolvedThreads(prNumber),
-          sonarFetch(
-            sonarConfig.baseUrl,
-            token,
-            'measures/component',
-            {
-              component: sonarConfig.projectKey,
-              pullRequest: prNumber,
-              metricKeys:
-                'coverage,new_coverage,new_line_coverage,uncovered_lines,lines_to_cover,branch_coverage,new_branch_coverage,new_lines_to_cover',
-            },
-            ctx.signal,
-          ).then((d) => d as CoverageResponse),
-          fetchAllIssues(
-            sonarConfig.baseUrl,
-            token,
-            sonarConfig.projectKey,
-            prNumber,
-            ctx.signal,
-          ),
-        ])
+        result = await gatherPrQualityData({
+          cwd: ctx.cwd,
+          prNumber: parsed.prNumber,
+          signal: ctx.signal,
+          onProgress: (message) => {
+            ctx.ui.notify(message, 'info')
+          },
+        })
       } catch (err) {
         ctx.ui.setStatus('pr-quality', undefined)
-        ctx.ui.notify(`Fetch failed: ${(err as Error).message}`, 'error')
+        if (err instanceof PrQualityError && err.kind === 'token') {
+          ctx.ui.notify(
+            [
+              'SONARQUBE_TOKEN is not set.',
+              'Get a token at https://sonarcloud.io/account/security',
+              'Then run: export SONARQUBE_TOKEN=<your_token>',
+              'Add it to your shell profile (~/.bashrc / ~/.zshrc) to persist it.',
+            ].join('  '),
+            'error',
+          )
+          return
+        }
+        if (err instanceof PrQualityError && err.kind === 'pr') {
+          ctx.ui.notify(String(err.message), 'error')
+          return
+        }
+        // AIDEV-NOTE: CI-pending is not a failure for the human — warn and
+        // return, exactly as before the core extraction.
+        if (err instanceof PrQualityError && err.kind === 'ci-pending') {
+          ctx.ui.notify(String(err.message), 'warning')
+          return
+        }
+        if (err instanceof PrQualityError && err.kind === 'config') {
+          ctx.ui.notify(
+            [
+              String(err.message),
+              'Either create sonar-project.properties with sonar.projectKey and sonar.organization,',
+              'or set SONAR_PROJECT_KEY and SONAR_ORGANIZATION env vars.',
+            ].join('  '),
+            'error',
+          )
+          return
+        }
+        ctx.ui.notify(String((err as Error).message), 'error')
         return
       }
 
       ctx.ui.setStatus('pr-quality', undefined)
+      pi.sendUserMessage(result.prompt)
+    },
+  })
 
-      // ── 6. Analyze ───────────────────────────────────────────────────
-      const coverage = analyzeCoverage(coverageRaw)
-      const issues = analyzeIssues(rawIssues)
-
-      // ── 7. Build and send prompt ─────────────────────────────────────
-      ctx.ui.notify(
-        `Fetched ${prData.unresolved_count} unresolved threads, ${issues.total} SonarCloud issues. Starting triage...`,
-        'info',
-      )
-
-      const prompt = buildAgentPrompt(
-        prNumber,
-        prData,
-        sonarConfig,
-        issues,
-        coverage,
-      )
-      pi.sendUserMessage(prompt)
+  // AIDEV-NOTE: Agent-callable surface — prompt text comes back in content,
+  // compact structured numbers in details. CI-pending becomes an isError
+  // result instead of a notify. Shares gatherPrQualityData with the command
+  // so there is one implementation.
+  pi.registerTool({
+    name: 'pr_quality',
+    label: 'PR quality triage',
+    description:
+      'Gather unresolved GitHub PR review threads plus SonarCloud coverage/issues for a PR and return a structured triage prompt for the agent to act on.',
+    promptSnippet:
+      'PR quality triage data: unresolved review threads, SonarCloud coverage and issues, with a step-by-step triage prompt.',
+    parameters: Type.Object({
+      pr_number: Type.Optional(
+        Type.String({
+          description:
+            'PR number to analyze. Omit to auto-detect from the current branch via gh.',
+        }),
+      ),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: { pr_number?: string },
+      signal: AbortSignal,
+      _onUpdate: unknown,
+      ctx: ExtensionToolContext,
+    ): Promise<AgentToolResult<PrQualityDetails>> {
+      try {
+        const result = await gatherPrQualityData({
+          cwd: ctx.cwd,
+          prNumber: params.pr_number,
+          signal,
+        })
+        return {
+          content: [{ type: 'text', text: result.prompt }],
+          details: result.details,
+        }
+      } catch (err) {
+        let text: string
+        if (err instanceof PrQualityError && err.kind === 'ci-pending') {
+          text = `pr_quality: ${err.message}. Re-run when all checks complete.`
+        } else {
+          text = `pr_quality failed: ${(err as Error).message}`
+        }
+        return {
+          content: [{ type: 'text', text }],
+          details: {
+            prNumber: params.pr_number ?? '',
+            prTitle: '',
+            prUrl: '',
+            unresolvedCount: 0,
+            issuesTotal: 0,
+            issuesBySeverity: {},
+            projectKey: '',
+          },
+          isError: true,
+        }
+      }
     },
   })
 }
