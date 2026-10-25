@@ -124,14 +124,62 @@ test('buildPlanPrompt: personal mode instructs size check + confirm gate', () =>
   assert.match(prompt, /size check/i)
   assert.match(prompt, /ask_user_question/)
   assert.match(prompt, /oneshot/)
-  assert.match(prompt, /planned/)
   assert.match(prompt, /todo/)
   assert.match(prompt, /PMR-F7YM/)
   assert.match(prompt, /\/x\/plan\.md/)
   assert.match(prompt, /open_in_pane/)
 })
 
-// AIDEV-NOTE: personal-mode plan must open the review pane — parity with
+// AIDEV-NOTE: PMR-QRJA — the plan phase must END in plan-state=review with
+// flow_phase_complete deferred until spec approval; the "planned" label only
+// lands after the human approves via spec_approve / /spec-review.
+test('buildPlanPrompt: personal mode ends phase in review, not complete', () => {
+  const prompt = buildPlanPrompt({
+    mode: 'personal',
+    ref: 'PMR-F7YM',
+    planPath: '/x/plan.md',
+  })
+  assert.match(prompt, /plan-state=review/)
+  assert.match(prompt, /aven edit PMR-F7YM --metadata plan-state=review/)
+  assert.match(prompt, /do not call the\s+flow_phase_complete tool/i)
+})
+
+test('buildPlanPrompt: personal mode completes only after plan-state=approved', () => {
+  const prompt = buildPlanPrompt({
+    mode: 'personal',
+    ref: 'PMR-F7YM',
+    planPath: '/x/plan.md',
+  })
+  assert.match(prompt, /plan-state=approved/)
+  assert.match(prompt, /spec_approve/)
+  assert.match(
+    prompt,
+    /flow_phase_complete tool with ref=<ticket ref> and phase="plan"/,
+  )
+  assert.match(prompt, /"planned" label/)
+  const approvedIdx = prompt.indexOf('plan-state=approved')
+  const completeIdx = prompt.indexOf(
+    'flow_phase_complete tool with ref=<ticket ref>',
+  )
+  assert.ok(approvedIdx !== -1)
+  assert.ok(completeIdx > approvedIdx, 'completion must follow approval')
+})
+
+// AIDEV-NOTE: PMR-QRJA — the oneshot route runs the SAME review gate; a
+// premature "planned" would misroute /implement even for oneshots.
+test('buildPlanPrompt: personal oneshot route also gated on spec approval', () => {
+  const prompt = buildPlanPrompt({
+    mode: 'personal',
+    ref: 'PMR-F7YM',
+    planPath: '/x/plan.md',
+  })
+  const oneshotIdx = prompt.indexOf('If confirmed as oneshot')
+  const gateIdx = prompt.indexOf('plan-state=review')
+  assert.ok(oneshotIdx !== -1)
+  assert.ok(gateIdx > oneshotIdx, 'review gate must apply to the oneshot route')
+})
+
+// AIDEV-NOTE: regression guard — personal plan must open the review pane — parity with
 // feature-plan-aven (work mode), which opens plan.md via open_in_pane itself.
 test('buildPlanPrompt: personal mode opens plan.md in a herdr review pane', () => {
   const prompt = buildPlanPrompt({

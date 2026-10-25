@@ -6,7 +6,9 @@
 // the tree-refresh path (step 2): a ticket that already has children is
 // confirmed/ordered, never decomposed again. Epic creation uses real aven
 // commands only — `aven edit <ref> --epic on` converts the ticket itself;
-// there is no "aven epic create".
+// there is no "aven epic create". PMR-QRJA: the phase ends in
+// plan-state=review; flow_phase_complete (and the "planned" label) runs only
+// after spec approval via spec_approve / /spec-review.
 
 export interface PlanPromptInput {
   mode: 'work' | 'personal'
@@ -77,7 +79,20 @@ Personal aven flow. Steps:
    - call the open_in_pane tool with that path to open it with nvim in a
      herdr review pane for the user to review. Skippable if herdr is
      unavailable or the user declines — never block on it.
-6. Either way: set the ticket status to "todo" and call the flow_phase_complete tool with ref=<ticket ref> and phase="plan" (applies the "planned" label behind the gate).
+6. Put the plan in review — for BOTH the oneshot and the plan route — set
+   the ticket status to "todo" and mark the plan for human spec review:
+   aven edit ${input.ref} --metadata plan-state=review
+   (the /spec-review command lists it for the user). Do NOT call the
+   flow_phase_complete tool yet. End the phase without the "planned"
+   label — a premature "planned" misroutes /implement, which routes
+   oneshot vs plan from the type labels only after approval.
+7. ONLY after the plan is approved — plan-state=approved, set by the
+   spec_approve tool or the /spec-review command — call the
+   flow_phase_complete tool with ref=<ticket ref> and phase="plan"; it
+   applies the "planned" label after re-checking the gates and its result
+   confirms the label landed. If the user does not approve, leave the
+   ticket at plan-state "review" WITHOUT the "planned" label and end the
+   phase — the flow halts and resumes at plan via /flow.
 
 NEVER convert the ticket to an epic or create subtasks before the explicit
 confirm answer. NEVER decompose a ticket that already has children.`
