@@ -37,8 +37,9 @@ function workSection(ref: string): string {
 
 Completion rule: every finding is fixed-and-committed or escalated as a new
 task. Report the final counts in your reply, then transition ${ref} to status
-done AND set the "done" label on ${ref} (aven edit ${ref} --label done) — the
-flow's advance gate reads the label.`
+done AND call the flow_phase_complete tool with ref=${ref} and
+phase="feedback" — it applies the "done" label after re-checking the gates,
+and its result confirms the label landed.`
 }
 
 function personalSection(ref: string): string {
@@ -53,8 +54,9 @@ function personalSection(ref: string): string {
    "## Outcome summary" with "### What shipped", "### Test evidence",
    "### Review verdict" sections).
 3. ONLY once the outcome summary note exists, transition ${ref} to status
-   done AND set the "done" label on ${ref} (aven edit ${ref} --label done) —
-   the flow's advance gate reads the label.
+   done AND call the flow_phase_complete tool with ref=${ref} and
+   phase="feedback" — it applies the "done" label after re-checking the
+   gates, and its result confirms the label landed.
 
 Completion rule: the ticket is NEVER marked done without the outcome summary
 note on it. If a section has no content, STOP and ask the human — never

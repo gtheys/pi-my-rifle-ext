@@ -17,9 +17,12 @@ export interface PlanPromptInput {
 const WORK_SUFFIX = `
 When the skill workflow is FULLY complete — including the user's explicit
 approval and the aven phase/subtask hierarchy — set the ticket status to
-"todo" and ensure it carries the "planned" label. The "planned" label lands
+"todo" and call the flow_phase_complete tool with ref=<ticket ref> and
+phase="plan" — it applies the "planned" label after re-checking the gates,
+and its result confirms the label landed. The "planned" label lands
 ONLY after approval: /implement routes oneshot vs plan from the type labels,
-and a premature "planned" would misroute the run. If the user does not
+and a premature "planned" would misroute the run. Direct aven label edits on
+lifecycle labels are blocked. If the user does not
 approve during this phase, leave the ticket at plan-state "review" WITHOUT
 the "planned" label and end the phase — the flow halts and resumes at plan
 via /flow once the tree exists.`
@@ -74,7 +77,7 @@ Personal aven flow. Steps:
    - call the open_in_pane tool with that path to open it with nvim in a
      herdr review pane for the user to review. Skippable if herdr is
      unavailable or the user declines — never block on it.
-6. Either way: set the ticket status to "todo" and ensure the "planned" label.
+6. Either way: set the ticket status to "todo" and call the flow_phase_complete tool with ref=<ticket ref> and phase="plan" (applies the "planned" label behind the gate).
 
 NEVER convert the ticket to an epic or create subtasks before the explicit
 confirm answer. NEVER decompose a ticket that already has children.`

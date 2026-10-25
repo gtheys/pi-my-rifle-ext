@@ -47,8 +47,9 @@ NEVER call acli or aven create before the explicit confirm answer.
 COMPLETION LABEL — when the research phase is fully done (artifact written,
 gate answered): ensure the ticket this research ran against — the one
 confirmed at the gate, or the existing ticket when the flow already provided
-one — carries the "researched" label (aven edit <ref> --label researched).
-The RPIV flow advances by reading lifecycle labels; without "researched" the
+one — carries the "researched" label: call the flow_phase_complete tool
+with ref=<ticket ref> and phase="research". The RPIV flow advances by
+reading lifecycle labels; without "researched" the
 flow halts at research. If the gate declined ticket creation, skip this.`
 
 // AIDEV-NOTE: scout fan-out contract — codegraph MCP, when available, must
@@ -130,9 +131,11 @@ there (plain --json output has no description field). The content is already
 in aven — no Jira fetch needed.`
     const completion = isEpic
       ? `COMPLETION LABEL — this phase advances the RPIV flow. When the artifact is
-written, run \`aven edit ${input.target.ref} --label researched\`. Without the
+written, call the flow_phase_complete tool with ref=${input.target.ref} and
+phase="research" (applies the "researched" label behind the gate). Without the
 label /flow halts at research.`
-      : `COMPLETION — run \`aven edit ${input.target.ref} --label researched\` AND append
+      : `COMPLETION — call the flow_phase_complete tool with ref=${input.target.ref} and
+phase="research" (applies the "researched" label) AND append
 the line "> researched by pi-flow on <today's date>" to the artifact header.
 A later \`/flow ${input.jiraId}\` creates the local epic and inherits research
 from that artifact marker.`

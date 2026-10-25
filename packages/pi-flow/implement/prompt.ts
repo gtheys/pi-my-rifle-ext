@@ -19,7 +19,7 @@ Hard rules for every task in this phase:
 - Retry budget: at most 3 attempts per task. If a test still fails after 3 attempts: STOP. Write the failure evidence as an aven note on the task (commands run, last error, hypothesis), set the task status to "blocked", and escalate to the human. NEVER silently continue past a red test.
 - Each task = implement -> run tests -> commit. A task is done only when its test run is green AND the commit landed in the worktree.
 - Follow the repo's commit discipline; use conventional commit subjects.
-- PHASE COMPLETION LABEL: when ALL work for this phase is green and committed, set the "active" LABEL on ${ref} (aven edit ${ref} --label active). The flow's advance gate reads this label — status alone never advances the flow. NEVER set the ticket status to "done" in this phase; later phases own that.
+- PHASE COMPLETION LABEL: when ALL work for this phase is green and committed, call the flow_phase_complete tool with ref=${ref} and phase="implement" — it applies the "active" label after re-checking the gates, and its result confirms the label landed. NEVER set the ticket status to "done" in this phase; later phases own that. Direct aven label edits on lifecycle labels are blocked.
 `
 }
 
@@ -60,6 +60,6 @@ ${BRANCH_RULES}${commonRules(input.ref)}${skip}`
 Oneshot flow for ${input.ref}:
 1. Implement the change in a single implement -> test -> commit cycle.
 2. Run the test suite; it must be green before the commit lands.
-3. Once tests are green AND the commit landed, apply the PHASE COMPLETION LABEL rule above (the "active" label).
+3. Once tests are green AND the commit landed, apply the PHASE COMPLETION LABEL rule above (flow_phase_complete with phase="implement").
 ${BRANCH_RULES}${commonRules(input.ref)}${skip}`
 }

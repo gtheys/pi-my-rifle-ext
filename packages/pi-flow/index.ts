@@ -4,7 +4,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { CONFIG_DIR_NAME, getAgentDir } from '@earendil-works/pi-coding-agent'
+import {
+  type AgentToolResult,
+  CONFIG_DIR_NAME,
+  getAgentDir,
+  isToolCallEventType,
+} from '@earendil-works/pi-coding-agent'
 import { hasLiveAssignmentForParent } from '@gtheys/pi-interactive-subagents'
 import { type Static, Type } from 'typebox'
 import { Value } from 'typebox/value'
@@ -18,8 +23,12 @@ import {
   findTicketResearchTarget,
   resolveJiraEpic,
 } from './flow/jira-ref.ts'
+import {
+  checkPhaseCompletion,
+  lifecycleLabelMutation,
+} from './flow/label-gate.ts'
 import { createFlowLoop } from './flow/loop.ts'
-import { nextPhase } from './flow/orchestrate.ts'
+import { nextPhase, PHASE_LABEL, type Phase } from './flow/orchestrate.ts'
 import {
   buildPhasePrompt,
   type PhasePrompt,
@@ -383,7 +392,7 @@ export default function (pi: ExtensionAPI) {
   // own ctx; the loop needs one stable notify. session_start fires before any
   // command or agent_settled event, so the holder is always populated by then.
   let notifyUser:
-    | ((message: string, level: 'info' | 'warning') => void)
+    | ((message: string, level: 'info' | 'warning' | 'error') => void)
     | null = null
 
   const loop = createFlowLoop({
@@ -425,6 +434,162 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_start', (_event, ctx) => {
     notifyUser = (message, level) => ctx.ui.notify(message, level)
     void ensureLabels(notifyUser)
+  })
+
+  // AIDEV-NOTE: PMR-EZHA — enforcement boundary for lifecycle run state.
+  // Aven lifecycle labels (LIFECYCLE_LABELS) are written ONLY through the
+  // flow_phase_complete tool below, which re-checks the pure gates
+  // (flow/label-gate.ts over gates.ts / orchestrate.ts) before exec'ing aven.
+  // Direct agent-side mutation is blocked at the bash tool_call event — the
+  // ExtensionAPI does offer real interception (handler returns {block,
+  // reason}), so no guard-wrapper fallback script is needed. The boundary is
+  // the agent's bash TOOL: a human running aven by hand is out of scope
+  // (humans own the run). Type/skip labels (bug, oneshot, plan,
+  // research-skipped) stay agent-writable.
+  pi.on('tool_call', (event) => {
+    if (!isToolCallEventType('bash', event)) return undefined
+    const label = lifecycleLabelMutation(event.input.command)
+    if (label === null) return undefined
+    return {
+      block: true,
+      reason: `lifecycle label "${label}" is extension-governed — call the flow_phase_complete tool instead of writing aven labels directly`,
+    }
+  })
+
+  // AIDEV-NOTE: PMR-EZHA — the ONLY sanctioned write path for lifecycle
+  // labels. Reads labels, consults the pure gate (checkPhaseCompletion), and
+  // on refusal returns the gate reason as a tool error; on success execs the
+  // same writeAvenLabel path the flow loop uses. Idempotent: an
+  // already-complete phase returns ok without re-writing.
+  const phaseResultDetails = {
+    ok: false,
+    refused: false,
+    already: false,
+    reason: '',
+    label: '',
+  }
+  type PhaseResultDetails = typeof phaseResultDetails
+  pi.registerTool({
+    name: 'flow_phase_complete',
+    label: 'flow phase complete',
+    description:
+      'Record completion of an RPIV flow phase by applying its lifecycle label (research=researched, plan=planned, implement=active, validate=review-passed, feedback=done). The gate re-checks phase order and refuses out-of-order completion with the reason. This is the ONLY way to write lifecycle labels — direct aven label edits on the ticket are blocked.',
+    promptSnippet:
+      'Gated lifecycle-label completion for RPIV flow phases (research/plan/implement/validate/feedback).',
+    promptGuidelines: [
+      'Call flow_phase_complete to close a flow phase — never run `aven edit <ref> --label <lifecycle>` yourself; that mutation is blocked.',
+      'A refusal carries the gate reason (missing prior phase); run the missing phase, do not retry the call.',
+    ],
+    parameters: Type.Object({
+      ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
+      phase: Type.Union(
+        [
+          Type.Literal('research'),
+          Type.Literal('plan'),
+          Type.Literal('implement'),
+          Type.Literal('validate'),
+          Type.Literal('feedback'),
+        ],
+        {
+          description: 'The flow phase being marked complete',
+        },
+      ),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: { ref: string; phase: Phase },
+    ): Promise<AgentToolResult<PhaseResultDetails>> {
+      const labels = await readAvenLabels(params.ref)
+      if (labels === null) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `flow_phase_complete: cannot read aven labels for ${params.ref} (fail-closed)`,
+            },
+          ],
+          details: {
+            ok: false,
+            refused: false,
+            already: false,
+            reason: '',
+            label: '',
+          } satisfies PhaseResultDetails,
+          isError: true,
+        }
+      }
+      const gate = checkPhaseCompletion(params.phase, labels)
+      if (!gate.ok) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `flow_phase_complete refused phase "${params.phase}" on ${params.ref}: ${gate.reason}`,
+            },
+          ],
+          details: {
+            ok: false,
+            refused: true,
+            already: false,
+            reason: gate.reason ?? '',
+            label: '',
+          } satisfies PhaseResultDetails,
+          isError: true,
+        }
+      }
+      const label = PHASE_LABEL[params.phase]
+      if (labels.includes(label)) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `flow_phase_complete: "${label}" already recorded on ${params.ref} — phase ${params.phase} was already complete`,
+            },
+          ],
+          details: {
+            ok: true,
+            refused: false,
+            already: true,
+            reason: '',
+            label,
+          } satisfies PhaseResultDetails,
+        }
+      }
+      const written = await writeAvenLabel(params.ref, label)
+      if (!written) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `flow_phase_complete: aven write failed for "${label}" on ${params.ref}`,
+            },
+          ],
+          details: {
+            ok: false,
+            refused: false,
+            already: false,
+            reason: '',
+            label: '',
+          } satisfies PhaseResultDetails,
+          isError: true,
+        }
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `flow_phase_complete: "${label}" landed on ${params.ref} — phase ${params.phase} recorded, the label is verified by this result`,
+          },
+        ],
+        details: {
+          ok: true,
+          refused: false,
+          already: false,
+          reason: '',
+          label,
+        } satisfies PhaseResultDetails,
+      }
+    },
   })
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
