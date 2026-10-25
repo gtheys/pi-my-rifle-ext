@@ -44,10 +44,13 @@ pi-my-rifle-ext/
 │   ├── pi-sem/              # pi-sem semantic code tools
 │   ├── pi-tool-pills/       # tool pill badges + Shiki diff rendering
 │   ├── pi-desktop-notify/   # /notify command
-│   ├── pi-aven-context/       # aven workspace state session-start context
 │   ├── pi-teams-transcript/ # teams_transcript tool (MS Graph)
-│   └── pi-pr-digest/        # pr_digest tool + /pr-digest command (gh CLI)
-│   ├── pi-flow/             # RPIV flow orchestrator (work-mode, phases, run-state journal, Herdr viewer)
+│   ├── pi-pr-digest/        # pr_digest tool + /pr-digest command (gh CLI)
+│   ├── pi-aven-context/     # aven workspace state session-start context
+│   ├── pi-flow/             # RPIV flow orchestrator (phases, gate tools, run-state journal, Herdr viewer)
+│   ├── pi-worktree/         # worktree tool (Herdr worktree workspaces)
+│   ├── pi-sudo/             # sudo_run tool (confirm dialog + masked password)
+│   └── pi-herdr-title/      # renames the herdr pane to `Pi - <cwd>` on session start
 ├── skills/            # Skills (each in a subdirectory with SKILL.md)
 │   ├── engineering/
 │   └── tools/
@@ -121,7 +124,7 @@ pi install git:github.com/DietrichGebert/ponytail
 
 | Component | Tested | Runtime floor |
 |---|---|---|
-| `@earendil-works/pi-coding-agent` | 0.85.1 | per package `peerDependencies` |
+| `@earendil-works/pi-coding-agent` | 1.4.0 | per package `peerDependencies` |
 | [herdr](https://github.com/steipete/herdr) | 0.9.5 | >= 0.9.1 (enforced at runtime by `pi-interactive-subagents`' `HERDR_MIN_VERSION` gate) |
 
 Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it checks every workspace's `npm pack --dry-run` output against its `files` allowlist and scans packed contents for secrets and absolute home paths, failing on any violation.
@@ -144,14 +147,16 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-sem`](packages/pi-sem/) | Semantic code analysis tools — entity-level diff, impact analysis, context lookup, and blame via `pi-sem` | Code Analysis |
 | [`pi-desktop-notify`](packages/pi-desktop-notify/) | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
 | [`pi-test-runner`](packages/pi-test-runner/) | `run_tests` tool + `/test-runner` command — runs JS/TS tests from `package.json` in an isolated pi-interactive-subagents worker; visible in the orchestrator's subagents widget; results injected back when done ⚠️ *experimental/WIP* | Testing |
-| [`pi-interactive-subagents`](packages/pi-interactive-subagents/) | `subagent` tool + `/plan` dispatch command — spawn scout/worker/planner sub-agents in cmux/tmux/zellij/wezterm/herdr panes, with a live status widget and programmatic `launchSubagent`/`watchSubagent` API; `/plan` routes to the create-plan/feature-plan skills (bundled generic workflow as fallback) | Orchestration |
+| [`pi-interactive-subagents`](packages/pi-interactive-subagents/) | `subagent` tool + `/plan` dispatch command — spawn scout/worker/planner sub-agents in cmux/tmux/zellij/wezterm/herdr panes, with a live status widget and programmatic `launchSubagent`/`watchSubagent` API; `/plan` routes aven-first to the feature-plan-aven skill (bundled generic workflow as fallback) | Orchestration |
 | [`pi-planning`](packages/pi-planning/) (plan-tools) | Aven-era planning helpers: `resolve_spec_path`, `resolve_feature_path`, `open_in_pane` tools + `/review-spec` command | Planning |
 | [`pi-planning`](packages/pi-planning/) (implement-plan) | `jira_create_branch` tool for Jira-synced tickets (the old ungated `/implement` command was removed — it collided with pi-flow's gated RPIV `/implement`; the implement-plan-aven skill is invoked via phrases or `/skill:implement-plan-aven`) | Planning |
 | [`pi-aven-context`](packages/pi-aven-context/) | Session-start injection of live aven workspace state (`aven prime` tail: open issues, active/ready/blocked) as hidden custom-message context; non-fatal, idempotent | Context |
 | [`pi-teams-transcript`](packages/pi-teams-transcript/) | `teams_transcript` tool — list/download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth) ⚠️ *work in progress* | Integrations |
 | [`pi-pr-digest`](packages/pi-pr-digest/) | `pr_digest` tool + `/pr-digest` command — outstanding GitHub PRs in an org with human comment/review status (bots filtered) and reviewer-request table | Integrations |
-| [`pi-flow`](packages/pi-flow/) | RPIV flow orchestrator — work-mode detection (`resolveMode` via workRoots config), phase-state label vocabulary with aven `ensure-labels` bootstrap, `/research /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish` (spec plan-state review/approval) commands (routing wired by phase tickets), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
+| [`pi-flow`](packages/pi-flow/) | RPIV flow orchestrator — `/research /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish`, gate tools (`flow_phase_complete`, `flow_land`, `flow_run_attempt`, `spec_approve`) that own lifecycle labels/landing/retry budget/spec approval, work-mode detection (`workRoots` config), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
 | [`pi-worktree`](packages/pi-worktree/) | `worktree` tool — create/list/remove Herdr worktree workspaces with branch derivation, lockfile-based dependency bootstrap, `.env` snapshots, and a pi agent state dashboard | Git Workflow |
+| [`pi-sudo`](packages/pi-sudo/) | `sudo_run` tool — root command execution behind an Allow/Deny confirmation + masked password prompt (password piped to `sudo -S`, never persisted) | System |
+| [`pi-herdr-title`](packages/pi-herdr-title/) | Renames the current herdr pane to `Pi - <cwd>` on session start; no-op outside herdr | UI Enhancement |
 
 ### Companion Packages (installed separately)
 
@@ -174,24 +179,25 @@ These complementary pi packages are **not** part of this repo. Install them with
 | Skill | Description |
 |-------|-------------|
 | `coding-standards` | Universal coding standards, best practices, and patterns for TypeScript, JavaScript, React, and Node.js development |
-| `create-plan` | Create detailed implementation plans from Jira tickets via taskwarrior; codebase research runs in parallel `scout` subagents; local features delegate to `feature-plan` |
-| `debug` | Bootstrap a debugging session — investigates pod logs, DB state, and git history without editing files |
-| `feature-plan` | Plan a local feature (no Jira) end to end — interview, scout subagents, interactive planner agent, `plan.md` artifact under `$PERSONAL_FEATURES`, and a taskwarrior feature hierarchy (`jirastatus:Local`) |
+| `explore` | Pre-ticket codebase Q&A — direct search for quick questions, scout subagents for broad mapping, hindsight/cognee memory for past decisions; exit ramp to a oneshot ticket or a feature plan |
+| `feature-plan-aven` | Plan an aven ticket end to end — pickup, interview, scout subagent, interactive planner agent, plan.md artifact, plan-state gate (draft → review → approved), then the aven epic/dep tree; handles aven refs, aven-synced Jira IDs, and local features |
+| `implement-plan-aven` | Execute an aven feature tree phase by phase in an isolated Herdr git worktree — worker subagents, test/commit cycle per phase; oneshot path for self-sufficient tickets |
 | `feature-ticket` | Interview-driven feature ticket creation for personal projects; records as Taskwarrior ticket |
+| `debug` | Structured debugging session — redact secrets, reproduce/minimise, rank hypotheses, fix with a regression test; optional Jira/aven bootstrap and SH infra flag |
 | `gh-unresolved-comments` | Fetch unresolved PR review comments, classify as VALID/INVALID, auto-resolve stale threads, produce resolution plan |
-| `implement-plan` | Execute an approved implementation spec from the taskwarrior phase/subtask tree (Jira ID or feature UUID); each subtask is implemented by a sequential `worker` subagent |
-| `iterate-plan` | Iterate on existing implementation specs with thorough research and updates |
 | `notes-locator` | Discover relevant documents in `notes/` or `$LLM_NOTES_ROOT` for a given topic or task |
 | `pr-description` | Generate comprehensive PR descriptions following repository templates |
+| `subagent-orchestration` | Playbook for orchestrating pi-interactive-subagents — parallel fan-out, worktree isolation, ask_owner vs message_owner, resuming orphaned children (symlinked from `packages/pi-interactive-subagents/skills/`) |
 | `tdd-workflow` | TDD workflow enforcement with 80%+ coverage — unit, integration, and E2E |
-| `teams-pr-notify` | Send PR review request as Adaptive Card to a Microsoft Teams channel via Power Automate |
+| `teams-pr-notify` | Send PR review request as Adaptive Card to a Microsoft Teams channel via Power Automate; digest mode backed by pi-pr-digest |
+| `ts-js-architecture-review` | Architecture and module-boundary review for mixed TS/JS codebases — dependency direction, circular imports, JS/TS seam type-safety |
+| `ts-js-refactoring-advisor` | Plan and carry out safe refactors in mixed TS/JS codebases — small behavior-preserving steps, impact analysis first |
 
 ### Tools
 
 | Skill | Description |
 |-------|-------------|
 | `acli` | Atlassian CLI reference — Jira work items, projects, boards, sprints, filters, dashboards, org admin |
-| `atlas` | Database schema management and migrations with Atlas CLI — generate, diff, lint, test, and apply migrations; ORM schema support |
 | `aws-architecture-diagram` | Generate validated AWS architecture diagrams as draw.io XML using official AWS4 icon libraries; supports codebase analysis and interactive brainstorm modes |
 | `cli-microsoft365` | CLI for Microsoft 365 — SharePoint, Entra ID, Teams, Power Platform, Graph API |
 | `devctl` | `devctl` CLI guide for the SalaryHero local Kubernetes dev environment (minikube-based) |
@@ -214,27 +220,34 @@ they depend on must be registered by exactly one package.
 
 ```
 /plan command (pi-interactive-subagents)
-    ├─ arg matches JIRA ID ──> injects create-plan skill
-    ├─ free text ───────────> injects feature-plan skill
+    ├─ any arg (aven ref, Jira-shaped, or free text)
+    │        ─────────────> injects the feature-plan-aven skill (aven-first:
+    │                       aven refs, aven-synced Jira IDs, and local features;
+    │                       workspace routed by cwd)
     └─ skills/ unreadable ──> bundled generic plan-skill.md (standalone installs)
 
-create-plan ──uses──> tw_get_ticket, tw_get_spec_task, tw_get_phases,
-    │                 tw_get_impl_tasks, resolve_spec_path,
-    │                 tw_create_spec_task, tw_create_phase,
-    │                 tw_create_impl_task, jira_create_branch   (pi-planning)
-    ├─uses──> scout subagents                                (pi-interactive-subagents)
-    └─for local features──> delegates to feature-plan
+feature-plan-aven ──uses──> aven CLI (ticket state), resolve_feature_path,
+    │                       jira_create_branch                  (pi-planning)
+    ├─uses──> scout + planner subagents           (pi-interactive-subagents)
+    └─writes──> plan.md ($PERSONAL_FEATURES or .pi/plans) + aven epic/dep tree
+                (plan-state gate: draft → review → approved; approval lands
+                only via pi-flow's spec_approve tool)
 
-feature-plan ──uses──> resolve_feature_path, tw_execution_plan (pi-planning)
-    ├─uses──> scout + planner subagents                      (pi-interactive-subagents)
-    └─writes──> taskwarrior hierarchy + plan.md ($PERSONAL_FEATURES or .pi/plans)
+implement-plan-aven ──uses──> aven CLI, jira_create_branch      (pi-planning)
+    └─uses──> worker subagents in a Herdr worktree
+                                              (pi-interactive-subagents, pi-worktree)
 
-implement-plan-aven skill (skills/engineering/implement-plan-aven)
-    └─ uses──> jira_create_branch                 (pi-planning implement-plan)
-    └─ uses──> worker subagents                   (pi-interactive-subagents)
-
-Reaching the skill: natural phrases ("implement PMR-ZTVG") or
+Reaching the skill: natural phrases ("implement PMR-ZTVG"),
 /skill:implement-plan-aven <ref> — or pi-flow's gated /implement phase.
+
+pi-flow /research /plan /implement /validate /feedback /flow
+    ├─ owns run state as aven labels via flow_phase_complete (direct
+    │   `aven edit --label` mutations are blocked while a flow is active)
+    ├─ flow_land gates git push / gh pr create on the review-passed label
+    ├─ flow_run_attempt owns the 3-attempt retry budget
+    ├─ spec_approve is the only plan-state review → approved transition
+    └─ /validate ends in a review gate consuming pi-review's
+        blockers_count verdict
 
 feature-ticket ──uses──> raw `task` CLI only (no extension dependency)
 ```
@@ -243,16 +256,32 @@ feature-ticket ──uses──> raw `task` CLI only (no extension dependency)
 
 | Rule | Detail |
 |------|--------|
-| Commands belong to exactly one package | Both `pi-interactive-subagents` and `pi-planning` register `/plan`; the **first registration wins** (load order = root `package.json` `pi.extensions`). `pi-planning`'s `/plan` is effectively dead — kept only because standalone npm installs of `pi-planning` load it without the subagents package. |
-| Skills degrade gracefully | `create-plan`/`feature-plan`/`implement-plan` all document a fallback when the `subagent` tool is missing (no multiplexer): research/implementing happens in the main session instead of scout/worker panes. |
-| Tool names are contracts | A skill referencing `tw_execution_plan` breaks if `pi-planning` is not loaded — pi reports the tool as unavailable and the skill's fallback path takes over. |
+| Commands belong to exactly one package | `pi-interactive-subagents` owns `/plan`; `pi-flow` owns the gated `/implement` (the old ungated `/implement` in pi-planning was removed — pi suffixes duplicates as `/implement:1`, making gated and ungated variants indistinguishable). |
+| Skills degrade gracefully | `feature-plan-aven`/`implement-plan-aven` document a fallback when the `subagent` tool is missing (no multiplexer): research/implementing happens in the main session instead of scout/worker panes. |
+| Tool names are contracts | A skill referencing `resolve_feature_path` or `flow_phase_complete` breaks if `pi-planning`/`pi-flow` is not loaded — pi reports the tool as unavailable and the skill's fallback path takes over. |
 | Agents are package data | `scout`/`worker`/`planner`/`reviewer` definitions live in `pi-interactive-subagents/agents/` and resolve project-local `.pi/agents/` first, then `~/.pi/agent/agents/`, then the bundled copy. |
-| Dispatch has a fallback | `/plan` with free text in a standalone install (no `skills/` dir) falls back to the bundled generic planner workflow — feature-planning without taskwarrior. |
+| Dispatch has a fallback | `/plan` in a standalone install (no `skills/` dir) falls back to the bundled generic planner workflow — feature-planning without aven. |
 
 ### Data contracts
 
-- **Jira flow**: spec path from `resolve_spec_path` (`$LLM_NOTES_ROOT/<repo>/notes/specs/<JIRA>__<slug>.md`), annotated as `Spec(repo=<repo>): <path>` on the spec task; hierarchy under `SalaryHero.<project>` via `tw_create_*` tools.
-- **Feature flow**: plan.md from `resolve_feature_path` (`$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, or `.pi/plans/` fallback), annotated on the feature task; hierarchy via raw `task` CLI with `jirastatus:Local`, `+feature`/`+phase`/`+impl` tags, `N.`/`N.M` description prefixes (the execution plan sorts by them).
+- **Aven state**: the [aven](https://aven.raine.dev) CLI is the task store for both
+  work and personal planning — tickets, epic/dep trees, labels, and `plan-state`
+  metadata all live there (the old taskwarrior `tw_*` tools were removed). Skills
+  call `aven` directly; `pi-aven-context` injects live workspace state at session
+  start.
+- **Jira flow**: spec path from `resolve_spec_path`
+  (`$LLM_NOTES_ROOT/<repo>/notes/specs/<JIRA>__<slug>.md`); Jira tickets sync into
+  aven via `jira-aven-sync` and are worked through a local epic (`jira-ref`
+  metadata, dep-linked to the synced ticket).
+- **Feature flow**: plan.md from `resolve_feature_path`
+  (`$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, or `.pi/plans/` fallback);
+  the aven tree holds the epic → phase → subtask hierarchy with
+  `N. Phase: <name>` / `N.M <title>` prefixes, and `plan-path` metadata points at
+  the plan file.
+- **Flow gates**: aven lifecycle labels
+  (`researched → planned → active → review-passed → done`) are the `/flow` run
+  state, written only through pi-flow's gate tools; the validate phase's review
+  gate consumes a `blockers_count: <N>` verdict emitted natively by pi-review.
 
 ---
 

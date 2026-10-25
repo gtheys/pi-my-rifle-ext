@@ -35,14 +35,22 @@ non-obvious implementation decisions worth knowing before you touch it.
   aven planner handles aven refs, aven-synced Jira IDs, and local features;
   the aven workspace is routed by cwd). If the repo's skill files can't be read
   (standalone install), it falls back to the bundled generic `plan-skill.md`.
-  Note `pi-planning` also registers `/plan` — first registration wins by load
-  order in the root `package.json` `pi.extensions`, so `pi-planning`'s `/plan`
-  is effectively dead in the monorepo but kept for standalone npm installs of
-  that package (see `README.md` "Rules of the road").
+  Note: `pi-planning` no longer registers `/plan` at all (its plan-tools only
+  register `/review-spec`), so there is no load-order collision in the
+  monorepo.
 - **Subagent env:** epimetheus (Hindsight memory) is **disabled** in subagent
   sessions (`EPIMETHEUS_ENABLED=false`) — its pending-queue markers for
   ephemeral/crashed subagent sessions orphaned and warned on every parent quit;
   subagent work is retained via the parent session's steering summary.
+- **Herdr stderr** is piped and classified (`03637f9`,
+  `subagents/herdr.ts`): expected failures (e.g. tab already exists) no longer
+  leak raw stderr into the TUI.
+- **Durable assignments** (`subagents/assignments.ts`) record running children
+  per parent so a restarted parent can rediscover them; `/flow` consults them
+  to avoid halting while a subagent is in flight (`90f41b6`).
+- **Agent frontmatter** is fully documented in `docs/agent-frontmatter.md`
+  (`be716a1`); the bundled `reviewer`/`worker` agents were moved off
+  github-copilot models (`042e55d`).
 - **`/reload` survival:** module-level timers and poll loops are keyed on
   `Symbol.for(...)` globals; a fresh module load aborts the previous load's
   poll controller (`POLL_ABORT_KEY`) so old closures can't keep polling.
@@ -171,8 +179,9 @@ nvim-in-pane plan review, and Jira branch derivation. Both siblings follow
 - **Files:** `index.ts`, `helpers.ts`, `open-in-pane.ts`, `resolve-spec-path.ts`,
   `resolve-feature-path.ts`.
 - **Tools:** `resolve_spec_path`, `resolve_feature_path`, `open_in_pane`.
-- **Commands:** `/plan <JIRA_ID>` (duplicate registration — see
-  pi-interactive-subagents above for who wins) and `/review-spec <path>`.
+- **Commands:** `/review-spec <path>` only — the old duplicate `/plan`
+  registration was removed; `/plan` is owned solely by
+  pi-interactive-subagents.
 - **Spec path convention:** `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md`
   (slug = first 5 lowercase words, non-alnum stripped; `$LLM_NOTES_ROOT` overrides
   for a central notes vault).
@@ -184,13 +193,15 @@ nvim-in-pane plan review, and Jira branch derivation. Both siblings follow
 
 ### implement-plan — `packages/pi-planning/implement-plan/`
 
-- **Files:** `index.ts` (the `/implement` command), `jira-branch-tool.ts`.
+- **Files:** `index.ts` (tool registration only), `jira-branch-tool.ts`.
 - **Tools:** `jira_create_branch` (shared `shared/jira-branch.ts`; registered here
   for standalone installs). Derives a branch from a Jira issue (type → prefix,
   summary → slug), optional git-town parent to `develop`. Requires `acli` +
   `git-town`.
-- **Command:** `/implement <AVEN-REF | JIRA-ID>` — routes to the
-  **implement-plan-aven** skill (execution state lives in aven, not here).
+- **No commands:** the old ungated `/implement` was removed — it collided with
+  pi-flow's gated `/implement` (pi suffixes duplicates as `/implement:1`). The
+  implement-plan-aven skill stays reachable via natural phrases or
+  `/skill:implement-plan-aven` (in-file AIDEV-NOTE).
 - See [Planning workflow](../workflows/planning-and-implementation.md) for the
   full aven data model and plan-state gate.
 
@@ -228,6 +239,10 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
 - Injects semantic-tool guidance (`buildSemReviewGuidance` from `sem-guidance.mjs`)
   so the review prompt tells the agent to prefer `sem_diff`/`sem_impact` when
   `pi-sem` is available.
+- **Verdict emission** (`review/verdict.ts`, `9ae1fce`): the review prompt
+  instructs the reviewer to end with a `blockers_count: <N>` verdict, and the
+  extension emits/parses that count natively so `pi-flow`'s review gate can
+  consume it without re-parsing prose.
 - **Session state:** tracks the origin session ID for a "fresh session per review"
   pattern; module-level state (`reviewOriginId`, `endReviewInProgress`) is deliberate
   and assumes a single active review at a time (documented in-file).
@@ -297,15 +312,48 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
   silently skips; idempotent across resume/fork/reload via an existing-entry
   check on the session branch.
 
-## pi-flow (Herdr integration subset)
+## pi-flow (RPIV flow)
 
-- **Files:** `packages/pi-flow/run-state.ts`, `herdr/viewer.ts`, `herdr/sync.ts`
-  (+ tests), root `herdr-plugin.toml`, `plugins/herdr/flow-viewer.mjs`.
-- **Registers:** `/flow-view <ref> [right|below|left|above|tab]`, `/herdr-sync`.
-- **What:** The repo doubles as a Herdr plugin (root manifest + pane launcher).
-  `/flow` journals run events to `~/.pi/agent/pi-flow/runs/<ref>.json`
-  (append-only `<ref>.journal.jsonl` alongside); `/flow-view` opens/focuses a
-  Herdr pane rendering that state (dedupe by pane label `flow · <ref>` via
+- **Files:** `packages/pi-flow/index.ts` (all registrations), `flow/` (loop, args,
+  label-gate, land-gate, ensure-labels, aven-resolve, ref-kind, jira-ref,
+  phase-prompts, orchestrate), `spec-review/` (approve, aven-spec, publish,
+  open-in-pane, picker), `research|plan|implement|validate|feedback/` (one
+  subdir per phase: args + prompt), `run-state.ts`, `herdr/` (viewer, sync).
+- **Commands:** `/research`, `/plan`, `/implement`, `/validate`, `/feedback`,
+  `/flow` (orchestrator loop), `/spec-review`, `/spec-publish`, plus the Herdr
+  pair `/flow-view <ref>` and `/herdr-sync`.
+- **Tools (agent-callable gates):** `flow_phase_complete` (the ONLY way to write
+  lifecycle labels — direct `aven edit --label` mutations are blocked by
+  `flow/label-gate.ts`), `flow_land` (gates push/PR creation behind the
+  `review-passed` label + optional `blockers_count` artifact — direct
+  `git push` / `gh pr create` are blocked by `flow/land-gate.ts` while a flow
+  is active), `flow_run_attempt` (owns the retry budget: **3 total attempts**,
+  the 3rd failure returns an escalation error and further attempts are
+  refused), `spec_approve` (only path from plan-state `review` → `approved`).
+- **What:** Drives the five RPIV phases with aven labels as run state
+  (`researched → planned → active → review-passed → done`). `/flow` injects one
+  phase prompt at a time and advances only when the phase turn settles **and**
+  its completion label landed; it no longer halts mid-phase while a subagent
+  is in flight (`90f41b6`, via pi-interactive-subagents durable assignments).
+  A flow pauses gracefully while a spec awaits approval (`be43caf`) instead of
+  forcing a halt.
+- **Aven resolution** (`flow/aven-resolve.ts`): workspace comes from the
+  **session cwd** (`c0145ea`, `8155cd9` — config override and `avenWorkspace`
+  are both resolved per-session, not process-global), falling back to
+  `aven show` → exact-ref `aven search` → workspace sweep; the resolved
+  workspace is pinned per ref. `flow/ref-kind.ts` is the escape hatch for
+  numeric aven refs that would otherwise parse as Jira-shaped.
+- **Spec review** (`spec-review/`): `/spec-review` batch-picks specs at
+  `plan-state=review` and opens each plan.md in a herdr nvim pane;
+  `spec_approve` pins the `plan` label and flips plan-state to approved;
+  `/spec-publish` spawns a worker that publishes the approved plan.md to the
+  ticket's notes repo. Workspace resolution is threaded through all of them
+  (`00648c5`).
+- **Herdr plugin subset:** the repo doubles as a Herdr plugin (root
+  `herdr-plugin.toml` + `plugins/herdr/flow-viewer.mjs`). `/flow` journals run
+  events to `~/.pi/agent/pi-flow/runs/<ref>.json` (append-only
+  `<ref>.journal.jsonl` alongside); `/flow-view` opens/focuses a Herdr pane
+  rendering that state (dedupe by pane label `flow · <ref>` via
   `herdr api snapshot` — survives Pi reloads); `/herdr-sync` links the plugin
   explicitly and idempotently (preflight enforces manifest/package version
   equality). Aven labels remain the gate source of truth; the journal is an
@@ -314,6 +362,8 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
 - **Invariants:** no polling/daemon/state-store on the Pi side; public herdr
   verbs only; 5s exec timeouts + bounded JSON parsing; panes resolve nothing
   from PATH (session passes `PI_FLOW_REF`/`PI_FLOW_RUN_FILE` via `--env`).
+- **Config:** `~/.pi/agent/pi-flow/config.json` — `workRoots` (work-vs-personal
+  mode by path prefix), `avenWorkspace` (pin a workspace, skip inference).
 
 ## Next
 

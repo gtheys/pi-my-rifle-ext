@@ -63,6 +63,9 @@ packages/
 ├── pi-pr-digest/             pr_digest tool + /pr-digest (gh CLI), standalone
 ├── pi-sudo/                  sudo_run tool — confirm dialog + masked password prompt
 ├── pi-aven-context/          injects live aven workspace state at session_start
+├── pi-flow/                  RPIV flow: /research /plan /implement /validate /feedback
+│                             + /flow orchestrator, gate tools (flow_phase_complete,
+│                             flow_land, flow_run_attempt, spec_approve), Herdr plugin
 └── pi-worktree/              worktree tool — Herdr worktree workspaces (create/list/remove)
 ```
 
@@ -108,6 +111,7 @@ for 3 exec calls).
 | `pi-interactive-subagents` | multiplexer CLI (cmux/tmux/zellij/wezterm/herdr) | sub-agents run in real terminal panes, results steer back into the session |
 | `pi-test-runner` | test scripts via the `pi-interactive-subagents` API | isolate test runs in a `test-runner` agent so they don't block the conversation |
 | `pi-pr-digest` | `gh` CLI | PR author/comment/review status across an org |
+| `pi-flow` | `aven`, `herdr`, `git`/`gh` (via gate tools) | RPIV phases; aven labels as run state; herdr panes for flow-view/spec-review |
 | `pi-worktree` | `herdr`, `git`, optional `acli`/`gh`/`git-town` + package manager | create/list/remove worktree workspaces |
 | `pi-desktop-notify` | `notify-send` | desktop notification on idle-after-work |
 

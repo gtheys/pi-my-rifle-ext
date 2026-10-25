@@ -105,11 +105,15 @@ Review is no longer a standalone post-step: inside the RPIV flow
 (`packages/pi-flow`), `/validate` ends with a **review gate**. After the
 environment/human gate passes, `/review` runs on the change and its verdict
 is written as a machine-readable artifact — exactly one `blockers_count: <N>`
-line plus `- blocker: <description>` lines. `0` → land (work: PR + Jira
-comment; personal: push to main); `> 0` → blockers recorded as aven notes
-and the flow routes back to `/implement`. Parsing is strict: a missing or
-malformed count is an error and forces a `/review` re-run — never a silent
-0 (that would auto-land broken code). See `docs/rpiv-flow.md` §3.4.
+line plus `- blocker: <description>` lines. Since `9ae1fce` the pi-review
+extension emits this verdict natively (`review/verdict.ts`), so the gate
+consumes a structured count instead of re-parsing prose. `0` → land (work:
+PR + Jira comment, authorized via the `flow_land` tool; personal: push to
+main); `> 0` → blockers recorded as aven notes and the flow routes back to
+`/implement`. Parsing is strict: an explicit verdict heading always wins over
+`blockers_count` lines inside fenced code blocks (`e9d2d36`), and a missing
+or malformed count is an error that forces a `/review` re-run — never a
+silent 0 (that would auto-land broken code). See `docs/rpiv-flow.md` §3.4.
 
 ## Recommended loop
 

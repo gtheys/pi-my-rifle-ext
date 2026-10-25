@@ -21,13 +21,14 @@ trigger phrases. Organized into two categories (`f7258cd` split tool references 
 | `notes-locator` | Find (not analyze) relevant docs under `notes/` or `$LLM_NOTES_ROOT` |
 | `tdd-workflow` | Enforce the red→green loop: tests at agreed public seams, 80%+ coverage; `references/` holds mocking, patterns, project-setup, and test-writing deep-dives |
 | `coding-standards` | Universal TS/JS/React/Node conventions reference |
+| `ts-js-architecture-review` | Architecture/module-boundary review for mixed TS/JS codebases (dependency direction, circular imports, JS/TS seam type-safety, migration progress) |
+| `ts-js-refactoring-advisor` | Plan and carry out safe refactors in mixed TS/JS codebases — small behavior-preserving steps, impact analysis first, typecheck/lint/test after every step |
 
 ### `skills/tools/` — third-party CLI references
 
 | Skill | Use for |
 |---|---|
 | `acli` | Atlassian CLI — Jira work items, projects, boards/sprints, org admin |
-| `atlas` | Atlas CLI — database schema management and migrations (generate, diff, lint, apply; ORM schema support) |
 | `aws-architecture-diagram` | Generate validated AWS draw.io diagrams from code or interactively |
 | `cli-microsoft365` | `m365` CLI — SharePoint, Entra ID, Teams, Power Platform, Graph |
 | `devctl` | SalaryHero's local minikube dev environment CLI |

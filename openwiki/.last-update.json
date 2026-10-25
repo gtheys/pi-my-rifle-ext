@@ -1,7 +1,7 @@
 {
   "command": "update",
-  "model": "glm-5.3",
-  "updatedAt": "2026-10-21T14:07:40.023Z",
-  "gitHead": "e9aaf8851b0377960e2e2e5e4448e00bc62b132d",
+  "model": "k3",
+  "updatedAt": "2026-10-25T08:28:23.834Z",
+  "gitHead": "3b6ef7664bd7257eee438255a7ff382c39dbb966",
   "snapshotHash": "b3Blbndpa2kvYXJj"
 }

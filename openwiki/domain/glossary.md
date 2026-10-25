@@ -21,6 +21,10 @@ not this file.
 | **`resolve_spec_path`** | Tool computing the spec path `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md` (slug = first 5 lowercase words, non-alnum stripped). |
 | **`$LLM_NOTES_ROOT`** | Optional env var pointing at a centralized notes vault (outside any single repo) so specs for multiple repos live in one place: `$LLM_NOTES_ROOT/<repoName>/notes/specs/`. |
 | **`$PERSONAL_FEATURES`** | Optional env var for the local-feature flow: plan.md hierarchies live at `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md` instead of `<repo>/.pi/plans/…`. |
+| **Lifecycle labels** | The five aven labels that ARE a `/flow` run's state: `researched → planned → active → review-passed → done`. Written only via the `flow_phase_complete` tool — direct `aven edit --label` mutations are blocked by pi-flow's label gate. |
+| **pi-flow gate tools** | Extension-owned tools that replace raw CLI mutations during a flow: `flow_phase_complete` (lifecycle labels, order-checked), `flow_land` (authorizes push/PR only after `review-passed`), `flow_run_attempt` (retry budget: 3 total attempts, 3rd failure escalates), `spec_approve` (plan-state review → approved, explicit "approve <REF>" only). |
+| **Ref-kind escape hatch** | `packages/pi-flow/flow/ref-kind.ts`: numeric aven refs that would parse as Jira-shaped are classified explicitly so they route to aven, not acli. |
+| **Aven workspace resolution** | pi-flow resolves the aven workspace from the **session cwd** (project path mappings), falling back to `aven show` → exact-ref `aven search` → workspace sweep; the resolved workspace is pinned per ref. `avenWorkspace` in `pi-flow/config.json` forces one workspace and skips inference. |
 
 ## Code annotation conventions
 

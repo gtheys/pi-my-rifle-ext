@@ -77,7 +77,7 @@ pi-my-rifle-ext/
 │                   #   (ask-user-question, prompt-snippets, interactive-subagents,
 │                   #    planning, review, test-runner, sem, tool-pills,
 │                   #    desktop-notify, teams-transcript, pr-digest, worktree,
-│                   #    bootstrap, sudo, aven-context)
+│                   #    bootstrap, sudo, aven-context, flow)
 ├── skills/         # SKILL.md-driven agent skills (engineering/tools)
 ├── prompts/        # slash-command prompt templates
 ├── themes/         # theme JSON (tokyo-night)

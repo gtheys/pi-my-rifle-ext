@@ -10,7 +10,18 @@ step-level detail, gates, and config. This page only orients.
 Five phases, chained by the `/flow` orchestrator, tracked as **aven labels
 on the ticket** (`researched → planned → active → review-passed → done` —
 labels ARE the run state; resume = run the first phase whose label is
-missing):
+missing). Labels and landings are written **only** through pi-flow's
+extension-owned gate tools — direct `aven edit --label`, `git push`, and
+`gh pr create` calls are blocked while a flow is active:
+
+- `flow_phase_complete` — the only way to apply a lifecycle label; refuses
+  out-of-order completion.
+- `flow_land` — verifies `review-passed` (and the `blockers_count` artifact
+  when given) before authorizing a push (personal) or PR creation (work).
+- `flow_run_attempt` — records each test attempt against the retry budget.
+- `spec_approve` — the only path from plan-state `review` → `approved`
+  (explicit "approve <REF>" only); a `/flow` run pauses gracefully while a
+  spec awaits approval instead of halting.
 
 1. **Research** — question loop + scouts → artifact in `notes/research/` →
    ticket-creation gate (explicit human confirm; work: Jira via acli,
@@ -19,7 +30,8 @@ missing):
    approval gate); personal: size check → human-confirmed oneshot-vs-plan
    split, plan.md + epic tree → `planned`.
 3. **Implement** — gate: `planned` required; worktree isolation; routes
-   bug / plan / oneshot; retry budget 3, then blocked + escalate →
+   bug / plan / oneshot; retry budget **3 total attempts** (the 3rd failure
+   escalates and refuses further attempts) → blocked + escalate →
    `active`.
 4. **Validate** — work: ordered cluster gate (minikube → connectivity →
    queues → deploy → manual tests → Jira evidence comment); personal: the
