@@ -68,14 +68,14 @@ describe('retry state machine', () => {
     const s = startRetry()
     assert.equal(s.attempts, 0)
   })
-  it('failing attempts retry up to budget of 3 then escalate', () => {
+  it('failing attempts retry up to 3 total attempts then escalate', () => {
     let s = startRetry()
     const fail = {
       ok: false as const,
       lastError: 'boom',
       commands: ['bun test'],
     }
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= 2; i++) {
       const r = nextAttempt(s, fail)
       assert.equal(r.status, 'retry')
       s = r.state
@@ -154,7 +154,7 @@ describe('buildImplementPrompt', () => {
       ref: 'DP-71',
       route: 'oneshot',
     })
-    assert.match(p, /3 retries/)
+    assert.match(p, /3 total attempts/)
     assert.match(p, /flow_run_attempt/)
     assert.match(p, /aven note/)
   })

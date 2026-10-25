@@ -46,8 +46,8 @@ import {
 import { parseImplementArgs } from './implement/args.ts'
 import {
   type AttemptResult,
+  MAX_ATTEMPTS,
   nextAttempt,
-  RETRY_BUDGET,
   type RetryState,
   startRetry,
 } from './implement/retry.ts'
@@ -690,7 +690,7 @@ export default function (pi: ExtensionAPI) {
     name: 'flow_run_attempt',
     label: 'flow run attempt',
     description:
-      'Record one test attempt for a flow task and get the retry decision from the owned budget (3 retries, then escalate). The 4th failing attempt returns an escalation error — STOP and report to the human; further attempts are refused.',
+      'Record one test attempt for a flow task and get the retry decision from the owned budget (3 total attempts, then escalate). The 3rd failing attempt returns an escalation error — STOP and report to the human; further attempts are refused.',
     promptSnippet:
       'Retry-budget tracking for flow test attempts — report every attempt result here.',
     promptGuidelines: [
@@ -741,18 +741,18 @@ export default function (pi: ExtensionAPI) {
           content: [
             {
               type: 'text',
-              text: `flow_run_attempt: attempt ${transition.state.attempts}/${RETRY_BUDGET} failed for ${params.ref} — retry permitted (${RETRY_BUDGET - transition.state.attempts} left in budget)`,
+              text: `flow_run_attempt: attempt ${transition.state.attempts}/${MAX_ATTEMPTS} failed for ${params.ref} — retry permitted (${MAX_ATTEMPTS - transition.state.attempts} left in budget)`,
             },
           ],
           details: { ok: false, status: 'retry' },
         }
       }
       const e = transition.escalation
-      const note = `escalated after ${RETRY_BUDGET + 1} failed attempts — commands: ${e.commands.join(' ; ') || 'none recorded'}; last error: ${e.lastError}; hypothesis: ${e.hypothesis}`
+      const note = `escalated after ${MAX_ATTEMPTS} failed attempts — commands: ${e.commands.join(' ; ') || 'none recorded'}; last error: ${e.lastError}; hypothesis: ${e.hypothesis}`
       const noted = await writeAvenNote(params.ref, note)
       // Keep the exhausted state so further reports keep escalating instead
       // of silently restarting the budget.
-      retryStates.set(params.ref, { attempts: RETRY_BUDGET + 1 })
+      retryStates.set(params.ref, { attempts: MAX_ATTEMPTS })
       return {
         content: [
           {

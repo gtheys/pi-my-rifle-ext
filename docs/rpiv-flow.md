@@ -157,10 +157,10 @@ Hard rules for every route:
   worktree; the main checkout is read-only. Branch: work mode →
   `jira_create_branch` for the ref; personal mode → conventional
   `feat/<slug>`.
-- **Retry budget 3**: at most 3 attempts per task. Still red after 3 → STOP,
-  write failure evidence as an aven note (commands, last error, hypothesis),
-  status `blocked`, escalate to the human. Never silently continue past a
-  red test.
+- **Retry budget 3**: at most 3 total attempts per task (2 retries). Still
+  red after the 3rd attempt → STOP, write failure evidence as an aven note
+  (commands, last error, hypothesis), status `blocked`, escalate to the
+  human. Never silently continue past a red test.
 - **Each task = implement → tests → commit** (conventional subjects). Done
   only when green AND committed.
 
