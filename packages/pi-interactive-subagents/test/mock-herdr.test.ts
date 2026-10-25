@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { after, before, describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it } from 'node:test'
 import { parseHerdrStatus, runHerdr } from '../pi-extension/subagents/herdr.ts'
 import { herdrPaneAlive } from '../pi-extension/subagents/spawn.ts'
 import { installMockHerdr, type MockHerdr } from './mock-herdr.ts'
@@ -9,16 +9,18 @@ import { installMockHerdr, type MockHerdr } from './mock-herdr.ts'
 // Each shim invocation is a fresh process, so these also prove state
 // persistence across processes via the shim's state file.
 describe('mock-herdr shim', () => {
+  // AIDEV-NOTE: fresh shim per test — a shared instance order-couples the
+  // tests through accumulated state.json contents (review P3).
   let mock: MockHerdr
   let savedPath: string | undefined
 
-  before(() => {
+  beforeEach(() => {
     mock = installMockHerdr()
     savedPath = process.env.PATH
     process.env.PATH = `${mock.binDir}:${savedPath ?? ''}`
   })
 
-  after(() => {
+  afterEach(() => {
     process.env.PATH = savedPath
     mock.dispose()
   })
@@ -234,11 +236,27 @@ describe('mock-herdr shim', () => {
   })
 
   it('focus verbs and pane/tab/agent close succeed', () => {
+    const setup = JSON.parse(
+      mock.run([
+        'tab',
+        'create',
+        '--workspace',
+        'w1',
+        '--cwd',
+        '/tmp',
+        '--label',
+        'focus-tab',
+        '--no-focus',
+      ]),
+    ) as {
+      result: { root_pane: { pane_id: string }; tab: { tab_id: string } }
+    }
+    const paneId = setup.result.root_pane.pane_id
     mock.run(['workspace', 'focus', 'w1'])
-    mock.run(['tab', 'focus', 't1'])
-    const layoutRaw = mock.run(['pane', 'layout', '--pane', 't1:p1'])
+    mock.run(['tab', 'focus', setup.result.tab.tab_id])
+    const layoutRaw = mock.run(['pane', 'layout', '--pane', paneId])
     const layout = JSON.parse(layoutRaw) as { result: { pane_id: string } }
-    assert.equal(layout.result.pane_id, 't1:p1')
+    assert.equal(layout.result.pane_id, paneId)
 
     const created = JSON.parse(
       mock.run([
@@ -259,10 +277,27 @@ describe('mock-herdr shim', () => {
   })
 
   it('pane list returns all panes', () => {
+    const created = JSON.parse(
+      mock.run([
+        'tab',
+        'create',
+        '--workspace',
+        'w1',
+        '--cwd',
+        '/tmp',
+        '--label',
+        'list-tab',
+        '--no-focus',
+      ]),
+    ) as { result: { root_pane: { pane_id: string } } }
     const list = JSON.parse(mock.run(['pane', 'list'])) as {
       result: { panes: Array<{ pane_id: string }> }
     }
-    assert.ok(list.result.panes.length >= 1)
+    assert.ok(
+      list.result.panes.some(
+        (p) => p.pane_id === created.result.root_pane.pane_id,
+      ),
+    )
   })
 
   it('pane split creates a pane in the most recent tab (PMR-RNW2)', () => {

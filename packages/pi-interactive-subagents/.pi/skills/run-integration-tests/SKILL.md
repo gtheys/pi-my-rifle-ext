@@ -61,14 +61,14 @@ cmux close-surface --surface $SURFACE
 
 ### Expected results
 
-| Suite | Tests | Approx Duration |
-|-------|-------|-----------------|
-| `mux-surface` | 8 | ~45s |
-| `subagent-lifecycle` | 7 | ~170s |
+| Suite | Tests | Mode |
+|-------|-------|------|
+| `herdr-verbs` | 4 | two-mode: real herdr / mock-herdr shim |
+| `mux-surface` | 9 | two-mode (2 real-herdr-only, skipped under mock) |
+| `owner-inbox` | 3 | file-based, no herdr |
+| `peers` | 1 | file-based, no herdr |
 
-All 15 tests must pass. If any fail, report the failure output and stop.
-
-The long-running `keeps a long active tool call from surfacing false stalled status` test in `subagent-lifecycle` runs ~100s on its own — total wall time is ~3:30.
+All 17 tests must pass (or skip where marked real-herdr-only). If any fail, report the failure output and stop. The real-LLM suites (subagent-lifecycle, assignments, worktree) were deleted in PMR-CM6D — no test spawns LLM sessions anymore.
 
 ### Configuration
 
@@ -76,7 +76,6 @@ Override defaults with environment variables:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `PI_TEST_MODEL` | `anthropic/claude-haiku-4-5` | Model for LLM-backed tests |
 | `PI_TEST_TIMEOUT` | `120000` | Per-test timeout in ms |
 
 ## Step 4: Introspect Sessions

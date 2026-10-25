@@ -83,7 +83,8 @@ function parseFlags(argv) {
       continue
     }
     const value = argv[i + 1]
-    if (value === undefined) {
+    if (value === undefined || value.startsWith('--')) {
+      // A following --flag is not a value — treat this one as boolean.
       flags[arg.slice(2)] = true
     } else {
       flags[arg.slice(2)] = value
@@ -428,7 +429,9 @@ export interface MockHerdr {
   binDir: string
   /** Full path of the shim binary (for direct execFileSync invocation). */
   shimPath: string
-  /** Dir holding state.json + pane logs (all shim state lives here). */
+  // AIDEV-NOTE: state.json and the pane logs live in binDir (the shim's own
+  // __dirname), NOT in dir — dir is only the mkdtemp root that owns binDir.
+  /** mkdtemp root that owns binDir; removed by dispose(). */
   dir: string
   /** Run the shim directly and return trimmed stdout. */
   run: (args: readonly string[]) => string
@@ -440,9 +443,7 @@ export interface MockHerdr {
 export function installMockHerdr(): MockHerdr {
   const dir = mkdtempSync(join(tmpdir(), 'mock-herdr-'))
   const binDir = join(dir, 'bin')
-  const panesDir = join(dir, 'panes')
   mkdirSync(binDir, { recursive: true })
-  mkdirSync(panesDir, { recursive: true })
   const shimPath = join(binDir, 'herdr')
   writeFileSync(shimPath, SHIM_SCRIPT, { mode: 0o755 })
   chmodSync(shimPath, 0o755)

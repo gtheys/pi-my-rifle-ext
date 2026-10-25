@@ -1,11 +1,14 @@
 /**
  * Integration tests for the herdr surface layer (PMR-TABUX).
  *
- * These tests exercise real herdr operations: background tab creation
+ * These tests exercise herdr operations: background tab creation
  * (focus-safe), shell readiness, sending commands, reading screen output,
  * Escape delivery, and closing surfaces. No LLM calls — fast and free.
+ * Two-mode (PMR-RNW2): real herdr when HERDR_PANE_ID is set, the
+ * mock-herdr shim otherwise; two tests stay real-herdr-only (focus is
+ * server-global state; Escape needs a TTY).
  *
- * Run inside herdr (HERDR_PANE_ID set): npm run test:integration
+ * Run: npm run test:integration
  */
 
 import assert from 'node:assert/strict'
@@ -63,7 +66,7 @@ after(() => {
   }
 })
 
-describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
+describe('herdr surface [two-mode herdr]', { timeout: 60_000 }, () => {
   let env: TestEnv
 
   before(() => {
@@ -74,11 +77,15 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
     if (env) cleanupTestEnv(env)
   })
 
-  it('creates a background tab without stealing focus (the --no-focus guarantee)', async () => {
-    // AIDEV-NOTE: real-herdr-only — focus is server-global state the mock
-    // shim cannot reproduce faithfully.
-    if (!isHerdrIntegrationAvailable()) return
-
+  // AIDEV-NOTE: real-herdr-only — focus is server-global state the mock
+  // shim cannot reproduce faithfully. Reported as skip, not a fake pass.
+  let focusSkip: string | false = false
+  if (!isHerdrIntegrationAvailable()) {
+    focusSkip = 'needs real herdr (server-global focus state)'
+  }
+  it('creates a background tab without stealing focus (the --no-focus guarantee)', {
+    skip: focusSkip,
+  }, async () => {
     const anchor = process.env.HERDR_PANE_ID as string
     focusSurface(anchor)
     await waitForFocusedSurface(anchor, 10_000)
@@ -198,10 +205,15 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
     )
   })
 
-  it('delivers Escape as byte 27 to the target surface', async () => {
-    // AIDEV-NOTE: real-herdr-only — the test needs a TTY inside the pane to
-    // read raw stdin; the mock's bash subprocess has no TTY.
-    if (!isHerdrIntegrationAvailable()) return
+  // AIDEV-NOTE: real-herdr-only — the test needs a TTY inside the pane to
+  // read raw stdin; the mock's bash subprocess has no TTY. Reported as skip.
+  let ttySkip: string | false = false
+  if (!isHerdrIntegrationAvailable()) {
+    ttySkip = 'needs real herdr (TTY inside the pane)'
+  }
+  it('delivers Escape as byte 27 to the target surface', {
+    skip: ttySkip,
+  }, async () => {
     const surface = createTrackedSurface(env, 'escape-byte-test')
     await sleep(1000)
 

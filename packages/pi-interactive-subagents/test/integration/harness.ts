@@ -27,7 +27,6 @@ import {
   herdrPaneAlive,
   herdrTabClose,
   herdrTabCreate,
-  herdrTabList,
 } from '../../pi-extension/subagents/spawn.ts'
 import {
   closeSurface,
@@ -289,10 +288,6 @@ export function createTrackedSurface(env: TestEnv, name: string): string {
  */
 export function untrackSurface(env: TestEnv, surface: string): void {
   env.surfaces = env.surfaces.filter((s) => s !== surface)
-}
-
-export function stillExists(tabId: string): boolean {
-  return herdrTabList(herdrWorkspaceId()).includes(tabId)
 }
 
 // ── Polling helpers ──

@@ -4479,8 +4479,8 @@ describe('worktrees.ts (PMR-11TD)', () => {
           stdio: 'ignore',
         })
       }
-      rmSync(repo, { recursive: true, force: true })
       removeFixtureWorktreeDir(repo)
+      rmSync(repo, { recursive: true, force: true })
     }
   })
 
@@ -4513,8 +4513,8 @@ describe('worktrees.ts (PMR-11TD)', () => {
         }),
       )
     } finally {
-      rmSync(repo, { recursive: true, force: true })
       removeFixtureWorktreeDir(repo)
+      rmSync(repo, { recursive: true, force: true })
     }
   })
 

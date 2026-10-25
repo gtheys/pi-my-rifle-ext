@@ -1,11 +1,11 @@
 /**
  * Integration tests for the herdr verb layer (PMR-M48Y).
  *
- * Exercises real herdr panes: shell-readiness marker, script-file send with
- * async read, agent read/list/get. Skipped unless running inside herdr
- * (HERDR_PANE_ID set).
+ * Exercises herdr panes: shell-readiness marker, script-file send with
+ * async read, agent read/list/get. Two-mode (PMR-RNW2): real herdr when
+ * HERDR_PANE_ID is set, the mock-herdr shim otherwise.
  *
- * Run: npm run test:integration (inside herdr)
+ * Run: npm run test:integration
  */
 
 import assert from 'node:assert/strict'
@@ -62,7 +62,7 @@ after(() => {
   }
 })
 
-describe('herdr verb layer [real herdr]', { timeout: 60_000 }, () => {
+describe('herdr verb layer [two-mode herdr]', { timeout: 60_000 }, () => {
   let workspace: string
 
   before(() => {
