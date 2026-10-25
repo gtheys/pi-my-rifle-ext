@@ -88,7 +88,9 @@ async function researchPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
   }
   const repoName = input.gitRoot.split('/').pop() ?? 'unknown'
   const dir = resolveResearchDir(
+    input.mode,
     process.env.LLM_NOTES_ROOT,
+    process.env.PERSONAL_FEATURES,
     repoName,
     input.gitRoot,
   )

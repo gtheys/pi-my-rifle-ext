@@ -1,16 +1,28 @@
 import { join } from 'node:path'
+import type { WorkMode } from '../work-mode.ts'
 
 // AIDEV-NOTE: Mirrors pi-planning's plan-tools/helpers.ts resolveSpecPath
 // env-fallback contract (duplication deliberate — cross-package runtime
-// imports are forbidden). If $LLM_NOTES_ROOT is set:
-// $LLM_NOTES_ROOT/<repo>/notes/research/ ; else <git-toplevel>/notes/research/.
+// imports are forbidden). Work mode: $LLM_NOTES_ROOT/<repo>/notes/research/
+// when set. Personal mode: $PERSONAL_FEATURES/<repo>/notes/research/ when set
+// ($PERSONAL_FEATURES is the personal counterpart of $LLM_NOTES_ROOT —
+// PMR-MSGE: personal research must never land under the work notes root).
+// Both modes fall back to <git-toplevel>/notes/research/.
 export function resolveResearchDir(
+  mode: WorkMode,
   notesRoot: string | undefined,
+  personalFeatures: string | undefined,
   repoName: string,
   gitToplevel: string,
 ): string {
-  if (notesRoot) {
-    return join(notesRoot, repoName, 'notes', 'research')
+  let root: string | undefined
+  if (mode === 'work') {
+    root = notesRoot
+  } else {
+    root = personalFeatures
+  }
+  if (root) {
+    return join(root, repoName, 'notes', 'research')
   }
   return join(gitToplevel, 'notes', 'research')
 }
