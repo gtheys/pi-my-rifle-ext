@@ -30,6 +30,14 @@ node --test test/test.ts test/herdr-stderr.test.ts test/mock-herdr.test.ts
 All tests must pass. If any fail, stop and fix them before proceeding.
 Expected wall time: a few seconds.
 
+When an agent runs this inside a subagent session, strip its own env
+first — `PI_SUBAGENT_ID`/`PI_DENY_TOOLS` make the extension skip tool
+registration and cause ~6 false test failures:
+
+```bash
+env -u PI_SUBAGENT_ID -u PI_SUBAGENT_SESSION -u PI_DENY_TOOLS node --test test/test.ts test/herdr-stderr.test.ts test/mock-herdr.test.ts
+```
+
 ## Step 3: Integration tests
 
 ```bash
