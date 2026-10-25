@@ -36,6 +36,7 @@ import {
   type PhasePromptInput,
   type ResearchOverride,
 } from './flow/phase-prompts.ts'
+import { parseRefKind } from './flow/ref-kind.ts'
 import { needsResearchSkip } from './gates.ts'
 import { syncHerdrPlugin } from './herdr/sync.ts'
 import {
@@ -825,14 +826,18 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.registerCommand('plan', {
-    description: 'RPIV plan phase. Usage: /plan <jira-id | aven-ref>',
+    description:
+      'RPIV plan phase. Usage: /plan <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     // AIDEV-NOTE: Same handoff pattern as /research. Work mode routes to the
     // user's feature-plan-aven skill by name; personal mode runs the size-check
     // flow. Decomposition only via plan/split-gate.ts after explicit confirm.
     handler: async (args, ctx) => {
       const parsed = parsePlanArgs(args)
       if (parsed.kind === 'help') {
-        ctx.ui.notify('Usage: /plan <jira-id | aven-ref>', 'info')
+        ctx.ui.notify(
+          'Usage: /plan <jira-id | aven-ref | aven:<ref> | jira:<key>>',
+          'info',
+        )
         return
       }
       const mode = await resolveMode(pi)
@@ -847,7 +852,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('implement', {
     description:
-      'RPIV implement phase. Usage: /implement <jira-id | aven-ref> [--skip-research]',
+      'RPIV implement phase. Usage: /implement <jira-id | aven-ref | aven:<ref> | jira:<key>> [--skip-research]',
     // AIDEV-NOTE: Gate wiring lives in implement/routing.ts via
     // buildPhasePrompt('implement'). This handler resolves args/mode/labels,
     // then hands off via sendUserMessage; refuse/skip-required surface as a
@@ -857,7 +862,7 @@ export default function (pi: ExtensionAPI) {
       const parsed = parseImplementArgs(args)
       if (parsed.kind === 'help') {
         ctx.ui.notify(
-          'Usage: /implement <jira-id | aven-ref> [--skip-research]',
+          'Usage: /implement <jira-id | aven-ref | aven:<ref> | jira:<key>> [--skip-research]',
           'info',
         )
         return
@@ -885,14 +890,18 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.registerCommand('validate', {
-    description: 'RPIV validate phase. Usage: /validate <jira-id | aven-ref>',
+    description:
+      'RPIV validate phase. Usage: /validate <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     // AIDEV-NOTE: Work mode resolves the sh-devctl scripts dir from the first
     // configured workRoot (validate/paths.ts) inside buildPhasePrompt; missing
     // workRoots blocks loudly. Personal mode (PMR-8449) never hits the work gate.
     handler: async (args, ctx) => {
       const parsed = parseValidateArgs(args)
       if (parsed.kind === 'help') {
-        ctx.ui.notify('Usage: /validate <jira-id | aven-ref>', 'info')
+        ctx.ui.notify(
+          'Usage: /validate <jira-id | aven-ref | aven:<ref> | jira:<key>>',
+          'info',
+        )
         return
       }
       const mode = await resolveMode(pi)
@@ -906,7 +915,8 @@ export default function (pi: ExtensionAPI) {
   })
 
   pi.registerCommand('feedback', {
-    description: 'RPIV feedback phase. Usage: /feedback <jira-id | aven-ref>',
+    description:
+      'RPIV feedback phase. Usage: /feedback <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     // AIDEV-NOTE: Same handoff pattern as /validate. Work mode runs the
     // /sonarqube + /pr-quality gate via the prompt; personal mode runs
     // /review + the outcome-summary-then-done flow. All gating rules live
@@ -914,7 +924,10 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const parsed = parseFeedbackArgs(args)
       if (parsed.kind === 'help') {
-        ctx.ui.notify('Usage: /feedback <jira-id | aven-ref>', 'info')
+        ctx.ui.notify(
+          'Usage: /feedback <jira-id | aven-ref | aven:<ref> | jira:<key>>',
+          'info',
+        )
         return
       }
       const mode = await resolveMode(pi)
@@ -929,7 +942,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('flow', {
     description:
-      'RPIV run-all. Usage: /flow <jira-id | aven-ref> [--skip-research]',
+      'RPIV run-all. Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>> [--skip-research]',
     // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
     // failure aborts, never starts from research by accident). nextPhase()
     // resolves the first phase whose completion label is missing, then the
@@ -941,7 +954,7 @@ export default function (pi: ExtensionAPI) {
       const parsed = parseFlowArgs(args)
       if (parsed.kind === 'help') {
         ctx.ui.notify(
-          'Usage: /flow <jira-id | aven-ref> [--skip-research]',
+          'Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>> [--skip-research]',
           'info',
         )
         return
@@ -1255,18 +1268,31 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('flow-view', {
     description:
-      'Open the flow run-state viewer in a Herdr pane. Usage: /flow-view <ref> [right|below|left|above|tab]',
+      'Open the flow run-state viewer in a Herdr pane. Usage: /flow-view <jira-id | aven-ref | aven:<ref> | jira:<key>> [right|below|left|above|tab]',
     // AIDEV-NOTE: Herdr-gated viewer opener. Requires an existing run-state
     // file (i.e. /flow must have started at least once for the ref). Dedupes
     // by pane label ("flow · <ref>") via herdr api snapshot — survives Pi
     // reloads without any state of our own.
     handler: async (args, ctx) => {
       const parts = args.trim().split(/\s+/).filter(Boolean)
-      const ref = parts[0]
+      const rawRef = parts[0]
       const placementArg = parts[1]
+      // AIDEV-NOTE: same kind-prefix escape hatch as the phase parsers
+      // (PMR-PCVK) — strip aven:/jira: before the run-state filename check.
+      let ref: string | undefined
+      if (rawRef === undefined) {
+        ref = undefined
+      } else {
+        const kinded = parseRefKind(rawRef)
+        if (kinded.kind === 'jira') {
+          ref = kinded.jiraId
+        } else {
+          ref = kinded.ref
+        }
+      }
       if (ref === undefined || !isValidRef(ref)) {
         ctx.ui.notify(
-          'Usage: /flow-view <ref> [right|below|left|above|tab]',
+          'Usage: /flow-view <jira-id | aven-ref | aven:<ref> | jira:<key>> [right|below|left|above|tab]',
           'info',
         )
         return

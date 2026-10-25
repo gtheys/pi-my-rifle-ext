@@ -1,6 +1,8 @@
 // AIDEV-NOTE: Pure /feedback arg parsing — mirrors validate/args.ts exactly
 // (single ref, Jira-style or aven).
 
+import { parseRefKind } from '../flow/ref-kind.ts'
+
 export type FeedbackArgs =
   | { kind: 'jira'; jiraId: string }
   | { kind: 'aven'; ref: string }
@@ -11,13 +13,9 @@ export function parseFeedbackArgs(raw: string): FeedbackArgs {
   if (trimmed === '') return { kind: 'help' }
   const parts = trimmed.split(/\s+/)
   if (parts.length !== 1) return { kind: 'help' }
-  const ref = parts[0] ?? ''
-  const match = /^([a-zA-Z][a-zA-Z0-9]+)-(\d+)$/.exec(ref)
-  if (match) {
-    return {
-      kind: 'jira',
-      jiraId: `${match[1].toUpperCase()}-${match[2]}`,
-    }
+  const parsed = parseRefKind(parts[0] ?? '')
+  if (parsed.kind === 'jira') {
+    return { kind: 'jira', jiraId: parsed.jiraId }
   }
-  return { kind: 'aven', ref }
+  return { kind: 'aven', ref: parsed.ref }
 }

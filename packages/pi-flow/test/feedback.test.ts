@@ -117,3 +117,14 @@ test('personal prompt: reruns /review, requires outcome summary before done', ()
   assert.match(prompt, /PMR-XDRB/)
   assert.match(prompt, /done/i)
 })
+
+test('parseFeedbackArgs: kind prefixes force the kind (PMR-PCVK)', () => {
+  assert.deepEqual(parseFeedbackArgs('aven:DP-71'), {
+    kind: 'aven',
+    ref: 'DP-71',
+  })
+  assert.deepEqual(parseFeedbackArgs('jira:DP-71'), {
+    kind: 'jira',
+    jiraId: 'DP-71',
+  })
+})

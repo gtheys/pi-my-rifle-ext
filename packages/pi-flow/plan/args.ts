@@ -2,6 +2,8 @@
 // ref (PROJECT-123) routes to the existing feature-plan-aven skill in work
 // mode; anything else is treated as an aven ref (personal mode).
 
+import { parseRefKind } from '../flow/ref-kind.ts'
+
 export type PlanArgs =
   | { kind: 'jira'; jiraId: string }
   | { kind: 'aven'; ref: string }
@@ -10,9 +12,9 @@ export type PlanArgs =
 export function parsePlanArgs(raw: string): PlanArgs {
   const trimmed = raw.trim()
   if (trimmed === '') return { kind: 'help' }
-  const match = /^([a-zA-Z][a-zA-Z0-9]+)-(\d+)$/.exec(trimmed)
-  if (match) {
-    return { kind: 'jira', jiraId: `${match[1].toUpperCase()}-${match[2]}` }
+  const parsed = parseRefKind(trimmed)
+  if (parsed.kind === 'jira') {
+    return { kind: 'jira', jiraId: parsed.jiraId }
   }
-  return { kind: 'aven', ref: trimmed }
+  return { kind: 'aven', ref: parsed.ref }
 }

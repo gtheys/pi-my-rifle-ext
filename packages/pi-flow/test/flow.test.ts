@@ -150,3 +150,16 @@ test('PHASE_LABEL maps every phase to its lifecycle label', () => {
   assert.equal(PHASE_LABEL.validate, 'review-passed')
   assert.equal(PHASE_LABEL.feedback, 'done')
 })
+
+test('parseFlowArgs: kind prefixes force the kind (PMR-PCVK)', () => {
+  assert.deepEqual(parseFlowArgs('aven:DP-71'), {
+    kind: 'aven',
+    ref: 'DP-71',
+    skipResearch: false,
+  })
+  assert.deepEqual(parseFlowArgs('jira:DP-71 --skip-research'), {
+    kind: 'jira',
+    jiraId: 'DP-71',
+    skipResearch: true,
+  })
+})

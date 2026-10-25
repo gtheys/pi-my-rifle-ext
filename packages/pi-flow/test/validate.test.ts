@@ -237,3 +237,14 @@ test('buildValidatePrompt: personal mode asks for artifacts, ask_user_question, 
   assert.ok(!p.includes('PMR-8449'))
   assert.ok(!p.includes('minikube'))
 })
+
+test('parseValidateArgs: kind prefixes force the kind (PMR-PCVK)', () => {
+  assert.deepEqual(parseValidateArgs('aven:DP-71'), {
+    kind: 'aven',
+    ref: 'DP-71',
+  })
+  assert.deepEqual(parseValidateArgs('jira:DP-71'), {
+    kind: 'jira',
+    jiraId: 'DP-71',
+  })
+})

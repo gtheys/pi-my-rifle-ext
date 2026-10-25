@@ -176,4 +176,17 @@ describe('buildImplementPrompt', () => {
     })
     assert.match(p, /aven note.*research skip/i)
   })
+
+  it('kind prefixes force the kind (PMR-PCVK)', () => {
+    assert.deepEqual(parseImplementArgs('aven:DP-71 --skip-research'), {
+      kind: 'aven',
+      ref: 'DP-71',
+      skipResearch: true,
+    })
+    assert.deepEqual(parseImplementArgs('jira:DP-71'), {
+      kind: 'jira',
+      jiraId: 'DP-71',
+      skipResearch: false,
+    })
+  })
 })

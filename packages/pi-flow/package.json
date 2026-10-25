@@ -30,6 +30,7 @@
     "flow/land-gate.ts",
     "flow/orchestrate.ts",
     "flow/phase-prompts.ts",
+    "flow/ref-kind.ts",
     "research/args.ts",
     "research/artifact.ts",
     "research/paths.ts",

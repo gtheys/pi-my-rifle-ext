@@ -3,6 +3,8 @@
 // anything else is a personal aven ref. --skip-research is the explicit flag
 // demanded by the W76D needsResearchSkip gate.
 
+import { parseRefKind } from '../flow/ref-kind.ts'
+
 export type ImplementArgs =
   | { kind: 'jira'; jiraId: string; skipResearch: boolean }
   | { kind: 'aven'; ref: string; skipResearch: boolean }
@@ -16,13 +18,9 @@ export function parseImplementArgs(raw: string): ImplementArgs {
   const rest = parts.filter((p) => p !== '--skip-research')
   if (rest.length !== 1) return { kind: 'help' }
   const ref = rest[0] ?? ''
-  const match = /^([a-zA-Z][a-zA-Z0-9]+)-(\d+)$/.exec(ref)
-  if (match) {
-    return {
-      kind: 'jira',
-      jiraId: `${match[1].toUpperCase()}-${match[2]}`,
-      skipResearch,
-    }
+  const parsed = parseRefKind(ref)
+  if (parsed.kind === 'jira') {
+    return { kind: 'jira', jiraId: parsed.jiraId, skipResearch }
   }
-  return { kind: 'aven', ref, skipResearch }
+  return { kind: 'aven', ref: parsed.ref, skipResearch }
 }

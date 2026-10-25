@@ -212,3 +212,11 @@ test('resolvePlanDir: PERSONAL_FEATURES unset → .pi/plans branch', () => {
     '/home/x/repo/.pi/plans/2026-10-16-add',
   )
 })
+
+test('parsePlanArgs: kind prefixes force the kind (PMR-PCVK)', () => {
+  assert.deepEqual(parsePlanArgs('aven:DP-71'), { kind: 'aven', ref: 'DP-71' })
+  assert.deepEqual(parsePlanArgs('jira:DP-71'), {
+    kind: 'jira',
+    jiraId: 'DP-71',
+  })
+})
