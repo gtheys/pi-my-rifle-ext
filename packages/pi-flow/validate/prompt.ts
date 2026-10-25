@@ -20,13 +20,16 @@ function buildReviewGateSection(
   mode: 'work' | 'personal',
   ref: string,
 ): string {
+  let landingRoute: string
   let landing: string
   if (mode === 'work') {
-    landing = `LANDING (work mode): push the branch and create a PR via
+    landingRoute = 'pr'
+    landing = `push the branch and create a PR via
    pi-review's PR tooling BY NAME (gh CLI), then post a Jira comment on
    ${ref} linking the PR URL.`
   } else {
-    landing = `LANDING (personal mode): push the branch straight to main —
+    landingRoute = 'push-main'
+    landing = `push the branch straight to main —
    the standing no-PR rule on own repos. No PR, no Jira link step.`
   }
   return `
@@ -39,11 +42,13 @@ Review gate — run ONLY after validation has fully passed:
 ${REVIEW_CONTRACT_PROMPT}
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
    malformed artifact means re-run /review, not silent landing.
-9. If blockers_count is 0: proceed to landing, THEN call the
-   flow_phase_complete tool with ref=${ref} and phase="validate" — it
-   applies the "review-passed" label after re-checking the gates, and its
-   result confirms the label landed; without it the flow halts at
-   validate. Direct aven label edits on lifecycle labels are blocked.
+9. If blockers_count is 0: call the flow_phase_complete tool with ref=${ref}
+   and phase="validate" — it applies the "review-passed" label after
+   re-checking the gates, and its result confirms the label landed; without
+   it the flow halts at validate. Then call the flow_land tool with
+   ref=${ref} and the route (${landingRoute}) — it authorizes the landing;
+   while the flow is active, direct git push / gh pr create are BLOCKED
+   until flow_land returns ok. On ok, run the landing step:
    ${landing}
 10. If blockers_count > 0: record each blocker as an aven note on ${ref},
    route back to /implement ${ref} (retry budget applies), and STOP — do

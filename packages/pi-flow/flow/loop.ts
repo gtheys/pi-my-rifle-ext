@@ -54,6 +54,8 @@ export interface FlowLoop {
   onSettled(): Promise<void>
   /** Whether a flow run is awaiting a phase outcome in this session. */
   isActive(): boolean
+  /** The active flow's ref, or null when no flow run is in flight (PMR-06RH). */
+  activeRef(): string | null
 }
 
 class FlowLoopImpl implements FlowLoop {
@@ -67,6 +69,11 @@ class FlowLoopImpl implements FlowLoop {
 
   isActive(): boolean {
     return this.state !== null
+  }
+
+  activeRef(): string | null {
+    if (this.state === null) return null
+    return this.state.ref
   }
 
   async start(input: FlowStartInput): Promise<void> {

@@ -154,7 +154,8 @@ describe('buildImplementPrompt', () => {
       ref: 'DP-71',
       route: 'oneshot',
     })
-    assert.match(p, /3 attempts/)
+    assert.match(p, /3 retries/)
+    assert.match(p, /flow_run_attempt/)
     assert.match(p, /aven note/)
   })
   it('personal ref uses conventional branch', () => {

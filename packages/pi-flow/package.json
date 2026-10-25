@@ -27,6 +27,7 @@
     "flow/jira-ref.ts",
     "flow/loop.ts",
     "flow/label-gate.ts",
+    "flow/land-gate.ts",
     "flow/orchestrate.ts",
     "flow/phase-prompts.ts",
     "research/args.ts",

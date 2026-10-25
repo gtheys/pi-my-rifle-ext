@@ -27,6 +27,7 @@ import {
   checkPhaseCompletion,
   lifecycleLabelMutation,
 } from './flow/label-gate.ts'
+import { landDecision, landingBashBlock } from './flow/land-gate.ts'
 import { createFlowLoop } from './flow/loop.ts'
 import { nextPhase, PHASE_LABEL, type Phase } from './flow/orchestrate.ts'
 import {
@@ -43,6 +44,13 @@ import {
   parseViewerPlacement,
 } from './herdr/viewer.ts'
 import { parseImplementArgs } from './implement/args.ts'
+import {
+  type AttemptResult,
+  nextAttempt,
+  RETRY_BUDGET,
+  type RetryState,
+  startRetry,
+} from './implement/retry.ts'
 import { ALL_LABELS } from './phase-state.ts'
 import { parsePlanArgs } from './plan/args.ts'
 import { parseResearchArgs } from './research/args.ts'
@@ -446,14 +454,26 @@ export default function (pi: ExtensionAPI) {
   // the agent's bash TOOL: a human running aven by hand is out of scope
   // (humans own the run). Type/skip labels (bug, oneshot, plan,
   // research-skipped) stay agent-writable.
+  // AIDEV-NOTE: PMR-06RH — landing interceptor. `git push` / `gh pr create`
+  // are blocked ONLY while the flow loop has an active ref, and only until
+  // flow_land authorizes that ref's landing (authorizedLanding). No flow
+  // active → undefined → normal git use outside pi-flow is never touched.
+  // A human running git by hand is out of scope (humans own the run).
+  let authorizedLanding: string | null = null
   pi.on('tool_call', (event) => {
     if (!isToolCallEventType('bash', event)) return undefined
     const label = lifecycleLabelMutation(event.input.command)
-    if (label === null) return undefined
-    return {
-      block: true,
-      reason: `lifecycle label "${label}" is extension-governed — call the flow_phase_complete tool instead of writing aven labels directly`,
+    if (label !== null) {
+      return {
+        block: true,
+        reason: `lifecycle label "${label}" is extension-governed — call the flow_phase_complete tool instead of writing aven labels directly`,
+      }
     }
+    const activeRef = loop.activeRef()
+    if (activeRef === null || authorizedLanding === activeRef) return undefined
+    const landing = landingBashBlock(event.input.command, activeRef)
+    if (landing === null) return undefined
+    return { block: true, reason: landing }
   })
 
   // AIDEV-NOTE: PMR-EZHA — the ONLY sanctioned write path for lifecycle
@@ -588,6 +608,160 @@ export default function (pi: ExtensionAPI) {
           reason: '',
           label,
         } satisfies PhaseResultDetails,
+      }
+    },
+  })
+
+  // AIDEV-NOTE: PMR-06RH — the ONLY sanctioned landing path for a flow run.
+  // Re-checks the review gate at the landing boundary via the pure
+  // landDecision (flow/land-gate.ts): 'review-passed' label required, and when
+  // the agent supplies the review artifact its blockers_count verdict is
+  // cross-checked. On ok, the ref's landing is authorized so the subsequent
+  // git push / gh pr create passes the interceptor. Route is recorded, not
+  // re-derived: mode detection stays the phase prompts' concern.
+  pi.registerTool({
+    name: 'flow_land',
+    label: 'flow land',
+    description:
+      'Gate a flow landing: verifies the review-passed label (and an optional review artifact verdict) for the ref, then authorizes git push (route=push-main) or gh pr create (route=pr) for it. Direct git push / gh pr create before this tool returns ok are blocked while the flow is active.',
+    promptSnippet:
+      'Gated landing for RPIV flow runs — call before pushing the branch or creating the PR.',
+    promptGuidelines: [
+      'Call flow_land AFTER flow_phase_complete(phase="validate") and BEFORE git push / gh pr create — direct landing commands are blocked until it returns ok.',
+      'A refusal carries the gate reason (missing review-passed label, blockers in the artifact); fix the cause, do not retry the call.',
+    ],
+    parameters: Type.Object({
+      ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
+      route: Type.Union([Type.Literal('pr'), Type.Literal('push-main')], {
+        description:
+          'pr: create a PR via gh (work mode). push-main: push straight to main (personal mode).',
+      }),
+      artifact: Type.Optional(
+        Type.String({
+          description:
+            'The review artifact text (must contain "blockers_count: <N>") — cross-checked when provided',
+        }),
+      ),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: {
+        ref: string
+        route: 'pr' | 'push-main'
+        artifact?: string
+      },
+    ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
+      const labels = await readAvenLabels(params.ref)
+      const decision = landDecision(labels, params.artifact ?? null)
+      if (!decision.ok) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `flow_land refused landing ${params.ref} via ${params.route}: ${decision.reason}`,
+            },
+          ],
+          details: { ok: false, reason: decision.reason },
+          isError: true,
+        }
+      }
+      authorizedLanding = params.ref
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `flow_land: landing for ${params.ref} authorized via ${params.route} — run the git push / gh pr create step now`,
+          },
+        ],
+        details: { ok: true, reason: '' },
+      }
+    },
+  })
+
+  // AIDEV-NOTE: PMR-06RH — tooling-owned retry budget. The agent reports each
+  // attempt's outcome here instead of counting in its head: the tool owns the
+  // in-memory RetryState (per ref, per session — no persistence by design;
+  // aven notes are the durable record) and nextAttempt decides retry vs
+  // escalate. Escalation is surfaced as a tool error AND an aven note; after
+  // it, further attempts for the ref are refused — only a human restarts
+  // (clearing the state is a session restart or a passing attempt).
+  const retryStates = new Map<string, RetryState>()
+  pi.registerTool({
+    name: 'flow_run_attempt',
+    label: 'flow run attempt',
+    description:
+      'Record one test attempt for a flow task and get the retry decision from the owned budget (3 retries, then escalate). The 4th failing attempt returns an escalation error — STOP and report to the human; further attempts are refused.',
+    promptSnippet:
+      'Retry-budget tracking for flow test attempts — report every attempt result here.',
+    promptGuidelines: [
+      'After EVERY test run in this phase, call flow_run_attempt with the outcome before deciding the next step — never count attempts yourself.',
+      'An escalation result means STOP: report to the human, do not run further attempts.',
+    ],
+    parameters: Type.Object({
+      ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
+      result: Type.Object({
+        ok: Type.Boolean({ description: 'Whether the test attempt passed' }),
+        lastError: Type.Optional(
+          Type.String({ description: 'The failing test\u2019s error message' }),
+        ),
+        commands: Type.Optional(
+          Type.Array(Type.String(), {
+            description: 'Commands run in this attempt',
+          }),
+        ),
+        hypothesis: Type.Optional(
+          Type.String({ description: 'What this attempt tried to change' }),
+        ),
+      }),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: {
+        ref: string
+        result: AttemptResult
+      },
+    ): Promise<AgentToolResult<{ ok: boolean; status: string }>> {
+      const state = retryStates.get(params.ref) ?? startRetry()
+      const transition = nextAttempt(state, params.result)
+      if (transition.status === 'passed') {
+        retryStates.delete(params.ref)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `flow_run_attempt: tests passed for ${params.ref} — commit the green change`,
+            },
+          ],
+          details: { ok: true, status: 'passed' },
+        }
+      }
+      if (transition.status === 'retry') {
+        retryStates.set(params.ref, transition.state)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `flow_run_attempt: attempt ${transition.state.attempts}/${RETRY_BUDGET} failed for ${params.ref} — retry permitted (${RETRY_BUDGET - transition.state.attempts} left in budget)`,
+            },
+          ],
+          details: { ok: false, status: 'retry' },
+        }
+      }
+      const e = transition.escalation
+      const note = `escalated after ${RETRY_BUDGET + 1} failed attempts — commands: ${e.commands.join(' ; ') || 'none recorded'}; last error: ${e.lastError}; hypothesis: ${e.hypothesis}`
+      const noted = await writeAvenNote(params.ref, note)
+      // Keep the exhausted state so further reports keep escalating instead
+      // of silently restarting the budget.
+      retryStates.set(params.ref, { attempts: RETRY_BUDGET + 1 })
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `flow_run_attempt: retry budget exhausted for ${params.ref} — ESCALATE to the human. ${note}${noted ? '' : ' (aven note write FAILED — record this manually)'}`,
+          },
+        ],
+        details: { ok: false, status: 'escalate' },
+        isError: true,
       }
     },
   })
