@@ -29,9 +29,11 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type {
+  AgentToolResult,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  ExtensionToolContext,
 } from '@earendil-works/pi-coding-agent'
 import {
   BorderedLoader,
@@ -55,6 +57,7 @@ import {
   worktreeCreate,
   worktreeRemove,
 } from '@gtheys/pi-worktree/herdr.ts'
+import { Type } from 'typebox'
 import {
   buildSemReviewGuidance,
   getSemToolAvailability,
@@ -154,6 +157,41 @@ export interface PrWorktreeInfo {
 }
 
 const prWorktrees = new Map<number, PrWorktreeInfo>()
+
+/**
+ * Compose the full review prompt: rubric + target-specific prompt + sem
+ * guidance + project REVIEW_GUIDELINES.md. Shared by the /review command and
+ * the agent-callable `review` tool — one implementation.
+ *
+ * AIDEV-NOTE: extraction boundary (was inline in executeReview). Keep both
+ * surfaces calling this so prompt composition never diverges.
+ */
+export async function buildFullReviewPrompt(
+  pi: ExtensionAPI,
+  target: ReviewTarget,
+  cwd: string,
+): Promise<string> {
+  const prompt = await buildReviewPrompt(pi, target)
+  const semReviewInstructions = await buildSemReviewInstructions(pi, target)
+  const projectGuidelines = await loadProjectReviewGuidelines(cwd)
+
+  // Combine the review rubric with the specific prompt
+  let fullPrompt = `${REVIEW_RUBRIC}\n\n---\n\nPlease perform a code review with the following focus:\n\n${prompt}`
+
+  if (semReviewInstructions) {
+    fullPrompt += `\n\n${semReviewInstructions}`
+  }
+
+  if (projectGuidelines) {
+    fullPrompt += `\n\nThis project has additional instructions for code reviews:\n\n${projectGuidelines}`
+  }
+
+  if (target.type === 'pullRequest' && target.tuicrInstructions) {
+    fullPrompt += target.tuicrInstructions
+  }
+
+  return fullPrompt
+}
 
 // Prompts (adapted from Codex)
 const UNCOMMITTED_PROMPT =
@@ -919,6 +957,47 @@ const REVIEW_PRESETS = [
   },
 ] as const
 
+/**
+ * Sem (semantic code tools) review guidance for a target, or null when sem
+ * tools are unavailable. Module scope so buildFullReviewPrompt can use it.
+ */
+async function buildSemReviewInstructions(
+  pi: ExtensionAPI,
+  target: ReviewTarget,
+): Promise<string | null> {
+  const tools = getSemToolAvailability(pi.getActiveTools())
+  if (!tools.any) return null
+
+  switch (target.type) {
+    case 'baseBranch': {
+      const mergeBase = await getMergeBase(pi, target.branch)
+      return buildSemReviewGuidance(
+        { type: 'baseBranch', branch: target.branch, mergeBase },
+        tools,
+      )
+    }
+    case 'pullRequest': {
+      const mergeBase = await getMergeBase(
+        pi,
+        target.baseBranch,
+        target.worktree?.path,
+      )
+      return buildSemReviewGuidance(
+        {
+          type: 'pullRequest',
+          prNumber: target.prNumber,
+          baseBranch: target.baseBranch,
+          title: target.title,
+          mergeBase,
+        },
+        tools,
+      )
+    }
+    default:
+      return buildSemReviewGuidance(target, tools)
+  }
+}
+
 export default function reviewExtension(pi: ExtensionAPI) {
   pi.on('session_start', (_event, ctx) => {
     applyReviewState(ctx)
@@ -1388,7 +1467,7 @@ ${result.summary}`
   }
 
   async function startOcrReview(
-    ctx: ExtensionCommandContext,
+    ctx: ExtensionContext,
     scope: string,
     ocrArgs: string[],
     reviewCwd: string,
@@ -1450,13 +1529,19 @@ ${result.summary}`
     }
   }
 
+  /**
+   * AIDEV-NOTE: spawn status distinguishes 'aborted' (PR worktree spawn
+   * failure — worktree job already released inside) from 'failed' (no
+   * worktree; the command falls back to in-session review, the tool reports
+   * an error).
+   */
   async function startSubagentReview(
-    ctx: ExtensionCommandContext,
+    ctx: ExtensionContext,
     fullPrompt: string,
     hint: string,
     reviewCwd?: string,
     worktree?: { prNumber: number; info: PrWorktreeInfo },
-  ): Promise<boolean> {
+  ): Promise<'spawned' | 'aborted' | 'failed'> {
     try {
       const running = await launchSubagent(
         {
@@ -1491,26 +1576,131 @@ ${result.summary}`
           })
           if (worktree) prWorktreeJobDone(ctx, worktree.prNumber)
         })
-      return true
+      return 'spawned'
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       // With a PR worktree the legacy in-session fallback would review the
       // wrong tree (main checkout, not the PR) — count the failed job, which
       // also removes the worktree if no other job holds it, and abort.
       if (worktree) {
-        prWorktreeJobDone(ctx, worktree.prNumber)
+        // Reviewer spawn failed and aborted the PR review. The worktree job
+        // is released by the caller (spawnReviewJobs) so the ocr reservation
+        // is cleaned up in one place.
         ctx.ui.notify(
           `Subagent spawn failed (${message}). PR review aborted — the worktree is removed when remaining jobs finish; retry with /review pr.`,
           'error',
         )
-        return true
+        return 'aborted'
       }
       ctx.ui.notify(
         `Subagent review unavailable (${message}). Falling back to in-session review.`,
         'warning',
       )
-      return false
+      return 'failed'
     }
+  }
+
+  /**
+   * Spawn the reviewer subagent (and the ocr scout when the binary exists)
+   * for a review target. Shared by the /review command and the agent-callable
+   * `review` tool — one implementation.
+   *
+   * AIDEV-NOTE: fire-and-steer — spawns and returns; findings keep arriving
+   * later as review_result / ocr_result steer messages via pi.sendMessage.
+   * The PR worktree refcount is reserved (pending = 2) BEFORE either job
+   * spawns so a fast reviewer can't tear the worktree out from under ocr.
+   */
+  async function spawnReviewJobs(
+    ctx: ExtensionContext,
+    target: ReviewTarget,
+    fullPrompt: string,
+  ): Promise<{
+    status: 'spawned' | 'aborted' | 'failed'
+    ocrStarted: boolean
+  }> {
+    const prWorktree =
+      target.type === 'pullRequest' && target.worktree
+        ? { prNumber: target.prNumber, info: target.worktree }
+        : undefined
+    const reviewCwd =
+      target.type === 'pullRequest' ? target.worktree?.path : undefined
+    // Reserve both worktree jobs up front (reviewer + ocr scout) so a
+    // fast-finishing reviewer can't tear the worktree out from under ocr.
+    if (prWorktree) prWorktree.info.pending = 2
+
+    const status = await startSubagentReview(
+      ctx,
+      fullPrompt,
+      getUserFacingHint(target),
+      reviewCwd,
+      prWorktree,
+    )
+
+    // AIDEV-NOTE: on 'aborted' the reviewer slot is released here (the
+    // release stayed out of startSubagentReview so it happens in exactly one
+    // place), then the ocr attempt below still runs — same as the original
+    // executeReview flow, where a failed reviewer spawn did not cancel ocr.
+    // Both slots are released either by ocr's jobDone or by the !ocrSpawned
+    // release at the end, so pending reaches 0 and the worktree cleans up.
+    if (status === 'aborted' && prWorktree) {
+      prWorktreeJobDone(ctx, prWorktree.prNumber)
+    }
+    if (status === 'failed') {
+      return { status, ocrStarted: false }
+    }
+
+    // AIDEV-NOTE: ocr second opinion — scout runs ocr in the review cwd
+    // when the binary exists; skips silently otherwise. Target mapping:
+    // pullRequest → review --from <base> --to <worktree branch> (worktree),
+    // baseBranch → review --from <merge-base> --to HEAD,
+    // uncommitted → review (workspace mode),
+    // commit → review --commit <sha>,
+    // folder → scan --path <paths> (no diff).
+    // ocrDelegate is excluded — the reviewer itself applies the ocr rules.
+    // custom is excluded — no diff equivalent.
+    let ocrSpawned = false
+    if (await commandExists(pi, 'ocr')) {
+      let scope: string | null = null
+      let ocrArgs: string[] = []
+      if (target.type === 'pullRequest') {
+        const toRef = prWorktree ? prWorktree.info.branch : 'HEAD'
+        scope = `PR #${target.prNumber}`
+        ocrArgs = ['review', '--from', target.baseBranch, '--to', toRef]
+      } else if (target.type === 'baseBranch') {
+        const mergeBase = await getMergeBase(pi, target.branch, ctx.cwd)
+        if (mergeBase) {
+          scope = `${target.branch}...HEAD`
+          ocrArgs = ['review', '--from', mergeBase, '--to', 'HEAD']
+        }
+      } else if (target.type === 'uncommitted') {
+        scope = 'uncommitted'
+        ocrArgs = ['review']
+      } else if (target.type === 'commit') {
+        scope = `commit ${target.sha.slice(0, 7)}`
+        ocrArgs = ['review', '--commit', target.sha]
+      } else if (target.type === 'folder') {
+        scope = `scan: ${target.paths.join(', ')}`
+        ocrArgs = ['scan', '--path', target.paths.join(',')]
+      }
+      if (scope && ocrArgs.length > 0) {
+        let jobDone: (() => void) | undefined
+        if (target.type === 'pullRequest') {
+          const prNumber = target.prNumber
+          jobDone = () => prWorktreeJobDone(ctx, prNumber)
+        }
+        ocrSpawned = await startOcrReview(
+          ctx,
+          scope,
+          ocrArgs,
+          reviewCwd ?? ctx.cwd,
+          jobDone,
+        )
+      }
+    }
+    if (prWorktree && !ocrSpawned) {
+      prWorktreeJobDone(ctx, prWorktree.prNumber)
+    }
+    return { status, ocrStarted: ocrSpawned }
   }
 
   /**
@@ -1521,108 +1711,14 @@ ${result.summary}`
     target: ReviewTarget,
     useFreshSession: boolean,
   ): Promise<void> {
-    const prompt = await buildReviewPrompt(pi, target)
-    const semReviewInstructions = await buildSemReviewInstructions(target)
+    const fullPrompt = await buildFullReviewPrompt(pi, target, ctx.cwd)
     const hint = getUserFacingHint(target)
-    const projectGuidelines = await loadProjectReviewGuidelines(ctx.cwd)
-
-    // Combine the review rubric with the specific prompt
-    let fullPrompt = `${REVIEW_RUBRIC}\n\n---\n\nPlease perform a code review with the following focus:\n\n${prompt}`
-
-    if (semReviewInstructions) {
-      fullPrompt += `\n\n${semReviewInstructions}`
-    }
-
-    if (projectGuidelines) {
-      fullPrompt += `\n\nThis project has additional instructions for code reviews:\n\n${projectGuidelines}`
-    }
-
-    if (target.type === 'pullRequest' && target.tuicrInstructions) {
-      fullPrompt += target.tuicrInstructions
-    }
 
     // Subagent path — preferred whenever a mux is available. Runs before the
     // branch machinery so a mux present means no session-tree branch is created.
-    if (isMuxAvailable()) {
-      const prWorktree =
-        target.type === 'pullRequest' && target.worktree
-          ? { prNumber: target.prNumber, info: target.worktree }
-          : undefined
-      const reviewCwd =
-        target.type === 'pullRequest' ? target.worktree?.path : undefined
-      // Reserve both worktree jobs up front (reviewer + ocr scout) so a
-      // fast-finishing reviewer can't tear the worktree out from under ocr.
-      if (prWorktree) prWorktree.info.pending = 2
-
-      const spawned = await startSubagentReview(
-        ctx,
-        fullPrompt,
-        hint,
-        reviewCwd,
-        prWorktree,
-      )
-
-      if (spawned) {
-        // AIDEV-NOTE: ocr second opinion — scout runs ocr in the review cwd
-        // when the binary exists; skips silently otherwise. Target mapping:
-        // pullRequest → review --from <base> --to <worktree branch> (worktree),
-        // baseBranch → review --from <merge-base> --to HEAD,
-        // uncommitted → review (workspace mode),
-        // commit → review --commit <sha>,
-        // folder → scan --path <paths> (no diff).
-        // ocrDelegate is excluded — the reviewer itself applies the ocr rules.
-        // custom is excluded — no diff equivalent.
-        let ocrSpawned = false
-        if (await commandExists(pi, 'ocr')) {
-          let scope: string | null = null
-          let ocrArgs: string[] = []
-          if (target.type === 'pullRequest') {
-            const toRef = prWorktree ? prWorktree.info.branch : 'HEAD'
-            scope = `PR #${target.prNumber}`
-            ocrArgs = ['review', '--from', target.baseBranch, '--to', toRef]
-          } else if (target.type === 'baseBranch') {
-            const mergeBase = await getMergeBase(pi, target.branch, ctx.cwd)
-            if (mergeBase) {
-              scope = `${target.branch}...HEAD`
-              ocrArgs = ['review', '--from', mergeBase, '--to', 'HEAD']
-            }
-          } else if (target.type === 'uncommitted') {
-            scope = 'uncommitted'
-            ocrArgs = ['review']
-          } else if (target.type === 'commit') {
-            scope = `commit ${target.sha.slice(0, 7)}`
-            ocrArgs = ['review', '--commit', target.sha]
-          } else if (target.type === 'folder') {
-            scope = `scan: ${target.paths.join(', ')}`
-            ocrArgs = ['scan', '--path', target.paths.join(',')]
-          }
-          if (scope && ocrArgs.length > 0) {
-            let jobDone: (() => void) | undefined
-            if (target.type === 'pullRequest') {
-              const prNumber = target.prNumber
-              jobDone = () => prWorktreeJobDone(ctx, prNumber)
-            }
-            ocrSpawned = await startOcrReview(
-              ctx,
-              scope,
-              ocrArgs,
-              reviewCwd ?? ctx.cwd,
-              jobDone,
-            )
-          }
-        }
-        if (prWorktree && !ocrSpawned) {
-          prWorktreeJobDone(ctx, prWorktree.prNumber)
-        }
-        return
-      }
-
-      if (prWorktree) {
-        // Reviewer spawn failed and aborted the PR review — release the
-        // never-started ocr reservation so the worktree cleans up.
-        prWorktreeJobDone(ctx, prWorktree.prNumber)
-        return
-      }
+    const spawned = await spawnReviewJobs(ctx, target, fullPrompt)
+    if (spawned.status !== 'failed') {
+      return
     }
 
     // Legacy in-session path (no mux, or subagent spawn failed)
@@ -1846,42 +1942,6 @@ ${result.summary}`
     }
   }
 
-  async function buildSemReviewInstructions(
-    target: ReviewTarget,
-  ): Promise<string | null> {
-    const tools = getSemToolAvailability(pi.getActiveTools())
-    if (!tools.any) return null
-
-    switch (target.type) {
-      case 'baseBranch': {
-        const mergeBase = await getMergeBase(pi, target.branch)
-        return buildSemReviewGuidance(
-          { type: 'baseBranch', branch: target.branch, mergeBase },
-          tools,
-        )
-      }
-      case 'pullRequest': {
-        const mergeBase = await getMergeBase(
-          pi,
-          target.baseBranch,
-          target.worktree?.path,
-        )
-        return buildSemReviewGuidance(
-          {
-            type: 'pullRequest',
-            prNumber: target.prNumber,
-            baseBranch: target.baseBranch,
-            title: target.title,
-            mergeBase,
-          },
-          tools,
-        )
-      }
-      default:
-        return buildSemReviewGuidance(target, tools)
-    }
-  }
-
   // Register the /review command
   pi.registerCommand('review', {
     description:
@@ -1964,6 +2024,142 @@ ${result.summary}`
 
         await executeReview(ctx, target, useFreshSession)
         return
+      }
+    },
+  })
+
+  // AIDEV-NOTE: Agent-callable surface — fire-and-steer. Spawns the reviewer
+  // (and ocr scout) subagents and returns immediately; findings arrive later
+  // as review_result / ocr_result steer messages. Shares buildFullReviewPrompt
+  // and spawnReviewJobs with the /review command — one implementation.
+  pi.registerTool({
+    name: 'review',
+    label: 'code review',
+    description:
+      'Start a code review of uncommitted changes, a branch, a commit, a PR, folders, or custom instructions. Spawns a reviewer subagent (requires the herdr mux) and returns immediately; findings arrive later as steer messages.',
+    promptSnippet:
+      'Spawn a background code review subagent for a target (uncommitted, branch, commit, pr, folder, custom).',
+    promptGuidelines: [
+      'The review runs in the background — findings arrive as later messages. Do not call this when the user needs review findings in this turn.',
+    ],
+    parameters: Type.Object({
+      target: Type.Union([
+        Type.Object({ type: Type.Literal('uncommitted') }),
+        Type.Object({
+          type: Type.Literal('branch'),
+          branch: Type.String({ description: 'Base branch to diff against' }),
+        }),
+        Type.Object({
+          type: Type.Literal('commit'),
+          sha: Type.String({ description: 'Commit SHA to review' }),
+          title: Type.Optional(Type.String()),
+        }),
+        Type.Object({
+          type: Type.Literal('pr'),
+          ref: Type.String({
+            description: 'PR number or GitHub PR URL',
+          }),
+        }),
+        Type.Object({
+          type: Type.Literal('folder'),
+          paths: Type.Array(Type.String(), {
+            description: 'Paths to review (snapshot, not a diff)',
+          }),
+        }),
+        Type.Object({
+          type: Type.Literal('custom'),
+          instructions: Type.String({
+            description: 'Custom review instructions',
+          }),
+        }),
+      ]),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: {
+        target:
+          | { type: 'uncommitted' }
+          | { type: 'branch'; branch: string }
+          | { type: 'commit'; sha: string; title?: string }
+          | { type: 'pr'; ref: string }
+          | { type: 'folder'; paths: string[] }
+          | { type: 'custom'; instructions: string }
+      },
+      _signal: AbortSignal,
+      _onUpdate: unknown,
+      ctx: ExtensionToolContext,
+    ): Promise<AgentToolResult<{ hint: string; ocr: boolean }>> {
+      if (!isMuxAvailable()) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Review requires a subagent mux (herdr). Ask the user to run the /review command instead.',
+            },
+          ],
+          isError: true,
+          details: { hint: '', ocr: false },
+        }
+      }
+
+      const p = params.target
+      let target: ReviewTarget
+      if (p.type === 'uncommitted') {
+        target = { type: 'uncommitted' }
+      } else if (p.type === 'branch') {
+        target = { type: 'baseBranch', branch: p.branch }
+      } else if (p.type === 'commit') {
+        target = { type: 'commit', sha: p.sha, title: p.title }
+      } else if (p.type === 'folder') {
+        target = { type: 'folder', paths: p.paths }
+      } else if (p.type === 'custom') {
+        target = { type: 'custom', instructions: p.instructions }
+      } else {
+        const prTarget = await handlePrCheckout(ctx, p.ref)
+        if (!prTarget) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `PR checkout failed for ${p.ref}. See the notification for details.`,
+              },
+            ],
+            isError: true,
+            details: { hint: '', ocr: false },
+          }
+        }
+        target = prTarget
+      }
+
+      const fullPrompt = await buildFullReviewPrompt(pi, target, ctx.cwd)
+      const { status, ocrStarted } = await spawnReviewJobs(
+        ctx,
+        target,
+        fullPrompt,
+      )
+      const hint = getUserFacingHint(target)
+
+      if (status === 'spawned') {
+        let text = `Review spawned: ${hint}. Findings will arrive here as messages when the reviewer finishes.`
+        if (ocrStarted) {
+          text += ' An ocr second-opinion scout was also started.'
+        }
+        return {
+          content: [{ type: 'text', text }],
+          details: { hint, ocr: ocrStarted },
+        }
+      }
+
+      let text: string
+      if (status === 'aborted') {
+        text = `Review aborted: subagent spawn failed for ${hint}. The PR review worktree is being cleaned up; retry with /review pr.`
+      } else {
+        text = `Review spawn failed: ${hint}. The review tool has no in-session fallback — ask the user to run /review.`
+      }
+      return {
+        content: [{ type: 'text', text }],
+        isError: true,
+        details: { hint, ocr: ocrStarted },
       }
     },
   })
