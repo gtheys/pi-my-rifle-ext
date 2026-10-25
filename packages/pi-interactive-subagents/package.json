@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "test": "node --test test/test.ts test/herdr-stderr.test.ts",
-    "test:integration": "node --test --test-concurrency=1 --test-force-exit test/integration/*.test.ts"
+    "test:integration": "node --test --test-concurrency=1 --test-force-exit test/integration/*.itest.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",

@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
@@ -71,6 +71,14 @@ describe('worktree placement [herdr]', { timeout: PI_TIMEOUT * 3 }, () => {
     git(['config', 'user.name', 'test'], env.dir)
     git(['add', '.'], env.dir)
     git(['commit', '-qm', 'init'], env.dir)
+    // AIDEV-NOTE: PMR-CM6D — the fixture commit must land in the temp repo,
+    // never in an ambient repo reached by upward .git resolution. Fail loud
+    // before any test spawns agents against a polluted repo.
+    assert.equal(
+      realpathSync(git(['rev-parse', '--show-toplevel'], env.dir)),
+      realpathSync(env.dir),
+      'fixture repo toplevel must be the temp dir',
+    )
   })
 
   after(() => {

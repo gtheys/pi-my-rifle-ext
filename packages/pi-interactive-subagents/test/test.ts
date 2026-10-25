@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -4305,6 +4306,16 @@ describe('worktrees.ts (PMR-11TD)', () => {
     writeFileSync(join(dir, 'README.md'), 'x')
     execFileSync('git', ['-C', dir, 'add', '.'])
     execFileSync('git', ['-C', dir, 'commit', '-qm', 'init'])
+    // AIDEV-NOTE: PMR-CM6D — the fixture commit must land in the temp repo,
+    // never in an ambient repo reached by upward .git resolution.
+    const toplevel = execFileSync(
+      'git',
+      ['-C', dir, 'rev-parse', '--show-toplevel'],
+      {
+        encoding: 'utf8',
+      },
+    ).trim()
+    assert.equal(realpathSync(toplevel), realpathSync(dir))
     return dir
   }
 
