@@ -32,17 +32,14 @@ const BLOCKER_RE = /^- blocker:\s*(.+)$/
 
 // AIDEV-NOTE: Scopes parsing to the verdict section so a review that merely
 // QUOTES the contract (e.g. while discussing the gate) does not double-count.
-// Preference order: the LAST fenced block containing a count line, else the
-// text after the LAST "## Verdict"-style heading (up to the next heading),
-// else the whole artifact (legacy fallback for hand-written artifacts).
+// Preference order: the section after the LAST "## Verdict"-style heading
+// (up to the next heading) ALWAYS wins — that is what pi-review's
+// review/verdict.ts emits canonically. Only when no heading exists do we
+// fall back to the LAST fenced block containing a count line (hand-written
+// artifacts), else the whole artifact. A quoted fenced example (e.g.
+// "blockers_count: 0" in a fence) must NEVER override a real heading
+// verdict — that would parse 0 and auto-land blocked code.
 export function extractVerdictSection(artifact: string): string {
-  const fences = [...artifact.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)]
-  for (let i = fences.length - 1; i >= 0; i--) {
-    const body = fences[i]?.[1]
-    if (body !== undefined && /^blockers_count:\s*\d+\s*$/m.test(body)) {
-      return body
-    }
-  }
   const headings = [
     ...artifact.matchAll(/^[ \t]*#{1,6}[ \t]+verdict\b[^\n]*$/gim),
   ]
@@ -55,6 +52,13 @@ export function extractVerdictSection(artifact: string): string {
       return rest.slice(0, nextHeading.index)
     }
     return rest
+  }
+  const fences = [...artifact.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)]
+  for (let i = fences.length - 1; i >= 0; i--) {
+    const body = fences[i]?.[1]
+    if (body !== undefined && /^blockers_count:\s*\d+\s*$/m.test(body)) {
+      return body
+    }
   }
   return artifact
 }

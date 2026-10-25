@@ -118,6 +118,67 @@ test('parseReviewArtifact: fenced verdict block wins over earlier fences', () =>
   }
 })
 
+test('parseReviewArtifact: ## Verdict heading wins over fenced count lines', () => {
+  const artifact = [
+    'The gate requires the contract:',
+    '```',
+    'blockers_count: 0',
+    '```',
+    '## Findings',
+    '- blocker: auth token not validated',
+    '## Verdict',
+    'blockers_count: 2',
+    '- blocker: auth token not validated',
+  ].join('\n')
+  const result = parseReviewArtifact(artifact)
+  assert.ok(result.ok)
+  if (result.ok) {
+    assert.equal(result.blockersCount, 2)
+    assert.deepEqual(result.blockers, ['auth token not validated'])
+  }
+})
+
+test('parseReviewArtifact: heading section without count is a strict error even when a fenced count exists', () => {
+  const artifact = [
+    '```',
+    'blockers_count: 0',
+    '```',
+    '## Verdict',
+    'No count recorded — malformed verdict section.',
+  ].join('\n')
+  const result = parseReviewArtifact(artifact)
+  assert.ok(!result.ok)
+  if (!result.ok) {
+    assert.match(result.reason, /no "blockers_count/)
+  }
+})
+
+test('parseReviewArtifact: no heading — last fenced block still wins over earlier fences', () => {
+  const artifact = [
+    '```',
+    'blockers_count: 1',
+    '```',
+    'Some discussion.',
+    '```',
+    'blockers_count: 3',
+    '- blocker: sql injection in search',
+    '```',
+  ].join('\n')
+  const result = parseReviewArtifact(artifact)
+  assert.ok(result.ok)
+  if (result.ok) {
+    assert.equal(result.blockersCount, 3)
+    assert.deepEqual(result.blockers, ['sql injection in search'])
+  }
+})
+
+test('parseReviewArtifact: no heading and no fence — whole artifact legacy fallback', () => {
+  const artifact = ['Review notes.', 'blockers_count: 0'].join('\n')
+  const result = parseReviewArtifact(artifact)
+  assert.ok(result.ok)
+  if (result.ok) assert.equal(result.blockersCount, 0)
+})
+
 // --- decideReviewRoute (pure gate decision) ---
 
 test('decideReviewRoute: zero blockers, work mode -> PR landing', () => {
