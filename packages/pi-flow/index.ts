@@ -57,6 +57,7 @@ import { parsePlanArgs } from './plan/args.ts'
 import { parseResearchArgs } from './research/args.ts'
 import { findResearchedArtifact } from './research/artifact.ts'
 import { recordRunEvent, runStatePath } from './run-state.ts'
+import { approveSpec } from './spec-review/approve.ts'
 import { parseSpecReviewArgs } from './spec-review/args.ts'
 import { listSpecsInReview, readPlanPath } from './spec-review/aven-spec.ts'
 import { openFileInPane } from './spec-review/open-in-pane.ts'
@@ -64,6 +65,7 @@ import { pickSpecs } from './spec-review/picker.ts'
 import { buildReviewPrompt } from './spec-review/prompt.ts'
 import {
   buildPublishWorkerTask,
+  isPublishSuccess,
   resolvePublishRoot,
   spawnPublishWorker,
 } from './spec-review/publish.ts'
@@ -131,6 +133,54 @@ async function avenArgsWithWorkspace(
     return [...args, '--workspace', workspace]
   }
   return args
+}
+
+// AIDEV-NOTE: workspace resolution for the spec commands (/spec-review,
+// /spec-publish) and the spec_approve tool (PMR-MR36 fix round). Priority:
+// explicit --workspace flag > project-config avenWorkspace override (the
+// SAME avenOverrideArg path the flow loop uses — no second config mechanism)
+// > per-ref resolution via resolveAvenRef, memoized in
+// resolvedRefWorkspaces like avenArgsWithWorkspace. Throws on failed
+// per-ref resolution — callers show the reason and stop; never fall back to
+// the cwd-inferred workspace silently (that was the original bug).
+export async function resolveSpecWorkspace(
+  explicit: string | undefined,
+  ref: string,
+): Promise<string | undefined> {
+  if (explicit !== undefined) return explicit
+  const override = await avenOverrideArg()
+  if (override.length > 0) return override[1]
+  if (!resolvedRefWorkspaces.has(ref)) {
+    const resolved = await resolveAvenRef(ref, avenExec)
+    if (!resolved.ok) throw new Error(resolved.reason)
+    resolvedRefWorkspaces.set(ref, resolved.workspace)
+  }
+  return resolvedRefWorkspaces.get(ref)
+}
+
+// AIDEV-NOTE: spec_approve tool body (PMR-MR36 fix round). approveSpec was
+// dead code and the injected review prompt made the model run a raw
+// `aven edit` — no loud failure, no workspace pin. Exported for tests; the
+// tool execute below is a thin wrapper mapping this result to tool output.
+export async function specApprove(params: {
+  ref: string
+  workspace?: string
+}): Promise<{ ok: boolean; text: string }> {
+  let workspace: string | undefined
+  try {
+    workspace = await resolveSpecWorkspace(params.workspace, params.ref)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    return { ok: false, text: `spec_approve: ${msg}` }
+  }
+  const result = await approveSpec(avenExec, params.ref, { workspace })
+  if (result.kind === 'error') {
+    return { ok: false, text: `spec_approve: ${result.reason}` }
+  }
+  return {
+    ok: true,
+    text: `spec_approve: ${params.ref} approved (plan-state=approved, label=plan, status=todo) — now run /spec-publish ${params.ref}`,
+  }
 }
 
 // AIDEV-NOTE: Shared aven helpers (labels are the run state, notes are the
@@ -789,6 +839,50 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
+  // AIDEV-NOTE: spec_approve (PMR-MR36 fix round). Agent-callable wrapper
+  // around approveSpec — the injected /spec-review prompt used to make the
+  // model run a raw `aven edit`, losing loud failure and the workspace pin.
+  // Workspace resolution mirrors the spec commands (resolveSpecWorkspace);
+  // failure is a loud tool error, never a silent no-op.
+  pi.registerTool({
+    name: 'spec_approve',
+    label: 'spec approve',
+    description:
+      'Approve a spec under review: pins it to the plan label, sets plan-state=approved, moves it to todo. This is the ONLY way to approve a spec — never run `aven edit <ref> --metadata plan-state=approved` yourself. After this returns ok, run /spec-publish <REF>.',
+    promptSnippet:
+      'Approval transition for specs in plan-state=review — call instead of raw aven edits.',
+    promptGuidelines: [
+      'Only call spec_approve when the user explicitly said "approve <REF>" — never without that explicit word, and only for the ref they named.',
+      'After spec_approve returns ok, run /spec-publish <REF>. On a tool error, report the reason to the user — do not retry with raw aven commands.',
+    ],
+    parameters: Type.Object({
+      ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
+      workspace: Type.Optional(
+        Type.String({
+          description:
+            'Aven workspace name — only when the spec lives outside the default workspace; normally omitted (config/per-ref resolution applies)',
+        }),
+      ),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: { ref: string; workspace?: string },
+    ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
+      const result = await specApprove(params)
+      if (!result.ok) {
+        return {
+          content: [{ type: 'text', text: result.text }],
+          details: { ok: false, reason: result.text },
+          isError: true,
+        }
+      }
+      return {
+        content: [{ type: 'text', text: result.text }],
+        details: { ok: true, reason: '' },
+      }
+    },
+  })
+
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
   // fully settles (blocking ask_user_question gates keep the run in flight,
   // so gates are never raced). Fire-and-forget subagents DO settle the run
@@ -1127,9 +1221,15 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const project = path.basename(toplevel)
+      // AIDEV-NOTE: PMR-MR36 fix round — the same resolved workspace feeds
+      // both the list and every per-pick readPlanPath. The list has no ref
+      // yet, so only the flag and the config override apply there; per-ref
+      // resolution joins at the per-pick readPlanPath.
+      const override = await avenOverrideArg()
+      const listWorkspace = parsed.workspace ?? override[1]
       const listed = await listSpecsInReview(avenExec, {
         project,
-        workspace: parsed.workspace,
+        workspace: listWorkspace,
       })
       if (listed.kind === 'error') {
         ctx.ui.notify(`/spec-review: ${listed.reason}`, 'warning')
@@ -1143,7 +1243,14 @@ export default function (pi: ExtensionAPI) {
         specs: listed.specs,
         select: (title, options) => ctx.ui.select(title, options),
         resolvePlanPath: async (ref) => {
-          const plan = await readPlanPath(avenExec, ref)
+          let workspace: string | undefined
+          try {
+            workspace = await resolveSpecWorkspace(parsed.workspace, ref)
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error)
+            return { ok: false, reason: `${ref}: ${msg}` }
+          }
+          const plan = await readPlanPath(avenExec, ref, { workspace })
           if (plan.kind === 'error') return { ok: false, reason: plan.reason }
           if (plan.kind === 'none') {
             return {
@@ -1190,11 +1297,15 @@ export default function (pi: ExtensionAPI) {
   // task text are pure (publish.ts); the actual git work runs in a subagent
   // worker — push failure never rolls back an approval, it only notifies.
   pi.registerCommand('spec-publish', {
-    description: 'Publish an approved spec plan. Usage: /spec-publish <REF>',
+    description:
+      'Publish an approved spec plan. Usage: /spec-publish <REF> [--workspace <name>]',
     handler: async (args, ctx) => {
       const parsed = parseSpecPublishArgs(args)
       if (parsed.kind === 'help') {
-        ctx.ui.notify('Usage: /spec-publish <REF>', 'info')
+        ctx.ui.notify(
+          'Usage: /spec-publish <REF> [--workspace <name>] | /spec-publish help',
+          'info',
+        )
         return
       }
       let toplevel = ''
@@ -1206,7 +1317,19 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(`/spec-publish: not a git repo (${msg})`, 'warning')
         return
       }
-      const plan = await readPlanPath(avenExec, parsed.ref)
+      // AIDEV-NOTE: PMR-MR36 fix round — the plan-path query must run in
+      // the same workspace the ref lives in (flag > config override > per-ref
+      // resolution); a resolution failure stops the publish, never falls
+      // back to the cwd-inferred workspace silently.
+      let workspace: string | undefined
+      try {
+        workspace = await resolveSpecWorkspace(parsed.workspace, parsed.ref)
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(`/spec-publish: ${msg}`, 'warning')
+        return
+      }
+      const plan = await readPlanPath(avenExec, parsed.ref, { workspace })
       if (plan.kind === 'error') {
         ctx.ui.notify(`/spec-publish: ${plan.reason}`, 'warning')
         return
@@ -1252,10 +1375,10 @@ export default function (pi: ExtensionAPI) {
           isFallback: resolved.isFallback,
         }),
       })
-      const ok =
-        outcome.includes('exited with code 0') &&
-        !outcome.includes('PUBLISH FAILED') &&
-        !outcome.includes('Publish manually')
+      // AIDEV-NOTE: success requires the PUBLISH OK marker from the worker
+      // contract — exit-0 alone was a false positive (PMR-MR36 fix round);
+      // exit-0 without the marker is a warning, not a success.
+      const ok = isPublishSuccess(outcome)
       let severity: 'info' | 'warning' = 'info'
       if (!ok) severity = 'warning'
       ctx.ui.notify(outcome, severity)

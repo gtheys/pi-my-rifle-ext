@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
   buildPublishWorkerTask,
+  isPublishSuccess,
   resolvePublishRoot,
 } from '../spec-review/publish.ts'
 import { parseSpecPublishArgs } from '../spec-review/publish-args.ts'
@@ -19,6 +20,29 @@ describe('parseSpecPublishArgs', () => {
       kind: 'ok',
       ref: 'PMR-AB12',
     })
+  })
+  it('accepts one ref plus --workspace in any position', () => {
+    assert.deepEqual(parseSpecPublishArgs('--workspace ws2 PMR-AB12'), {
+      kind: 'ok',
+      ref: 'PMR-AB12',
+      workspace: 'ws2',
+    })
+    assert.deepEqual(parseSpecPublishArgs('PMR-AB12 --workspace ws2'), {
+      kind: 'ok',
+      ref: 'PMR-AB12',
+      workspace: 'ws2',
+    })
+  })
+  it('omits workspace when the flag is absent', () => {
+    assert.deepEqual(parseSpecPublishArgs('PMR-AB12'), {
+      kind: 'ok',
+      ref: 'PMR-AB12',
+    })
+  })
+  it('rejects --workspace without a value or without a ref', () => {
+    assert.equal(parseSpecPublishArgs('--workspace').kind, 'help')
+    assert.equal(parseSpecPublishArgs('--workspace ws2').kind, 'help')
+    assert.equal(parseSpecPublishArgs('a b c').kind, 'help')
   })
   it('rejects zero and multiple args', () => {
     assert.equal(parseSpecPublishArgs('').kind, 'help')
@@ -105,6 +129,18 @@ describe('resolvePublishRoot', () => {
       if (old === undefined) delete process.env.PERSONAL_FEATURES
       else process.env.PERSONAL_FEATURES = old
     }
+  })
+})
+
+describe('isPublishSuccess', () => {
+  it('requires the PUBLISH OK marker', () => {
+    assert.equal(isPublishSuccess('all steps ok\nPUBLISH OK'), true)
+  })
+  it('treats exit-0 output without the marker as failure', () => {
+    assert.equal(isPublishSuccess('exited with code 0, did some work'), false)
+  })
+  it('fails loud on PUBLISH FAILED', () => {
+    assert.equal(isPublishSuccess('PUBLISH FAILED: push rejected'), false)
   })
 })
 

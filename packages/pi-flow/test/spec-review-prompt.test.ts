@@ -30,15 +30,20 @@ test('buildReviewPrompt: instructs review-stage behavior and in-place fixes', ()
   assert.match(prompt, /in place/i)
 })
 
-test('buildReviewPrompt: approval requires explicit "approve <REF>" aven edit + /spec-publish', () => {
+test('buildReviewPrompt: approval requires explicit "approve <REF>" via spec_approve tool + /spec-publish', () => {
   const prompt = buildReviewPrompt(PICKED)
   assert.match(prompt, /approve PMR-AAAA/)
-  assert.match(
-    prompt,
-    /aven edit .REF. --metadata plan-state=approved --label plan --status todo/,
-  )
+  assert.match(prompt, /spec_approve/)
   assert.match(prompt, /\/spec-publish <REF>/)
   assert.match(prompt, /never approve/i)
+})
+
+test('buildReviewPrompt: does not instruct raw aven edit for approval', () => {
+  const prompt = buildReviewPrompt(PICKED)
+  assert.ok(
+    !prompt.includes('aven edit <REF> --metadata plan-state=approved'),
+    'prompt must not tell the model to run raw aven edit',
+  )
 })
 
 test('buildReviewPrompt: single spec still complete', () => {

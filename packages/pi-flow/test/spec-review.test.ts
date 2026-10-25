@@ -209,6 +209,19 @@ test('readPlanPath: exit-0 error -> error', async () => {
   assert.match(result.reason, /unknown-ref/)
 })
 
+test('readPlanPath: threads workspace into aven show args', async () => {
+  const { aven, calls } = runner([{ stdout: SHOW_FULL }])
+  const result = await readPlanPath(aven, 'PMR-YWY0', { workspace: 'ws2' })
+  assert.equal(result.kind, 'found')
+  assert.deepEqual(calls[0], [
+    'show',
+    'PMR-YWY0',
+    '--full',
+    '--workspace',
+    'ws2',
+  ])
+})
+
 test('readPlanPath: spawn failure -> error', async () => {
   const { aven } = runner([new Error('boom')])
   const result = await readPlanPath(aven, 'PMR-X')

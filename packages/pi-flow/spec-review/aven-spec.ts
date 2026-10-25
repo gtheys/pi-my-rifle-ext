@@ -109,11 +109,19 @@ function parseMetadataBlock(text: string, key: string): string | null {
 export async function readPlanPath(
   aven: AvenRunner,
   ref: string,
+  opts: { workspace?: string } = {},
 ): Promise<PlanPathResult> {
+  const args = ['show', ref, '--full']
+  // AIDEV-NOTE: PMR-MR36 fix round — the workspace must ride along with the
+  // per-ref query, or a cross-workspace pick resolves its plan path against
+  // the cwd-inferred workspace and fails.
+  if (opts.workspace !== undefined) {
+    args.push('--workspace', opts.workspace)
+  }
   let stdout = ''
   let stderr = ''
   try {
-    const out = await aven(['show', ref, '--full'])
+    const out = await aven(args)
     stdout = out.stdout
     stderr = out.stderr
   } catch (error) {

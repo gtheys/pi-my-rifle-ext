@@ -2,8 +2,9 @@
 // module. The injected message makes the SESSION the reviewer: it loads the
 // feature-plan-aven review-stage behavior, reads each plan.md fully, fixes
 // the spec in place in one go, and may only transition a spec via the
-// user's explicit "approve <REF>" — which runs the approveSpec aven edit
-// and then /spec-publish. Never approve without that explicit word.
+// user's explicit "approve <REF>" — which calls the spec_approve tool
+// (workspace-pinned approveSpec, loud failure) and then /spec-publish.
+// Never approve without that explicit word.
 
 import type { PickedSpec } from './picker.ts'
 
@@ -38,11 +39,12 @@ export function buildReviewPrompt(picked: PickedSpec[]): string {
   lines.push(
     `- ONLY when the user explicitly says "approve <REF>" (for example`,
   )
-  lines.push(`  "approve ${picked[0]?.ref ?? '<REF>'}"), run:`)
   lines.push(
-    `    aven edit <REF> --metadata plan-state=approved --label plan --status todo`,
+    `  "approve ${picked[0]?.ref ?? '<REF>'}"), call the spec_approve tool`,
   )
-  lines.push(`  and then run /spec-publish <REF>.`)
+  lines.push(`  with that ref. Never run the aven edit command yourself —`)
+  lines.push(`  spec_approve owns the workspace pin and fails loud on error.`)
+  lines.push(`  After spec_approve returns ok, run /spec-publish <REF>.`)
   lines.push(
     '- NEVER approve a spec without that explicit word, and never approve',
   )

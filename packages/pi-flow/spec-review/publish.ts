@@ -82,6 +82,14 @@ export function buildPublishWorkerTask(input: PublishWorkerTaskInput): string {
   ].join('\n')
 }
 
+// AIDEV-NOTE: PMR-MR36 fix round - the old inline check required exit-0 AND
+// the absence of failure strings, so any exit-0 worker output counted as
+// success. The worker contract (buildPublishWorkerTask) promises exactly one
+// terminal marker: success is PUBLISH OK, nothing else is.
+export function isPublishSuccess(outcome: string): boolean {
+  return outcome.includes('PUBLISH OK')
+}
+
 export interface SpawnPublishWorkerInput {
   task: string
   name: string
