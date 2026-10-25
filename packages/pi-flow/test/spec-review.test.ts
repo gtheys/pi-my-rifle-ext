@@ -231,10 +231,14 @@ test('readPlanPath: spawn failure -> error', async () => {
 // --- approveSpec ---
 
 test('approveSpec: success', async () => {
-  const { aven, calls } = runner([{ stdout: 'updated PMR-YWY0\n' }])
+  const { aven, calls } = runner([
+    { stdout: JSON.stringify({ labels: ['plan'] }) },
+    { stdout: 'updated PMR-YWY0\n' },
+  ])
   const result = await approveSpec(aven, 'PMR-YWY0')
   assert.deepEqual(result, { kind: 'ok', ref: 'PMR-YWY0' })
-  assert.deepEqual(calls[0], [
+  assert.deepEqual(calls[0], ['show', 'PMR-YWY0', '--json'])
+  assert.deepEqual(calls[1], [
     'edit',
     'PMR-YWY0',
     '--metadata',
@@ -246,23 +250,51 @@ test('approveSpec: success', async () => {
   ])
 })
 
+// AIDEV-NOTE: regression guard — a oneshot-confirmed ticket must NOT get the
+// plan label on approval, or /implement takes the plan route with no tree.
+test('approveSpec: oneshot ticket -> no plan label', async () => {
+  const { aven, calls } = runner([
+    { stdout: JSON.stringify({ labels: ['oneshot'] }) },
+    { stdout: 'updated PMR-YWY0\n' },
+  ])
+  const result = await approveSpec(aven, 'PMR-YWY0')
+  assert.deepEqual(result, { kind: 'ok', ref: 'PMR-YWY0' })
+  assert.deepEqual(calls[1], [
+    'edit',
+    'PMR-YWY0',
+    '--metadata',
+    'plan-state=approved',
+    '--status',
+    'todo',
+  ])
+  assert.ok(!calls[1]?.includes('--label'))
+})
+
 test('approveSpec: workspace pinned when provided', async () => {
-  const { aven, calls } = runner([{ stdout: 'updated PMR-YWY0\n' }])
+  const { aven, calls } = runner([
+    { stdout: JSON.stringify({ labels: [] }) },
+    { stdout: 'updated PMR-YWY0\n' },
+  ])
   const result = await approveSpec(aven, 'PMR-YWY0', { workspace: 'personal' })
   assert.equal(result.kind, 'ok')
   if (result.kind !== 'ok') return
   assert.ok(calls[0]?.includes('--workspace'))
-  assert.ok(calls[0]?.includes('personal'))
+  assert.ok(calls[1]?.includes('--workspace'))
 })
 
 test('approveSpec: no workspace -> no workspace flag', async () => {
-  const { aven, calls } = runner([{ stdout: 'updated PMR-YWY0\n' }])
+  const { aven, calls } = runner([
+    { stdout: JSON.stringify({ labels: [] }) },
+    { stdout: 'updated PMR-YWY0\n' },
+  ])
   await approveSpec(aven, 'PMR-YWY0')
   assert.ok(!calls[0]?.includes('--workspace'))
+  assert.ok(!calls[1]?.includes('--workspace'))
 })
 
 test('approveSpec: failure is loud with raw output', async () => {
   const { aven } = runner([
+    { stdout: JSON.stringify({ labels: [] }) },
     { stdout: 'Error: error unknown-ref: no task xyz\n' },
   ])
   const result = await approveSpec(aven, 'PMR-NOPE')
@@ -272,7 +304,10 @@ test('approveSpec: failure is loud with raw output', async () => {
 })
 
 test('approveSpec: missing updated line -> error', async () => {
-  const { aven } = runner([{ stdout: 'something unexpected' }])
+  const { aven } = runner([
+    { stdout: JSON.stringify({ labels: [] }) },
+    { stdout: 'something unexpected' },
+  ])
   const result = await approveSpec(aven, 'PMR-X')
   assert.equal(result.kind, 'error')
   if (result.kind !== 'error') return

@@ -79,8 +79,15 @@ Personal aven flow. Steps:
    - call the open_in_pane tool with that path to open it with nvim in a
      herdr review pane for the user to review. Skippable if herdr is
      unavailable or the user declines — never block on it.
-6. Put the plan in review — for BOTH the oneshot and the plan route — set
-   the ticket status to "todo" and mark the plan for human spec review:
+6. Resume check FIRST — run \`aven show ${input.ref} --full\` and read the
+   plan-state metadata block (trust only \`metadata field_id=... key=plan-state\`
+   blocks followed by a value<<EOF ... EOF heredoc; description text may
+   mention the words). If the ticket is ALREADY at plan-state=approved, the
+   plan was approved in an earlier run — do NOT set plan-state=review again;
+   skip straight to step 7 and call the flow_phase_complete tool.
+   Otherwise put the plan in review — for BOTH the oneshot and the plan
+   route — set the ticket status to "todo" and mark the plan for human spec
+   review:
    aven edit ${input.ref} --metadata plan-state=review
    (the /spec-review command lists it for the user). Do NOT call the
    flow_phase_complete tool yet. End the phase without the "planned"

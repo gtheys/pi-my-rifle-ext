@@ -165,6 +165,36 @@ test('buildPlanPrompt: personal mode completes only after plan-state=approved', 
   assert.ok(completeIdx > approvedIdx, 'completion must follow approval')
 })
 
+// AIDEV-NOTE: regression guard — /flow resume re-runs this prompt; without an
+// approved-check it would reset plan-state to review on already-approved
+// tickets and loop pause/approve/resume forever.
+test('buildPlanPrompt: personal mode checks plan-state before setting review', () => {
+  const prompt = buildPlanPrompt({
+    mode: 'personal',
+    ref: 'PMR-F7YM',
+    planPath: '/x/plan.md',
+  })
+  assert.match(prompt, /aven show PMR-F7YM --full/)
+  const checkIdx = prompt.indexOf('aven show PMR-F7YM --full')
+  const reviewIdx = prompt.indexOf('plan-state=review')
+  assert.ok(checkIdx !== -1)
+  assert.ok(reviewIdx > checkIdx, 'approved-check must precede review set')
+})
+
+test('buildPlanPrompt: personal mode skips review when already approved', () => {
+  const prompt = buildPlanPrompt({
+    mode: 'personal',
+    ref: 'PMR-F7YM',
+    planPath: '/x/plan.md',
+  })
+  assert.match(
+    prompt,
+    /ALREADY at plan-state=approved[\s\S]*?flow_phase_complete tool/,
+    'must go straight to flow_phase_complete when plan-state=approved',
+  )
+  assert.match(prompt, /do NOT set plan-state=review/i)
+})
+
 // AIDEV-NOTE: PMR-QRJA — the oneshot route runs the SAME review gate; a
 // premature "planned" would misroute /implement even for oneshots.
 test('buildPlanPrompt: personal oneshot route also gated on spec approval', () => {
