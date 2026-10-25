@@ -227,6 +227,49 @@ if (verb0 === 'pane' && verb1 === 'layout') {
   out({ pane_id: paneId, layout: 'single', panes: [state.panes[paneId]] })
   process.exit(0)
 }
+// AIDEV-NOTE: pane split mirrors the itest gate (PMR-RNW2): attach the
+// new pane to the referenced pane's tab, else the most recently created tab.
+if (verb0 === 'pane' && verb1 === 'split') {
+  const n = state.next
+  state.next = n + 1
+  const paneId = 't' + n + ':p' + n
+  const refPaneId = positional[2] ? String(positional[2]) : ''
+  let tabId
+  let workspaceId
+  if (refPaneId && state.panes[refPaneId]) {
+    tabId = state.panes[refPaneId].tab_id
+    workspaceId = state.panes[refPaneId].workspace_id
+  } else {
+    const tabIds = Object.keys(state.tabs)
+    if (tabIds.length === 0) {
+      // A running herdr always has a current tab — synthesize one so pane
+      // split works without a prior tab create (itest gate, PMR-RNW2).
+      const t = state.next
+      state.next = t + 1
+      tabId = 't' + t
+      workspaceId = 'w1'
+      state.tabs[tabId] = {
+        tab_id: tabId,
+        workspace_id: workspaceId,
+        label: '',
+        cwd: String(flags.cwd ?? '/tmp'),
+      }
+    } else {
+      tabId = tabIds[tabIds.length - 1]
+      workspaceId = state.tabs[tabId].workspace_id
+    }
+  }
+  state.panes[paneId] = {
+    pane_id: paneId,
+    tab_id: tabId,
+    workspace_id: workspaceId,
+    agent: null,
+    cwd: String(flags.cwd ?? '/tmp'),
+  }
+  saveState(state)
+  out({ pane: { pane_id: paneId, tab_id: tabId, workspace_id: workspaceId } })
+  process.exit(0)
+}
 if (verb0 === 'pane' && verb1 === 'run') {
   const paneId = positional[2]
   requirePane(state, paneId)
@@ -237,17 +280,33 @@ if (verb0 === 'pane' && verb1 === 'run') {
   process.exit(res.status === 0 ? 0 : 1)
 }
 if (verb0 === 'pane' && verb1 === 'send-text') {
+  // AIDEV-NOTE: minimal shell semantics (PMR-RNW2): send-text buffers the
+  // typed line (echoed into the log), send-keys return executes it via bash
+  // and appends the output — so the send-text/return surface path runs real
+  // commands against the mock, like a terminal would.
   const paneId = positional[2]
-  requirePane(state, paneId)
-  appendLog(paneId, positional.slice(3).join(' ') + '\\n')
+  const record = requirePane(state, paneId)
+  const text = positional.slice(3).join(' ')
+  appendLog(paneId, text + '\\n')
+  record.pending = text
+  saveState(state)
   process.exit(0)
 }
 if (verb0 === 'pane' && verb1 === 'send-keys') {
   const paneId = positional[2]
-  requirePane(state, paneId)
+  const record = requirePane(state, paneId)
   const key = positional.slice(3).join(' ')
   if (key === 'return') {
-    appendLog(paneId, '\\n')
+    const pending = typeof record.pending === 'string' ? record.pending : ''
+    record.pending = null
+    saveState(state)
+    if (pending !== '') {
+      const res = cp.spawnSync('bash', ['-c', pending], { encoding: 'utf8' })
+      appendLog(paneId, String(res.stdout ?? ''))
+      appendLog(paneId, String(res.stderr ?? ''))
+    } else {
+      appendLog(paneId, '\\n')
+    }
   } else if (key === 'esc') {
     appendLog(paneId, '[esc]\\n')
   } else {

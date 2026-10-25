@@ -262,4 +262,65 @@ describe('mock-herdr shim', () => {
     }
     assert.ok(list.result.panes.length >= 1)
   })
+
+  it('pane split creates a pane in the most recent tab (PMR-RNW2)', () => {
+    const created = JSON.parse(
+      mock.run([
+        'tab',
+        'create',
+        '--workspace',
+        'w1',
+        '--cwd',
+        '/tmp',
+        '--label',
+        'split-tab',
+        '--no-focus',
+      ]),
+    ) as { result: { tab: { tab_id: string } } }
+    const tabId = created.result.tab.tab_id
+
+    const raw = mock.run([
+      'pane',
+      'split',
+      '--direction',
+      'down',
+      '--no-focus',
+      '--current',
+      '--cwd',
+      process.cwd(),
+    ])
+    const result = JSON.parse(raw) as {
+      result: { pane: { pane_id: string; tab_id: string } }
+    }
+    assert.equal(result.result.pane.tab_id, tabId)
+    assert.equal(herdrPaneAlive(result.result.pane.pane_id), true)
+  })
+
+  it('send-text + return executes the typed line via bash (PMR-RNW2)', () => {
+    const created = JSON.parse(
+      mock.run([
+        'tab',
+        'create',
+        '--workspace',
+        'w1',
+        '--cwd',
+        '/tmp',
+        '--label',
+        'shell-tab',
+        '--no-focus',
+      ]),
+    ) as { result: { root_pane: { pane_id: string } } }
+    const paneId = created.result.root_pane.pane_id
+
+    mock.run(['pane', 'send-text', paneId, 'echo shell-sem-$((40 + 2))'])
+    mock.run(['pane', 'send-keys', paneId, 'return'])
+    const output = runHerdr([
+      'pane',
+      'read',
+      paneId,
+      '--source',
+      'recent-unwrapped',
+    ])
+    assert.match(output, /shell-sem-42/)
+  })
 })

@@ -17,6 +17,7 @@ import {
   runHerdr,
 } from '../../pi-extension/subagents/herdr.ts'
 import { waitShellReady } from '../../pi-extension/subagents/spawn.ts'
+import { installMockHerdr, type MockHerdr } from '../mock-herdr.ts'
 import {
   cleanupTestEnv,
   closeSurface,
@@ -40,17 +41,33 @@ import {
   waitForScreen,
 } from './harness.ts'
 
-if (!isHerdrIntegrationAvailable()) {
-  console.log(
-    '⚠️  Not inside herdr (HERDR_PANE_ID unset) — skipping surface tests',
-  )
-}
+// AIDEV-NOTE: two-mode gate (PMR-RNW2). HERDR_PANE_ID set → run against real
+// herdr as before. Unset → prepend the mock-herdr shim bin dir to PATH so
+// runHerdr/execFileSync('herdr') hits the shim; restored in after().
+// Two tests exercise semantics the mock cannot fake faithfully (server-global
+// focus, raw TTY byte delivery via sendEscape) and stay real-herdr-only.
+let mock: MockHerdr | null = null
+let savedPath: string | undefined
+
+before(() => {
+  if (isHerdrIntegrationAvailable()) return
+  mock = installMockHerdr()
+  savedPath = process.env.PATH
+  process.env.PATH = `${mock.binDir}:${savedPath ?? ''}`
+})
+
+after(() => {
+  if (mock) {
+    process.env.PATH = savedPath
+    mock.dispose()
+  }
+})
 
 describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   let env: TestEnv
 
   before(() => {
-    if (isHerdrIntegrationAvailable()) env = createTestEnv()
+    env = createTestEnv()
   })
 
   after(() => {
@@ -58,6 +75,8 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   })
 
   it('creates a background tab without stealing focus (the --no-focus guarantee)', async () => {
+    // AIDEV-NOTE: real-herdr-only — focus is server-global state the mock
+    // shim cannot reproduce faithfully.
     if (!isHerdrIntegrationAvailable()) return
 
     const anchor = process.env.HERDR_PANE_ID as string
@@ -84,13 +103,11 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   })
 
   it('proves shell readiness via the marker protocol', async () => {
-    if (!isHerdrIntegrationAvailable()) return
     const surface = createTrackedSurface(env, 'shell-ready')
     await waitShellReady(surface, { timeoutMs: 15_000 })
   })
 
   it('creates a surface, sends a command, reads output, and closes it', async () => {
-    if (!isHerdrIntegrationAvailable()) return
     const surface = createTrackedSurface(env, 'echo-test')
     await sleep(1000)
 
@@ -103,7 +120,6 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   })
 
   it('preserves shell special characters in echo output', async () => {
-    if (!isHerdrIntegrationAvailable()) return
     const surface = createTrackedSurface(env, 'escape-test')
     await sleep(1000)
 
@@ -122,7 +138,6 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   })
 
   it('sends a long command via script file without truncation', async () => {
-    if (!isHerdrIntegrationAvailable()) return
     const surface = createTrackedSurface(env, 'long-cmd-test')
     await sleep(1000)
 
@@ -144,7 +159,6 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   })
 
   it('manages multiple surfaces concurrently', async () => {
-    if (!isHerdrIntegrationAvailable()) return
     const s1 = createTrackedSurface(env, 'multi-1')
     const s2 = createTrackedSurface(env, 'multi-2')
     await sleep(1500)
@@ -161,7 +175,6 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   })
 
   it('writes output to a file and verifies via the file (file-based assert)', async () => {
-    if (!isHerdrIntegrationAvailable()) return
     const surface = createTrackedSurface(env, 'file-test')
     await sleep(1000)
 
@@ -186,6 +199,8 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   })
 
   it('delivers Escape as byte 27 to the target surface', async () => {
+    // AIDEV-NOTE: real-herdr-only — the test needs a TTY inside the pane to
+    // read raw stdin; the mock's bash subprocess has no TTY.
     if (!isHerdrIntegrationAvailable()) return
     const surface = createTrackedSurface(env, 'escape-byte-test')
     await sleep(1000)
@@ -216,7 +231,6 @@ describe('herdr surface [real herdr]', { timeout: 60_000 }, () => {
   })
 
   it('reports agent identity via agent list / agent get', async () => {
-    if (!isHerdrIntegrationAvailable()) return
     // AIDEV-NOTE: same as herdr-verbs.test.ts — the runner pane is not a
     // registered agent in headless runs, so start our own.
     const surface = createTrackedSurface(env, `agent-id-${uniqueId()}`)

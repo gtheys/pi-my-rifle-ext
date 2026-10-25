@@ -29,13 +29,26 @@ import {
 } from '../../pi-extension/subagents/herdr.ts'
 import { waitShellReady } from '../../pi-extension/subagents/spawn.ts'
 
-if (!process.env.HERDR_PANE_ID) {
-  console.log(
-    '⚠️  Not inside herdr (HERDR_PANE_ID unset) — skipping herdr verb tests',
-  )
-}
+import { installMockHerdr, type MockHerdr } from '../mock-herdr.ts'
+
+// AIDEV-NOTE: two-mode gate (PMR-RNW2). HERDR_PANE_ID set → run against real
+// herdr as before. Unset → prepend the mock-herdr shim bin dir to PATH so
+// runHerdr/execFileSync('herdr') hits the shim; restored in after().
+let mock: MockHerdr | null = null
+let savedPath: string | undefined
 
 const trackedPanes: string[] = []
+
+function isRealHerdr(): boolean {
+  return !!process.env.HERDR_PANE_ID
+}
+
+before(() => {
+  if (isRealHerdr()) return
+  mock = installMockHerdr()
+  savedPath = process.env.PATH
+  process.env.PATH = `${mock.binDir}:${savedPath ?? ''}`
+})
 
 after(() => {
   for (const pane of trackedPanes) {
@@ -43,13 +56,17 @@ after(() => {
       runHerdr(['pane', 'close', pane])
     } catch {}
   }
+  if (mock) {
+    process.env.PATH = savedPath
+    mock.dispose()
+  }
 })
 
 describe('herdr verb layer [real herdr]', { timeout: 60_000 }, () => {
   let workspace: string
 
   before(() => {
-    if (!process.env.HERDR_PANE_ID) return
+    if (!isRealHerdr()) return
     workspace = process.env.HERDR_PANE_ID.split(':')[0] as string
   })
 
@@ -71,14 +88,20 @@ describe('herdr verb layer [real herdr]', { timeout: 60_000 }, () => {
   }
 
   it('preflight enforces the version gate on the installed binary', () => {
-    const raw = runHerdr(['status', '--json'])
-    const status = JSON.parse(raw) as { server?: { version?: string } }
-    const version = status.server?.version ?? ''
-    if (compareVersions(version, HERDR_MIN_VERSION) >= 0) {
-      parseHerdrStatus(raw)
+    if (isRealHerdr()) {
+      const raw = runHerdr(['status', '--json'])
+      const status = JSON.parse(raw) as { server?: { version?: string } }
+      const version = status.server?.version ?? ''
+      if (compareVersions(version, HERDR_MIN_VERSION) >= 0) {
+        parseHerdrStatus(raw)
+        return
+      }
+      assert.throws(() => parseHerdrStatus(raw), HerdrError)
       return
     }
-    assert.throws(() => parseHerdrStatus(raw), HerdrError)
+    // Mock mode: the shim always reports a version above the gate.
+    const raw = runHerdr(['status', '--json'])
+    parseHerdrStatus(raw)
   })
 
   it('shell-readiness marker: pane run echo + pane wait-output', async () => {
