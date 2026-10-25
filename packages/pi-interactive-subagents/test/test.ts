@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -4312,6 +4313,27 @@ describe('worktrees.ts (PMR-11TD)', () => {
     })
   }
 
+  // AIDEV-NOTE: PMR-CM6D cleanup-collision guard. The old cleanup blindly
+  // rmSync'd ~/.herdr/worktrees/<basename(repo)>, which could destroy a REAL
+  // same-named repo's worktree dir. Now only worktree dirs whose `.git` file
+  // points into the fixture repo are removed, and the slug dir is dropped
+  // only when left empty.
+  function removeFixtureWorktreeDir(repo: string): void {
+    const slugDir = join(homedir(), '.herdr', 'worktrees', basename(repo))
+    if (!existsSync(slugDir)) return
+    for (const entry of readdirSync(slugDir)) {
+      const gitFile = join(slugDir, entry, '.git')
+      if (!existsSync(gitFile)) continue
+      const content = readFileSync(gitFile, 'utf8')
+      if (content.includes(realpathSync(repo))) {
+        rmSync(join(slugDir, entry), { recursive: true, force: true })
+      }
+    }
+    try {
+      rmdirSync(slugDir)
+    } catch {}
+  }
+
   function gitInitRepo(): string {
     const dir = mkdtempSync(join(tmpdir(), 'wt-unit-'))
     gitExec(['init', '-q', dir])
@@ -4458,10 +4480,7 @@ describe('worktrees.ts (PMR-11TD)', () => {
         })
       }
       rmSync(repo, { recursive: true, force: true })
-      rmSync(join(homedir(), '.herdr', 'worktrees', basename(repo)), {
-        recursive: true,
-        force: true,
-      })
+      removeFixtureWorktreeDir(repo)
     }
   })
 
@@ -4495,10 +4514,47 @@ describe('worktrees.ts (PMR-11TD)', () => {
       )
     } finally {
       rmSync(repo, { recursive: true, force: true })
-      rmSync(join(homedir(), '.herdr', 'worktrees', basename(repo)), {
-        recursive: true,
-        force: true,
-      })
+      removeFixtureWorktreeDir(repo)
+    }
+  })
+
+  // AIDEV-NOTE: PMR-CM6D — proves the guarded cleanup leaves a foreign
+  // same-slug worktree dir alone (a real repo with the same basename must
+  // survive a test run).
+  it('worktree cleanup spares foreign same-slug dir', () => {
+    const repo = gitInitRepo()
+    const foreignRepo = gitInitRepo()
+    const slug = basename(repo)
+    const slugDir = join(homedir(), '.herdr', 'worktrees', slug)
+    const foreignDir = join(slugDir, 'foreign-wt')
+    mkdirSync(foreignDir, { recursive: true })
+    writeFileSync(
+      join(foreignDir, '.git'),
+      `gitdir: ${join(foreignRepo, '.git', 'worktrees', 'x')}\n`,
+    )
+    const branch = deriveWorktreeBranch(
+      'spare foreign',
+      't3',
+      new Date(Date.UTC(2026, 0, 1)),
+    )
+    let created: string | null = null
+    try {
+      const wt = createSubagentWorktree({ cwd: repo, branch })
+      created = wt.path
+      assert.ok(existsSync(wt.path))
+    } finally {
+      if (created) {
+        gitExec(['-C', repo, 'worktree', 'remove', '--force', created], {
+          stdio: 'ignore',
+        })
+        gitExec(['-C', repo, 'branch', '-qD', branch], { stdio: 'ignore' })
+      }
+      removeFixtureWorktreeDir(repo)
+      // foreign dir (owned by a different repo) must survive; slug dir stays
+      assert.ok(existsSync(join(foreignDir, '.git')))
+      rmSync(repo, { recursive: true, force: true })
+      rmSync(foreignRepo, { recursive: true, force: true })
+      rmSync(foreignDir, { recursive: true, force: true })
     }
   })
 })

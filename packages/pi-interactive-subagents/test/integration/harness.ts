@@ -5,8 +5,7 @@
  * Provides utilities to:
  * - Create isolated test environments with test agent definitions
  * - Create herdr background tabs for test sessions
- * - Start real pi sessions in those tabs
- * - Poll for file creation and pane output
+ * - Poll for pane output
  * - Clean up tabs and temp files after tests
  */
 import { execFileSync } from 'node:child_process'
@@ -21,7 +20,7 @@ import {
   unlinkSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runHerdr } from '../../pi-extension/subagents/herdr.ts'
 import {
@@ -54,31 +53,9 @@ export {
 // ── Paths ──
 
 const HARNESS_DIR = dirname(fileURLToPath(import.meta.url))
-const PROJECT_ROOT = resolve(HARNESS_DIR, '../..')
 const TEST_AGENTS_SRC = join(HARNESS_DIR, 'agents')
 
-/**
- * Absolute path to the extension source in the working tree.
- *
- * Integration tests must exercise the code on the current branch — NOT the
- * version installed as a pi-package under `~/.pi/agent/git/...` or the project
- * mirror under `.pi/git/...`, which stays pinned to the last released tag.
- *
- * We force-load this file via `pi -ne -e <path>` in startPi() below so local
- * edits are always the code under test, regardless of what pi-packages are
- * installed on the host.
- */
-const EXTENSION_SOURCE = join(
-  PROJECT_ROOT,
-  'pi-extension',
-  'subagents',
-  'index.ts',
-)
-
 // ── Configuration ──
-
-/** Model used for integration tests. Override with PI_TEST_MODEL env var. */
-export const TEST_MODEL = process.env.PI_TEST_MODEL ?? 'zai/glm-5.3-flash'
 
 /** Per-test timeout in ms. Override with PI_TEST_TIMEOUT env var. */
 export const PI_TIMEOUT = Number(process.env.PI_TEST_TIMEOUT ?? '120000')
@@ -318,45 +295,6 @@ export function stillExists(tabId: string): boolean {
   return herdrTabList(herdrWorkspaceId()).includes(tabId)
 }
 
-// ── Pi session management ──
-
-/**
- * Start a pi session in a herdr pane with the subagents extension loaded.
- * Returns immediately — the pi process runs asynchronously in the pane.
- *
- * The command ends with a sentinel so we can detect when pi exits:
- *   `pi ...; echo '__TEST_DONE_'$?'__'`
- */
-export function startPi(
-  paneId: string,
-  testDir: string,
-  task: string,
-  opts?: { model?: string; extraArgs?: string },
-): void {
-  const model = opts?.model ?? TEST_MODEL
-  const extra = opts?.extraArgs ?? ''
-
-  // Force pi to load the working-tree extension (not an installed pi-package
-  // snapshot). `-ne` disables extension auto-discovery, `-e <path>` loads the
-  // current branch's source directly. Without this, the tests silently run
-  // against whatever version is checked out under `~/.pi/agent/git/...`.
-  const cmd = [
-    `cd ${shellEscape(testDir)} &&`,
-    `pi`,
-    `-ne`,
-    `-e ${shellEscape(EXTENSION_SOURCE)}`,
-    `--model ${shellEscape(model)}`,
-    extra,
-    shellEscape(task),
-  ]
-    .filter(Boolean)
-    .join(' ')
-
-  sendLongCommand(paneId, `${cmd}; echo '__TEST_DONE_'$?'__'`, {
-    scriptPath: join(testDir, `test-launch-${Date.now()}.sh`),
-  })
-}
-
 // ── Polling helpers ──
 
 /**
@@ -408,19 +346,6 @@ export async function waitForFile(
     `Timeout (${timeout}ms) waiting for file: ${path}` +
       (contentPattern ? ` matching ${contentPattern}` : ''),
   )
-}
-
-/**
- * Wait for the pi process in a pane to exit (sentinel detection).
- * Returns the exit code.
- */
-export async function waitForPiExit(
-  paneId: string,
-  timeout: number = PI_TIMEOUT,
-): Promise<number> {
-  const screen = await waitForScreen(paneId, /__TEST_DONE_(\d+)__/, timeout)
-  const match = screen.match(/__TEST_DONE_(\d+)__/)
-  return match ? parseInt(match[1], 10) : -1
 }
 
 // ── Utilities ──

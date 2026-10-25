@@ -67,7 +67,11 @@ describe('herdr verb layer [real herdr]', { timeout: 60_000 }, () => {
 
   before(() => {
     if (!isRealHerdr()) return
-    workspace = process.env.HERDR_PANE_ID.split(':')[0] as string
+    // AIDEV-NOTE: isRealHerdr() already guarantees HERDR_PANE_ID is set;
+    // narrow it explicitly so no cast is needed.
+    const paneEnv = process.env.HERDR_PANE_ID
+    if (!paneEnv) return
+    workspace = paneEnv.split(':')[0]
   })
 
   function createTestPane(): string {

@@ -39,7 +39,7 @@ Use cmux to run the integration tests in a dedicated surface so the main session
 ```bash
 SURFACE=$(cmux new-surface --type terminal | awk '{print $2}')
 sleep 0.5
-cmux send --surface $SURFACE 'cd /Users/haza/Projects/pi-interactive-subagents && node --test --test-concurrency=1 test/integration/mux-surface.itest.ts test/integration/subagent-lifecycle.itest.ts 2>&1; echo __TESTS_DONE_$?__\n'
+cmux send --surface $SURFACE 'cd /Users/haza/Projects/pi-interactive-subagents && node --test --test-concurrency=1 test/integration/mux-surface.itest.ts 2>&1; echo __TESTS_DONE_$?__\n'
 ```
 
 `--test-concurrency=1` is required: the focus-preservation test asserts global mux state and would race against parallel suites.

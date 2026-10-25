@@ -56,7 +56,9 @@ describe('mock-herdr shim', () => {
     // Fresh process: pane get + tab list still see the created tab/pane.
     assert.equal(herdrPaneAlive(paneId), true)
     const listRaw = mock.run(['tab', 'list', '--workspace', 'w1'])
-    const list = JSON.parse(listRaw) as { result: { tabs: string[] } }
+    const list = JSON.parse(listRaw) as {
+      result: { tabs: Array<{ tab_id: string }> }
+    }
     assert.deepEqual(
       list.result.tabs.map((t) => t.tab_id),
       [tabId],
