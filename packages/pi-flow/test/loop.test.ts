@@ -205,10 +205,10 @@ test('resume after approval: /flow re-enters plan, refreshed prompt run lands th
   // spec approved meanwhile (plan-state=approved); a later /flow re-enters plan
   h.planState = 'approved'
   await loop.start({ ...startInput(), phase: 'plan' })
-  assert.match(h.sent.at(-1), /plan\.md|Plan phase/)
+  assert.match(h.sent.at(-1) ?? '', /plan\.md|Plan phase/)
   h.labels = ['researched', 'planned'] // refreshed plan prompt run lands "planned"
   await loop.onSettled()
-  assert.match(h.sent.at(-1), /Implement phase/)
+  assert.match(h.sent.at(-1) ?? '', /Implement phase/)
   assert.deepEqual(
     h.events.map((e) => e.kind),
     ['phase-start', 'note', 'phase-start', 'phase-complete', 'phase-start'],
