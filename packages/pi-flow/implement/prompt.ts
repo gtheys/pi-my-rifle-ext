@@ -40,7 +40,9 @@ export function buildImplementPrompt(input: ImplementPromptInput): string {
 Invoke the user's implement-plan-aven skill (engineering:implement-plan-aven)
 for ${input.ref} and follow its workflow exactly.
 ${BRANCH_RULES}${commonRules(input.ref)}
-- Walk the epic's subtasks IN ORDER (aven epic list).
+- Walk the epic's subtasks IN ORDER (aven epic list), but NEVER start a
+  subtask that is blocked by an open dependency (check each subtask's
+  blocked state before starting it) — finish its blockers first.
 - EACH subtask gets its own test run + commit; mark it done only then.
 - Keep working until ALL subtasks are done (each marked done only after its own test run + commit); then set the "active" label on ${input.ref} — never mark the epic status done in this phase.${skip}`
   }

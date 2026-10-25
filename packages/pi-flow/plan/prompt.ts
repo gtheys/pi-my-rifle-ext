@@ -1,8 +1,12 @@
 // AIDEV-NOTE: Prompt handed to the pi agent via sendUserMessage after /plan
 // resolves args/mode/path. Work mode routes to the user's existing
 // feature-plan-aven skill BY NAME — its logic is never reimplemented here
-// (regression-guarded by test). Personal mode is the new size-check flow;
-// the decomposition gate lives in plan/split-gate.ts.
+// (regression-guarded by test). Personal mode is the size-check flow;
+// the decomposition gate lives in plan/split-gate.ts. Existing epics take
+// the tree-refresh path (step 2): a ticket that already has children is
+// confirmed/ordered, never decomposed again. Epic creation uses real aven
+// commands only — `aven edit <ref> --epic on` converts the ticket itself;
+// there is no "aven epic create".
 
 export interface PlanPromptInput {
   mode: 'work' | 'personal'
@@ -33,24 +37,45 @@ ${WORK_SUFFIX}`
 Personal aven flow. Steps:
 
 1. Fetch ticket ${input.ref} and any aven notes on it (extra info).
-2. Run the size check (classifySize heuristic):
+2. Existing-tree check: run \`aven epic list ${input.ref}\`. If the ticket
+   already HAS children it is an existing epic — never decompose it again:
+   - Present the child list (refs, titles, statuses) via ask_user_question
+     and confirm the tree is current. Add or remove children first when the
+     human asks (aven epic add <child> ${input.ref} /
+     aven epic remove <child> ${input.ref}).
+   - When execution order matters and is not yet encoded, confirm the order
+     with the human and encode it as dependency links:
+     aven dep add <blocked-child> <blocker-child>.
+   - Write (or refresh) the plan.md to: ${input.planPath} — the tree, the
+     execution order, and per-child intent — and record its location:
+     aven edit ${input.ref} --metadata plan-path=${input.planPath}
+   - call the open_in_pane tool with that path to open it with nvim in a
+     herdr review pane for the user to review. Skippable if herdr is
+     unavailable or the user declines — never block on it.
+   - Skip to step 6.
+3. No children yet — run the size check (classifySize heuristic):
    - single-file / one-module change with one test surface → 'oneshot'
    - anything touching the data model, cross-package, or with multi-step
      test implications → 'plan'
-3. Use ask_user_question to present the verdict with its reasons and let the
+4. Use ask_user_question to present the verdict with its reasons and let the
    human CONFIRM the split. Never decompose without explicit confirmation.
-4. If confirmed as oneshot:
+5. If confirmed as oneshot:
    - set the type label "oneshot" on the ticket (no epic),
    - enrich the description with any useful aven-note context,
    - the plan for this ticket IS its description; skip writing a plan file.
-5. If confirmed as plan:
-   - aven epic create for the ticket, decompose into subtasks (aven epic add),
+   If confirmed as plan:
+   - make the ticket itself the epic: aven edit ${input.ref} --epic on,
+   - create each subtask (aven add "<title>" --status backlog) and link it:
+     aven epic add <child-ref> ${input.ref},
    - set the "plan" label on the epic; subtasks inherit via epic membership,
    - write the plan.md to: ${input.planPath}
+   - record its location: aven edit ${input.ref} --metadata
+     plan-path=${input.planPath}
    - call the open_in_pane tool with that path to open it with nvim in a
      herdr review pane for the user to review. Skippable if herdr is
      unavailable or the user declines — never block on it.
 6. Either way: set the ticket status to "todo" and ensure the "planned" label.
 
-NEVER create an epic or subtasks before the explicit confirm answer.`
+NEVER convert the ticket to an epic or create subtasks before the explicit
+confirm answer. NEVER decompose a ticket that already has children.`
 }

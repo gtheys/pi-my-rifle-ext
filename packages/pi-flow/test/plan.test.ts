@@ -146,6 +146,38 @@ test('buildPlanPrompt: personal mode opens plan.md in a herdr review pane', () =
   assert.match(prompt, /never block/)
 })
 
+// AIDEV-NOTE: regression guard — personal plan must handle a ticket that is
+// ALREADY an epic with children (e.g. a post-review hardening epic):
+// confirm/refresh the tree, encode order as dep links, never decompose again.
+test('buildPlanPrompt: personal mode handles existing epic trees', () => {
+  const prompt = buildPlanPrompt({
+    mode: 'personal',
+    ref: 'PMR-Z0M2',
+    planPath: '/x/plan.md',
+  })
+  assert.match(prompt, /aven epic list PMR-Z0M2/)
+  assert.match(prompt, /never decompose/i)
+  assert.match(prompt, /aven dep add/)
+  assert.match(prompt, /aven epic add/)
+  assert.match(prompt, /aven epic remove/)
+  assert.match(prompt, /plan-path=\/x\/plan\.md/)
+})
+
+// AIDEV-NOTE: regression guard — "aven epic create" is not a real command;
+// the ticket itself becomes the epic via aven edit --epic on.
+test('buildPlanPrompt: personal mode uses real aven commands for epic creation', () => {
+  const prompt = buildPlanPrompt({
+    mode: 'personal',
+    ref: 'PMR-F7YM',
+    planPath: '/x/plan.md',
+  })
+  assert.ok(
+    !/aven epic create/.test(prompt),
+    'prompt must not reference the nonexistent "aven epic create" command',
+  )
+  assert.match(prompt, /aven edit PMR-F7YM --epic on/)
+})
+
 // --- W76D gates ---
 
 test('canImplement: refuses without planned label', () => {
