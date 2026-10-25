@@ -62,6 +62,7 @@
     "spec-review/args.ts",
     "spec-review/aven-spec.ts",
     "spec-review/approve.ts",
+    "spec-review/escape-regexp.ts",
     "spec-review/open-in-pane.ts",
     "spec-review/picker.ts",
     "spec-review/prompt.ts",
