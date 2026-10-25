@@ -314,6 +314,12 @@ Slug rule: lowercase, strip non-alphanumeric, max 5 words, dashes.
 
 ## See also
 
+- [rpiv-flow-personal.md](rpiv-flow-personal.md) — personal-mode deep dive:
+  every transition, status change, and auto-advance vs wait-for-human point,
+  with diagrams.
+- [rpiv-flow-work.md](rpiv-flow-work.md) — work-mode deep dive: the Jira↔aven
+  epic mirror, Jira-ID resolution, the ordered cluster gate, PR landing, and
+  the same auto-advance vs wait-for-human analysis.
 - [herdr-flow-integration.md](herdr-flow-integration.md) — the Herdr viewer
   plugin, `/flow-view` / `/herdr-sync`, and the run-state journal
   (`~/.pi/agent/pi-flow/runs/`) that renders in the viewer pane.
