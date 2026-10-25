@@ -662,8 +662,13 @@ export async function runSonarAnalysis(
       dupMeasuresData.component?.measures ?? [],
       topFiles,
     )
-  } catch {
-    // AIDEV-NOTE: Duplication fetch is non-fatal — report still generated without it.
+  } catch (err) {
+    // AIDEV-NOTE: Duplication fetch is non-fatal — report still generated
+    // without it. The command's "Duplication fetch skipped" info notify is
+    // preserved via onProgress so the human surface matches main.
+    if (onProgress) {
+      onProgress(`Duplication fetch skipped: ${(err as Error).message}`)
+    }
   }
 
   const report = generateReport(prNumber, config, coverage, issues, duplication)

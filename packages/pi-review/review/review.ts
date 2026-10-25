@@ -1618,6 +1618,14 @@ ${result.summary}`
     status: 'spawned' | 'aborted' | 'failed'
     ocrStarted: boolean
   }> {
+    // AIDEV-NOTE: no-mux gate — main's executeReview only entered the spawn
+    // path behind isMuxAvailable(). launchSubagent writes a durable 'starting'
+    // assignment record BEFORE it throws outside herdr, and its throw path
+    // does not clean that record — so calling it without a mux leaks durable
+    // state per invocation. Fail soft to the legacy in-session path instead.
+    if (!isMuxAvailable()) {
+      return { status: 'failed', ocrStarted: false }
+    }
     const prWorktree =
       target.type === 'pullRequest' && target.worktree
         ? { prNumber: target.prNumber, info: target.worktree }
