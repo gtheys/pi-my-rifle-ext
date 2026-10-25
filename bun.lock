@@ -126,6 +126,7 @@
       "dependencies": {
         "@gtheys/pi-interactive-subagents": "workspace:*",
         "@gtheys/pi-worktree": "workspace:*",
+        "typebox": "*",
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",

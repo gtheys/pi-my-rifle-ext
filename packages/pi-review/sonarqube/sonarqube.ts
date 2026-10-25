@@ -16,7 +16,12 @@
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type {
+  AgentToolResult,
+  ExtensionAPI,
+  ExtensionToolContext,
+} from '@earendil-works/pi-coding-agent'
+import { Type } from 'typebox'
 import {
   analyzeCoverage,
   analyzeIssues,
@@ -466,166 +471,352 @@ function generateReport(
   return lines.join('\n')
 }
 
+// ── Shared analysis core ──────────────────────────────────────────────────────
+
+export type SonarAnalysisErrorKind =
+  | 'token'
+  | 'config'
+  | 'pr'
+  | 'coverage'
+  | 'issues'
+
+// AIDEV-NOTE: Classified failure so the /sonarqube command and the sonarqube
+// tool can map the same error to their own surfaces (notify vs isError result).
+export class SonarAnalysisError extends Error {
+  kind: SonarAnalysisErrorKind
+  cause?: Error
+
+  constructor(kind: SonarAnalysisErrorKind, message: string, cause?: Error) {
+    super(message)
+    this.kind = kind
+    this.cause = cause
+  }
+}
+
+export interface SonarAnalysisOptions {
+  cwd: string
+  prNumber?: string
+  filter?: FilterOptions
+  signal?: AbortSignal
+  // AIDEV-NOTE: progress feed so the command keeps its original notify
+  // updates; the tool leaves it unset.
+  onProgress?: (message: string) => void
+}
+
+// Structured summary for the tool's `details` field — report text stays the
+// single source of truth for humans.
+export interface SonarAnalysisDetails {
+  prNumber: string
+  projectKey: string
+  organization: string
+  coverageOverall: number
+  coverageNewCode: number
+  issuesTotal: number
+  duplicationDensity?: number
+  duplicationStatus?: string
+}
+
+export interface SonarAnalysisResult {
+  report: string
+  prNumber: string
+  config: SonarConfig
+  coverage: CoverageAnalysis
+  issues: IssuesAnalysis
+  duplication?: DuplicationAnalysis
+  details: SonarAnalysisDetails
+}
+
+// AIDEV-NOTE: Shared core extracted from the /sonarqube command handler. Does
+// NOT write sonarqube-report.md — the command caller keeps that behavior; the
+// sonarqube tool returns content + details instead. Errors are classified via
+// SonarAnalysisError.kind so each caller maps them to its own surface.
+export async function runSonarAnalysis(
+  options: SonarAnalysisOptions,
+): Promise<SonarAnalysisResult> {
+  const { cwd, filter, signal, onProgress } = options
+  const token = process.env.SONARQUBE_TOKEN
+  if (!token) {
+    throw new SonarAnalysisError(
+      'token',
+      'SONARQUBE_TOKEN not set. Run: export SONARQUBE_TOKEN=your_token',
+    )
+  }
+
+  let config: SonarConfig
+  try {
+    config = await detectSonarConfig(cwd)
+  } catch (err) {
+    throw new SonarAnalysisError('config', String((err as Error).message))
+  }
+
+  let prNumber: string
+  if (options.prNumber) {
+    prNumber = options.prNumber
+  } else {
+    try {
+      prNumber = await detectPrNumber('/sonarqube')
+    } catch (err) {
+      throw new SonarAnalysisError(
+        'pr',
+        String((err as Error).message),
+        err as Error,
+      )
+    }
+  }
+
+  if (onProgress) {
+    onProgress(`Analyzing PR #${prNumber}...`)
+  }
+
+  let coverageData: CoverageResponse
+  try {
+    coverageData = (await sonarFetch(
+      config.baseUrl,
+      token,
+      'measures/component',
+      {
+        component: config.projectKey,
+        pullRequest: prNumber,
+        metricKeys:
+          'coverage,new_coverage,new_line_coverage,uncovered_lines,lines_to_cover,branch_coverage,new_branch_coverage,new_lines_to_cover',
+      },
+      signal,
+    )) as CoverageResponse
+  } catch (err) {
+    throw new SonarAnalysisError(
+      'coverage',
+      `Coverage fetch failed: ${(err as Error).message}`,
+    )
+  }
+
+  let allIssues: SonarIssue[]
+  let total: number
+  try {
+    ;({ issues: allIssues, total } = await fetchAllIssues(
+      config.baseUrl,
+      token,
+      config.projectKey,
+      prNumber,
+      signal,
+    ))
+  } catch (err) {
+    throw new SonarAnalysisError(
+      'issues',
+      `Issues fetch failed: ${(err as Error).message}`,
+    )
+  }
+
+  const coverage = analyzeCoverage(coverageData)
+  const issues = analyzeIssues({ total, issues: allIssues }, filter)
+
+  let duplication: DuplicationAnalysis | undefined
+  if (onProgress) {
+    onProgress('Fetching duplication data...')
+  }
+  try {
+    const dupMeasuresData = (await sonarFetch(
+      config.baseUrl,
+      token,
+      'measures/component',
+      {
+        component: config.projectKey,
+        pullRequest: prNumber,
+        metricKeys:
+          'duplicated_lines_density,duplicated_lines,duplicated_blocks,duplicated_files',
+      },
+      signal,
+    )) as CoverageResponse
+
+    const topFiles = await fetchDuplicatedFiles(
+      config.baseUrl,
+      token,
+      config.projectKey,
+      prNumber,
+      signal,
+    )
+
+    const TOP_N = 5
+    for (const fileDetail of topFiles.slice(0, TOP_N)) {
+      const details = await fetchDuplicationDetails(
+        config.baseUrl,
+        token,
+        fileDetail.key,
+        prNumber,
+        signal,
+      )
+      if (details) {
+        fileDetail.duplicationGroups = details.duplications.map((d) => ({
+          blocks: d.blocks.map((b) => ({
+            from: b.from,
+            size: b.size,
+            file:
+              details.files[b._ref]?.key.split(':')[1] ||
+              details.files[b._ref]?.key ||
+              fileDetail.file,
+          })),
+        }))
+      }
+    }
+
+    duplication = analyzeDuplications(
+      dupMeasuresData.component?.measures ?? [],
+      topFiles,
+    )
+  } catch {
+    // AIDEV-NOTE: Duplication fetch is non-fatal — report still generated without it.
+  }
+
+  const report = generateReport(prNumber, config, coverage, issues, duplication)
+
+  let analysisDetails: SonarAnalysisDetails = {
+    prNumber,
+    projectKey: config.projectKey,
+    organization: config.organization,
+    coverageOverall: coverage.overallCoverage,
+    coverageNewCode: coverage.newCoverage,
+    issuesTotal: issues.total,
+  }
+  if (duplication) {
+    analysisDetails = {
+      ...analysisDetails,
+      duplicationDensity: duplication.density,
+      duplicationStatus: duplication.status,
+    }
+  }
+
+  return {
+    report,
+    prNumber,
+    config,
+    coverage,
+    issues,
+    duplication,
+    details: analysisDetails,
+  }
+}
+
 // ── Extension ─────────────────────────────────────────────────────────────────
 
+// AIDEV-NOTE: Human surface (/sonarqube command) — keeps the original behavior:
+// notify progress, write sonarqube-report.md to cwd, send report as user message.
 export default function sonarqube(pi: ExtensionAPI) {
   pi.registerCommand('sonarqube', {
     description: 'Analyze SonarCloud coverage gaps and quality issues for a PR',
     handler: async (args, ctx) => {
-      // 1. Verify token
-      const token = process.env.SONARQUBE_TOKEN
-      if (!token) {
-        ctx.ui.notify(
-          'SONARQUBE_TOKEN not set. Run: export SONARQUBE_TOKEN=your_token',
-          'error',
-        )
-        return
-      }
-
-      // 2. Parse arguments
       const parsed = parseArgs(args)
-      const filter = parsed.filter
 
-      // 3. Detect config
-      let config: SonarConfig
+      let result: SonarAnalysisResult
       try {
-        config = await detectSonarConfig(ctx.cwd)
+        result = await runSonarAnalysis({
+          cwd: ctx.cwd,
+          prNumber: parsed.prNumber,
+          filter: parsed.filter,
+          signal: ctx.signal,
+          onProgress: (message) => {
+            ctx.ui.notify(message, 'info')
+          },
+        })
       } catch (err) {
         ctx.ui.notify(String((err as Error).message), 'error')
         return
       }
 
-      // 4. Detect PR number
-      const prNumber = parsed.prNumber || (await detectPrNumber('/sonarqube'))
-      ctx.ui.notify(`Analyzing PR #${prNumber}...`, 'info')
-
-      // 5. Fetch coverage
-      let coverageData: CoverageResponse
-      try {
-        coverageData = (await sonarFetch(
-          config.baseUrl,
-          token,
-          'measures/component',
-          {
-            component: config.projectKey,
-            pullRequest: prNumber,
-            metricKeys:
-              'coverage,new_coverage,new_line_coverage,uncovered_lines,lines_to_cover,branch_coverage,new_branch_coverage,new_lines_to_cover',
-          },
-          ctx.signal,
-        )) as CoverageResponse
-      } catch (err) {
-        ctx.ui.notify(
-          `Coverage fetch failed: ${(err as Error).message}`,
-          'error',
-        )
-        return
-      }
-
-      // 6. Fetch issues (handle pagination)
-      let allIssues: SonarIssue[]
-      let total: number
-      try {
-        ;({ issues: allIssues, total } = await fetchAllIssues(
-          config.baseUrl,
-          token,
-          config.projectKey,
-          prNumber,
-          ctx.signal,
-        ))
-      } catch (err) {
-        ctx.ui.notify(`Issues fetch failed: ${(err as Error).message}`, 'error')
-        return
-      }
-
-      // 7. Analyze
-      const coverage = analyzeCoverage(coverageData)
-      const issues = analyzeIssues({ total, issues: allIssues }, filter)
-
-      // 8. Fetch duplication data
-      let duplication: DuplicationAnalysis | undefined
-      try {
-        ctx.ui.notify('Fetching duplication data...', 'info')
-
-        // Project-level duplication metrics (added to existing coverage fetch params)
-        const dupMeasuresData = (await sonarFetch(
-          config.baseUrl,
-          token,
-          'measures/component',
-          {
-            component: config.projectKey,
-            pullRequest: prNumber,
-            metricKeys:
-              'duplicated_lines_density,duplicated_lines,duplicated_blocks,duplicated_files',
-          },
-          ctx.signal,
-        )) as CoverageResponse
-
-        // Per-file breakdown (top duplicated files)
-        const topFiles = await fetchDuplicatedFiles(
-          config.baseUrl,
-          token,
-          config.projectKey,
-          prNumber,
-          ctx.signal,
-        )
-
-        // Detailed block info for top 5 most-duplicated files
-        const TOP_N = 5
-        for (const fileDetail of topFiles.slice(0, TOP_N)) {
-          const details = await fetchDuplicationDetails(
-            config.baseUrl,
-            token,
-            fileDetail.key,
-            prNumber,
-            ctx.signal,
-          )
-          if (details) {
-            fileDetail.duplicationGroups = details.duplications.map((d) => ({
-              blocks: d.blocks.map((b) => ({
-                from: b.from,
-                size: b.size,
-                file:
-                  details.files[b._ref]?.key.split(':')[1] ||
-                  details.files[b._ref]?.key ||
-                  fileDetail.file,
-              })),
-            }))
-          }
-        }
-
-        duplication = analyzeDuplications(
-          dupMeasuresData.component?.measures ?? [],
-          topFiles,
-        )
-      } catch (err) {
-        // AIDEV-NOTE: Duplication fetch is non-fatal — report still generated without it.
-        ctx.ui.notify(
-          `Duplication fetch skipped: ${(err as Error).message}`,
-          'info',
-        )
-      }
-
-      // 9. Generate report
-      const report = generateReport(
-        prNumber,
-        config,
-        coverage,
-        issues,
-        duplication,
-      )
-
-      // 10. Write report to repo root
       const reportPath = path.join(ctx.cwd, 'sonarqube-report.md')
-      await fs.writeFile(reportPath, report, 'utf8')
+      await fs.writeFile(reportPath, result.report, 'utf8')
 
       ctx.ui.notify(
-        `Analysis complete: ${issues.total} issues, coverage ${coverage.overallCoverage}%. Report: ${reportPath}`,
+        `Analysis complete: ${result.issues.total} issues, coverage ${result.coverage.overallCoverage}%. Report: ${reportPath}`,
         'info',
       )
 
-      // 11. Send report as user message so the agent can act on it
-      pi.sendUserMessage(report)
+      pi.sendUserMessage(result.report)
+    },
+  })
+
+  // AIDEV-NOTE: Agent-callable surface — never writes sonarqube-report.md;
+  // report text comes back in content, structured numbers in details. Shares
+  // runSonarAnalysis with the command so there is one implementation.
+  pi.registerTool({
+    name: 'sonarqube',
+    label: 'sonarqube analysis',
+    description:
+      'Fetch SonarCloud coverage gaps and quality issues for a PR and return an actionable report. Does not write any files.',
+    promptSnippet:
+      'SonarCloud coverage/issue analysis for a PR; returns the full report text and structured numbers.',
+    parameters: Type.Object({
+      pr_number: Type.Optional(
+        Type.String({
+          description:
+            'PR number to analyze. Omit to auto-detect from the current branch via gh.',
+        }),
+      ),
+      severity: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            'Filter issues by severity, e.g. ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"]',
+        }),
+      ),
+      types: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            'Filter issues by type, e.g. ["BUG", "VULNERABILITY", "CODE_SMELL"]',
+        }),
+      ),
+      files: Type.Optional(
+        Type.String({ description: 'Filter issues by file path pattern' }),
+      ),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: {
+        pr_number?: string
+        severity?: string[]
+        types?: string[]
+        files?: string
+      },
+      signal: AbortSignal,
+      _onUpdate: unknown,
+      ctx: ExtensionToolContext,
+    ): Promise<AgentToolResult<SonarAnalysisDetails>> {
+      let filter: FilterOptions | undefined
+      if (params.severity || params.types || params.files) {
+        filter = {
+          severity: params.severity,
+          types: params.types,
+          files: params.files,
+        }
+      }
+
+      try {
+        const result = await runSonarAnalysis({
+          cwd: ctx.cwd,
+          prNumber: params.pr_number,
+          filter,
+          signal,
+        })
+        return {
+          content: [{ type: 'text', text: result.report }],
+          details: result.details,
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `sonarqube analysis failed: ${(err as Error).message}`,
+            },
+          ],
+          details: {
+            prNumber: params.pr_number ?? '',
+            projectKey: '',
+            organization: '',
+            coverageOverall: 0,
+            coverageNewCode: 0,
+            issuesTotal: 0,
+          },
+          isError: true,
+        }
+      }
     },
   })
 }
