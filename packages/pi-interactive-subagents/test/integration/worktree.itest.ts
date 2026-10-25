@@ -15,6 +15,7 @@ import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
+import { childGitEnv } from '../../pi-extension/subagents/worktrees.ts'
 import {
   cleanupTestEnv,
   createTestEnv,
@@ -34,8 +35,13 @@ if (!isHerdrIntegrationAvailable()) {
   )
 }
 
+// AIDEV-NOTE: PMR-S6W3 — scrub hook env (GIT_DIR et al.): with GIT_DIR set,
+// these calls would read the ambient repo instead of `cwd`.
 function git(args: string[], cwd: string): string {
-  return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim()
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    env: childGitEnv(),
+  }).trim()
 }
 
 /** Poll `git worktree list --porcelain` until a linked worktree appears. */

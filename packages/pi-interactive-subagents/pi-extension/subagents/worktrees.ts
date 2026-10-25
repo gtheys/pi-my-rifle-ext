@@ -29,6 +29,30 @@ export class WorktreeError extends Error {
   }
 }
 
+// AIDEV-NOTE: PMR-S6W3 — inside a git hook (e.g. lefthook pre-push) git
+// exports repo-pointing vars (GIT_DIR, GIT_WORK_TREE, ...). This code
+// resolves repos from explicit cwds via `git -C`, so those vars must never
+// leak into child git calls — they override repo discovery and make every
+// cwd look like a repo. Identity vars (GIT_AUTHOR_NAME etc.) are kept.
+const GIT_REPO_ENV_VARS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_PREFIX',
+] as const
+
+export function childGitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  for (const name of GIT_REPO_ENV_VARS) {
+    delete env[name]
+  }
+  return env
+}
+
 /** Lowercase dash-slug; mirrors pi-worktree's slugify rules (unexported). */
 export function slugifyWorktree(text: string): string {
   return text
@@ -78,7 +102,7 @@ export function findMainRepoRoot(cwd: string): string {
     out = execFileSync(
       'git',
       ['-C', cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: childGitEnv() },
     ).trim()
   } catch (err) {
     const e = err as { stderr?: string | Buffer; message: string }
@@ -109,7 +133,7 @@ export function createSubagentWorktree(options: {
     args.push(options.base)
   }
   try {
-    execFileSync('git', args, { encoding: 'utf8' })
+    execFileSync('git', args, { encoding: 'utf8', env: childGitEnv() })
   } catch (err) {
     const e = err as { stderr?: string | Buffer; message: string }
     const stderr = e.stderr ? String(e.stderr).trim() : ''

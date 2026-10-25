@@ -2686,6 +2686,7 @@ import {
   nextSpawnSeq,
 } from '../pi-extension/subagents/spawnseq.ts'
 import {
+  childGitEnv,
   createSubagentWorktree,
   deriveWorktreeBranch,
   findMainRepoRoot,
@@ -4298,23 +4299,30 @@ import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 
 describe('worktrees.ts (PMR-11TD)', () => {
+  // AIDEV-NOTE: PMR-S6W3 — fixture git calls must not inherit hook env
+  // (GIT_DIR et al.) either, or they would hit the ambient repo.
+  function gitExec(
+    args: string[],
+    options: { stdio?: 'ignore' | 'pipe' } = {},
+  ): string {
+    return execFileSync('git', args, {
+      encoding: 'utf8',
+      ...options,
+      env: childGitEnv(),
+    })
+  }
+
   function gitInitRepo(): string {
     const dir = mkdtempSync(join(tmpdir(), 'wt-unit-'))
-    execFileSync('git', ['init', '-q', dir])
-    execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@test'])
-    execFileSync('git', ['-C', dir, 'config', 'user.name', 'test'])
+    gitExec(['init', '-q', dir])
+    gitExec(['-C', dir, 'config', 'user.email', 'test@test'])
+    gitExec(['-C', dir, 'config', 'user.name', 'test'])
     writeFileSync(join(dir, 'README.md'), 'x')
-    execFileSync('git', ['-C', dir, 'add', '.'])
-    execFileSync('git', ['-C', dir, 'commit', '-qm', 'init'])
+    gitExec(['-C', dir, 'add', '.'])
+    gitExec(['-C', dir, 'commit', '-qm', 'init'])
     // AIDEV-NOTE: PMR-CM6D — the fixture commit must land in the temp repo,
     // never in an ambient repo reached by upward .git resolution.
-    const toplevel = execFileSync(
-      'git',
-      ['-C', dir, 'rev-parse', '--show-toplevel'],
-      {
-        encoding: 'utf8',
-      },
-    ).trim()
+    const toplevel = gitExec(['-C', dir, 'rev-parse', '--show-toplevel']).trim()
     assert.equal(realpathSync(toplevel), realpathSync(dir))
     return dir
   }
@@ -4357,22 +4365,14 @@ describe('worktrees.ts (PMR-11TD)', () => {
     try {
       assert.equal(findMainRepoRoot(repo), repo)
       const wt = join(repo, 'linked')
-      execFileSync('git', [
-        '-C',
-        repo,
-        'worktree',
-        'add',
-        '-q',
-        '-b',
-        'linked',
-        wt,
-      ])
+      gitExec(['-C', repo, 'worktree', 'add', '-q', '-b', 'linked', wt])
       assert.equal(findMainRepoRoot(wt), repo)
     } finally {
-      execFileSync(
-        'git',
+      gitExec(
         ['-C', repo, 'worktree', 'remove', '--force', join(repo, 'linked')],
-        { stdio: 'ignore' },
+        {
+          stdio: 'ignore',
+        },
       )
       rmSync(repo, { recursive: true, force: true })
     }
@@ -4385,6 +4385,41 @@ describe('worktrees.ts (PMR-11TD)', () => {
       assert.throws(() => findMainRepoRoot(dir), /not a git repository/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // PMR-S6W3: git push hook env sets GIT_DIR etc.; repo resolution must
+  // ignore them and rely on the explicit cwd only.
+  it('findMainRepoRoot ignores GIT_DIR/GIT_WORK_TREE hook env (non-repo throws)', () => {
+    const repo = gitInitRepo()
+    const dir = mkdtempSync(join(tmpdir(), 'wt-nogit-'))
+    const savedGitDir = process.env.GIT_DIR
+    const savedGitWorkTree = process.env.GIT_WORK_TREE
+    process.env.GIT_DIR = join(repo, '.git')
+    process.env.GIT_WORK_TREE = repo
+    try {
+      assert.throws(() => findMainRepoRoot(dir), WorktreeError)
+      assert.throws(() => findMainRepoRoot(dir), /not a git repository/)
+    } finally {
+      restoreEnvVar('GIT_DIR', savedGitDir)
+      restoreEnvVar('GIT_WORK_TREE', savedGitWorkTree)
+      rmSync(repo, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('findMainRepoRoot still resolves the real repo under GIT_DIR hook env', () => {
+    const repo = gitInitRepo()
+    const savedGitDir = process.env.GIT_DIR
+    const savedGitWorkTree = process.env.GIT_WORK_TREE
+    process.env.GIT_DIR = join(repo, '.git')
+    process.env.GIT_WORK_TREE = repo
+    try {
+      assert.equal(findMainRepoRoot(repo), repo)
+    } finally {
+      restoreEnvVar('GIT_DIR', savedGitDir)
+      restoreEnvVar('GIT_WORK_TREE', savedGitWorkTree)
+      rmSync(repo, { recursive: true, force: true })
     }
   })
 
@@ -4402,11 +4437,7 @@ describe('worktrees.ts (PMR-11TD)', () => {
       assert.equal(wt.branch, branch)
       assert.ok(existsSync(join(wt.path, 'README.md')))
       assert.ok(existsSync(join(wt.path, '.git')))
-      const head = execFileSync(
-        'git',
-        ['-C', wt.path, 'branch', '--show-current'],
-        { encoding: 'utf8' },
-      ).trim()
+      const head = gitExec(['-C', wt.path, 'branch', '--show-current']).trim()
       assert.equal(head, branch)
       // base ref variant branches from that ref
       const wt2 = createSubagentWorktree({
@@ -4415,23 +4446,14 @@ describe('worktrees.ts (PMR-11TD)', () => {
         base: 'HEAD',
       })
       assert.ok(existsSync(wt2.path))
-      execFileSync('git', [
-        '-C',
-        repo,
-        'worktree',
-        'remove',
-        '--force',
-        wt2.path,
-      ])
-      execFileSync('git', ['-C', repo, 'branch', '-qD', `${branch}-b`])
+      gitExec(['-C', repo, 'worktree', 'remove', '--force', wt2.path])
+      gitExec(['-C', repo, 'branch', '-qD', `${branch}-b`])
     } finally {
       if (created) {
-        execFileSync(
-          'git',
-          ['-C', repo, 'worktree', 'remove', '--force', created],
-          { stdio: 'ignore' },
-        )
-        execFileSync('git', ['-C', repo, 'branch', '-qD', branch], {
+        gitExec(['-C', repo, 'worktree', 'remove', '--force', created], {
+          stdio: 'ignore',
+        })
+        gitExec(['-C', repo, 'branch', '-qD', branch], {
           stdio: 'ignore',
         })
       }
@@ -4464,14 +4486,10 @@ describe('worktrees.ts (PMR-11TD)', () => {
       )
       // no worktree registered, no branch created
       assert.ok(!existsSync(path))
-      const list = execFileSync(
-        'git',
-        ['-C', repo, 'worktree', 'list', '--porcelain'],
-        { encoding: 'utf8' },
-      )
+      const list = gitExec(['-C', repo, 'worktree', 'list', '--porcelain'])
       assert.ok(!list.includes(path))
       assert.throws(() =>
-        execFileSync('git', ['-C', repo, 'rev-parse', '--verify', branch], {
+        gitExec(['-C', repo, 'rev-parse', '--verify', branch], {
           stdio: 'pipe',
         }),
       )
