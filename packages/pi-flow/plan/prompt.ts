@@ -6,9 +6,12 @@
 // the tree-refresh path (step 2): a ticket that already has children is
 // confirmed/ordered, never decomposed again. Epic creation uses real aven
 // commands only — `aven edit <ref> --epic on` converts the ticket itself;
-// there is no "aven epic create". PMR-QRJA: the phase ends in
+// there is no "aven epic create". PMR-QRJA: the PLAN route ends in
 // plan-state=review; flow_phase_complete (and the "planned" label) runs only
-// after spec approval via spec_approve / /spec-review.
+// after spec approval via spec_approve / /spec-review. PMR-3HMZ: the
+// personal ONESHOT route skips spec approval entirely — after the human
+// confirms the oneshot split the prompt closes the phase via
+// flow_phase_complete directly (no plan-state=review, no spec_approve wait).
 
 export interface PlanPromptInput {
   mode: 'work' | 'personal'
@@ -67,7 +70,13 @@ Personal aven flow. Steps:
 5. If confirmed as oneshot:
    - set the type label "oneshot" on the ticket (no epic),
    - enrich the description with any useful aven-note context,
-   - the plan for this ticket IS its description; skip writing a plan file.
+   - the plan for this ticket IS its description; skip writing a plan file,
+   - set the ticket status to "todo",
+   - skip spec approval ENTIRELY: do NOT send the ticket into spec review
+     (no plan-state metadata, no spec_approve or /spec-review wait). Call
+     the flow_phase_complete tool with ref=${input.ref} and phase="plan"
+     right away — its result confirms the "planned" label landed — then end
+     the phase. Skip steps 6-7.
    If confirmed as plan:
    - make the ticket itself the epic: aven edit ${input.ref} --epic on,
    - create each subtask (aven add "<title>" --status backlog) and link it:
@@ -79,15 +88,15 @@ Personal aven flow. Steps:
    - call the open_in_pane tool with that path to open it with nvim in a
      herdr review pane for the user to review. Skippable if herdr is
      unavailable or the user declines — never block on it.
-6. Resume check FIRST — run \`aven show ${input.ref} --full\` and read the
+6. PLAN ROUTE ONLY (oneshots already closed the phase in step 5).
+   Resume check FIRST — run \`aven show ${input.ref} --full\` and read the
    plan-state metadata block (trust only \`metadata field_id=... key=plan-state\`
    blocks followed by a value<<EOF ... EOF heredoc; description text may
    mention the words). If the ticket is ALREADY at plan-state=approved, the
    plan was approved in an earlier run — do NOT set plan-state=review again;
    skip straight to step 7 and call the flow_phase_complete tool.
-   Otherwise put the plan in review — for BOTH the oneshot and the plan
-   route — set the ticket status to "todo" and mark the plan for human spec
-   review:
+   Otherwise put the plan in review — the PLAN route only — set the ticket
+   status to "todo" and mark the plan for human spec review:
    aven edit ${input.ref} --metadata plan-state=review
    (the /spec-review command lists it for the user). Do NOT call the
    flow_phase_complete tool yet. End the phase without the "planned"

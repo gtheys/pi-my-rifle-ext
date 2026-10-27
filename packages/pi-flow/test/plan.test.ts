@@ -195,18 +195,30 @@ test('buildPlanPrompt: personal mode skips review when already approved', () => 
   assert.match(prompt, /do NOT set plan-state=review/i)
 })
 
-// AIDEV-NOTE: PMR-QRJA — the oneshot route runs the SAME review gate; a
-// premature "planned" would misroute /implement even for oneshots.
-test('buildPlanPrompt: personal oneshot route also gated on spec approval', () => {
+// AIDEV-NOTE: PMR-3HMZ — the personal ONESHOT route skips the spec-approval
+// gate: no plan-state=review, no spec_approve wait; the prompt closes the
+// phase via flow_phase_complete right after the human confirms the split.
+// Only the plan route keeps the PMR-QRJA review gate.
+test('buildPlanPrompt: personal oneshot route skips the spec-approval gate', () => {
   const prompt = buildPlanPrompt({
     mode: 'personal',
     ref: 'PMR-F7YM',
     planPath: '/x/plan.md',
   })
   const oneshotIdx = prompt.indexOf('If confirmed as oneshot')
-  const gateIdx = prompt.indexOf('plan-state=review')
+  const planIdx = prompt.indexOf('If confirmed as plan')
   assert.ok(oneshotIdx !== -1)
-  assert.ok(gateIdx > oneshotIdx, 'review gate must apply to the oneshot route')
+  assert.ok(planIdx > oneshotIdx)
+  const oneshotBlock = prompt.slice(oneshotIdx, planIdx)
+  assert.ok(
+    !oneshotBlock.includes('--metadata plan-state=review'),
+    'oneshot block must not send the ticket into spec review',
+  )
+  assert.match(oneshotBlock, /skip spec approval/)
+  assert.match(
+    oneshotBlock,
+    /flow_phase_complete tool\s+with ref=PMR-F7YM and phase="plan"/,
+  )
 })
 
 // AIDEV-NOTE: regression guard — personal plan must open the review pane — parity with
