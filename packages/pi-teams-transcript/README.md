@@ -78,8 +78,7 @@ Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
 | `timezone` | `string` | system timezone | IANA timezone (e.g. `Asia/Bangkok`) used for day boundaries (today/yesterday) and displayed meeting times in the sync report. |
 | `weekly` | `string` | none | Directory to write `/teams-transcript-weekly` reports to. Required for that command — no default, since it's a deliberate separate folder. |
 | `projects` | `string` | none | Directory of one `.md` file per project (e.g. an Obsidian vault `Projects` folder). When set, `/teams-transcript-summarize` and `/teams-transcript-weekly` cross-link meeting/weekly notes with matching project notes. Optional — skipped entirely when unset. |
-| `znServer` | `string` | none | ZenNotes server base URL (e.g. `http://100.108.226.64:8089`) that `/teams-transcript-push` targets for the workspace vault. Env `ZENNOTES_SERVER` overrides. |
-| `znToken` | `string` | none | Auth token for `znServer`, used by `/teams-transcript-push`. Env `ZENNOTES_REMOTE_TOKEN` overrides. |
+| `vaultMeetings` | `string` | none | Obsidian vault directory `/teams-transcript-push` copies meeting `.md` notes into (e.g. `…/obsidian/Personal/01 Projects/Salary-Hero/Meetings`). Relative paths resolve from cwd. |
 
 ```json
 {
@@ -88,9 +87,8 @@ Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
   "userId": "you@example.com",
   "timezone": "Asia/Bangkok",
   "weekly": "./teams-transcripts/weekly",
-  "projects": "/home/you/ZenVault/Projects",
-  "znServer": "http://100.108.226.64:8089",
-  "znToken": "your-token"
+  "projects": "/home/you/obsidian/Personal/01 Projects/MyCompany/Projects",
+  "vaultMeetings": "/home/you/obsidian/Personal/01 Projects/MyCompany/Meetings"
 }
 ```
 
@@ -174,7 +172,7 @@ Zero recordings for that week is reported directly (no LLM call, no file written
 
 `/teams-transcript-push [dir]`
 
-Pushes synced meeting notes (`.md`) and raw transcripts (`.vtt` from `outDir/vtt/`) into a remote ZenNotes workspace vault via the `zn` CLI (installed from the ZenNotes app, Settings → CLI): notes land in `inbox/Meetings`, transcripts as notes in `inbox/Meetings/vtt`. Idempotent — each file is dedup-checked against the vault by full path, then moved to `outDir/pushed/` so re-runs are no-ops. Requires `znServer`/`znToken` in config or the `ZENNOTES_SERVER`/`ZENNOTES_REMOTE_TOKEN` env vars.
+Copies synced meeting notes (`.md` from the staging `outDir`) into an Obsidian vault Meetings folder via a plain filesystem copy — Obsidian picks the files up live, no server, token, or CLI involved. Requires `vaultMeetings` in config. Idempotent: a note whose file already exists in the vault is skipped, and every processed staging file is moved to `outDir/pushed/` so re-runs are no-ops. Raw `.vtt` stays behind in `outDir/vtt/` (sync's dedup store — the `.md` stub already embeds the full transcript, so copying the vtt into the vault would only duplicate content). A configured `vaultMeetings` path that doesn't exist fails loud instead of silently creating a junk directory.
 
 ```
 /teams-transcript-sync week
