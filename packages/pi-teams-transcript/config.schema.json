@@ -15,11 +15,11 @@
     },
     "weekly": {
       "type": "string",
-      "description": "Directory to write /teams-transcript-weekly reports to, one file per ISO week (e.g. 2026-w32.md). Relative paths resolve from cwd. Required for that command — no default."
+      "description": "Directory to write /teams-transcript-weekly reports to, one file per ISO week (e.g. 2026-W32.md, matching Obsidian periodic-note naming). Relative paths resolve from cwd. Required for that command — no default."
     },
     "projects": {
       "type": "string",
-      "description": "Directory of one .md file per project (e.g. an Obsidian vault Projects folder). When set, /teams-transcript-summarize and /teams-transcript-weekly cross-link meeting notes with matching project notes, creating or updating a project note when a discussed project has none yet. Relative paths resolve from cwd. Optional — feature is skipped entirely when unset."
+      "description": "Root of a project-notes tree (e.g. an Obsidian vault Projects folder) — subfolders are scanned recursively, one .md per project. When set, /teams-transcript-summarize and /teams-transcript-weekly cross-link meeting notes with matching project notes, creating or updating a project note when a discussed project has none yet. Relative paths resolve from cwd. Optional — feature is skipped entirely when unset."
     },
     "vaultMeetings": {
       "type": "string",

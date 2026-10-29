@@ -41,13 +41,13 @@ const TeamsTranscriptConfigSchema = Type.Object({
   weekly: Type.Optional(
     Type.String({
       description:
-        'Directory to write /teams-transcript-weekly reports to, one file per ISO week (e.g. 2026-w32.md). Relative paths resolve from cwd. Required for that command — no default.',
+        'Directory to write /teams-transcript-weekly reports to, one file per ISO week (e.g. 2026-W32.md, matching Obsidian periodic-note naming). Relative paths resolve from cwd. Required for that command — no default.',
     }),
   ),
   projects: Type.Optional(
     Type.String({
       description:
-        'Directory of one .md file per project (e.g. an Obsidian vault Projects folder). When set, /teams-transcript-summarize and /teams-transcript-weekly cross-link meeting notes with matching project notes, creating or updating a project note when a discussed project has none yet. Relative paths resolve from cwd. Optional — feature is skipped entirely when unset.',
+        'Root of a project-notes tree (e.g. an Obsidian vault Projects folder) — subfolders are scanned recursively, one .md per project. When set, /teams-transcript-summarize and /teams-transcript-weekly cross-link meeting notes with matching project notes, creating or updating a project note when a discussed project has none yet. Relative paths resolve from cwd. Optional — feature is skipped entirely when unset.',
     }),
   ),
   vaultMeetings: Type.Optional(
@@ -341,7 +341,7 @@ function isoWeek(date: Date): { isoYear: number; isoWeek: number } {
 function targetWeekBounds(timeZone: string): {
   monday: string // YYYY-MM-DD
   friday: string
-  weekLabel: string // '2026-w32'
+  weekLabel: string // '2026-W32'
 } {
   const now = new Date()
   const ymd = new Intl.DateTimeFormat('en-CA', {
@@ -363,7 +363,7 @@ function targetWeekBounds(timeZone: string): {
   return {
     monday: targetMonday.toISOString().slice(0, 10),
     friday: targetFriday.toISOString().slice(0, 10),
-    weekLabel: `${isoYear}-w${String(weekNum).padStart(2, '0')}`,
+    weekLabel: `${isoYear}-W${String(weekNum).padStart(2, '0')}`,
   }
 }
 
@@ -1293,16 +1293,18 @@ const WEEKLY_FORMAT_GUIDANCE =
   'rather than padding it.'
 
 // AIDEV-NOTE: matches the observed convention of real project notes in a
-// vault Projects folder — `# Title`, then a one-line description, then
+// vault Projects tree — `# Title`, then a one-line description, then
 // `## Status` (dated bullet subsections) and `## Meetings` (bullets linking
-// back to meeting note filenames). Only built when `projects` is configured;
-// callers must skip entirely otherwise — no hardcoded fallback path.
+// back to meeting note filenames). Notes may be nested in subfolders, so
+// matching scans recursively; new notes land at the tree root for the human
+// to file. Only built when `projects` is configured; callers must skip
+// entirely otherwise — no hardcoded fallback path.
 function buildProjectCrosslinkGuidance(projectsDir: string): string {
   return (
-    `Project cross-linking: for every project discussed, check ${projectsDir} for a matching ` +
-    '.md file (filename or `# Title` heading matching the project name, case-insensitive; a ' +
-    'close/renamed match still counts as the same project, ask the user only if genuinely ' +
-    'ambiguous). If found:\n' +
+    `Project cross-linking: for every project discussed, search ${projectsDir} recursively ` +
+    '(including subfolders) for a matching .md file (filename or `# Title` heading matching the ' +
+    'project name, case-insensitive; a close/renamed match still counts as the same project, ask ' +
+    'the user only if genuinely ambiguous). If found:\n' +
     '- Add a `[[Project Name]]` wikilink into the meeting note wherever that project is ' +
     'discussed (Summary/Decisions/etc.).\n' +
     "- Add a bullet to that project note's `## Meetings` section linking back to this meeting " +
@@ -1311,7 +1313,8 @@ function buildProjectCrosslinkGuidance(projectsDir: string): string {
     "- If the project note's one-line description (the text right under the `# Title` heading, " +
     'before the first `##`) is stale or missing given what was just discussed, replace/add it ' +
     "with an accurate one-liner — keep it short, don't rewrite the rest of the note.\n\n" +
-    `If no matching file exists in ${projectsDir}, create \`<Project Name>.md\` there with:\n` +
+    `If no matching file exists anywhere under ${projectsDir}, create \`<Project Name>.md\` at the root ` +
+    'of that folder (the human files it into the right subfolder later) with:\n' +
     '```\n# <Project Name>\n\n<one-line description synthesized from what was discussed>\n\n' +
     '## Status\n\n### [[<meeting-date>]]\n\n- <bullet summarizing what was decided/discussed>\n\n' +
     '## Meetings\n\n- [[<meeting-filename-without-.md>]] <one-line takeaway>\n```\n' +

@@ -11,7 +11,9 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { attendeeLink, parseAttendee, resolveAttendee } from '../index.ts'
 
-const DIR = process.argv[2] ?? '/home/geert/Documents/ZenVault/Meetings'
+const DIR =
+  process.argv[2] ??
+  '/home/geert/Documents/obsidian/Personal/01 Projects/Salary-Hero/Meetings'
 
 function yamlScalar(s: string): string {
   if (/^[\s]|[\s]$|[:#\-[\]{}&*!|>'"%@`]/.test(s)) {

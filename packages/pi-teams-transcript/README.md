@@ -77,7 +77,7 @@ Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
 | `userId` | `string` | none | Default meeting organizer's user ID or UPN, used by `/teams-transcript-sync` when not set via the `TEAMS_USER_ID` env var. |
 | `timezone` | `string` | system timezone | IANA timezone (e.g. `Asia/Bangkok`) used for day boundaries (today/yesterday) and displayed meeting times in the sync report. |
 | `weekly` | `string` | none | Directory to write `/teams-transcript-weekly` reports to. Required for that command — no default, since it's a deliberate separate folder. |
-| `projects` | `string` | none | Directory of one `.md` file per project (e.g. an Obsidian vault `Projects` folder). When set, `/teams-transcript-summarize` and `/teams-transcript-weekly` cross-link meeting/weekly notes with matching project notes. Optional — skipped entirely when unset. |
+| `projects` | `string` | none | Root of a project-notes tree (e.g. an Obsidian vault `Projects` folder). Subfolders are scanned recursively. When set, `/teams-transcript-summarize` and `/teams-transcript-weekly` cross-link meeting/weekly notes with matching project notes. Optional — skipped entirely when unset. |
 | `vaultMeetings` | `string` | none | Obsidian vault directory `/teams-transcript-push` copies meeting `.md` notes into (e.g. `…/obsidian/Personal/01 Projects/Salary-Hero/Meetings`). Relative paths resolve from cwd. |
 
 ```json
@@ -86,7 +86,7 @@ Non-secret settings live in `~/.pi/agent/pi-teams-transcript/config.json`.
   "outDir": "./teams-transcripts",
   "userId": "you@example.com",
   "timezone": "Asia/Bangkok",
-  "weekly": "./teams-transcripts/weekly",
+  "weekly": "/home/you/obsidian/Personal/Periodic/Weekly",
   "projects": "/home/you/obsidian/Personal/01 Projects/MyCompany/Projects",
   "vaultMeetings": "/home/you/obsidian/Personal/01 Projects/MyCompany/Meetings"
 }
@@ -158,7 +158,7 @@ When `projects` is configured, both this command and `/teams-transcript-weekly` 
 
 `/teams-transcript-weekly`
 
-Synthesizes the most recently *finished* Mon-Fri work week's meeting notes into one report, written to `weekly/<isoyear>-w<isoweek>.md` (e.g. `2026-w31.md`). No arguments — it always targets the last finished work week: while "today" still falls inside the current Mon-Fri span, that week isn't over, so it targets the previous week instead; once today is Sat/Sun, the week that just ended becomes the target. If that week's report file already exists, the command skips — permanently, since a target week is never re-touched once finished.
+Synthesizes the most recently *finished* Mon-Fri work week's meeting notes into one report, written to `weekly/<isoyear>-W<isoweek>.md` (e.g. `2026-W31.md`, matching Obsidian periodic-note naming). No arguments — it always targets the last finished work week: while "today" still falls inside the current Mon-Fri span, that week isn't over, so it targets the previous week instead; once today is Sat/Sun, the week that just ended becomes the target. If that week's report file already exists, the command skips — permanently, since a target week is never re-touched once finished.
 
 ```
 /teams-transcript-weekly
