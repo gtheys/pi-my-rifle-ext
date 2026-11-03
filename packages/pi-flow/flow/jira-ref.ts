@@ -7,9 +7,11 @@
 // metadata key and the dep-link. aven prints errors (unknown-metadata-field,
 // unknown-ref) with exit 0, so detection is by output text, not exit code.
 
-export type AvenRunner = (
-  args: readonly string[],
-) => Promise<{ stdout: string; stderr: string }>
+// AIDEV-NOTE: AvenRunner's single definition lives in aven/client.ts
+// (PMR-T22H); re-exported here so existing imports keep working.
+import type { AvenRunner } from '../aven/client.ts'
+
+export type { AvenRunner } from '../aven/client.ts'
 
 export type EpicLookup =
   | { kind: 'found'; ref: string }

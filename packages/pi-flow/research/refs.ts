@@ -3,6 +3,7 @@
 // researchPrompt, so a human invocation and a flow-driven one can never
 // drift. Same Jira-ID pattern as flow/args.ts (duplication deliberate —
 // that file owns /flow parsing, this owns /research targets).
+import { MODE_PROFILE } from '../mode-profile.ts'
 
 export type ResearchTarget =
   | { kind: 'topic'; text: string }
@@ -21,7 +22,7 @@ export interface ClassifyInput {
 // AIDEV-NOTE: bare jira-shaped refs auto-detect ONLY in work mode — in
 // personal repos an aven ref (e.g. PMR-5900) matches the same pattern, so
 // bare stays topic there (PMR-PCVK ambiguity). ID= forces the ticket path
-// everywhere as the escape hatch.
+// everywhere as the escape hatch. The mode rule is data: mode-profile.ts.
 export function classifyResearchTarget(
   text: string,
   opts: ClassifyInput,
@@ -33,7 +34,7 @@ export function classifyResearchTarget(
   if (!JIRA_ID_RE.test(trimmed)) {
     return { kind: 'topic', text: trimmed }
   }
-  if (opts.explicit && opts.mode === 'work') {
+  if (opts.explicit && MODE_PROFILE[opts.mode].acceptsJiraRefs) {
     return { kind: 'ticket', jiraId: trimmed.toUpperCase() }
   }
   return { kind: 'topic', text: trimmed }

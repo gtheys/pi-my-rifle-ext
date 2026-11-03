@@ -8,7 +8,7 @@
 // by output text ("updated <REF>" must appear on success), loud error result
 // carries aven's raw output.
 
-import type { AvenRunner } from '../flow/jira-ref.ts'
+import type { AvenRunner } from '../aven/client.ts'
 import { escapeRegExp } from './escape-regexp.ts'
 
 export type ApproveResult =

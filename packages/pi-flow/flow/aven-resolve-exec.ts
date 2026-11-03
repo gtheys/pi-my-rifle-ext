@@ -3,6 +3,9 @@
 // Resolution: plain `show` (cwd-inferred workspace) → `search` in the active
 // workspace → iterate `workspace list`. An explicit override skips straight
 // to `show --workspace <override>`.
+// AIDEV-NOTE: AvenRunner's single definition lives in aven/client.ts
+// (PMR-T22H); re-exported here so existing imports keep working.
+import type { AvenRunner } from '../aven/client.ts'
 import {
   isUnknownRef,
   overrideFailureReason,
@@ -12,9 +15,7 @@ import {
   workspaceSearchOrder,
 } from './aven-resolve.ts'
 
-export type AvenRunner = (
-  args: string[],
-) => Promise<{ stdout: string; stderr: string }>
+export type { AvenRunner } from '../aven/client.ts'
 
 export type RefResolution =
   | { ok: true; workspace?: string }

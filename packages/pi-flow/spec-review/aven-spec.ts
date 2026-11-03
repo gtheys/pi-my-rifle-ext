@@ -7,7 +7,7 @@
 // human text, trusting only `metadata field_id=... key=<k>` / value<<EOF
 // blocks (description text may contain the words "plan-path").
 
-import type { AvenRunner } from '../flow/jira-ref.ts'
+import type { AvenRunner } from '../aven/client.ts'
 import { escapeRegExp } from './escape-regexp.ts'
 
 export interface SpecInReview {

@@ -8,6 +8,7 @@
 // validate/personal.ts, asks pass/fail via ask_user_question, then records and
 // routes per routePersonalOutcome. Personal mode is never treated as work mode.
 
+import { MODE_PROFILE } from '../mode-profile.ts'
 import { DEFAULT_POLL_CONFIG } from './gate.ts'
 import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
 
@@ -21,15 +22,15 @@ function buildReviewGateSection(
   mode: 'work' | 'personal',
   ref: string,
 ): string {
-  let landingRoute: string
+  // AIDEV-NOTE: the landing route is data (mode-profile.ts); only the prose
+  // below is mode-keyed here.
+  const landingRoute = MODE_PROFILE[mode].landingRoute
   let landing: string
   if (mode === 'work') {
-    landingRoute = 'pr'
     landing = `push the branch and create a PR via
    pi-review's PR tooling BY NAME (gh CLI), then post a Jira comment on
    ${ref} linking the PR URL.`
   } else {
-    landingRoute = 'push-main'
     landing = `push the branch straight to main —
    the standing no-PR rule on own repos. No PR, no Jira link step.`
   }

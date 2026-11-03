@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { MODE_PROFILE } from '../mode-profile.ts'
 import type { WorkMode } from '../work-mode.ts'
 
 // AIDEV-NOTE: Mirrors pi-planning's plan-tools/helpers.ts resolveSpecPath
@@ -15,8 +16,10 @@ export function resolveResearchDir(
   repoName: string,
   gitToplevel: string,
 ): string {
+  // AIDEV-NOTE: which env root applies is data (mode-profile.ts); the
+  // params still carry both values so the caller shape is unchanged.
   let root: string | undefined
-  if (mode === 'work') {
+  if (MODE_PROFILE[mode].artifactRootEnv === 'LLM_NOTES_ROOT') {
     root = notesRoot
   } else {
     root = personalFeatures
