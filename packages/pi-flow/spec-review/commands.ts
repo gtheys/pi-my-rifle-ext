@@ -212,4 +212,25 @@ export function registerSpecCommands(pi: ExtensionAPI): void {
       ctx.ui.notify(outcome, severity)
     },
   })
+
+  // AIDEV-NOTE: PMR-XCA9 — /review-spec moved from pi-planning's
+  // plan-tools/index.ts when the package was absorbed into pi-flow.
+  pi.registerCommand('review-spec', {
+    description: 'Open a spec/plan file with nvim in a herdr review pane',
+    handler: async (args, ctx) => {
+      const path = args.trim()
+      if (!path) {
+        ctx.ui.notify('Usage: /review-spec <path>', 'warning')
+        return
+      }
+
+      const result = await openFileInPane(pi, path)
+      const text = result.content[0]?.text ?? ''
+      if (result.details.ok) {
+        ctx.ui.notify(text, 'info')
+      } else {
+        ctx.ui.notify(text, 'error')
+      }
+    },
+  })
 }

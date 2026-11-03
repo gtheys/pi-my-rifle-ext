@@ -1,9 +1,9 @@
 import { join } from 'node:path'
 import { slugify } from '../research/paths.ts'
 
-// AIDEV-NOTE: Mirrors pi-planning's plan-tools/helpers.ts resolveFeaturePath
-// env-fallback contract (duplication deliberate — cross-package runtime
-// imports are forbidden). If $PERSONAL_FEATURES is set:
+// AIDEV-NOTE: PMR-XCA9 — mirrors plan-tools/helpers.ts resolveFeaturePath's
+// env-fallback contract (same package since the pi-planning absorption;
+// pure here, exec-based there). If $PERSONAL_FEATURES is set:
 // $PERSONAL_FEATURES/<repo>/<date>-<slug>/ ; else
 // <git-toplevel>/.pi/plans/<date>-<slug>/. plan.md sits inside the dir.
 

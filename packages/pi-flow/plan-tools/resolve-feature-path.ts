@@ -1,7 +1,7 @@
 /**
  * resolve_feature_path tool — compute the canonical feature plan path.
+ * Moved from packages/pi-planning (PMR-XCA9).
  */
-// AIDEV-TODO: add to files allowlist in Phase 4 (Docs & Packaging subtask 4.1)
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'

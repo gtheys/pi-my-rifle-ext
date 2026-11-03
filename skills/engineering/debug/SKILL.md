@@ -105,7 +105,7 @@ Run `bugwarrior pull` to sync, or describe the issue manually.
 git branch --list "*$JIRA_ID*"
 ```
 
-If none found, call the `jira_create_branch` tool (ships with the `pi-planning` package — shared with the implement-plan skill instead of a per-skill copy):
+If none found, call the `jira_create_branch` tool (ships with the `pi-flow` package — shared with the implement-plan skill instead of a per-skill copy):
 
 ```
 jira_create_branch({ jira_id: "$JIRA_ID", cwd: "<repo root>" })
@@ -122,7 +122,7 @@ rule as the aven path: `worktree({ action: 'create', jira_id: '$JIRA_ID' })`,
 record it via `aven`/ticket note, resume via `worktree list`. Investigation
 and repro stay read-only in the main checkout.
 
-> `jira_create_branch` sets the git-town parent to `develop` and names the branch `<prefix>/$JIRA_ID-<summary-slug>`. Pass `dry_run: true` to preview without creating. Requires the `pi-planning` package's tools to be loaded in this session.
+> `jira_create_branch` sets the git-town parent to `develop` and names the branch `<prefix>/$JIRA_ID-<summary-slug>`. Pass `dry_run: true` to preview without creating. Requires the `pi-flow` package's tools to be loaded in this session.
 
 **Present context and ask what broke:**
 

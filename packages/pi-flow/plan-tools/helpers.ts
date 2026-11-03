@@ -1,12 +1,12 @@
 /**
- * Shared helpers for the plan-tools registrations (aven edition).
- *
- * Taskwarrior helpers (extractSpecPath, getTaskUuid, listTaggedTasks,
- * jiraIdParams) were removed with the tw_* tools — aven is the task store.
+ * Shared helpers for the plan-tools registrations.
+ * Moved from packages/pi-planning/plan-tools/helpers.ts (PMR-XCA9 — package
+ * absorbed into pi-flow). The slug rule now lives in research/paths.ts.
  */
 
 import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { slugify } from '../research/paths.ts'
 
 export async function getRepoName(pi: ExtensionAPI): Promise<string> {
   // ponytail: git rev-parse --show-toplevel always works in a repo; remote URL is optional
@@ -17,18 +17,6 @@ export async function getRepoName(pi: ExtensionAPI): Promise<string> {
     // Not a git repo or git unavailable — fall through to 'unknown' below.
   }
   return 'unknown'
-}
-
-// AIDEV-NOTE: Shared slug rule — lowercase, strip non-alnum, max 5 words,
-// dashes. Used by both resolveSpecPath and resolveFeaturePath.
-export function slugify(summary: string): string {
-  return summary
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .trim()
-    .split(/\s+/)
-    .slice(0, 5)
-    .join('-')
 }
 
 export async function resolveSpecPath(
@@ -54,7 +42,8 @@ export async function resolveSpecPath(
 // AIDEV-NOTE: Feature path contract — if $PERSONAL_FEATURES is set, feature
 // plans live in $PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md (personal
 // cross-repo features collection). Otherwise fall back to the repo-local
-// <git-toplevel>/.pi/plans/<date>-<slug>/plan.md.
+// <git-toplevel>/.pi/plans/<date>-<slug>/plan.md. plan/paths.ts mirrors this
+// contract in pure form for the /plan phase.
 export async function resolveFeaturePath(
   pi: ExtensionAPI,
   summary: string,

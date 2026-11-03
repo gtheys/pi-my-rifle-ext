@@ -2,9 +2,9 @@ import { join } from 'node:path'
 import { MODE_PROFILE } from '../mode-profile.ts'
 import type { WorkMode } from '../work-mode.ts'
 
-// AIDEV-NOTE: Mirrors pi-planning's plan-tools/helpers.ts resolveSpecPath
-// env-fallback contract (duplication deliberate — cross-package runtime
-// imports are forbidden). Work mode: $LLM_NOTES_ROOT/<repo>/notes/research/
+// AIDEV-NOTE: PMR-XCA9 — mirrors plan-tools/helpers.ts resolveSpecPath's
+// env-fallback contract (same package since the pi-planning absorption;
+// pure here, exec-based there). Work mode: $LLM_NOTES_ROOT/<repo>/notes/research/
 // when set. Personal mode: $PERSONAL_FEATURES/<repo>/notes/research/ when set
 // ($PERSONAL_FEATURES is the personal counterpart of $LLM_NOTES_ROOT —
 // PMR-MSGE: personal research must never land under the work notes root).
@@ -30,8 +30,8 @@ export function resolveResearchDir(
   return join(gitToplevel, 'notes', 'research')
 }
 
-// Same slug rule as plan-tools/helpers.ts slugify: lowercase, strip non-alnum,
-// max 5 words, dashes.
+// AIDEV-NOTE: Canonical slug rule — lowercase, strip non-alnum, max 5 words,
+// dashes. plan-tools/helpers.ts imports this.
 export function slugify(summary: string): string {
   return summary
     .toLowerCase()

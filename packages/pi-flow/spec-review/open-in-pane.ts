@@ -1,11 +1,11 @@
-// AIDEV-NOTE: DELIBERATE DUPLICATION from packages/pi-planning/plan-tools/
-// open-in-pane.ts — cross-package runtime imports are forbidden in this
-// repo, so openFileInPane is copied here for /spec-review. Keep the two
-// copies in sync (source of truth: pi-planning).
+// AIDEV-NOTE: PMR-XCA9 — single surviving copy. pi-planning's twin
+// (plan-tools/open-in-pane.ts, source of truth until the absorption) was
+// retired with the package; registerOpenInPane moved here with it.
 
 import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { Type } from 'typebox'
 
 type OpenInPaneResult = {
   content: Array<{ type: 'text'; text: string }>
@@ -32,7 +32,7 @@ export async function openFileInPane(
   }
 
   // AIDEV-NOTE: herdr CLI called directly — deliberate: no cross-package
-  // dependency for 4 exec calls (see pi-planning twin: plan 2026-09-07-open-spec-file-with-glow).
+  // dependency on pi-interactive-subagents for 4 exec calls (plan 2026-09-07-open-spec-file-with-glow).
   try {
     const split = await pi.exec(
       'herdr',
@@ -85,4 +85,25 @@ export async function openFileInPane(
       details: { ok: false },
     }
   }
+}
+
+// AIDEV-NOTE: PMR-XCA9 — tool registration moved from pi-planning's
+// plan-tools/open-in-pane.ts; the openFileInPane helper above is unchanged.
+export function registerOpenInPane(pi: ExtensionAPI) {
+  pi.registerTool({
+    name: 'open_in_pane',
+    label: 'Open File in Pane',
+    description:
+      'Open a file with nvim (or another command) in a new herdr pane for review. Non-fatal: returns the path and a manual-open note if herdr is unavailable.',
+    promptSnippet: 'Open a spec/plan file with nvim in a herdr review pane',
+    parameters: Type.Object({
+      file: Type.String({ description: 'Absolute path to the file to open' }),
+      command: Type.Optional(
+        Type.String({ description: 'Command to run (default: nvim)' }),
+      ),
+    }),
+    async execute(_id, params) {
+      return openFileInPane(pi, params.file, params.command ?? 'nvim')
+    },
+  })
 }

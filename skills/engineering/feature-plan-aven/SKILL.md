@@ -143,7 +143,7 @@ then read the scout context back.
 ### 3. Resolve the plan artifact path
 
 - **Local ticket**: call `resolve_feature_path` with the feature summary (tool
-  from pi-planning — taskwarrior-agnostic, reused as-is).
+  from pi-flow — taskwarrior-agnostic, reused as-is).
 - **Jira-linked ticket** (`jira-ref` metadata on the epic): call
   `resolve_spec_path` with the Jira ID and summary — the plan lands in the
   specs dir (`<JIRA>__<slug>.md`).

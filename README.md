@@ -40,7 +40,6 @@ pi-my-rifle-ext/
 │   ├── pi-review/           # review + sonarqube + pr-quality
 │   ├── pi-test-runner/      # run_tests tool + /test-runner command
 │   ├── pi-interactive-subagents/ # subagent orchestration (scout/worker/planner/…)
-│   ├── pi-planning/         # plan-tools + implement-plan
 │   ├── pi-sem/              # pi-sem semantic code tools
 │   ├── pi-tool-pills/       # tool pill badges + Shiki diff rendering
 │   ├── pi-desktop-notify/   # /notify command
@@ -148,12 +147,10 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-desktop-notify`](packages/pi-desktop-notify/) | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
 | [`pi-test-runner`](packages/pi-test-runner/) | `run_tests` tool + `/test-runner` command — runs JS/TS tests from `package.json` in an isolated pi-interactive-subagents worker; visible in the orchestrator's subagents widget; results injected back when done ⚠️ *experimental/WIP* | Testing |
 | [`pi-interactive-subagents`](packages/pi-interactive-subagents/) | `subagent` tool + `/plan` dispatch command — spawn scout/worker/planner sub-agents in cmux/tmux/zellij/wezterm/herdr panes, with a live status widget and programmatic `launchSubagent`/`watchSubagent` API; `/plan` routes aven-first to the feature-plan-aven skill (bundled generic workflow as fallback) | Orchestration |
-| [`pi-planning`](packages/pi-planning/) (plan-tools) | Aven-era planning helpers: `resolve_spec_path`, `resolve_feature_path`, `open_in_pane` tools + `/review-spec` command | Planning |
-| [`pi-planning`](packages/pi-planning/) (implement-plan) | `jira_create_branch` tool for Jira-synced tickets (the old ungated `/implement` command was removed — it collided with pi-flow's gated RPIV `/implement`; the implement-plan-aven skill is invoked via phrases or `/skill:implement-plan-aven`) | Planning |
 | [`pi-aven-context`](packages/pi-aven-context/) | Session-start injection of live aven workspace state (`aven prime` tail: open issues, active/ready/blocked) as hidden custom-message context; non-fatal, idempotent | Context |
 | [`pi-teams-transcript`](packages/pi-teams-transcript/) | `teams_transcript` tool — list/download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth) ⚠️ *work in progress* | Integrations |
 | [`pi-pr-digest`](packages/pi-pr-digest/) | `pr_digest` tool + `/pr-digest` command — outstanding GitHub PRs in an org with human comment/review status (bots filtered) and reviewer-request table | Integrations |
-| [`pi-flow`](packages/pi-flow/) | RPIV flow orchestrator — `/research /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish`, gate tools (`flow_phase_complete`, `flow_land`, `flow_run_attempt`, `spec_approve`) that own lifecycle labels/landing/retry budget/spec approval, work-mode detection (`workRoots` config), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
+| [`pi-flow`](packages/pi-flow/) | RPIV flow orchestrator — `/research /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish` / `/review-spec`, gate tools (`flow_phase_complete`, `flow_land`, `flow_run_attempt`, `spec_approve`) that own lifecycle labels/landing/retry budget/spec approval, planning helpers (`resolve_spec_path`, `resolve_feature_path`, `open_in_pane`, `jira_create_branch` — absorbed from the retired pi-planning package), work-mode detection (`workRoots` config), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
 | [`pi-worktree`](packages/pi-worktree/) | `worktree` tool — create/list/remove Herdr worktree workspaces with branch derivation, lockfile-based dependency bootstrap, `.env` snapshots, and a pi agent state dashboard | Git Workflow |
 | [`pi-sudo`](packages/pi-sudo/) | `sudo_run` tool — root command execution behind an Allow/Deny confirmation + masked password prompt (password piped to `sudo -S`, never persisted) | System |
 | [`pi-herdr-title`](packages/pi-herdr-title/) | Renames the current herdr pane to `Pi - <cwd>` on session start; no-op outside herdr | UI Enhancement |
@@ -227,13 +224,13 @@ they depend on must be registered by exactly one package.
     └─ skills/ unreadable ──> bundled generic plan-skill.md (standalone installs)
 
 feature-plan-aven ──uses──> aven CLI (ticket state), resolve_feature_path,
-    │                       jira_create_branch                  (pi-planning)
+    │                       jira_create_branch                  (pi-flow)
     ├─uses──> scout + planner subagents           (pi-interactive-subagents)
     └─writes──> plan.md ($PERSONAL_FEATURES or .pi/plans) + aven epic/dep tree
                 (plan-state gate: draft → review → approved; approval lands
                 only via pi-flow's spec_approve tool)
 
-implement-plan-aven ──uses──> aven CLI, jira_create_branch      (pi-planning)
+implement-plan-aven ──uses──> aven CLI, jira_create_branch      (pi-flow)
     └─uses──> worker subagents in a Herdr worktree
                                               (pi-interactive-subagents, pi-worktree)
 
@@ -256,9 +253,9 @@ feature-ticket ──uses──> raw `task` CLI only (no extension dependency)
 
 | Rule | Detail |
 |------|--------|
-| Commands belong to exactly one package | `pi-interactive-subagents` owns `/plan`; `pi-flow` owns the gated `/implement` (the old ungated `/implement` in pi-planning was removed — pi suffixes duplicates as `/implement:1`, making gated and ungated variants indistinguishable). |
+| Commands belong to exactly one package | `pi-interactive-subagents` owns `/plan`; `pi-flow` owns the gated `/implement` (the old ungated `/implement` in the retired pi-planning package was removed — pi suffixes duplicates as `/implement:1`, making gated and ungated variants indistinguishable). |
 | Skills degrade gracefully | `feature-plan-aven`/`implement-plan-aven` document a fallback when the `subagent` tool is missing (no multiplexer): research/implementing happens in the main session instead of scout/worker panes. |
-| Tool names are contracts | A skill referencing `resolve_feature_path` or `flow_phase_complete` breaks if `pi-planning`/`pi-flow` is not loaded — pi reports the tool as unavailable and the skill's fallback path takes over. |
+| Tool names are contracts | A skill referencing `resolve_feature_path` or `flow_phase_complete` breaks if `pi-flow` is not loaded — pi reports the tool as unavailable and the skill's fallback path takes over. |
 | Agents are package data | `scout`/`worker`/`planner`/`reviewer` definitions live in `pi-interactive-subagents/agents/` and resolve project-local `.pi/agents/` first, then `~/.pi/agent/agents/`, then the bundled copy. |
 | Dispatch has a fallback | `/plan` in a standalone install (no `skills/` dir) falls back to the bundled generic planner workflow — feature-planning without aven. |
 

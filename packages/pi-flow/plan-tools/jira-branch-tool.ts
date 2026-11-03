@@ -1,12 +1,13 @@
 /**
  * jira_create_branch tool — thin registerTool wrapper around
- * shared/jira-branch.ts. Shared by implement-plan and debug skills, replacing
+ * jira-branch.ts. Shared by the implement-plan and debug skills, replacing
  * the formerly-duplicated scripts/jira-branch.sh in each skill directory.
+ * Moved from packages/pi-planning/implement-plan (PMR-XCA9).
  */
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { createJiraBranch } from '../shared/jira-branch.ts'
+import { createJiraBranch } from './jira-branch.ts'
 
 export function registerJiraCreateBranch(pi: ExtensionAPI) {
   pi.registerTool({

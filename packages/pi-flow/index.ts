@@ -44,9 +44,13 @@ import {
   parseViewerPlacement,
 } from './herdr/viewer.ts'
 import { MODE_PROFILE } from './mode-profile.ts'
+import { registerJiraCreateBranch } from './plan-tools/jira-branch-tool.ts'
+import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts'
+import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import { findResearchedArtifact } from './research/artifact.ts'
 import { recordRunEvent, runStatePath } from './run-state.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
+import { registerOpenInPane } from './spec-review/open-in-pane.ts'
 import { createLandingState, registerLandTool } from './tools/land.ts'
 import { registerPhaseCompleteTool } from './tools/phase-complete.ts'
 import { registerRunAttemptTool } from './tools/run-attempt.ts'
@@ -147,6 +151,13 @@ export default function (pi: ExtensionAPI) {
   registerLandTool(pi, landingState)
   registerRunAttemptTool(pi)
   registerSpecApproveTool(pi)
+  // AIDEV-NOTE: PMR-XCA9 — plan-tools absorbed from the retired pi-planning
+  // package (resolve_spec_path, resolve_feature_path, open_in_pane,
+  // jira_create_branch; /review-spec lives in spec-review/commands.ts).
+  registerResolveSpecPath(pi)
+  registerResolveFeaturePath(pi)
+  registerOpenInPane(pi)
+  registerJiraCreateBranch(pi)
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
   // fully settles (blocking ask_user_question gates keep the run in flight,

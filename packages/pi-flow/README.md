@@ -1,8 +1,9 @@
 # pi-flow
 
 RPIV flow extension — `/research /plan /implement /validate /feedback`
-phase commands plus the `/flow` orchestrator, routed over pi-planning,
-pi-review, and pi-interactive-subagents (no cross-package runtime imports).
+phase commands plus the `/flow` orchestrator, routed over pi-review and
+pi-interactive-subagents (pi-planning was absorbed into this package —
+plan-tools and jira_create_branch now live here).
 Canonical flow documentation: [`docs/rpiv-flow.md`](../../docs/rpiv-flow.md).
 
 ## Commands

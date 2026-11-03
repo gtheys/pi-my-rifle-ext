@@ -31,9 +31,6 @@
       "./index.ts"
     ]
   },
-  "dependencies": {
-    "@gtheys/pi-planning": "workspace:*"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"

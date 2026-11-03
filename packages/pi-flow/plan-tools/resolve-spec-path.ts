@@ -1,5 +1,6 @@
 /**
  * resolve_spec_path tool — compute the canonical spec file path for a Jira ticket.
+ * Moved from packages/pi-planning (PMR-XCA9).
  */
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'

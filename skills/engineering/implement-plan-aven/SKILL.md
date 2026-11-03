@@ -243,7 +243,7 @@ If on `main`/`master` and about to edit, suggest one branch name (e.g.
 `feat/<feature-slug>`) — one sentence, no tool call. Otherwise stay put.
 
 **Jira-linked** (`jira-ref` present): derive the branch with
-`jira_create_branch` (from the `pi-planning` package) using the `jira-ref`
+`jira_create_branch` (from the `pi-flow` package) using the `jira-ref`
 value as the Jira ID, `cwd` set to the target repo root:
 
 1. `jira_create_branch({ jira_id: "<jira-ref value>", cwd: "<repo root>", dry_run: true })` — `details.branch` is the expected branch (`<prefix>/<JIRA_ID>-<slug>`).

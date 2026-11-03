@@ -95,14 +95,6 @@
         "@sinclair/typebox": "*",
       },
     },
-    "packages/pi-planning": {
-      "name": "@gtheys/pi-planning",
-      "version": "0.2.0",
-      "peerDependencies": {
-        "@earendil-works/pi-coding-agent": "*",
-        "typebox": "*",
-      },
-    },
     "packages/pi-pr-digest": {
       "name": "@gtheys/pi-pr-digest",
       "version": "0.1.0",
@@ -196,9 +188,6 @@
     "packages/pi-worktree": {
       "name": "@gtheys/pi-worktree",
       "version": "0.1.0",
-      "dependencies": {
-        "@gtheys/pi-planning": "workspace:*",
-      },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "typebox": "*",
@@ -335,8 +324,6 @@
     "@gtheys/pi-interactive-subagents": ["@gtheys/pi-interactive-subagents@workspace:packages/pi-interactive-subagents"],
 
     "@gtheys/pi-per-commit-spend": ["@gtheys/pi-per-commit-spend@0.2.6", "", { "peerDependencies": { "@mariozechner/pi-coding-agent": "*", "@mariozechner/pi-tui": "*" } }, "sha512-0+8P5DcK0MTeIh/wiz4wfOgD0qbfv/dT5rgokwHY6oTP2V40JWK7KrTjcWZLZcAFkU97SWoCt0Qa5bz/TPH4Pw=="],
-
-    "@gtheys/pi-planning": ["@gtheys/pi-planning@workspace:packages/pi-planning"],
 
     "@gtheys/pi-pr-digest": ["@gtheys/pi-pr-digest@workspace:packages/pi-pr-digest"],
 

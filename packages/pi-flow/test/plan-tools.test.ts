@@ -1,11 +1,15 @@
+// AIDEV-NOTE: PMR-XCA9 — moved from packages/pi-planning/test/test.ts;
+// only the import paths changed (slugify now canonical in research/paths.ts,
+// openFileInPane in spec-review/open-in-pane.ts).
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { resolveFeaturePath, slugify } from '../plan-tools/helpers.ts'
-import { openFileInPane } from '../plan-tools/open-in-pane.ts'
+import { resolveFeaturePath } from '../plan-tools/helpers.ts'
+import { slugify } from '../research/paths.ts'
+import { openFileInPane } from '../spec-review/open-in-pane.ts'
 
 const GIT_TOPLEVEL = '/home/dev/Code/acme/widgets'
 
