@@ -4,7 +4,7 @@ import test from 'node:test'
 import {
   buildSemReviewGuidance,
   getSemToolAvailability,
-} from './sem-guidance.mjs'
+} from '../review/sem-guidance.mjs'
 
 test('getSemToolAvailability detects active sem review tools', () => {
   const availability = getSemToolAvailability([

@@ -1,6 +1,8 @@
 // AIDEV-NOTE: Feedback-phase handoff prompts (PMR-XDRB phase 5), sent via
 // sendUserMessage (same pattern as validate/prompt.ts). Work mode runs
-// /sonarqube and /pr-quality (pi-review) BY NAME — no imports of pi-review.
+// /sonarqube and /pr-quality — in-package commands since PMR-W8SG absorbed
+// pi-review; the prompt still names them because command invocation is a
+// runtime act, not an import.
 // The triage rules mirror classify() in feedback/triage.ts; the escalation
 // rule (new work = new task through the gates) is stated as an absolute in
 // the prompt so the agent can never fix silently or ignore a finding.
@@ -20,7 +22,7 @@ const MECHANICAL = [...FIX_NOW_SEVERITIES].join(', ')
 function workSection(ref: string): string {
   return `Run the feedback work gate on ${ref}'s PR. Execute IN ORDER:
 
-1. Run /sonarqube on the PR (pi-review, BY NAME) and read its report.
+1. Run /sonarqube on the PR and read its report.
 2. For EACH unresolved finding, triage it with these rules:
    - Mechanical findings (severity ${MECHANICAL}) that do NOT touch
      behavior, architecture, data, migrations, schema, or API contracts are
@@ -46,7 +48,7 @@ function personalSection(ref: string): string {
   return `Run the feedback personal flow on ${ref}:
 
 1. If the validate phase produced fixes after its /review, re-run /review
-   (BY NAME) on the final state and address its blockers via the same rules
+   on the final state and address its blockers via the same rules
    as the work mode (mechanical fixes committed; bigger findings become new
    tasks through the gates — never silent, never ignored).
 2. Write the outcome summary as an aven note on ${ref}: what shipped, the

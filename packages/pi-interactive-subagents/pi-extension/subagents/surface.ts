@@ -19,7 +19,7 @@ import { herdrPaneAlive } from './spawn.ts'
 // AIDEV-NOTE: herdr-only surface layer (PMR-TABUX). The cmux/tmux/zellij/
 // wezterm backends and the PI_SUBAGENT_MUX override were deleted; every
 // surface operation goes through the herdr verb layer. Kept public names:
-// isMuxAvailable/muxSetupHint (pi-test-runner, pi-review) and the text-send /
+// isMuxAvailable/muxSetupHint (pi-test-runner, pi-flow) and the text-send /
 // screen-read helpers the still-alive WXG0 answer path uses until Phase 5
 // replaces pane typing with the mailbox pump.
 

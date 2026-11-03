@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { REVIEW_VERDICT_INSTRUCTIONS } from './verdict.ts'
+import { REVIEW_VERDICT_INSTRUCTIONS } from '../review/verdict.ts'
 
 test('verdict instructions contain the exact contract lines', () => {
   // Byte-for-byte match with pi-flow's REVIEW_CONTRACT_PROMPT wording

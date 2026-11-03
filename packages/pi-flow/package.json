@@ -1,13 +1,13 @@
 {
   "name": "@gtheys/pi-flow",
   "version": "0.1.0",
-  "description": "Pi extension \u2014 RPIV flow orchestrator skeleton (work-mode detection, phase-state labels, stub phase commands)",
+  "description": "Pi extension \u2014 RPIV flow orchestrator (phase commands, gate tools, review/sonarqube/pr-quality, work-mode detection, run-state journal)",
   "type": "module",
   "keywords": [
     "pi-package"
   ],
   "scripts": {
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts test/*.test.mjs"
   },
   "license": "MIT",
   "repository": {
@@ -58,13 +58,20 @@
     "plan/prompt.ts",
     "plan/size-check.ts",
     "plan/split-gate.ts",
+    "pr-quality/index.ts",
     "research/args.ts",
     "research/artifact.ts",
     "research/paths.ts",
     "research/prompt.ts",
     "research/refs.ts",
     "research/ticket-gate.ts",
+    "review/review.ts",
+    "review/sem-guidance.d.mts",
+    "review/sem-guidance.mjs",
+    "review/verdict.ts",
     "run-state.ts",
+    "shared/sonarqube-utils.ts",
+    "sonarqube/sonarqube.ts",
     "spec-review/approve.ts",
     "spec-review/args.ts",
     "spec-review/aven-spec.ts",
@@ -95,9 +102,11 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "dependencies": {
-    "@gtheys/pi-interactive-subagents": "workspace:*"
+    "@gtheys/pi-interactive-subagents": "workspace:*",
+    "@gtheys/pi-worktree": "workspace:*"
   }
 }

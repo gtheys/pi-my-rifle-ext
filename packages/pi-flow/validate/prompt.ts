@@ -14,10 +14,10 @@ import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
 
 // AIDEV-NOTE: Review gate section (PMR-JTAM) — appended to BOTH validate
 // prompts. Runs after the env/human gate passes: /review (fresh-context
-// reviewer, pi-review) -> parse blockers_count artifact -> route. The
-// contract wording lives in review-gate.ts; pi-review emits the verdict
-// section natively (PMR-5PCB), and this prompt restates it for artifacts
-// written by hand.
+// reviewer, in-package since PMR-W8SG) -> parse blockers_count artifact ->
+// route. The contract wording lives in review-gate.ts; review/verdict.ts
+// emits the verdict section natively from those shared constants
+// (PMR-5PCB), and this prompt restates it for artifacts written by hand.
 function buildReviewGateSection(
   mode: 'work' | 'personal',
   ref: string,
@@ -28,7 +28,7 @@ function buildReviewGateSection(
   let landing: string
   if (mode === 'work') {
     landing = `push the branch and create a PR via
-   pi-review's PR tooling BY NAME (gh CLI), then post a Jira comment on
+   the gh CLI, then post a Jira comment on
    ${ref} linking the PR URL.`
   } else {
     landing = `push the branch straight to main —

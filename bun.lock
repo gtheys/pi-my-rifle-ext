@@ -68,9 +68,11 @@
       "version": "0.1.0",
       "dependencies": {
         "@gtheys/pi-interactive-subagents": "workspace:*",
+        "@gtheys/pi-worktree": "workspace:*",
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
+        "@earendil-works/pi-tui": "*",
         "typebox": "*",
       },
     },
@@ -107,19 +109,6 @@
     "packages/pi-prompt-snippets": {
       "name": "@gtheys/pi-prompt-snippets",
       "version": "0.1.0",
-      "peerDependencies": {
-        "@earendil-works/pi-coding-agent": "*",
-        "@earendil-works/pi-tui": "*",
-      },
-    },
-    "packages/pi-review": {
-      "name": "@gtheys/pi-review",
-      "version": "0.2.0",
-      "dependencies": {
-        "@gtheys/pi-interactive-subagents": "workspace:*",
-        "@gtheys/pi-worktree": "workspace:*",
-        "typebox": "*",
-      },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "@earendil-works/pi-tui": "*",
@@ -328,8 +317,6 @@
     "@gtheys/pi-pr-digest": ["@gtheys/pi-pr-digest@workspace:packages/pi-pr-digest"],
 
     "@gtheys/pi-prompt-snippets": ["@gtheys/pi-prompt-snippets@workspace:packages/pi-prompt-snippets"],
-
-    "@gtheys/pi-review": ["@gtheys/pi-review@workspace:packages/pi-review"],
 
     "@gtheys/pi-sem": ["@gtheys/pi-sem@workspace:packages/pi-sem"],
 

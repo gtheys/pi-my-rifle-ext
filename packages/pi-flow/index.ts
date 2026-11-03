@@ -47,8 +47,11 @@ import { MODE_PROFILE } from './mode-profile.ts'
 import { registerJiraCreateBranch } from './plan-tools/jira-branch-tool.ts'
 import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts'
 import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
+import prQualityExtension from './pr-quality/index.ts'
 import { findResearchedArtifact } from './research/artifact.ts'
+import reviewExtension from './review/review.ts'
 import { recordRunEvent, runStatePath } from './run-state.ts'
+import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
 import { createLandingState, registerLandTool } from './tools/land.ts'
@@ -158,6 +161,14 @@ export default function (pi: ExtensionAPI) {
   registerResolveFeaturePath(pi)
   registerOpenInPane(pi)
   registerJiraCreateBranch(pi)
+
+  // AIDEV-NOTE: PMR-W8SG — review/sonarqube/pr-quality absorbed from the
+  // retired pi-review package. Each is a self-registering extension
+  // entrypoint (own commands + agent tool); pi-review is deleted, so these
+  // register exactly once, here.
+  reviewExtension(pi)
+  sonarqubeExtension(pi)
+  prQualityExtension(pi)
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
   // fully settles (blocking ask_user_question gates keep the run in flight,

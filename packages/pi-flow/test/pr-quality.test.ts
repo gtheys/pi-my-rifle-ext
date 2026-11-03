@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { gatherPrQualityData, PrQualityError } from './index.ts'
+import { gatherPrQualityData, PrQualityError } from '../pr-quality/index.ts'
 
 // Canned SonarCloud API responses
 const coverageMeasures = {

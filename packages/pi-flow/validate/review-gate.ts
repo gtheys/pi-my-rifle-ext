@@ -3,10 +3,10 @@
 // artifact is parsed here. PURE only: no /review invocation, no aven/Jira/git
 // I/O — the handoff prompt (validate/prompt.ts) owns all side effects.
 //
-// AIDEV-NOTE: blockers_count artifact contract (DEFINED HERE — pi-review
-// emits it natively since PMR-5PCB: its review rubric ends every /review
-// artifact with a "## Verdict" section carrying exactly these lines, via
-// pi-review's review/verdict.ts). The validate prompt still restates the
+// AIDEV-NOTE: blockers_count artifact contract (DEFINED HERE — single
+// owner since PMR-W8SG absorbed pi-review into pi-flow). The emitter
+// (review/verdict.ts) imports VERDICT_HEADING and BLOCKER_LINE from here so
+// parser and emitter can never drift. The validate prompt still restates the
 // contract so hand-written artifacts match too:
 //   - exactly one line matching `blockers_count: <integer >= 0>`
 //   - optional blocker descriptions as lines starting with `- blocker: `
@@ -18,10 +18,17 @@
 
 export type LandingRoute = 'pr' | 'push-main'
 
+// AIDEV-NOTE: Contract pieces shared with the emitter (review/verdict.ts).
+// parseReviewArtifact scopes parsing to the verdict section, so the heading
+// wording is load-bearing on both sides.
+export const VERDICT_HEADING = '## Verdict'
+export const BLOCKER_LINE =
+  '   - blocker: <description> (omit this line entirely when N is 0)'
+
 // AIDEV-NOTE: The exact contract wording handed to the validating agent so
 // the artifact it writes matches parseReviewArtifact byte-for-byte.
 export const REVIEW_CONTRACT_PROMPT = `   blockers_count: 0
-   - blocker: <description> (omit this line entirely when N is 0)`
+${BLOCKER_LINE}`
 
 export type ReviewArtifact =
   | { ok: true; blockersCount: number; blockers: readonly string[] }
@@ -33,8 +40,8 @@ const BLOCKER_RE = /^- blocker:\s*(.+)$/
 // AIDEV-NOTE: Scopes parsing to the verdict section so a review that merely
 // QUOTES the contract (e.g. while discussing the gate) does not double-count.
 // Preference order: the section after the LAST "## Verdict"-style heading
-// (up to the next heading) ALWAYS wins — that is what pi-review's
-// review/verdict.ts emits canonically. Only when no heading exists do we
+// (up to the next heading) ALWAYS wins — that is what review/verdict.ts
+// emits canonically. Only when no heading exists do we
 // fall back to the LAST fenced block containing a count line (hand-written
 // artifacts), else the whole artifact. A quoted fenced example (e.g.
 // "blockers_count: 0" in a fence) must NEVER override a real heading
@@ -103,7 +110,7 @@ export type ReviewDecision =
   | { route: 'implement'; blockersNote: string }
 
 // AIDEV-NOTE: Pure gate decision. 0 blockers -> landing route chosen by
-// resolveMode (work: PR via pi-review tooling, personal: straight push to
+// resolveMode (work: PR via the gh CLI, personal: straight push to
 // main — standing no-PR rule on own repos). >0 -> back to /implement with
 // the blockers recorded as an aven note (retry budget applies there).
 export function decideReviewRoute(

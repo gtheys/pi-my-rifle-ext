@@ -5,7 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { isMuxAvailable } from '@gtheys/pi-interactive-subagents'
-import reviewExtension, { buildFullReviewPrompt } from './review.ts'
+import reviewExtension, { buildFullReviewPrompt } from '../review/review.ts'
 
 type CapturedCommand = { name: string; options: unknown }
 

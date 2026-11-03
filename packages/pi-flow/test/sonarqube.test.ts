@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { runSonarAnalysis } from './sonarqube.ts'
+import { runSonarAnalysis } from '../sonarqube/sonarqube.ts'
 
 // Canned SonarCloud API responses
 const coverageMeasures = {

@@ -37,7 +37,6 @@ pi-my-rifle-ext/
 │   ├── pi-bootstrap/        # Startup bootstrap (symlinks AGENTS.md)
 │   ├── pi-ask-user-question/ # ask_user_question tool (interactive TUI dialogs)
 │   ├── pi-prompt-snippets/  # one-shot prompt snippet toggles (alt+s / /snippets)
-│   ├── pi-review/           # review + sonarqube + pr-quality
 │   ├── pi-test-runner/      # run_tests tool + /test-runner command
 │   ├── pi-interactive-subagents/ # subagent orchestration (scout/worker/planner/…)
 │   ├── pi-sem/              # pi-sem semantic code tools
@@ -46,7 +45,7 @@ pi-my-rifle-ext/
 │   ├── pi-teams-transcript/ # teams_transcript tool (MS Graph)
 │   ├── pi-pr-digest/        # pr_digest tool + /pr-digest command (gh CLI)
 │   ├── pi-aven-context/     # aven workspace state session-start context
-│   ├── pi-flow/             # RPIV flow orchestrator (phases, gate tools, run-state journal, Herdr viewer)
+│   ├── pi-flow/             # RPIV flow orchestrator (phases, gate tools, run-state journal, Herdr viewer, review/sonarqube/pr-quality)
 │   ├── pi-worktree/         # worktree tool (Herdr worktree workspaces)
 │   ├── pi-sudo/             # sudo_run tool (confirm dialog + masked password)
 │   └── pi-herdr-title/      # renames the herdr pane to `Pi - <cwd>` on session start
@@ -139,9 +138,6 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-bootstrap`](packages/pi-bootstrap/) | Startup bootstrap — symlinks `agents/AGENTS.md` to `~/.pi/agent/AGENTS.md` | Bootstrap |
 | [`pi-ask-user-question`](packages/pi-ask-user-question/) | `ask_user_question` tool — pauses execution for interactive text / single-select / multi-select questions with an Other free-text escape hatch | Interaction |
 | [`pi-prompt-snippets`](packages/pi-prompt-snippets/) | One-shot prompt snippets — alt+s / `/snippets` toggle menu, bodies prepended/appended to the next message, widget shows active set | Interaction |
-| [`pi-review`](packages/pi-review/) (review) | `/review` command — code review for PRs, branches, uncommitted changes, commits, or folders with semantic tool guidance; optional OpenCodeReview second opinion (JSON) and ocr delegate preset (agent applies ocr rules, no ocr LLM) | Code Review |
-| [`pi-review`](packages/pi-review/) (sonarqube) | `/sonarqube` command — fetches SonarCloud coverage gaps and quality issues for a PR, generates actionable report | Code Quality |
-| [`pi-review`](packages/pi-review/) (pr-quality) | `/pr-quality` command — combines GitHub PR review triage + SonarCloud analysis into a unified action plan | Code Quality |
 | [`pi-tool-pills`](packages/pi-tool-pills/) | Colored pill badges for tool headers + Shiki-powered syntax-highlighted diffs for write/edit | UI Enhancement |
 | [`pi-sem`](packages/pi-sem/) | Semantic code analysis tools — entity-level diff, impact analysis, context lookup, and blame via `pi-sem` | Code Analysis |
 | [`pi-desktop-notify`](packages/pi-desktop-notify/) | `/notify` command — desktop notifications (notify-send) when pi finishes work after an idle period | Notifications |
@@ -150,7 +146,7 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-aven-context`](packages/pi-aven-context/) | Session-start injection of live aven workspace state (`aven prime` tail: open issues, active/ready/blocked) as hidden custom-message context; non-fatal, idempotent | Context |
 | [`pi-teams-transcript`](packages/pi-teams-transcript/) | `teams_transcript` tool — list/download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth) ⚠️ *work in progress* | Integrations |
 | [`pi-pr-digest`](packages/pi-pr-digest/) | `pr_digest` tool + `/pr-digest` command — outstanding GitHub PRs in an org with human comment/review status (bots filtered) and reviewer-request table | Integrations |
-| [`pi-flow`](packages/pi-flow/) | RPIV flow orchestrator — `/research /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish` / `/review-spec`, gate tools (`flow_phase_complete`, `flow_land`, `flow_run_attempt`, `spec_approve`) that own lifecycle labels/landing/retry budget/spec approval, planning helpers (`resolve_spec_path`, `resolve_feature_path`, `open_in_pane`, `jira_create_branch` — absorbed from the retired pi-planning package), work-mode detection (`workRoots` config), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
+| [`pi-flow`](packages/pi-flow/) | RPIV flow orchestrator — `/research /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish` / `/review-spec`, gate tools (`flow_phase_complete`, `flow_land`, `flow_run_attempt`, `spec_approve`) that own lifecycle labels/landing/retry budget/spec approval, planning helpers (`resolve_spec_path`, `resolve_feature_path`, `open_in_pane`, `jira_create_branch` — absorbed from the retired pi-planning package), review tooling (`/review` + `review` tool, `/sonarqube` + `sonarqube` tool, `/pr-quality` + `pr_quality` tool, `/pr-watch` — absorbed from the retired pi-review package), work-mode detection (`workRoots` config), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
 | [`pi-worktree`](packages/pi-worktree/) | `worktree` tool — create/list/remove Herdr worktree workspaces with branch derivation, lockfile-based dependency bootstrap, `.env` snapshots, and a pi agent state dashboard | Git Workflow |
 | [`pi-sudo`](packages/pi-sudo/) | `sudo_run` tool — root command execution behind an Allow/Deny confirmation + masked password prompt (password piped to `sudo -S`, never persisted) | System |
 | [`pi-herdr-title`](packages/pi-herdr-title/) | Renames the current herdr pane to `Pi - <cwd>` on session start; no-op outside herdr | UI Enhancement |
@@ -243,8 +239,8 @@ pi-flow /research /plan /implement /validate /feedback /flow
     ├─ flow_land gates git push / gh pr create on the review-passed label
     ├─ flow_run_attempt owns the 3-attempt retry budget
     ├─ spec_approve is the only plan-state review → approved transition
-    └─ /validate ends in a review gate consuming pi-review's
-        blockers_count verdict
+    └─ /validate ends in a review gate consuming the blockers_count
+        verdict emitted by pi-flow's own /review
 
 feature-ticket ──uses──> raw `task` CLI only (no extension dependency)
 ```
@@ -278,7 +274,9 @@ feature-ticket ──uses──> raw `task` CLI only (no extension dependency)
 - **Flow gates**: aven lifecycle labels
   (`researched → planned → active → review-passed → done`) are the `/flow` run
   state, written only through pi-flow's gate tools; the validate phase's review
-  gate consumes a `blockers_count: <N>` verdict emitted natively by pi-review.
+  gate consumes a `blockers_count: <N>` verdict emitted natively by pi-flow's
+  `/review` (the contract is shared inside the package: `validate/review-gate.ts`
+  owns the wording, `review/verdict.ts` emits from it).
 
 ---
 
