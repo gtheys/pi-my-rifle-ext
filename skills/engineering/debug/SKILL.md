@@ -46,7 +46,7 @@ the ticket's `worktree:` note / `worktree list`):
 worktree({ action: 'create', name: '<REF-slug>' })
 ```
 
-If `herdr` is unavailable (`pi-worktree` can't run): STOP AND ASK — never
+If `herdr` is unavailable (pi-flow's `worktree` tool can't run): STOP AND ASK — never
 fall back to in-place fixes. Record the worktree on the ticket so a later
 session can resume:
 

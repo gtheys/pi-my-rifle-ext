@@ -35,9 +35,9 @@ non-obvious implementation decisions worth knowing before you touch it.
   aven planner handles aven refs, aven-synced Jira IDs, and local features;
   the aven workspace is routed by cwd). If the repo's skill files can't be read
   (standalone install), it falls back to the bundled generic `plan-skill.md`.
-  Note: `pi-planning` no longer registers `/plan` at all (its plan-tools only
-  register `/review-spec`), so there is no load-order collision in the
-  monorepo.
+  Historical note: the retired `pi-planning` package used to collide here;
+  it was absorbed into pi-flow (PMR-XCA9), which registers no `/plan`, so
+  there is no load-order collision in the monorepo.
 - **Subagent env:** epimetheus (Hindsight memory) is **disabled** in subagent
   sessions (`EPIMETHEUS_ENABLED=false`) — its pending-queue markers for
   ephemeral/crashed subagent sessions orphaned and warned on every parent quit;
@@ -85,22 +85,10 @@ non-obvious implementation decisions worth knowing before you touch it.
   comment/review status — bot activity filtered out. Backs the digest mode of the
   `teams-pr-notify` skill (reviewer-request table for PRs lacking human review).
 
-## pi-worktree
+## pi-worktree (retired)
 
-- **Files:** `packages/pi-worktree/index.ts`, `branch.ts`, `bootstrap.ts`,
-  `herdr.ts`, `remove-guards.ts`
-- **Registers:** `worktree` tool (actions `create` / `list` / `remove`).
-- **What:** Parallel feature work via [Herdr](https://github.com/pi-edubot/herdr)
-  worktree workspaces. `create` derives a branch from a Jira ID (acli), a
-  conventional `name`+`type`, or a literal `branch`; creates the worktree, bootstraps
-  dependencies by lockfile (bun/yarn/npm/pnpm/cargo/go — best-effort, failures never
-  block creation, and the action waits for bootstrap to finish before returning),
-  copies missing `.env*` files from the main checkout (point-in-time snapshot, never
-  overwritten), and best-effort sets the git-town parent for the Jira flow.
-  `list` joins worktrees with live pi agent states as a dashboard; `remove` refuses
-  dirty worktrees without `force` and only deletes branches already **MERGED** on
-  GitHub when `delete_branch` is set. Merge/push stay manual — removal only checks
-  the result.
+Absorbed into pi-flow (PMR-K0ZV) as `packages/pi-flow/worktree/` — see
+[pi-flow → worktree/](#worktree--absorbed-from-pi-worktree) below.
 
 ## pi-desktop-notify
 
@@ -165,115 +153,22 @@ non-obvious implementation decisions worth knowing before you touch it.
   `truncateToolText`).
 - Full usage guidance lives in the paired `skills/tools/sem/SKILL.md`.
 
-## pi-planning (plan-tools + implement-plan)
+## pi-planning (retired)
 
-Aven-era slimmed-down package: task management lives in **aven** (see
-`feature-plan-aven` / `implement-plan-aven` skills and
-[the planning workflow](../workflows/planning-and-implementation.md)); every
-`tw_*` taskwarrior tool was deleted. What remains: canonical path resolution,
-nvim-in-pane plan review, and Jira branch derivation. Both siblings follow
-**one-tool-per-file** layout, wired from each `index.ts`.
+Absorbed into pi-flow (PMR-XCA9) as `packages/pi-flow/plan-tools/` (+ the
+`jira_create_branch` tool and `/review-spec` command) — see
+[pi-flow → plan-tools/](#plan-tools--absorbed-from-pi-planning) below.
+Task management lives in **aven**; every `tw_*` taskwarrior tool was deleted
+earlier. See [Planning workflow](../workflows/planning-and-implementation.md)
+for the full aven data model and plan-state gate.
 
-### plan-tools — `packages/pi-planning/plan-tools/`
+## pi-review (retired)
 
-- **Files:** `index.ts`, `helpers.ts`, `open-in-pane.ts`, `resolve-spec-path.ts`,
-  `resolve-feature-path.ts`.
-- **Tools:** `resolve_spec_path`, `resolve_feature_path`, `open_in_pane`.
-- **Commands:** `/review-spec <path>` only — the old duplicate `/plan`
-  registration was removed; `/plan` is owned solely by
-  pi-interactive-subagents.
-- **Spec path convention:** `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md`
-  (slug = first 5 lowercase words, non-alnum stripped; `$LLM_NOTES_ROOT` overrides
-  for a central notes vault).
-- **Feature path convention:** `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`
-  if set, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md`.
-- **`open_in_pane`** opens a plan/spec with **nvim** (glow was replaced) in a herdr
-  `spec-review` pane — calls the `herdr` CLI directly (deliberate, no cross-package
-  import for 3 exec calls); non-fatal when herdr is missing.
-
-### implement-plan — `packages/pi-planning/implement-plan/`
-
-- **Files:** `index.ts` (tool registration only), `jira-branch-tool.ts`.
-- **Tools:** `jira_create_branch` (shared `shared/jira-branch.ts`; registered here
-  for standalone installs). Derives a branch from a Jira issue (type → prefix,
-  summary → slug), optional git-town parent to `develop`. Requires `acli` +
-  `git-town`.
-- **No commands:** the old ungated `/implement` was removed — it collided with
-  pi-flow's gated `/implement` (pi suffixes duplicates as `/implement:1`). The
-  implement-plan-aven skill stays reachable via natural phrases or
-  `/skill:implement-plan-aven` (in-file AIDEV-NOTE).
-- See [Planning workflow](../workflows/planning-and-implementation.md) for the
-  full aven data model and plan-state gate.
-
-## pi-review (review + sonarqube + pr-quality)
-
-Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
-
-### review — `packages/pi-review/review/review.ts`
-
-- **Command:** `/review [pr <n>|pr <url>|uncommitted|branch <name>|commit <sha>|folder <paths...>|custom "<instructions>"]`
-  with an interactive selector when called with no args.
-- **What:** Prompts the agent to review code changes. When a supported multiplexer is
-  available, `/review` **spawns a `reviewer` subagent** via `pi-interactive-subagents`
-  programmatic API (`launchSubagent`, `d90713f`) — findings steer back into the session
-  when the review completes. The legacy in-session path remains as fallback when
-  there's no mux or the spawn fails; with a mux available, every mode runs in the
-  subagent.
-- **PR reviews are worktree-based by default:** with Herdr + mux, the PR is fetched
-  into a dedicated `review/pr-<n>` branch in its own Herdr worktree; the worktree
-  (and branch) is auto-removed when all jobs finish. Fresh worktrees run
-  `yarn install` with `GH_TOKEN` propagated. Only the legacy no-Herdr path
-  in-place-checks-out the PR and requires a clean tree.
-- **ocr second opinion:** with the `ocr` binary on PATH, every diff-based target
-  also spawns a pure-runner **scout** subagent running
-  `ocr <args> --format json --output <tmpfile>` and catting it back — the JSON
-  steers in as an `ocr_result` message. Target mapping: PR →
-  `review --from <base> --to <worktree-branch>`; base branch →
-  `--from <merge-base> --to HEAD`; uncommitted → workspace `review`; commit →
-  `--commit <sha>`; folder → `scan --path <paths>`. PR worktrees are refcounted
-  (`pending` = reviewer + ocr scout) so a fast reviewer can't tear the worktree
-  out from under a still-running scout.
-- **ocr delegate preset:** "Review with ocr delegate rules" — the reviewer subagent
-  itself runs `ocr delegate preview` + `ocr delegate rule` (LLM-free) and applies
-  the resolved rules to the diff; no ocr LLM configuration needed.
-- Injects semantic-tool guidance (`buildSemReviewGuidance` from `sem-guidance.mjs`)
-  so the review prompt tells the agent to prefer `sem_diff`/`sem_impact` when
-  `pi-sem` is available.
-- **Verdict emission** (`review/verdict.ts`, `9ae1fce`): the review prompt
-  instructs the reviewer to end with a `blockers_count: <N>` verdict, and the
-  extension emits/parses that count natively so `pi-flow`'s review gate can
-  consume it without re-parsing prose.
-- **Session state:** tracks the origin session ID for a "fresh session per review"
-  pattern; module-level state (`reviewOriginId`, `endReviewInProgress`) is deliberate
-  and assumes a single active review at a time (documented in-file).
-- Project-specific guidelines: if `REVIEW_GUIDELINES.md` exists next to `.pi/`, its
-  contents are appended to the review prompt.
-
-### sonarqube — `packages/pi-review/sonarqube/sonarqube.ts`
-
-- **Command:** `/sonarqube [pr-number] [--severity=...] [--types=...]`
-- **What:** Analysis-only rewrite of legacy `salaryhero/opencode/bin/sonar-*` bash
-  scripts. Auto-detects PR number from current branch and Sonar project config from
-  `sonar-project.properties` if not given explicitly. Fetches coverage gaps
-  (`analyzeCoverage`) and quality issues (`analyzeIssues`/`fetchAllIssues`) from
-  SonarCloud, filterable by severity/type.
-- **Requires:** `SONARQUBE_TOKEN` env var.
-
-### pr-quality — `packages/pi-review/pr-quality/index.ts` (642 lines)
-
-- **Commands:** `/pr-quality [pr-number]`, `/pr-watch`.
-- **What:** Combines GitHub PR unresolved review threads (via inline `gh api graphql`,
-  `REVIEW_THREADS_QUERY`) with SonarCloud analysis for the same PR into one unified
-  LLM context message. The agent is expected to: triage each thread VALID/INVALID,
-  auto-resolve INVALID threads through the GraphQL API, cross-reference VALID
-  comments with Sonar issues by file, and **fix issues immediately** — deliberately
-  no plan file is written (changed in `f68b45b5`, replacing an earlier
-  plan-file-based flow).
-- **`/pr-watch`:** background-polls GitHub Actions/status checks
-  (`checkActionsComplete`, via `statusCheckRollup`, ignoring `SKIPPED` checks) using a
-  plain `setInterval` loop — replaced an earlier detached-bash+sentinel-file+`fs.watch`
-  approach (`202b3de7`) that was flaky. When checks complete, it triggers `/pr-quality`
-  automatically. Cleans up its interval on `session_shutdown`.
+Absorbed into pi-flow (PMR-W8SG) as `packages/pi-flow/review/`,
+`sonarqube/`, `pr-quality/` (+ `shared/sonarqube-utils.ts`) — see the
+pi-flow subsections [review/](#review--absorbed-from-pi-review),
+[sonarqube/](#sonarqube--absorbed-from-pi-review), and
+[pr-quality/](#pr-quality--absorbed-from-pi-review) below.
 
 ## pi-teams-transcript
 
@@ -314,14 +209,22 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
 
 ## pi-flow (RPIV flow)
 
-- **Files:** `packages/pi-flow/index.ts` (all registrations), `flow/` (loop, args,
-  label-gate, land-gate, ensure-labels, aven-resolve, ref-kind, jira-ref,
-  phase-prompts, orchestrate), `spec-review/` (approve, aven-spec, publish,
-  open-in-pane, picker), `research|plan|implement|validate|feedback/` (one
-  subdir per phase: args + prompt), `run-state.ts`, `herdr/` (viewer, sync).
+- **Files:** `packages/pi-flow/index.ts` (wiring only — registrations +
+  enforcement interceptors; decisions live in pure modules), `aven/` (client:
+  every aven shell-out), `config.ts` + `work-mode.ts` + `mode-profile.ts`
+  (config boundary + work/personal mode), `tools/` (the four gate tools),
+  `flow/` (loop, args, label-gate, land-gate, ensure-labels, aven-resolve,
+  ref-kind, jira-ref, phase-command, phase-prompts, orchestrate),
+  `spec-review/` (approve, aven-spec, publish, open-in-pane, picker),
+  `research|plan|implement|validate|feedback/` (one subdir per phase: args +
+  prompt), `plan-tools/` (absorbed from pi-planning), `review/` +
+  `sonarqube/` + `pr-quality/` + `shared/` (absorbed from pi-review),
+  `worktree/` (absorbed from pi-worktree), `run-state.ts`, `herdr/` (viewer,
+  sync).
 - **Commands:** `/research`, `/plan`, `/implement`, `/validate`, `/feedback`,
-  `/flow` (orchestrator loop), `/spec-review`, `/spec-publish`, plus the Herdr
-  pair `/flow-view <ref>` and `/herdr-sync`.
+  `/flow` (orchestrator loop), `/spec-review`, `/spec-publish`, `/review-spec`,
+  the absorbed `/review`, `/sonarqube`, `/pr-quality`, `/pr-watch`, plus the
+  Herdr pair `/flow-view <ref>` and `/herdr-sync`.
 - **Tools (agent-callable gates):** `flow_phase_complete` (the ONLY way to write
   lifecycle labels — direct `aven edit --label` mutations are blocked by
   `flow/label-gate.ts`), `flow_land` (gates push/PR creation behind the
@@ -330,6 +233,9 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
   is active), `flow_run_attempt` (owns the retry budget: **3 total attempts**,
   the 3rd failure returns an escalation error and further attempts are
   refused), `spec_approve` (only path from plan-state `review` → `approved`).
+  Plus the absorbed agent tools: `resolve_spec_path`, `resolve_feature_path`,
+  `open_in_pane`, `jira_create_branch` (from pi-planning), `review`,
+  `sonarqube`, `pr_quality` (from pi-review), `worktree` (from pi-worktree).
 - **What:** Drives the five RPIV phases with aven labels as run state
   (`researched → planned → active → review-passed → done`). `/flow` injects one
   phase prompt at a time and advances only when the phase turn settles **and**
@@ -364,6 +270,113 @@ Three extensions sharing `packages/pi-review/shared/sonarqube-utils.ts`.
   from PATH (session passes `PI_FLOW_REF`/`PI_FLOW_RUN_FILE` via `--env`).
 - **Config:** `~/.pi/agent/pi-flow/config.json` — `workRoots` (work-vs-personal
   mode by path prefix), `avenWorkspace` (pin a workspace, skip inference).
+
+### plan-tools/ (absorbed from pi-planning)
+
+- **Files:** `packages/pi-flow/plan-tools/` (`resolve-spec-path.ts`,
+  `resolve-feature-path.ts`, `jira-branch-tool.ts`, `jira-branch.ts`,
+  `helpers.ts`); `open_in_pane` lives in `spec-review/open-in-pane.ts`.
+- **Tools:** `resolve_spec_path`, `resolve_feature_path`, `open_in_pane`,
+  `jira_create_branch`.
+- **Command:** `/review-spec <path>` — opens a plan/spec with **nvim** in a
+  herdr `spec-review` pane; non-fatal when herdr is missing.
+- **Spec path convention:** `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md`
+  (slug = first 5 lowercase words, non-alnum stripped; `$LLM_NOTES_ROOT` overrides
+  for a central notes vault).
+- **Feature path convention:** `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`
+  if set, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md`.
+- **`jira_create_branch`** derives a branch from a Jira issue (type → prefix,
+  summary → slug), optional git-town parent to `develop`. Requires `acli` +
+  `git-town`. `/plan` is owned solely by pi-interactive-subagents; pi-flow
+  registers no `/plan` (the old duplicate registration was removed pre-merge).
+
+### review/ (absorbed from pi-review)
+
+- **File:** `packages/pi-flow/review/review.ts`.
+- **Command:** `/review [pr <n>|pr <url>|uncommitted|branch <name>|commit <sha>|folder <paths...>|custom "<instructions>"]`
+  with an interactive selector when called with no args.
+- **What:** Prompts the agent to review code changes. When a supported multiplexer is
+  available, `/review` **spawns a `reviewer` subagent** via `pi-interactive-subagents`
+  programmatic API (`launchSubagent`, `d90713f`) — findings steer back into the session
+  when the review completes. The legacy in-session path remains as fallback when
+  there's no mux or the spawn fails; with a mux available, every mode runs in the
+  subagent.
+- **PR reviews are worktree-based by default:** with Herdr + mux, the PR is fetched
+  into a dedicated `review/pr-<n>` branch in its own Herdr worktree; the worktree
+  (and branch) is auto-removed when all jobs finish. Fresh worktrees run
+  `yarn install` with `GH_TOKEN` propagated. Only the legacy no-Herdr path
+  in-place-checks-out the PR and requires a clean tree.
+- **ocr second opinion:** with the `ocr` binary on PATH, every diff-based target
+  also spawns a pure-runner **scout** subagent running
+  `ocr <args> --format json --output <tmpfile>` and catting it back — the JSON
+  steers in as an `ocr_result` message. Target mapping: PR →
+  `review --from <base> --to <worktree-branch>`; base branch →
+  `--from <merge-base> --to HEAD`; uncommitted → workspace `review`; commit →
+  `--commit <sha>`; folder → `scan --path <paths>`. PR worktrees are refcounted
+  (`pending` = reviewer + ocr scout) so a fast reviewer can't tear the worktree
+  out from under a still-running scout.
+- **ocr delegate preset:** "Review with ocr delegate rules" — the reviewer subagent
+  itself runs `ocr delegate preview` + `ocr delegate rule` (LLM-free) and applies
+  the resolved rules to the diff; no ocr LLM configuration needed.
+- Injects semantic-tool guidance (`buildSemReviewGuidance` from `sem-guidance.mjs`)
+  so the review prompt tells the agent to prefer `sem_diff`/`sem_impact` when
+  `pi-sem` is available.
+- **Verdict emission** (`review/verdict.ts`, `9ae1fce`): the review prompt
+  instructs the reviewer to end with a `blockers_count: <N>` verdict, and the
+  extension emits/parses that count natively so `pi-flow`'s review gate can
+  consume it without re-parsing prose.
+- **Session state:** tracks the origin session ID for a "fresh session per review"
+  pattern; module-level state (`reviewOriginId`, `endReviewInProgress`) is deliberate
+  and assumes a single active review at a time (documented in-file).
+- Project-specific guidelines: if `REVIEW_GUIDELINES.md` exists next to `.pi/`, its
+  contents are appended to the review prompt.
+
+### sonarqube/ (absorbed from pi-review)
+
+- **File:** `packages/pi-flow/sonarqube/sonarqube.ts`
+
+- **Command:** `/sonarqube [pr-number] [--severity=...] [--types=...]`
+- **What:** Analysis-only rewrite of legacy `salaryhero/opencode/bin/sonar-*` bash
+  scripts. Auto-detects PR number from current branch and Sonar project config from
+  `sonar-project.properties` if not given explicitly. Fetches coverage gaps
+  (`analyzeCoverage`) and quality issues (`analyzeIssues`/`fetchAllIssues`) from
+  SonarCloud, filterable by severity/type.
+- **Requires:** `SONARQUBE_TOKEN` env var.
+
+### pr-quality/ (absorbed from pi-review)
+
+- **File:** `packages/pi-flow/pr-quality/index.ts` (642 lines)
+
+- **Commands:** `/pr-quality [pr-number]`, `/pr-watch`.
+- **What:** Combines GitHub PR unresolved review threads (via inline `gh api graphql`,
+  `REVIEW_THREADS_QUERY`) with SonarCloud analysis for the same PR into one unified
+  LLM context message. The agent is expected to: triage each thread VALID/INVALID,
+  auto-resolve INVALID threads through the GraphQL API, cross-reference VALID
+  comments with Sonar issues by file, and **fix issues immediately** — deliberately
+  no plan file is written (changed in `f68b45b5`, replacing an earlier
+  plan-file-based flow).
+- **`/pr-watch`:** background-polls GitHub Actions/status checks
+  (`checkActionsComplete`, via `statusCheckRollup`, ignoring `SKIPPED` checks) using a
+  plain `setInterval` loop — replaced an earlier detached-bash+sentinel-file+`fs.watch`
+  approach (`202b3de7`) that was flaky. When checks complete, it triggers `/pr-quality`
+  automatically. Cleans up its interval on `session_shutdown`.
+
+### worktree/ (absorbed from pi-worktree)
+
+- **Files:** `packages/pi-flow/worktree/` (`index.ts`, `branch.ts`,
+  `bootstrap.ts`, `herdr.ts`, `remove-guards.ts`).
+- **Registers:** `worktree` tool (actions `create` / `list` / `remove`).
+- **What:** Parallel feature work via [Herdr](https://github.com/pi-edubot/herdr)
+  worktree workspaces. `create` derives a branch from a Jira ID (acli), a
+  conventional `name`+`type`, or a literal `branch`; creates the worktree, bootstraps
+  dependencies by lockfile (bun/yarn/npm/pnpm/cargo/go — best-effort, failures never
+  block creation, and the action waits for bootstrap to finish before returning),
+  copies missing `.env*` files from the main checkout (point-in-time snapshot, never
+  overwritten), and best-effort sets the git-town parent for the Jira flow.
+  `list` joins worktrees with live pi agent states as a dashboard; `remove` refuses
+  dirty worktrees without `force` and only deletes branches already **MERGED** on
+  GitHub when `delete_branch` is set. Merge/push stay manual — removal only checks
+  the result.
 
 ## Next
 

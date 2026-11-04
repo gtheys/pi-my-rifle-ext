@@ -1,8 +1,9 @@
 # Code Review Workflow
 
-Three cooperating slash commands under `packages/pi-review/`, sharing
-`packages/pi-review/shared/sonarqube-utils.ts`. None of them share code with the
-`pi-planning` package — review and planning are fully independent domains.
+Three cooperating slash commands under `packages/pi-flow/` (absorbed from the
+retired pi-review package, PMR-W8SG), sharing
+`packages/pi-flow/shared/sonarqube-utils.ts`. Review lives in the same package
+as planning now, but the modules stay independent domains.
 
 ## The three commands and when to use which
 
@@ -13,7 +14,7 @@ Three cooperating slash commands under `packages/pi-review/`, sharing
 | `/pr-quality` | PR number (or auto-detect) | Unified pass: unresolved GitHub review threads **+** SonarCloud issues, triaged and **fixed immediately** |
 | `/pr-watch` | (background) | Polls PR checks until green, then auto-triggers `/pr-quality` |
 
-## `/review` — `packages/pi-review/review/review.ts`
+## `/review` — `packages/pi-flow/review/review.ts`
 
 Modes: `/review pr 123`, `/review pr <url>`, `/review uncommitted`,
 `/review branch main`, `/review commit <sha>`, `/review folder src docs` (snapshot, not
@@ -55,7 +56,7 @@ offers the ocr-delegate preset, below).
   `endReviewInProgress`) — only one review can be active at a time, by design; see the
   in-file comment for why this isn't per-session state.
 
-## `/sonarqube` — `packages/pi-review/sonarqube/sonarqube.ts`
+## `/sonarqube` — `packages/pi-flow/sonarqube/sonarqube.ts`
 
 Rewrite of legacy `salaryhero/opencode/bin/sonar-*` bash scripts as a typed pi
 extension. **Analysis only — makes no code changes.**
@@ -71,7 +72,7 @@ Requires `SONARQUBE_TOKEN` env var. Auto-detects the Sonar project key/org from
 `sonar-project.properties` if `--config` not given. Reports coverage gaps
 (`analyzeCoverage`) and issues (`analyzeIssues`) filtered by severity/type.
 
-## `/pr-quality` — `packages/pi-review/pr-quality/index.ts`
+## `/pr-quality` — `packages/pi-flow/pr-quality/index.ts`
 
 The "do the work" command — combines both signal sources and expects the agent to act:
 
@@ -105,8 +106,8 @@ Review is no longer a standalone post-step: inside the RPIV flow
 (`packages/pi-flow`), `/validate` ends with a **review gate**. After the
 environment/human gate passes, `/review` runs on the change and its verdict
 is written as a machine-readable artifact — exactly one `blockers_count: <N>`
-line plus `- blocker: <description>` lines. Since `9ae1fce` the pi-review
-extension emits this verdict natively (`review/verdict.ts`), so the gate
+line plus `- blocker: <description>` lines. Since `9ae1fce` the pi-flow
+review extension emits this verdict natively (`review/verdict.ts`), so the gate
 consumes a structured count instead of re-parsing prose. `0` → land (work:
 PR + Jira comment, authorized via the `flow_land` tool; personal: push to
 main); `> 0` → blockers recorded as aven notes and the flow routes back to
@@ -129,7 +130,7 @@ LLM bill.
 
 ## See also
 
-- [Extension reference](../architecture/extensions.md#pi-review-review--sonarqube--pr-quality)
+- [Extension reference](../architecture/extensions.md#review-absorbed-from-pi-review)
 - `skills/engineering/gh-unresolved-comments/SKILL.md` — the standalone skill
   `/pr-quality`'s GraphQL query is derived from.
 - `skills/engineering/pr-description/SKILL.md`, `teams-pr-notify/SKILL.md` — adjacent

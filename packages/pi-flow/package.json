@@ -65,6 +65,7 @@
     "research/prompt.ts",
     "research/refs.ts",
     "research/ticket-gate.ts",
+    "review/LICENSE",
     "review/review.ts",
     "review/sem-guidance.d.mts",
     "review/sem-guidance.mjs",

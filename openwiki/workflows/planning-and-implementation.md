@@ -61,5 +61,5 @@ command reference live in the superseded-but-still-accurate
   semantics, config, script-path resolution).
 - `openwiki/workflows/code-review.md` — the review commands; review now
   gates validate.
-- [Extension reference](../architecture/extensions.md#pi-planning-plan-tools--implement-plan)
-  for pi-planning source pointers.
+- [Extension reference](../architecture/extensions.md#plan-tools-absorbed-from-pi-planning)
+  for pi-flow plan-tools source pointers.

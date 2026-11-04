@@ -189,11 +189,11 @@ the subtask first, fall back to the feature ticket.
 for implementation — no user override to in-place exists.** This applies to
 feature phases and oneshots alike.
 
-Sole exception: `herdr` is unavailable / not inside Herdr (`pi-worktree`
-can't run). In that case **STOP AND ASK** — never silently fall back to
+Sole exception: `herdr` is unavailable / not inside Herdr (pi-flow's
+`worktree` tool can't run). In that case **STOP AND ASK** — never silently fall back to
 in-place, and never create a plain branch and continue on your own.
 
-All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
+All `worktree`-tool requirements apply (inside Herdr, `herdr` on PATH):
 
 1. Check for an existing open worktree first — resume, don't duplicate:
 
@@ -231,7 +231,7 @@ All `pi-worktree` requirements apply (inside Herdr, `herdr` on PATH):
    is read-only** — the orchestrator never edits code there.
 
 **No-worktree fallback (STOP-AND-ASK only)** — the machinery below is kept
-only for the case where `pi-worktree` requirements are unmet, and only after
+only for the case where `worktree`-tool requirements are unmet, and only after
 the user has been asked and explicitly approved continuing without a
 worktree. Never use it by default:
 

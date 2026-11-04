@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
 // AIDEV-NOTE: Worktree placement for `subagent({worktree: true})` (PMR-11TD).
-// Direct `git worktree add` — NO pi-worktree import (cross-package runtime
+// Direct `git worktree add` — NO pi-flow/worktree import (cross-package runtime
 // deps are repo-verboten), NO `herdr worktree` coupling. Creation is
 // blocking+sync and runs BEFORE the tab spawn: a failed `git worktree add`
 // means no tab, no partial state. Worktrees outlive their children — removal
@@ -53,7 +53,7 @@ export function childGitEnv(): NodeJS.ProcessEnv {
   return env
 }
 
-/** Lowercase dash-slug; mirrors pi-worktree's slugify rules (unexported). */
+/** Lowercase dash-slug; mirrors pi-flow/worktree's slugify rules (unexported). */
 export function slugifyWorktree(text: string): string {
   return text
     .toLowerCase()
@@ -83,7 +83,7 @@ export function deriveWorktreeBranch(
 /**
  * Worktree path convention: `$HOME/.herdr/worktrees/<repo-slug>/<branch-slug>`
  * — the same layout herdr uses for its own workspaces, so manual cleanup and
- * the pi-worktree dashboard stay coherent. Branch slashes become dashes.
+ * the pi-flow `worktree` tool's dashboard stay coherent. Branch slashes become dashes.
  */
 export function worktreePathFor(mainRepoRoot: string, branch: string): string {
   const repoSlug = basename(mainRepoRoot)

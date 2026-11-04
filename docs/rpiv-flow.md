@@ -186,7 +186,7 @@ note with the description, route back to `/implement`, retry budget resets.
 **Review gate (both modes, after the env/human gate passes)** — review now
 gates validate:
 
-1. Run `/review` (fresh-context reviewer, pi-review) on the change.
+1. Run `/review` (fresh-context reviewer, pi-flow) on the change.
 2. Write the verdict as a machine-readable artifact: exactly one line
    `blockers_count: <N>` plus one `- blocker: <description>` line per
    blocker. Parsing is strict — missing, duplicated, or non-integer counts
@@ -200,7 +200,7 @@ On pass the ticket carries the `review-passed` label.
 
 ### 3.5 `/feedback <ref>`
 
-- **Work mode**: run `/sonarqube` and `/pr-quality` (pi-review, BY NAME) on
+- **Work mode**: run `/sonarqube` and `/pr-quality` (pi-flow, BY NAME) on
   the PR. Triage every finding: mechanical severities (`minor`, `style`,
   `naming`) that don't touch behavior/architecture/data/migrations/schema/API
   contracts are fixed and committed immediately; everything else — and any
@@ -218,7 +218,7 @@ On pass the ticket carries the `review-passed` label.
 
 | Mode | Landing |
 | --- | --- |
-| work | Push branch, create PR via pi-review's gh tooling, post a Jira comment on the ref linking the PR |
+| work | Push branch, create PR via pi-flow's gh tooling, post a Jira comment on the ref linking the PR |
 | personal | Push the branch straight to main — standing no-PR rule on own repos |
 
 Landing happens only after the review gate reports `blockers_count: 0`.

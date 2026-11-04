@@ -29,7 +29,7 @@ that function it registers three kinds of things against the injected `pi` objec
 
 Tool schemas are defined with `typebox`'s `Type.*` builders (or `@sinclair/typebox`
 directly in older packages) so the harness can validate LLM tool-call arguments
-before your handler runs. See `packages/pi-planning/plan-tools/index.ts:86` for a
+before your handler runs. See `packages/pi-flow/plan-tools/resolve-spec-path.ts` for a
 representative tool registration.
 
 ## Workspace layout and dependency direction
@@ -50,49 +50,42 @@ packages/
 │                             programmatic launchSubagent/watchSubagent API
 ├── pi-test-runner/           run_tests tool, launches a test-runner agent via ↑
 ├── pi-sem/                   sem_* tools, wraps the external `sem` CLI (@ataraxy-labs/sem)
-├── pi-planning/
-│   ├── shared/               ← shared by both siblings below (jira-branch)
-│   ├── plan-tools/           resolve_* tools + open_in_pane (aven-era slimmed down)
-│   └── implement-plan/       jira_create_branch + /implement routing to implement-plan-aven
-├── pi-review/
-│   ├── shared/sonarqube-utils.ts  ← shared by sonarqube.ts and pr-quality
-│   ├── review/review.ts           /review command (reviewer agent + ocr scout via ↑)
-│   ├── sonarqube/sonarqube.ts     /sonarqube command
-│   └── pr-quality/index.ts        /pr-quality + /pr-watch commands
 ├── pi-teams-transcript/      teams_transcript tool + sync/summarize/weekly/push commands (MS Graph)
 ├── pi-pr-digest/             pr_digest tool + /pr-digest (gh CLI), standalone
 ├── pi-sudo/                  sudo_run tool — confirm dialog + masked password prompt
 ├── pi-aven-context/          injects live aven workspace state at session_start
 ├── pi-flow/                  RPIV flow: /research /plan /implement /validate /feedback
 │                             + /flow orchestrator, gate tools (flow_phase_complete,
-│                             flow_land, flow_run_attempt, spec_approve), Herdr plugin
-└── pi-worktree/              worktree tool — Herdr worktree workspaces (create/list/remove)
+│                             flow_land, flow_run_attempt, spec_approve), Herdr plugin;
+│                             also owns the absorbed plan-tools/, review/, sonarqube/,
+│                             pr-quality/, worktree/ modules (pi-planning, pi-review,
+│                             pi-worktree were retired into it)
+└── pi-herdr-title/           renames the herdr pane to `Pi - <cwd>` on session start
 ```
 
-Two packages internally share code across sibling extensions rather than being split
-into more packages — this is deliberate (see `README.md`: "Shared helpers are
-co-located with their only consumer"). Don't extract a new package for a helper used
-by exactly one other file; keep them next to each other like `pi-planning/shared` and
-`pi-review/shared` do.
+pi-flow internally shares code across its modules rather than being split into more
+packages — this is deliberate (see `README.md`: "Shared helpers are co-located with
+their only consumer"). Don't extract a new package for a helper used by exactly one
+other file; keep them next to each other like `pi-flow/shared` does.
 
 ## Cross-package dependencies: exactly one, deliberately
 
 `pi-interactive-subagents` was vendored into the monorepo and publishes a
 programmatic API (`launchSubagent`/`watchSubagent` from `@gtheys/pi-interactive-subagents`).
 Two packages import it as a real workspace dependency: `pi-test-runner` (spawns its
-test-runner agent through it) and `pi-review` (spawns its reviewer agent and ocr
-scout through it). Everything else still coordinates without imports:
+test-runner agent through it) and `pi-flow` (spawns its reviewer agent, ocr scout,
+and phase subagents through it). Everything else still coordinates without imports:
 - **aven** as external planning state (`feature-plan-aven` / `implement-plan-aven`
-  skills drive the aven CLI; `pi-planning` only resolves paths and branches) —
+  skills drive the aven CLI; `pi-flow`'s plan-tools only resolve paths and branches) —
   see `workflows/planning-and-implementation.md` and `docs/rpiv-flow.md`.
-- **git/gh CLI** as external state (`pi-review`'s three commands all shell out to `gh`
+- **git/gh CLI** as external state (`pi-flow`'s review commands all shell out to `gh`
   and `git`).
 - **pi's own event bus** (`session_start`, `agent_end`) for cross-cutting concerns like
   desktop notifications and AGENTS.md bootstrapping.
 - **skill files** as the glue between `/plan` (registered by `pi-interactive-subagents`)
   and the aven planning flow — see the dependency map in `README.md`.
 
-Notably `pi-planning`'s `open_in_pane` shells out to the `herdr` CLI directly instead
+Notably `pi-flow`'s `open_in_pane` shells out to the `herdr` CLI directly instead
 of importing pi-interactive-subagents (in-file AIDEV-NOTE: no cross-package dependency
 for 3 exec calls).
 
@@ -101,18 +94,18 @@ for 3 exec calls).
 | Package | External binary/API | Why |
 |---|---|---|
 | `pi-bootstrap` | none (fs only) | symlink AGENTS.md |
-| `pi-planning` (both) | `aven` (optional), `acli` + `git-town` (jira_create_branch) | planning state lives in aven; branch derivation for Jira tickets |
+| `pi-flow` (plan-tools) | `aven` (optional), `acli` + `git-town` (jira_create_branch) | planning state lives in aven; branch derivation for Jira tickets |
 | `pi-aven-context` | `aven` (`aven prime`) | inject live workspace state at session start |
 | `pi-sudo` | `sudo -S` | root command execution behind confirm + password overlay |
 | `pi-sem` | `sem` CLI (`@ataraxy-labs/sem`, optional dep) | entity-aware git diff/impact/context/blame |
-| `pi-review/review` | `git`, `gh`, optional `ocr`, + reviewer agent & ocr scout via `pi-interactive-subagents` | checkout PRs, diff branches/commits, ocr second opinion |
-| `pi-review/sonarqube` | SonarCloud REST API (`sonarFetch`) | coverage + issues |
-| `pi-review/pr-quality` | `gh api graphql`, SonarCloud API | unresolved review threads + Sonar issues in one pass |
+| `pi-flow/review` | `git`, `gh`, optional `ocr`, + reviewer agent & ocr scout via `pi-interactive-subagents` | checkout PRs, diff branches/commits, ocr second opinion |
+| `pi-flow/sonarqube` | SonarCloud REST API (`sonarFetch`) | coverage + issues |
+| `pi-flow/pr-quality` | `gh api graphql`, SonarCloud API | unresolved review threads + Sonar issues in one pass |
 | `pi-interactive-subagents` | multiplexer CLI (cmux/tmux/zellij/wezterm/herdr) | sub-agents run in real terminal panes, results steer back into the session |
 | `pi-test-runner` | test scripts via the `pi-interactive-subagents` API | isolate test runs in a `test-runner` agent so they don't block the conversation |
 | `pi-pr-digest` | `gh` CLI | PR author/comment/review status across an org |
 | `pi-flow` | `aven`, `herdr`, `git`/`gh` (via gate tools) | RPIV phases; aven labels as run state; herdr panes for flow-view/spec-review |
-| `pi-worktree` | `herdr`, `git`, optional `acli`/`gh`/`git-town` + package manager | create/list/remove worktree workspaces |
+| `pi-flow/worktree` | `herdr`, `git`, optional `acli`/`gh`/`git-town` + package manager | create/list/remove worktree workspaces |
 | `pi-desktop-notify` | `notify-send` | desktop notification on idle-after-work |
 
 ## Next

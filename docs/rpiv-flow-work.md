@@ -418,14 +418,14 @@ a silent 0 would auto-land broken code.
   `/implement` (budget applies); do not land.
 - `blockers_count: 0` → `flow_phase_complete(phase="validate")` lands
   `review-passed`, then `flow_land ref route=pr` re-checks the gate and
-  authorizes the landing — push the branch, create the PR via pi-review's
+  authorizes the landing — push the branch, create the PR via pi-flow's
   gh tooling, and post a Jira comment on the ref linking the PR URL.
 
 **Exit:** `review-passed` label + PR exists → AUTO to feedback.
 
 ### 5.5 Feedback — triage the PR, nothing silent
 
-1. Run `/sonarqube` on the PR (pi-review, by name) and read the report.
+1. Run `/sonarqube` on the PR (pi-flow, by name) and read the report.
 2. **Triage every unresolved finding** (`feedback/triage.ts` `classify`):
    - Mechanical severities (`minor`, `style`, `naming`) that do NOT touch
      behavior, architecture, data, migrations, schema, or API contracts →

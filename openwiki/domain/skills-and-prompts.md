@@ -43,8 +43,8 @@ Skills are **prose workflows**; extensions are **typed tools/commands** those
 workflows call. `feature-plan-aven`/`implement-plan-aven` drive the **aven CLI**
 directly (the aven skill at `~/.pi/agent/skills/aven/` holds the CLI primer;
 `pi-aven-context` injects live workspace state at session start) and call the
-slimmed `pi-planning` tools (`resolve_spec_path`, `resolve_feature_path`,
-`jira_create_branch`). Same pattern for `sem` (skill) → `pi-sem` (extension), and
+`pi-flow` plan-tools (`resolve_spec_path`, `resolve_feature_path`,
+`jira_create_branch` — absorbed from the retired pi-planning package). Same pattern for `sem` (skill) → `pi-sem` (extension), and
 `gh-unresolved-comments` (skill) → informs `/pr-quality`'s inline GraphQL query
 (extension). When a skill references an aven ref or filter, trace it back to the
 extension in [Extension reference](../architecture/extensions.md) for the exact
