@@ -111,6 +111,7 @@ import {
   closeSurface,
   isMuxAvailable,
   muxSetupHint,
+  type PollResult,
   pollForExit,
   readScreen,
   sendEscape,
@@ -1807,6 +1808,7 @@ export const __test__ = {
   handleSubagentInterrupt,
   defaultInterruptControlIo,
   resolveResultPresentation,
+  resolvePiSummary,
   resolveResumeLaunchBehavior,
   runningSubagents,
   formatElapsed,
@@ -2409,6 +2411,34 @@ function copyClaudeSession(sentinelFile: string): string | null {
   }
 }
 
+/**
+ * Pi subagent summary resolution (PMR-ZQ9P): the done sidecar's `summary`
+ * wins when present; otherwise scrape the session jsonl's last assistant
+ * message, then fall back to exit-code placeholders.
+ */
+function resolvePiSummary(
+  result: Pick<PollResult, 'summary' | 'errorMessage' | 'exitCode'>,
+  sessionFile: string | undefined,
+): string {
+  if (result.summary) return result.summary
+  if (sessionFile && existsSync(sessionFile)) {
+    const allEntries = getNewEntries(sessionFile, 0)
+    return (
+      findLastAssistantMessage(allEntries) ??
+      (result.errorMessage
+        ? `Subagent error: ${result.errorMessage}`
+        : result.exitCode !== 0
+          ? `Sub-agent exited with code ${result.exitCode}`
+          : 'Sub-agent exited without output')
+    )
+  }
+  return result.errorMessage
+    ? `Subagent error: ${result.errorMessage}`
+    : result.exitCode !== 0
+      ? `Sub-agent exited with code ${result.exitCode}`
+      : 'Sub-agent exited without output'
+}
+
 async function watchSubagent(
   running: RunningSubagent,
   signal: AbortSignal,
@@ -2491,23 +2521,10 @@ async function watchSubagent(
     }
 
     // Pi subagent result extraction
-    let summary: string
-    if (existsSync(sessionFile)) {
-      const allEntries = getNewEntries(sessionFile, 0)
-      summary =
-        findLastAssistantMessage(allEntries) ??
-        (result.errorMessage
-          ? `Subagent error: ${result.errorMessage}`
-          : result.exitCode !== 0
-            ? `Sub-agent exited with code ${result.exitCode}`
-            : 'Sub-agent exited without output')
-    } else {
-      summary = result.errorMessage
-        ? `Subagent error: ${result.errorMessage}`
-        : result.exitCode !== 0
-          ? `Sub-agent exited with code ${result.exitCode}`
-          : 'Sub-agent exited without output'
-    }
+    // AIDEV-NOTE (PMR-ZQ9P): prefer the summary the child wrote into the
+    // done sidecar (durable, written at subagent_done time); jsonl scraping
+    // stays as the fallback for old children without a summary payload.
+    const summary = resolvePiSummary(result, sessionFile)
 
     // PMR-874G: settle-time accounting — full-file read (the incremental
     // tracker may lag the final writes). Recorded onto the durable

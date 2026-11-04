@@ -1836,6 +1836,24 @@ describe('surface.ts interpretExitSidecar', () => {
     })
   })
 
+  it('decodes done payloads carrying a summary (PMR-ZQ9P round-trip)', () => {
+    assert.deepEqual(
+      interpretExitSidecar({ type: 'done', summary: 'Implemented X' }),
+      { reason: 'done', exitCode: 0, summary: 'Implemented X' },
+    )
+  })
+
+  it('ignores non-string summary fields on done payloads', () => {
+    assert.deepEqual(interpretExitSidecar({ type: 'done', summary: 42 }), {
+      reason: 'done',
+      exitCode: 0,
+    })
+    assert.deepEqual(interpretExitSidecar({ type: 'done', summary: '' }), {
+      reason: 'done',
+      exitCode: 0,
+    })
+  })
+
   it('decodes error payloads and propagates the message with a non-zero exit code', () => {
     assert.deepEqual(
       interpretExitSidecar({
@@ -1866,6 +1884,59 @@ describe('surface.ts interpretExitSidecar', () => {
     })
   })
 })
+describe('resolvePiSummary — sidecar summary preferred over jsonl (PMR-ZQ9P)', () => {
+  const testApi = (subagentsModule as any).__test__
+
+  function writeSession(dir: string, text: string): string {
+    const sessionFile = join(dir, 's.jsonl')
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({
+        type: 'message',
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      })}\n`,
+      'utf8',
+    )
+    return sessionFile
+  }
+
+  it('prefers the sidecar summary over the jsonl last assistant message', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pi-summary-'))
+    try {
+      const sessionFile = writeSession(dir, 'jsonl text that must LOSE')
+      const summary = testApi.resolvePiSummary(
+        { reason: 'done', exitCode: 0, summary: 'Sidecar WINS' },
+        sessionFile,
+      )
+      assert.equal(summary, 'Sidecar WINS')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to jsonl scraping when the sidecar has no summary (old payloads)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pi-summary-'))
+    try {
+      const sessionFile = writeSession(dir, 'jsonl text that must WIN')
+      const summary = testApi.resolvePiSummary(
+        { reason: 'done', exitCode: 0 },
+        sessionFile,
+      )
+      assert.equal(summary, 'jsonl text that must WIN')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the error placeholder when there is no sidecar summary and no session file', () => {
+    const summary = testApi.resolvePiSummary(
+      { reason: 'error', exitCode: 1, errorMessage: 'boom' },
+      join(tmpdir(), 'no-such-session.jsonl'),
+    )
+    assert.equal(summary, 'Subagent error: boom')
+  })
+})
+
 describe('commands', () => {
   it('/iterate always emits a full-context fork tool call', () => {
     const { api, registeredCommands, sentUserMessages } =
@@ -3643,6 +3714,25 @@ describe('pollForExit crash inference (PMR-TABUX)', () => {
       opts({ sessionFile }),
     )
     assert.equal(result.reason, 'done')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('resolves the sidecar summary through pollForExit (PMR-ZQ9P)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'poll-exit-summary-'))
+    const sessionFile = join(dir, 's.jsonl')
+    writeFileSync(
+      `${sessionFile}.exit`,
+      JSON.stringify({ type: 'done', summary: 'Sidecar summary wins' }),
+      'utf8',
+    )
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const result = await pollForExit(
+      'w1:p1',
+      AbortSignal.timeout(1000),
+      opts({ sessionFile }),
+    )
+    assert.equal(result.reason, 'done')
+    assert.equal(result.summary, 'Sidecar summary wins')
     rmSync(dir, { recursive: true, force: true })
   })
 

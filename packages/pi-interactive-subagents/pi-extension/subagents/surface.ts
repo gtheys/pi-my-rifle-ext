@@ -159,12 +159,18 @@ export interface PollResult {
   ping?: { name: string; message: string }
   /** Error message if reason is "error" (auto-retry exhausted, crash, etc.) */
   errorMessage?: string
+  /** Summary the child wrote into the done sidecar (PMR-ZQ9P), if present */
+  summary?: string
 }
 
 /**
  * Interpret an `.exit` sidecar payload (written by subagent_done / caller_ping /
  * the error path in subagent-done.ts). Centralized so both the fast and slow
  * paths in pollForExit decode the payload the same way.
+ *
+ * AIDEV-NOTE (PMR-ZQ9P): done payloads may carry a `summary` written by the
+ * child's subagent_done call; older children omit it, so absence must stay
+ * tolerated.
  */
 function interpretExitSidecar(data: any): PollResult {
   if (data?.type === 'ping') {
@@ -181,7 +187,11 @@ function interpretExitSidecar(data: any): PollResult {
         : 'Subagent exited with stopReason=error (no errorMessage in sidecar).'
     return { reason: 'error', exitCode: 1, errorMessage }
   }
-  return { reason: 'done', exitCode: 0 }
+  const done: PollResult = { reason: 'done', exitCode: 0 }
+  if (typeof data?.summary === 'string' && data.summary.trim() !== '') {
+    done.summary = data.summary
+  }
+  return done
 }
 
 export const __pollForExitTest__ = { interpretExitSidecar }

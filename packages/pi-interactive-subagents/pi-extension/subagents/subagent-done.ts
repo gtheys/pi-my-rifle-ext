@@ -932,13 +932,28 @@ export default function (pi: ExtensionAPI) {
     description:
       'Call this tool when you have completed your task. ' +
       'It will close this session and return your results to the main session. ' +
-      'Your LAST assistant message before calling this becomes the summary returned to the caller.',
-    parameters: Type.Object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      'Pass a `summary` with your final results — it is delivered to the parent ' +
+      'directly and is preferred over the last assistant message.',
+    parameters: Type.Object({
+      summary: Type.Optional(
+        Type.String({
+          description:
+            'Concise final summary of what you accomplished, for the parent session.',
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const sessionFile = process.env.PI_SUBAGENT_SESSION
       recorder.subagentDone()
       if (sessionFile) {
-        writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: 'done' }))
+        // AIDEV-NOTE (PMR-ZQ9P): the sidecar payload is the durable summary
+        // channel to the parent. Keep always-writing it (even without a
+        // summary) — old parents read {type:'done'} as the completion signal.
+        const payload: { type: 'done'; summary?: string } = { type: 'done' }
+        if (params.summary) {
+          payload.summary = params.summary
+        }
+        writeFileSync(`${sessionFile}.exit`, JSON.stringify(payload))
       }
       ctx.shutdown()
       return {
