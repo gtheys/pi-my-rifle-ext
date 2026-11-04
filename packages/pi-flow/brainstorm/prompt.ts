@@ -3,7 +3,7 @@
 // (ask_user_question), scouts (subagent tool from pi-interactive-subagents),
 // writes the artifact, then runs the ticket-creation gate. Routing-only reuse
 // of the user's debug skill (referenced by name, never imported).
-// Ticket research (research/refs.ts classified a jira-shaped ref) SKIPS the
+// Ticket research (brainstorm/refs.ts classified a jira-shaped ref) SKIPS the
 // creation gate: the ticket exists — aven epic first, acli fallback.
 
 export interface PromptInput {
@@ -18,7 +18,7 @@ export interface TicketPromptInput {
   /** Where the ticket content lives. epic = local epic (jira-ref) — the
    *  confirmed ticket; synced =
    *  aven synced ticket (jira-key) — label lands on it and the artifact
-   *  marker lets a later /flow epic inherit research. null = not aven-
+   *  marker lets a later /flow epic inherit the brainstorm. null = not aven-
    *  managed, acli fallback. */
   target: { kind: 'epic' | 'synced'; ref: string } | null
   artifactPath: string
@@ -44,10 +44,10 @@ TICKET CREATION GATE — after the artifact is written:
 5. If the user declines, create nothing and say so.
 NEVER call acli or aven create before the explicit confirm answer.
 
-COMPLETION — research is done when the artifact is written and the gate is
-answered. Research no longer lands a lifecycle label (PMR-Z2K7); /flow and
-/plan gate on the "planned" label instead. If the gate declined ticket
-creation, skip this.`
+COMPLETION — the brainstorm is done when the artifact is written and the gate
+is answered. Brainstorming no longer lands a lifecycle label (PMR-Z2K7);
+/flow and /plan gate on the "planned" label instead. If the gate declined
+ticket creation, skip this.`
 
 // AIDEV-NOTE: scout fan-out contract — codegraph MCP, when available, must
 // be initialized and fresh (codegraph init on "not initialized", then sync)
@@ -75,8 +75,8 @@ ${CODEGRAPH_INSTRUCTIONS}
    ticket must contain: scope, risks, touched areas).`
 }
 
-export function buildResearchPrompt(input: PromptInput): string {
-  const header = `Research phase (RPIV flow). Mode: ${input.mode}.`
+export function buildBrainstormPrompt(input: PromptInput): string {
+  const header = `Brainstorm phase. Mode: ${input.mode}.`
   if (input.kind === 'debug') {
     return `${header}
 Debug flow: symptom = "${input.input}".
@@ -102,12 +102,12 @@ ${featureSteps(input.artifactPath)}
 ${GATE_INSTRUCTIONS}`
 }
 
-export function buildTicketResearchPrompt(input: TicketPromptInput): string {
-  const header = `Research phase (RPIV flow). Mode: ${input.mode}. Ticket: ${input.jiraId}.`
+export function buildTicketBrainstormPrompt(input: TicketPromptInput): string {
+  const header = `Brainstorm phase. Mode: ${input.mode}. Ticket: ${input.jiraId}.`
   const noCreate = `The ticket already exists. Do NOT run the ticket-creation gate and do
 NOT create anything.
 
-Brief: fetch the research subject FIRST. Quote its summary/description in the
+Brief: fetch the brainstorm subject FIRST. Quote its summary/description in the
 artifact's Ticket section.`
   if (input.target !== null) {
     const isEpic = input.target.kind === 'epic'
@@ -130,9 +130,9 @@ in aven — no Jira fetch needed.`
     // research left the lifecycle, so completion is just the artifact plus
     // the marker line a later pure-Jira /flow can still discover.
     const completion = isEpic
-      ? `COMPLETION - the research phase is done when the artifact is written.`
-      : `COMPLETION - the research phase is done when the artifact is written. Append
-the line "> researched by pi-flow on <today's date>" to the artifact header.
+      ? `COMPLETION - the brainstorm phase is done when the artifact is written.`
+      : `COMPLETION - the brainstorm phase is done when the artifact is written. Append
+the line "> brainstormed by pi-flow on <today's date>" to the artifact header.
 A later /flow ${input.jiraId} creates the local epic and can discover the
 artifact via that marker.`
     return `${header}
@@ -152,7 +152,7 @@ report the failure — do not guess the contents and do not create any ticket.
 ${featureSteps(input.artifactPath)}
 
 COMPLETION — no aven ref exists for this ticket. Append a
-line "> researched by pi-flow on <today's date>" to the artifact header, and
+line "> brainstormed by pi-flow on <today's date>" to the artifact header, and
 note under Ticket implications that a later \`/flow ${input.jiraId}\` will
 create the local epic.`
 }

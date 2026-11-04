@@ -1,13 +1,13 @@
-// AIDEV-NOTE: Pure /research arg parsing — unit-testable without pi.
+// AIDEV-NOTE: Pure /brainstorm arg parsing — unit-testable without pi.
 // `ID=<jira-id>` marks the topic as a known Jira ID (forceRef): the target
-// classifier (research/refs.ts) then takes the ticket path in any mode.
+// classifier (brainstorm/refs.ts) then takes the ticket path in any mode.
 
-export type ResearchArgs =
+export type BrainstormArgs =
   | { kind: 'feature'; topic: string; forceRef?: boolean }
   | { kind: 'debug'; symptom: string }
   | { kind: 'help' }
 
-export function parseResearchArgs(raw: string): ResearchArgs {
+export function parseBrainstormArgs(raw: string): BrainstormArgs {
   const trimmed = raw.trim()
   if (trimmed === '') return { kind: 'help' }
   if (trimmed.startsWith('--debug')) {

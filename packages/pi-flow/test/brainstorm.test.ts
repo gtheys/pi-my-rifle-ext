@@ -1,32 +1,33 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseResearchArgs } from '../research/args.ts'
-import { renderArtifact } from '../research/artifact.ts'
-import { resolveResearchDir, slugify } from '../research/paths.ts'
-import { buildResearchPrompt } from '../research/prompt.ts'
-import { buildTicketPlan } from '../research/ticket-gate.ts'
+import { parseBrainstormArgs } from '../brainstorm/args.ts'
+import { renderArtifact } from '../brainstorm/artifact.ts'
+import { resolveBrainstormDir } from '../brainstorm/paths.ts'
+import { buildBrainstormPrompt } from '../brainstorm/prompt.ts'
+import { buildTicketPlan } from '../brainstorm/ticket-gate.ts'
+import { slugify } from '../slugify.ts'
 
 // --- args ---
 
-test('parseResearchArgs: empty → help', () => {
-  assert.deepEqual(parseResearchArgs(''), { kind: 'help' })
-  assert.deepEqual(parseResearchArgs('   '), { kind: 'help' })
+test('parseBrainstormArgs: empty → help', () => {
+  assert.deepEqual(parseBrainstormArgs(''), { kind: 'help' })
+  assert.deepEqual(parseBrainstormArgs('   '), { kind: 'help' })
 })
 
-test('parseResearchArgs: --debug with symptom', () => {
-  assert.deepEqual(parseResearchArgs('--debug login 500s on prod'), {
+test('parseBrainstormArgs: --debug with symptom', () => {
+  assert.deepEqual(parseBrainstormArgs('--debug login 500s on prod'), {
     kind: 'debug',
     symptom: 'login 500s on prod',
   })
 })
 
-test('parseResearchArgs: --debug without symptom → help', () => {
-  assert.deepEqual(parseResearchArgs('--debug'), { kind: 'help' })
-  assert.deepEqual(parseResearchArgs('--debug   '), { kind: 'help' })
+test('parseBrainstormArgs: --debug without symptom → help', () => {
+  assert.deepEqual(parseBrainstormArgs('--debug'), { kind: 'help' })
+  assert.deepEqual(parseBrainstormArgs('--debug   '), { kind: 'help' })
 })
 
-test('parseResearchArgs: topic', () => {
-  assert.deepEqual(parseResearchArgs('rate limiting for the API'), {
+test('parseBrainstormArgs: topic', () => {
+  assert.deepEqual(parseBrainstormArgs('rate limiting for the API'), {
     kind: 'feature',
     topic: 'rate limiting for the API',
   })
@@ -42,42 +43,48 @@ test('slugify matches plan-tools contract', () => {
   )
 })
 
-test('resolveResearchDir: work mode, LLM_NOTES_ROOT set → notes-root branch', () => {
-  const dir = resolveResearchDir('work', '/nr', '/pf', 'myrepo', '/home/x/repo')
-  assert.equal(dir, '/nr/myrepo/notes/research')
+test('resolveBrainstormDir: work mode, LLM_NOTES_ROOT set → notes-root branch', () => {
+  const dir = resolveBrainstormDir(
+    'work',
+    '/nr',
+    '/pf',
+    'myrepo',
+    '/home/x/repo',
+  )
+  assert.equal(dir, '/nr/myrepo/notes/brainstorm')
 })
 
-test('resolveResearchDir: work mode, LLM_NOTES_ROOT unset → repo-local branch', () => {
-  const dir = resolveResearchDir(
+test('resolveBrainstormDir: work mode, LLM_NOTES_ROOT unset → repo-local branch', () => {
+  const dir = resolveBrainstormDir(
     'work',
     undefined,
     '/pf',
     'myrepo',
     '/home/x/repo',
   )
-  assert.equal(dir, '/home/x/repo/notes/research')
+  assert.equal(dir, '/home/x/repo/notes/brainstorm')
 })
 
-test('resolveResearchDir: personal mode, PERSONAL_FEATURES set → features branch', () => {
-  const dir = resolveResearchDir(
+test('resolveBrainstormDir: personal mode, PERSONAL_FEATURES set → features branch', () => {
+  const dir = resolveBrainstormDir(
     'personal',
     '/nr',
     '/pf',
     'myrepo',
     '/home/x/repo',
   )
-  assert.equal(dir, '/pf/myrepo/notes/research')
+  assert.equal(dir, '/pf/myrepo/notes/brainstorm')
 })
 
-test('resolveResearchDir: personal mode, PERSONAL_FEATURES unset → repo-local branch', () => {
-  const dir = resolveResearchDir(
+test('resolveBrainstormDir: personal mode, PERSONAL_FEATURES unset → repo-local branch', () => {
+  const dir = resolveBrainstormDir(
     'personal',
     '/nr',
     undefined,
     'myrepo',
     '/home/x/repo',
   )
-  assert.equal(dir, '/home/x/repo/notes/research')
+  assert.equal(dir, '/home/x/repo/notes/brainstorm')
 })
 
 // --- artifact ---
@@ -93,7 +100,7 @@ test('renderArtifact: feature flow sections', () => {
     diagrams: ['```mermaid\ngraph TD\nA-->B\n```'],
     ticketImplications: ['Needs new endpoint'],
   })
-  assert.match(md, /^# Research: Rate limiting$/m)
+  assert.match(md, /^# Brainstorm: Rate limiting$/m)
   assert.match(md, /## Questions/)
   assert.match(md, /- Q1/)
   assert.match(md, /## Findings/)
@@ -195,8 +202,8 @@ test('buildTicketPlan: confirmed but missing destination details → null', () =
 
 // --- prompt ---
 
-test('buildResearchPrompt: debug flow references debug skill and bug label', () => {
-  const p = buildResearchPrompt({
+test('buildBrainstormPrompt: debug flow references debug skill and bug label', () => {
+  const p = buildBrainstormPrompt({
     kind: 'debug',
     input: 'login 500s',
     artifactPath: '/tmp/r.md',
@@ -208,8 +215,8 @@ test('buildResearchPrompt: debug flow references debug skill and bug label', () 
   assert.match(p, /confirmed/)
 })
 
-test('buildResearchPrompt: feature flow references ask_user_question loop and scouts', () => {
-  const p = buildResearchPrompt({
+test('buildBrainstormPrompt: feature flow references ask_user_question loop and scouts', () => {
+  const p = buildBrainstormPrompt({
     kind: 'feature',
     input: 'rate limiting',
     artifactPath: '/tmp/r.md',

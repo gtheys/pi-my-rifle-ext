@@ -5,8 +5,8 @@
 // The table below is the ONLY place the phase<->label lifecycle is mapped;
 // reconcile with phase-state.ts LIFECYCLE_LABELS before renaming labels.
 // Lifecycle is PIV (PMR-Z2K7): plan -> implement -> validate -> feedback.
-// Research is no longer a lifecycle phase — the /research and /brainstorm
-// commands still exist outside the gates.
+// Research is no longer a lifecycle phase — the /brainstorm command
+// (renamed from /research, PMR-H7RW) still exists outside the gates.
 
 export type Phase = 'plan' | 'implement' | 'validate' | 'feedback'
 

@@ -1,5 +1,5 @@
 // AIDEV-NOTE: PMR-T22H — phase-command factory. The 5 phase commands
-// (/research, /plan, /implement, /validate, /feedback) share ONE skeleton
+// (/brainstorm, /plan, /implement, /validate, /feedback) share ONE skeleton
 // (parse → resolveMode → resolve ref → commandPhaseInput → buildPhasePrompt
 // → sendOrNotify) so notify wording and gate wiring cannot drift between
 // phases; per-command variance is declared via the hooks below. The /flow
@@ -14,20 +14,20 @@ import {
   epicHasOpenChildren,
   readAvenLabels,
 } from '../aven/client.ts'
+import { type BrainstormArgs, parseBrainstormArgs } from '../brainstorm/args.ts'
 import { loadConfig, resolveMode } from '../config.ts'
 import { parseFeedbackArgs } from '../feedback/args.ts'
 import { parseImplementArgs } from '../implement/args.ts'
 import { parsePlanArgs } from '../plan/args.ts'
-import { parseResearchArgs, type ResearchArgs } from '../research/args.ts'
 import { parseValidateArgs } from '../validate/args.ts'
 import type { WorkMode } from '../work-mode.ts'
-import { findJiraEpic, findTicketResearchTarget } from './jira-ref.ts'
+import { findJiraEpic, findTicketBrainstormTarget } from './jira-ref.ts'
 import {
+  type BrainstormOverride,
   buildPhasePrompt,
   type CommandPhase,
   type PhasePrompt,
   type PhasePromptInput,
-  type ResearchOverride,
 } from './phase-prompts.ts'
 
 type ParsedRef =
@@ -62,7 +62,7 @@ export async function commandPhaseInput(
     ref: string
     cwd?: string
     labels?: readonly string[]
-    onResearchFallback?: (jiraId: string) => void
+    onBrainstormFallback?: (jiraId: string) => void
   },
 ): Promise<PhasePromptInput> {
   const { stdout } = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
@@ -73,14 +73,14 @@ export async function commandPhaseInput(
     gitRoot: stdout.trim(),
     workRoots: config.workRoots,
     labels: input.labels ?? [],
-    // AIDEV-NOTE: read-only ticket lookup for ticket research — jira-ref epic
+    // AIDEV-NOTE: read-only ticket lookup for ticket brainstorming — jira-ref epic
     // first (labels land there, /flow resumes clean), then the jira-key synced
     // ticket (no acli needed). Neither → acli branch, announced via
-    // onResearchFallback so an acli-first run never looks like aven was
+    // onBrainstormFallback so an acli-first run never looks like aven was
     // skipped.
     findTicketRef: async (jiraId) => {
-      const found = await findTicketResearchTarget(jiraId, avenExec)
-      if (found.kind === 'none') input.onResearchFallback?.(jiraId)
+      const found = await findTicketBrainstormTarget(jiraId, avenExec)
+      if (found.kind === 'none') input.onBrainstormFallback?.(jiraId)
       if (found.kind === 'epic' || found.kind === 'synced') {
         return { kind: found.kind, ref: found.ref }
       }
@@ -114,16 +114,16 @@ interface PhaseCommandOptions<Parsed extends { kind: string }> {
   /** Resolve the phase ref from parsed args; default is the shared
    *  resolvePhaseRef (aven-first Jira resolution). */
   resolveRef?: (parsed: Parsed, mode: WorkMode) => Promise<string>
-  /** Extra PhasePromptInput fields (labels, research override, epic guard). */
+  /** Extra PhasePromptInput fields (labels, brainstorm override, epic guard). */
   extraInput?: (input: {
     parsed: Parsed
     mode: WorkMode
     ref: string
     ctx: ExtensionCommandContext
   }) => Promise<Partial<PhasePromptInput>>
-  /** Called when ticket research finds no aven epic or synced ticket and
+  /** Called when ticket brainstorming finds no aven epic or synced ticket and
    *  falls back to acli. */
-  onResearchFallback?: (jiraId: string, ctx: ExtensionCommandContext) => void
+  onBrainstormFallback?: (jiraId: string, ctx: ExtensionCommandContext) => void
 }
 
 function registerPhaseCommand<Parsed extends { kind: string }>(
@@ -150,10 +150,10 @@ function registerPhaseCommand<Parsed extends { kind: string }>(
         mode,
         ref,
         cwd: ctx.cwd,
-        onResearchFallback:
-          options.onResearchFallback === undefined
+        onBrainstormFallback:
+          options.onBrainstormFallback === undefined
             ? undefined
-            : (jiraId) => options.onResearchFallback?.(jiraId, ctx),
+            : (jiraId) => options.onBrainstormFallback?.(jiraId, ctx),
       })
       const extra =
         options.extraInput === undefined
@@ -165,9 +165,9 @@ function registerPhaseCommand<Parsed extends { kind: string }>(
   })
 }
 
-function researchOverrideOf(
-  parsed: Exclude<ResearchArgs, { kind: 'help' }>,
-): ResearchOverride {
+function brainstormOverrideOf(
+  parsed: Exclude<BrainstormArgs, { kind: 'help' }>,
+): BrainstormOverride {
   if (parsed.kind === 'debug') {
     return { kind: 'debug', text: parsed.symptom }
   }
@@ -180,27 +180,27 @@ function researchOverrideOf(
 export function registerPhaseCommands(pi: ExtensionAPI): void {
   // AIDEV-NOTE: Prompt prep lives in flow/phase-prompts.ts (shared with the
   // /flow loop). The ticket-creation gate lives in the agent prompt — the
-  // command itself never creates tickets. See research/ticket-gate.ts.
+  // command itself never creates tickets. See brainstorm/ticket-gate.ts.
   // Ticket refs (ID=<jira-id>, or bare jira-shaped in work mode) resolve
   // aven-first via findEpicRef and skip the creation gate — see
-  // research/refs.ts.
+  // brainstorm/refs.ts.
   registerPhaseCommand(pi, {
-    name: 'research',
+    name: 'brainstorm',
     description:
-      'PIV research phase (standalone, not a lifecycle phase). Usage: /research <topic> | /research ID=<jira-id> | /research --debug <symptom>',
+      'Brainstorm phase (standalone, not a lifecycle phase). Usage: /brainstorm <topic> | /brainstorm ID=<jira-id> | /brainstorm --debug <symptom>',
     usage:
-      '/research <topic> | /research ID=<jira-id> | /research --debug <symptom>',
-    parse: parseResearchArgs,
+      '/brainstorm <topic> | /brainstorm ID=<jira-id> | /brainstorm --debug <symptom>',
+    parse: parseBrainstormArgs,
     resolveRef: async (parsed) => {
       if (parsed.kind === 'debug') return parsed.symptom
       return parsed.topic
     },
     extraInput: async ({ parsed }) => ({
-      research: researchOverrideOf(parsed),
+      brainstorm: brainstormOverrideOf(parsed),
     }),
-    onResearchFallback: (jiraId, ctx) => {
+    onBrainstormFallback: (jiraId, ctx) => {
       ctx.ui.notify(
-        `/research ${jiraId}: no aven epic or synced ticket found — research falls back to the Jira ticket via acli`,
+        `/brainstorm ${jiraId}: no aven epic or synced ticket found — brainstorming falls back to the Jira ticket via acli`,
         'info',
       )
     },

@@ -3,35 +3,38 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { type AvenRunner, findTicketResearchTarget } from '../flow/jira-ref.ts'
+import { parseBrainstormArgs } from '../brainstorm/args.ts'
+import { findBrainstormArtifact } from '../brainstorm/artifact.ts'
+import { buildTicketBrainstormPrompt } from '../brainstorm/prompt.ts'
+import { classifyBrainstormTarget } from '../brainstorm/refs.ts'
+import {
+  type AvenRunner,
+  findTicketBrainstormTarget,
+} from '../flow/jira-ref.ts'
 import { buildPhasePrompt } from '../flow/phase-prompts.ts'
-import { parseResearchArgs } from '../research/args.ts'
-import { findResearchedArtifact } from '../research/artifact.ts'
-import { buildTicketResearchPrompt } from '../research/prompt.ts'
-import { classifyResearchTarget } from '../research/refs.ts'
 
 // --- args ---
 
-test('parseResearchArgs: ID= prefix forces the ticket path', () => {
-  assert.deepEqual(parseResearchArgs('ID=DP-257'), {
+test('parseBrainstormArgs: ID= prefix forces the ticket path', () => {
+  assert.deepEqual(parseBrainstormArgs('ID=DP-257'), {
     kind: 'feature',
     topic: 'DP-257',
     forceRef: true,
   })
-  assert.deepEqual(parseResearchArgs('ID=  dp-9  '), {
+  assert.deepEqual(parseBrainstormArgs('ID=  dp-9  '), {
     kind: 'feature',
     topic: 'dp-9',
     forceRef: true,
   })
 })
 
-test('parseResearchArgs: ID= without a ref → help', () => {
-  assert.deepEqual(parseResearchArgs('ID='), { kind: 'help' })
-  assert.deepEqual(parseResearchArgs('ID=   '), { kind: 'help' })
+test('parseBrainstormArgs: ID= without a ref → help', () => {
+  assert.deepEqual(parseBrainstormArgs('ID='), { kind: 'help' })
+  assert.deepEqual(parseBrainstormArgs('ID=   '), { kind: 'help' })
 })
 
-test('parseResearchArgs: bare topic stays unforced', () => {
-  assert.deepEqual(parseResearchArgs('DP-257 rate limits'), {
+test('parseBrainstormArgs: bare topic stays unforced', () => {
+  assert.deepEqual(parseBrainstormArgs('DP-257 rate limits'), {
     kind: 'feature',
     topic: 'DP-257 rate limits',
   })
@@ -42,7 +45,11 @@ test('parseResearchArgs: bare topic stays unforced', () => {
 test('classify: force wins in any mode and normalizes case', () => {
   for (const mode of ['work', 'personal'] as const) {
     assert.deepEqual(
-      classifyResearchTarget('dp-257', { force: true, explicit: false, mode }),
+      classifyBrainstormTarget('dp-257', {
+        force: true,
+        explicit: false,
+        mode,
+      }),
       { kind: 'ticket', jiraId: 'DP-257' },
     )
   }
@@ -50,7 +57,7 @@ test('classify: force wins in any mode and normalizes case', () => {
 
 test('classify: work mode + explicit jira-shaped topic → ticket', () => {
   assert.deepEqual(
-    classifyResearchTarget('DP-257', {
+    classifyBrainstormTarget('DP-257', {
       force: false,
       explicit: true,
       mode: 'work',
@@ -61,7 +68,7 @@ test('classify: work mode + explicit jira-shaped topic → ticket', () => {
 
 test('classify: personal mode bare jira-shaped topic stays topic (aven-ref ambiguity)', () => {
   assert.deepEqual(
-    classifyResearchTarget('PMR-5900', {
+    classifyBrainstormTarget('PMR-5900', {
       force: false,
       explicit: true,
       mode: 'personal',
@@ -73,7 +80,7 @@ test('classify: personal mode bare jira-shaped topic stays topic (aven-ref ambig
 test('classify: non-jira text stays topic everywhere', () => {
   for (const mode of ['work', 'personal'] as const) {
     assert.deepEqual(
-      classifyResearchTarget('rate limiting', {
+      classifyBrainstormTarget('rate limiting', {
         force: false,
         explicit: true,
         mode,
@@ -86,7 +93,7 @@ test('classify: non-jira text stays topic everywhere', () => {
 // --- ticket prompt ---
 
 test('ticket prompt: epic branch labels the epic and forbids creation', () => {
-  const p = buildTicketResearchPrompt({
+  const p = buildTicketBrainstormPrompt({
     jiraId: 'DP-257',
     target: { kind: 'epic', ref: 'PMR-ABC1' },
     artifactPath: '/tmp/r.md',
@@ -97,13 +104,13 @@ test('ticket prompt: epic branch labels the epic and forbids creation', () => {
   assert.match(p, /aven show <synced-ref> --full/)
   assert.match(p, /acli jira workitem view DP-257/)
   assert.doesNotMatch(p, /flow_phase_complete/)
-  assert.doesNotMatch(p, /aven edit PMR-ABC1 --label researched/)
+  assert.doesNotMatch(p, /aven edit PMR-ABC1 --label brainstormed/)
   assert.match(p, /Do NOT run the ticket-creation gate/)
   assert.doesNotMatch(p, /TICKET CREATION GATE/)
 })
 
 test('ticket prompt: synced branch targets the aven ticket, no acli, marker for later epic', () => {
-  const p = buildTicketResearchPrompt({
+  const p = buildTicketBrainstormPrompt({
     jiraId: 'DP-247',
     target: { kind: 'synced', ref: 'DPX-TFZH' },
     artifactPath: '/tmp/r.md',
@@ -113,13 +120,13 @@ test('ticket prompt: synced branch targets the aven ticket, no acli, marker for 
   assert.match(p, /aven show DPX-TFZH --full/)
   assert.doesNotMatch(p, /acli/)
   assert.doesNotMatch(p, /flow_phase_complete/)
-  assert.match(p, /researched by pi-flow/)
+  assert.match(p, /brainstormed by pi-flow/)
   assert.match(p, /creates the local epic and can discover/)
   assert.doesNotMatch(p, /TICKET CREATION GATE/)
 })
 
 test('ticket prompt: acli fallback stops on view failure, no label possible', () => {
-  const p = buildTicketResearchPrompt({
+  const p = buildTicketBrainstormPrompt({
     jiraId: 'DP-257',
     target: null,
     artifactPath: '/tmp/r.md',
@@ -127,18 +134,20 @@ test('ticket prompt: acli fallback stops on view failure, no label possible', ()
   })
   assert.match(p, /acli jira workitem view DP-257/)
   assert.match(p, /stop and/)
-  assert.match(p, /researched by pi-flow/)
-  assert.doesNotMatch(p, /--label researched/)
+  assert.match(p, /brainstormed by pi-flow/)
+  assert.doesNotMatch(p, /--label brainstormed/)
 })
 
-// --- research-label inheritance ---
+// --- brainstorm-marker inheritance ---
 
-async function withResearchDir(files: Record<string, string>): Promise<string> {
+async function withBrainstormDir(
+  files: Record<string, string>,
+): Promise<string> {
   const gitRoot = path.join(
-    await mkdtemp(path.join(tmpdir(), 'pi-flow-research-')),
+    await mkdtemp(path.join(tmpdir(), 'pi-flow-brainstorm-')),
     'repo',
   )
-  const dir = path.join(gitRoot, 'notes', 'research')
+  const dir = path.join(gitRoot, 'notes', 'brainstorm')
   await mkdir(dir, { recursive: true })
   for (const [name, content] of Object.entries(files)) {
     await writeFile(path.join(dir, name), content)
@@ -146,15 +155,15 @@ async function withResearchDir(files: Record<string, string>): Promise<string> {
   return gitRoot
 }
 
-test('findResearchedArtifact: finds the marker in the newest matching file', async () => {
-  const root = await withResearchDir({
-    '2026-10-01-dp-257.md': '# Research: DP-257\n',
+test('findBrainstormArtifact: finds the marker in the newest matching file', async () => {
+  const root = await withBrainstormDir({
+    '2026-10-01-dp-257.md': '# Brainstorm: DP-257\n',
     '2026-10-09-dp-257.md':
-      '# Research: DP-257\n> researched by pi-flow on 2026-10-09\n',
-    '2026-10-15-dp-257.md': '# Research: DP-257\nno marker here\n',
+      '# Brainstorm: DP-257\n> brainstormed by pi-flow on 2026-10-09\n',
+    '2026-10-15-dp-257.md': '# Brainstorm: DP-257\nno marker here\n',
   })
   try {
-    const found = await findResearchedArtifact(
+    const found = await findBrainstormArtifact(
       undefined,
       'repo',
       root,
@@ -167,12 +176,12 @@ test('findResearchedArtifact: finds the marker in the newest matching file', asy
   }
 })
 
-test('findResearchedArtifact: slug boundary — dp-257 does not match dp-2570', async () => {
-  const root = await withResearchDir({
-    '2026-10-09-dp-2570.md': '> researched by pi-flow\n',
+test('findBrainstormArtifact: slug boundary — dp-257 does not match dp-2570', async () => {
+  const root = await withBrainstormDir({
+    '2026-10-09-dp-2570.md': '> brainstormed by pi-flow\n',
   })
   try {
-    const found = await findResearchedArtifact(
+    const found = await findBrainstormArtifact(
       undefined,
       'repo',
       root,
@@ -184,8 +193,8 @@ test('findResearchedArtifact: slug boundary — dp-257 does not match dp-2570', 
   }
 })
 
-test('findResearchedArtifact: missing dir → null', async () => {
-  const found = await findResearchedArtifact(
+test('findBrainstormArtifact: missing dir → null', async () => {
+  const found = await findBrainstormArtifact(
     undefined,
     'no-such-repo',
     '/nonexistent/root',
@@ -203,12 +212,12 @@ const BASE = {
   labels: [] as string[],
 }
 
-test('phase-prompts: explicit jira-shaped research resolves via findTicketRef', async () => {
+test('phase-prompts: explicit jira-shaped brainstorm resolves via findTicketRef', async () => {
   const seen: string[] = []
-  const result = await buildPhasePrompt('research', {
+  const result = await buildPhasePrompt('brainstorm', {
     ...BASE,
     mode: 'work',
-    research: { kind: 'feature', text: 'DP-257', refHint: 'explicit' },
+    brainstorm: { kind: 'feature', text: 'DP-257', refHint: 'explicit' },
     findTicketRef: async (jiraId) => {
       seen.push(jiraId)
       return { kind: 'epic', ref: 'PMR-ABC1' }
@@ -222,10 +231,10 @@ test('phase-prompts: explicit jira-shaped research resolves via findTicketRef', 
 })
 
 test('phase-prompts: synced ticket resolves without acli', async () => {
-  const result = await buildPhasePrompt('research', {
+  const result = await buildPhasePrompt('brainstorm', {
     ...BASE,
     mode: 'work',
-    research: { kind: 'feature', text: 'DP-247', refHint: 'force' },
+    brainstorm: { kind: 'feature', text: 'DP-247', refHint: 'force' },
     findTicketRef: async () => ({ kind: 'synced', ref: 'DPX-TFZH' }),
   })
   assert.equal(result.kind, 'send')
@@ -235,10 +244,10 @@ test('phase-prompts: synced ticket resolves without acli', async () => {
 })
 
 test('phase-prompts: findTicketRef miss falls back to the acli branch', async () => {
-  const result = await buildPhasePrompt('research', {
+  const result = await buildPhasePrompt('brainstorm', {
     ...BASE,
     mode: 'work',
-    research: { kind: 'feature', text: 'DP-257', refHint: 'force' },
+    brainstorm: { kind: 'feature', text: 'DP-257', refHint: 'force' },
     findTicketRef: async () => null,
   })
   assert.equal(result.kind, 'send')
@@ -248,7 +257,7 @@ test('phase-prompts: findTicketRef miss falls back to the acli branch', async ()
 })
 
 test('phase-prompts: default ref-as-topic never takes the ticket path', async () => {
-  const result = await buildPhasePrompt('research', {
+  const result = await buildPhasePrompt('brainstorm', {
     ...BASE,
     mode: 'work',
     ref: 'PMR-5900',
@@ -259,10 +268,10 @@ test('phase-prompts: default ref-as-topic never takes the ticket path', async ()
 })
 
 test('phase-prompts: debug symptoms never take the ticket path', async () => {
-  const result = await buildPhasePrompt('research', {
+  const result = await buildPhasePrompt('brainstorm', {
     ...BASE,
     mode: 'work',
-    research: { kind: 'debug', text: 'DP-257 crashes' },
+    brainstorm: { kind: 'debug', text: 'DP-257 crashes' },
     findTicketRef: async () => ({ kind: 'epic', ref: 'PMR-ABC1' }),
   })
   assert.equal(result.kind, 'send')
@@ -273,7 +282,7 @@ test('phase-prompts: debug symptoms never take the ticket path', async () => {
 
 // --- jira-ref target resolution ---
 
-test('findTicketResearchTarget: epic beats synced; synced found via jira-key; miss = none', async () => {
+test('findTicketBrainstormTarget: epic beats synced; synced found via jira-key; miss = none', async () => {
   const scripted = (responses: Record<string, string>) =>
     (async (args: readonly string[]) => {
       const key = args.join(' ')
@@ -287,16 +296,16 @@ test('findTicketResearchTarget: epic beats synced; synced found via jira-key; mi
     'jira-ref=DP-1': '[{"ref":"PMR-E1","is_epic":true}]',
     'jira-key=DP-1': '[{"ref":"DPX-S1","is_epic":false}]',
   })
-  const t1 = await findTicketResearchTarget('DP-1', epicAndSynced)
+  const t1 = await findTicketBrainstormTarget('DP-1', epicAndSynced)
   assert.deepEqual(t1, { kind: 'epic', ref: 'PMR-E1' })
 
   const syncedOnly = scripted({
     'jira-key=DP-2': '[{"ref":"DPX-S2","is_epic":false}]',
   })
-  const t2 = await findTicketResearchTarget('DP-2', syncedOnly)
+  const t2 = await findTicketBrainstormTarget('DP-2', syncedOnly)
   assert.deepEqual(t2, { kind: 'synced', ref: 'DPX-S2' })
 
   const neither = scripted({})
-  const t3 = await findTicketResearchTarget('DP-3', neither)
+  const t3 = await findTicketBrainstormTarget('DP-3', neither)
   assert.deepEqual(t3, { kind: 'none' })
 })

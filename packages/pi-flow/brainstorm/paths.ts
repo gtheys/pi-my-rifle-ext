@@ -1,15 +1,19 @@
 import { join } from 'node:path'
 import { MODE_PROFILE } from '../mode-profile.ts'
+import { slugify } from '../slugify.ts'
 import type { WorkMode } from '../work-mode.ts'
 
 // AIDEV-NOTE: PMR-XCA9 — mirrors plan-tools/helpers.ts resolveSpecPath's
 // env-fallback contract (same package since the pi-planning absorption;
-// pure here, exec-based there). Work mode: $LLM_NOTES_ROOT/<repo>/notes/research/
-// when set. Personal mode: $PERSONAL_FEATURES/<repo>/notes/research/ when set
+// pure here, exec-based there). Work mode: $LLM_NOTES_ROOT/<repo>/notes/brainstorm/
+// when set. Personal mode: $PERSONAL_FEATURES/<repo>/notes/brainstorm/ when set
 // ($PERSONAL_FEATURES is the personal counterpart of $LLM_NOTES_ROOT —
-// PMR-MSGE: personal research must never land under the work notes root).
-// Both modes fall back to <git-toplevel>/notes/research/.
-export function resolveResearchDir(
+// PMR-MSGE: personal brainstorm artifacts must never land under the work
+// notes root). Both modes fall back to <git-toplevel>/notes/brainstorm/.
+// PMR-H7RW: dir renamed notes/research -> notes/brainstorm; no production
+// reader of the old dir remained (findResearchedArtifact's /flow caller
+// was removed with PMR-Z2K7), so the rename is a clean break.
+export function resolveBrainstormDir(
   mode: WorkMode,
   notesRoot: string | undefined,
   personalFeatures: string | undefined,
@@ -25,24 +29,12 @@ export function resolveResearchDir(
     root = personalFeatures
   }
   if (root) {
-    return join(root, repoName, 'notes', 'research')
+    return join(root, repoName, 'notes', 'brainstorm')
   }
-  return join(gitToplevel, 'notes', 'research')
+  return join(gitToplevel, 'notes', 'brainstorm')
 }
 
-// AIDEV-NOTE: Canonical slug rule — lowercase, strip non-alnum, max 5 words,
-// dashes. plan-tools/helpers.ts imports this.
-export function slugify(summary: string): string {
-  return summary
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .trim()
-    .split(/\s+/)
-    .slice(0, 5)
-    .join('-')
-}
-
-export function researchArtifactPath(
+export function brainstormArtifactPath(
   dir: string,
   title: string,
   date: string,

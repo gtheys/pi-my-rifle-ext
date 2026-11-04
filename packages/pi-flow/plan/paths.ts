@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { slugify } from '../research/paths.ts'
+import { slugify } from '../slugify.ts'
 
 // AIDEV-NOTE: PMR-XCA9 — mirrors plan-tools/helpers.ts resolveFeaturePath's
 // env-fallback contract (same package since the pi-planning absorption;

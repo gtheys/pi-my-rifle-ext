@@ -1,12 +1,12 @@
 /**
  * Shared helpers for the plan-tools registrations.
  * Moved from packages/pi-planning/plan-tools/helpers.ts (PMR-XCA9 — package
- * absorbed into pi-flow). The slug rule now lives in research/paths.ts.
+ * absorbed into pi-flow). The slug rule now lives in slugify.ts (re-homed out of brainstorm/paths.ts, PMR-H7RW).
  */
 
 import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { slugify } from '../research/paths.ts'
+import { slugify } from '../slugify.ts'
 
 export async function getRepoName(pi: ExtensionAPI): Promise<string> {
   // ponytail: git rev-parse --show-toplevel always works in a repo; remote URL is optional

@@ -1,42 +1,46 @@
 // AIDEV-NOTE: Single source of truth for phase handoff prompts, shared by
-// the phase commands (/research, /plan, ...) in index.ts and the /flow loop
+// the phase commands (/brainstorm, /plan, ...) in index.ts and the /flow loop
 // in flow/loop.ts. Both entrypoints MUST produce identical prompts so gates
 // and phase logic can never drift between a human invocation and a
 // flow-driven one. The loop never "reimplements" a phase — it calls these
 // same builders the commands call.
 import path from 'node:path'
+import {
+  brainstormArtifactPath,
+  resolveBrainstormDir,
+} from '../brainstorm/paths.ts'
+import {
+  buildBrainstormPrompt,
+  buildTicketBrainstormPrompt,
+} from '../brainstorm/prompt.ts'
+import { classifyBrainstormTarget } from '../brainstorm/refs.ts'
 import { buildFeedbackPrompt } from '../feedback/prompt.ts'
 import { buildImplementPrompt } from '../implement/prompt.ts'
 import { routeFor } from '../implement/routing.ts'
 import { resolvePlanDir } from '../plan/paths.ts'
 import { buildPlanPrompt } from '../plan/prompt.ts'
-import { researchArtifactPath, resolveResearchDir } from '../research/paths.ts'
-import {
-  buildResearchPrompt,
-  buildTicketResearchPrompt,
-} from '../research/prompt.ts'
-import { classifyResearchTarget } from '../research/refs.ts'
 import { resolveDevctlScriptsDir } from '../validate/paths.ts'
 import { buildValidatePrompt } from '../validate/prompt.ts'
 import type { WorkMode } from '../work-mode.ts'
 import type { Phase } from './orchestrate.ts'
 
-// AIDEV-NOTE: PMR-Z2K7 — 'research' left the lifecycle Phase union; it stays
-// here as a command-only phase so /research (and only /research) can reach
-// researchPrompt through the shared builder. The /flow loop only ever passes
+// AIDEV-NOTE: PMR-Z2K7 — research left the lifecycle Phase union; it stays
+// here as a command-only phase so /brainstorm (and only /brainstorm) can
+// reach brainstormPrompt through the shared builder (PMR-H7RW renamed the
+// member from 'research' to 'brainstorm'). The /flow loop only ever passes
 // lifecycle Phases.
-export type CommandPhase = Phase | 'research'
+export type CommandPhase = Phase | 'brainstorm'
 
 export type PhasePrompt =
   | { kind: 'send'; prompt: string }
   | { kind: 'block'; reason: string }
 
-export interface ResearchOverride {
+export interface BrainstormOverride {
   kind: 'feature' | 'debug'
   text: string
   /** Provenance of text — decides ticket-ref resolution
-   *  (research/refs.ts classifyResearchTarget): 'force' = known Jira ID
-   *  (/flow jira kind or ID= prefix), 'explicit' = bare /research topic
+   *  (brainstorm/refs.ts classifyBrainstormTarget): 'force' = known Jira ID
+   *  (/flow jira kind or ID= prefix), 'explicit' = bare /brainstorm topic
    *  (ticket path only when jira-shaped AND work mode). Undefined = default
    *  ref-as-topic; never the ticket path (an aven ref must not hit acli). */
   refHint?: 'force' | 'explicit'
@@ -45,7 +49,7 @@ export interface ResearchOverride {
 export interface PhasePromptInput {
   mode: WorkMode
   ref: string
-  /** Git toplevel of the session cwd; research/plan derive repoName from it. */
+  /** Git toplevel of the session cwd; brainstorm/plan derive repoName from it. */
   gitRoot: string
   /** Resolved pi-flow config workRoots; work-mode validate needs them. */
   workRoots: readonly string[]
@@ -55,9 +59,9 @@ export interface PhasePromptInput {
    *  (an oneshot route over an open tree is always a misroute: the whole
    *  tree gets executed as one batch without per-task workers). */
   epicHasOpenChildren?: boolean
-  /** /research override: explicit kind + topic/symptom (flow defaults to feature+ref). */
-  research?: ResearchOverride
-  /** Aven ticket lookup for ticket research (jira-ref epic, then jira-key
+  /** /brainstorm override: explicit kind + topic/symptom (flow defaults to feature+ref). */
+  brainstorm?: BrainstormOverride
+  /** Aven ticket lookup for ticket brainstorming (jira-ref epic, then jira-key
    *  synced ticket). Null = neither exists — the prompt falls back to acli. */
   findTicketRef?: (jiraId: string) => Promise<{
     kind: 'epic' | 'synced'
@@ -70,8 +74,8 @@ export async function buildPhasePrompt(
   input: PhasePromptInput,
 ): Promise<PhasePrompt> {
   switch (phase) {
-    case 'research':
-      return researchPrompt(input)
+    case 'brainstorm':
+      return brainstormPrompt(input)
     case 'plan':
       return planPrompt(input)
     case 'implement':
@@ -83,16 +87,16 @@ export async function buildPhasePrompt(
   }
 }
 
-// AIDEV-NOTE: async so ticket research can resolve the local epic via
-// findEpicRef before the prompt is built — /flow and /research share this
+// AIDEV-NOTE: async so ticket brainstorming can resolve the local epic via
+// findEpicRef before the prompt is built — /flow and /brainstorm share this
 // one path. Debug symptoms never take the ticket branch.
-async function researchPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
-  const research = input.research ?? {
+async function brainstormPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
+  const brainstorm = input.brainstorm ?? {
     kind: 'feature' as const,
     text: input.ref,
   }
   const repoName = input.gitRoot.split('/').pop() ?? 'unknown'
-  const dir = resolveResearchDir(
+  const dir = resolveBrainstormDir(
     input.mode,
     process.env.LLM_NOTES_ROOT,
     process.env.PERSONAL_FEATURES,
@@ -100,32 +104,32 @@ async function researchPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
     input.gitRoot,
   )
   const today = new Date().toISOString().slice(0, 10)
-  const target = classifyResearchTarget(research.text, {
-    force: research.refHint === 'force',
-    explicit: research.refHint === 'explicit',
+  const target = classifyBrainstormTarget(brainstorm.text, {
+    force: brainstorm.refHint === 'force',
+    explicit: brainstorm.refHint === 'explicit',
     mode: input.mode,
   })
-  if (research.kind === 'feature' && target.kind === 'ticket') {
+  if (brainstorm.kind === 'feature' && target.kind === 'ticket') {
     let resolved: { kind: 'epic' | 'synced'; ref: string } | null = null
     if (input.findTicketRef !== undefined) {
       resolved = await input.findTicketRef(target.jiraId)
     }
     return {
       kind: 'send',
-      prompt: buildTicketResearchPrompt({
+      prompt: buildTicketBrainstormPrompt({
         jiraId: target.jiraId,
         target: resolved,
-        artifactPath: researchArtifactPath(dir, target.jiraId, today),
+        artifactPath: brainstormArtifactPath(dir, target.jiraId, today),
         mode: input.mode,
       }),
     }
   }
-  const artifactPath = researchArtifactPath(dir, research.text, today)
+  const artifactPath = brainstormArtifactPath(dir, brainstorm.text, today)
   return {
     kind: 'send',
-    prompt: buildResearchPrompt({
-      kind: research.kind,
-      input: research.text,
+    prompt: buildBrainstormPrompt({
+      kind: brainstorm.kind,
+      input: brainstorm.text,
       artifactPath,
       mode: input.mode,
     }),

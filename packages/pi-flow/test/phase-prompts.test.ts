@@ -10,19 +10,19 @@ const BASE = {
   labels: [] as string[],
 }
 
-test('research: defaults to feature flow with the ref as topic', async () => {
-  const result = await buildPhasePrompt('research', BASE)
+test('brainstorm: defaults to feature flow with the ref as topic', async () => {
+  const result = await buildPhasePrompt('brainstorm', BASE)
   assert.equal(result.kind, 'send')
   if (result.kind !== 'send') return
-  assert.match(result.prompt, /Research phase/)
+  assert.match(result.prompt, /Brainstorm phase/)
   assert.match(result.prompt, /personal/)
   assert.doesNotMatch(result.prompt, /Debug flow/)
 })
 
-test('research: explicit debug override routes the debug flow', async () => {
-  const result = await buildPhasePrompt('research', {
+test('brainstorm: explicit debug override routes the debug flow', async () => {
+  const result = await buildPhasePrompt('brainstorm', {
     ...BASE,
-    research: { kind: 'debug', text: 'cart total wrong' },
+    brainstorm: { kind: 'debug', text: 'cart total wrong' },
   })
   assert.equal(result.kind, 'send')
   if (result.kind !== 'send') return

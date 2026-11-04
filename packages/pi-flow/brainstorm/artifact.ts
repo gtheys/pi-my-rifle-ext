@@ -1,20 +1,25 @@
-// AIDEV-NOTE: Artifact renderer for the /research phase. Both flows share the
-// skeleton; flow 1 gets "Ticket implications", flow 2 gets "Hypothesis chain"
-// + "Evidence". Diagrams/flows are embedded as mermaid code fences.
+// AIDEV-NOTE: Artifact renderer for the /brainstorm phase. Both flows share
+// the skeleton; flow 1 gets "Ticket implications", flow 2 gets "Hypothesis
+// chain" + "Evidence". Diagrams/flows are embedded as mermaid code fences.
 import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { resolveResearchDir, slugify } from './paths.ts'
+import { slugify } from '../slugify.ts'
+import { resolveBrainstormDir } from './paths.ts'
 
-// Marker the ticket-research prompt (research/prompt.ts) dictates for
-// pure-Jira research — the acli-fallback branch has no aven ref to label,
+// Marker the ticket-brainstorm prompt (brainstorm/prompt.ts) dictates for
+// pure-Jira topics — the acli-fallback branch has no aven ref to label,
 // so the artifact header carries the completion record instead.
-const RESEARCHED_MARKER = /> researched by pi-flow/
+// AIDEV-NOTE: marker renamed "> researched by pi-flow" -> "> brainstormed by
+// pi-flow" (PMR-H7RW) — no production reader of the old marker remained.
+const BRAINSTORMED_MARKER = /> brainstormed by pi-flow/
 
 // AIDEV-NOTE: /flow label inheritance. Pure-Jira research (acli fallback,
 // no aven ref) cannot land the "researched" label; when /flow later pulls in
 // the local epic, this finds the prior artifact so the epic can be marked
 // without rerunning research. Newest file wins (date-prefixed names).
-export async function findResearchedArtifact(
+// PMR-H7RW: the /flow caller of this was removed (PMR-Z2K7); kept for the
+// pure-Jira /flow pull-in rediscovery contract.
+export async function findBrainstormArtifact(
   notesRoot: string | undefined,
   repoName: string,
   gitToplevel: string,
@@ -22,8 +27,8 @@ export async function findResearchedArtifact(
 ): Promise<string | null> {
   // AIDEV-NOTE: the only caller (/flow Jira pull-in, index.ts) is work-mode
   // only — Jira IDs are rejected in personal repos — so this always resolves
-  // against the work branch of resolveResearchDir.
-  const dir = resolveResearchDir(
+  // against the work branch of resolveBrainstormDir.
+  const dir = resolveBrainstormDir(
     'work',
     notesRoot,
     undefined,
@@ -41,7 +46,7 @@ export async function findResearchedArtifact(
   for (const name of candidates.reverse()) {
     try {
       const content = await readFile(join(dir, name), 'utf8')
-      if (RESEARCHED_MARKER.test(content)) return join(dir, name)
+      if (BRAINSTORMED_MARKER.test(content)) return join(dir, name)
     } catch {
       // unreadable candidate — try the next one
     }
@@ -69,7 +74,7 @@ function bullets(items: readonly string[]): string {
 
 export function renderArtifact(input: ArtifactInput): string {
   const lines: string[] = []
-  lines.push(`# Research: ${input.title}`)
+  lines.push(`# Brainstorm: ${input.title}`)
   lines.push('')
   lines.push(`- Date: ${input.date}`)
   lines.push(`- Flow: ${input.kind}`)
