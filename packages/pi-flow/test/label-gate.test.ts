@@ -87,6 +87,30 @@ describe('lifecycleLabelMutation', () => {
     )
   })
 
+  it('allows read-only aven commands with a lifecycle --label (PMR-5RFR)', () => {
+    assert.equal(
+      lifecycleLabelMutation('aven search --label done --json'),
+      null,
+    )
+    assert.equal(lifecycleLabelMutation('aven list --label planned'), null)
+  })
+
+  it('blocks aven edit --label with extra whitespace (PMR-5RFR)', () => {
+    assert.equal(
+      lifecycleLabelMutation('aven edit PMR-1 --label  done'),
+      'done',
+    )
+    assert.equal(
+      lifecycleLabelMutation('aven edit PMR-1 --label   review-passed'),
+      'review-passed',
+    )
+    assert.equal(lifecycleLabelMutation('aven edit PMR-1 --label=done'), 'done')
+    assert.equal(
+      lifecycleLabelMutation('aven edit PMR-1 --remove-label  active'),
+      'active',
+    )
+  })
+
   it('allows non-label aven commands and non-aven commands', () => {
     assert.equal(lifecycleLabelMutation('aven show PMR-1 --json'), null)
     assert.equal(lifecycleLabelMutation('aven note PMR-1 "active work"'), null)
