@@ -44,14 +44,15 @@ export function checkPhaseCompletion(
 // allowed. Type labels (bug, oneshot, plan) stay agent-writable — only
 // LIFECYCLE_LABELS are gated.
 //
-// AIDEV-NOTE: PMR-5RFR — the flag match only fires under `aven edit` (the
-// mutating subcommand); read-only commands like `aven search --label done`
-// must pass. The separator is (?:=|\s+) so `--label  done` (extra
-// whitespace) cannot evade.
+// AIDEV-NOTE: PMR-5RFR — the flag match only fires under the mutating
+// subcommands `aven edit` and `aven add` (PMR-TCE5: add can birth a ticket
+// carrying a lifecycle label); read-only commands like
+// `aven search --label done` must pass. The separator is (?:=|\s+) so
+// `--label  done` (extra whitespace) cannot evade.
 export function lifecycleLabelMutation(command: string): string | null {
   if (!command.includes('aven')) return null
   const lifecycle = new Set<string>(LIFECYCLE_LABELS)
-  if (/\baven\s+edit\b/.test(command)) {
+  if (/\baven\s+(edit|add)\b/.test(command)) {
     const flag = command.match(/--(?:remove-)?label(?:=|\s+)["']?([\w-]+)/)
     if (flag !== null && lifecycle.has(flag[1])) return flag[1]
   }

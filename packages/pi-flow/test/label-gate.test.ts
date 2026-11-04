@@ -60,6 +60,22 @@ describe('lifecycleLabelMutation', () => {
     )
   })
 
+  it('blocks aven add --label with a lifecycle label (PMR-TCE5)', () => {
+    assert.equal(
+      lifecycleLabelMutation('aven add "title" --label done'),
+      'done',
+    )
+    assert.equal(
+      lifecycleLabelMutation('aven add "title" --label  active'),
+      'active',
+    )
+    assert.equal(
+      lifecycleLabelMutation('aven add "title" --label=planned'),
+      'planned',
+    )
+    assert.equal(lifecycleLabelMutation('aven add "title" --label bug'), null)
+  })
+
   it('blocks aven label add/remove legacy syntax', () => {
     assert.equal(
       lifecycleLabelMutation('aven label add PMR-1 planned'),
