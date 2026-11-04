@@ -69,6 +69,7 @@ import {
 import {
   findLastAssistantMessage,
   getNewEntries,
+  lastAssistantTurnIsToolCallOnly,
   seedSubagentSessionFile,
 } from './session.ts'
 import { type AggregateSnapshot, buildAggregateSnapshot } from './snapshot.ts'
@@ -2421,22 +2422,28 @@ function resolvePiSummary(
   sessionFile: string | undefined,
 ): string {
   if (result.summary) return result.summary
+  // AIDEV-NOTE (PMR-KGS5): when the child exited via subagent_done without a
+  // final text turn, the last assistant message is the toolCall-only done call
+  // and findLastAssistantMessage serves stale intermediate narration. Flag it
+  // so the parent knows the real report is missing.
+  const FALLBACK_FLAG =
+    '[subagent exited without a final summary; text below is the last assistant narration]'
+  const exitPlaceholder = (): string => {
+    if (result.errorMessage) return `Subagent error: ${result.errorMessage}`
+    if (result.exitCode !== 0)
+      return `Sub-agent exited with code ${result.exitCode}`
+    return 'Sub-agent exited without output'
+  }
   if (sessionFile && existsSync(sessionFile)) {
     const allEntries = getNewEntries(sessionFile, 0)
-    return (
-      findLastAssistantMessage(allEntries) ??
-      (result.errorMessage
-        ? `Subagent error: ${result.errorMessage}`
-        : result.exitCode !== 0
-          ? `Sub-agent exited with code ${result.exitCode}`
-          : 'Sub-agent exited without output')
-    )
+    const scraped = findLastAssistantMessage(allEntries)
+    if (scraped == null) return exitPlaceholder()
+    if (lastAssistantTurnIsToolCallOnly(allEntries)) {
+      return `${FALLBACK_FLAG}\n${scraped}`
+    }
+    return scraped
   }
-  return result.errorMessage
-    ? `Subagent error: ${result.errorMessage}`
-    : result.exitCode !== 0
-      ? `Sub-agent exited with code ${result.exitCode}`
-      : 'Sub-agent exited without output'
+  return exitPlaceholder()
 }
 
 async function watchSubagent(

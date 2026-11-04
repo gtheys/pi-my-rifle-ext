@@ -144,6 +144,34 @@ export function findLastAssistantMessage(
 }
 
 /**
+ * True when the LAST assistant message carries only tool-call blocks and no
+ * usable text (e.g. a bare `subagent_done` call). Used by the jsonl fallback
+ * to detect that no final text turn was ever produced — findLastAssistantMessage
+ * would then serve stale intermediate narration as if it were the final report.
+ */
+export function lastAssistantTurnIsToolCallOnly(
+  entries: SessionEntry[],
+): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]
+    if (entry.type !== 'message') continue
+    const msg = entry as MessageEntry
+    if (msg.message.role !== 'assistant') continue
+
+    const blocks = msg.message.content
+    const hasUsableText = blocks.some(
+      (block) =>
+        block.type === 'text' &&
+        typeof block.text === 'string' &&
+        block.text.trim() !== '',
+    )
+    const hasToolCall = blocks.some((block) => block.type === 'toolCall')
+    return hasToolCall && !hasUsableText
+  }
+  return false
+}
+
+/**
  * Append a branch_summary entry to the session file.
  * Returns the new entry's id.
  */

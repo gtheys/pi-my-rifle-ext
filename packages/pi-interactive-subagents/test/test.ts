@@ -1928,6 +1928,61 @@ describe('resolvePiSummary — sidecar summary preferred over jsonl (PMR-ZQ9P)',
     }
   })
 
+  function writeToolCallOnlySession(dir: string): string {
+    const sessionFile = join(dir, 'toolcall.jsonl')
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'intermediate narration' }],
+        },
+      })}\n${JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'toolCall', name: 'subagent_done' }],
+        },
+      })}\n`,
+      'utf8',
+    )
+    return sessionFile
+  }
+
+  it('flags the fallback text when the final assistant turn is toolCall-only (PMR-KGS5)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pi-summary-'))
+    try {
+      const sessionFile = writeToolCallOnlySession(dir)
+      const summary = testApi.resolvePiSummary(
+        { reason: 'done', exitCode: 0 },
+        sessionFile,
+      )
+      assert.match(
+        summary,
+        /subagent exited without a final summary/,
+        'stale narration must be flagged, not passed off as the final report',
+      )
+      assert.match(summary, /intermediate narration/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not flag the fallback when the final assistant turn has text', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pi-summary-'))
+    try {
+      const sessionFile = writeSession(dir, 'proper final report')
+      const summary = testApi.resolvePiSummary(
+        { reason: 'done', exitCode: 0 },
+        sessionFile,
+      )
+      assert.equal(summary, 'proper final report')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('uses the error placeholder when there is no sidecar summary and no session file', () => {
     const summary = testApi.resolvePiSummary(
       { reason: 'error', exitCode: 1, errorMessage: 'boom' },
