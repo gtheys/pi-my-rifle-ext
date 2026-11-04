@@ -103,6 +103,34 @@ describe('lifecycleLabelMutation', () => {
     )
   })
 
+  it('blocks a lifecycle label behind repeated --label flags (PMR-9P9E)', () => {
+    assert.equal(
+      lifecycleLabelMutation('aven edit PMR-1 --label bug --label done'),
+      'done',
+    )
+    assert.equal(
+      lifecycleLabelMutation('aven edit PMR-1 --label done --label bug'),
+      'done',
+    )
+    assert.equal(
+      lifecycleLabelMutation(
+        'aven edit PMR-1 --label bug --label plan --remove-label active',
+      ),
+      'active',
+    )
+    assert.equal(
+      lifecycleLabelMutation('aven add "title" --label bug --label planned'),
+      'planned',
+    )
+  })
+
+  it('allows repeated --label flags when all are type labels', () => {
+    assert.equal(
+      lifecycleLabelMutation('aven edit PMR-1 --label bug --label plan'),
+      null,
+    )
+  })
+
   it('allows read-only aven commands with a lifecycle --label (PMR-5RFR)', () => {
     assert.equal(
       lifecycleLabelMutation('aven search --label done --json'),

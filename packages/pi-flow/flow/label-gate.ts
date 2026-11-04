@@ -53,8 +53,14 @@ export function lifecycleLabelMutation(command: string): string | null {
   if (!command.includes('aven')) return null
   const lifecycle = new Set<string>(LIFECYCLE_LABELS)
   if (/\baven\s+(edit|add)\b/.test(command)) {
-    const flag = command.match(/--(?:remove-)?label(?:=|\s+)["']?([\w-]+)/)
-    if (flag !== null && lifecycle.has(flag[1])) return flag[1]
+    // AIDEV-NOTE: PMR-9P9E — matchAll, not match: repeated --label flags are
+    // all inspected, so `--label foo --label done` cannot smuggle a lifecycle
+    // label past a first-flag-only capture.
+    for (const flag of command.matchAll(
+      /--(?:remove-)?label(?:=|\s+)["']?([\w-]+)/g,
+    )) {
+      if (lifecycle.has(flag[1])) return flag[1]
+    }
   }
   if (/\blabel\s+(add|remove|set|rm|delete)\b/.test(command)) {
     for (const token of command.split(/[\s,'"|;&]+/)) {
