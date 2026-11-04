@@ -29,6 +29,7 @@ import {
 import {
   type BranchDeleteDecision,
   decideBranchDelete,
+  describePruneFailure,
   type PrState,
 } from './remove-guards.ts'
 
@@ -447,7 +448,7 @@ async function removeFlow(
   let pruneNote = 'prune ok'
   const prune = await pi.exec('git', ['fetch', '--prune'], { cwd: main })
   if (prune.code !== 0) {
-    pruneNote = `git fetch --prune failed (non-fatal): ${prune.stderr || prune.stdout}`
+    pruneNote = describePruneFailure(prune.stderr || prune.stdout)
   }
 
   const text = [

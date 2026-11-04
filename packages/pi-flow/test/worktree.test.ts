@@ -330,7 +330,27 @@ test('selectEnvFiles: empty dirs', () => {
 
 // --- decideBranchDelete: basics (full matrix in subtask 3.3) ---
 
-import { decideBranchDelete } from '../worktree/remove-guards.ts'
+import {
+  decideBranchDelete,
+  describePruneFailure,
+} from '../worktree/remove-guards.ts'
+
+test('describePruneFailure: publickey failure classified as skip', () => {
+  const note = describePruneFailure(
+    'git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.',
+  )
+  assert.match(note, /^prune skipped:/)
+  assert.match(note, /publickey/)
+  assert.doesNotMatch(note, /failed/)
+})
+
+test('describePruneFailure: other failures keep the non-fatal failure note', () => {
+  const note = describePruneFailure('fatal: unable to connect')
+  assert.equal(
+    note,
+    'git fetch --prune failed (non-fatal): fatal: unable to connect',
+  )
+})
 
 test('decideBranchDelete: not requested skips', () => {
   assert.deepEqual(

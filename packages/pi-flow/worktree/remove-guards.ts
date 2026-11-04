@@ -39,3 +39,14 @@ export function decideBranchDelete(input: {
     reason: `PR for branch is ${input.prState} — refusing to delete an unmerged branch`,
   }
 }
+
+// AIDEV-NOTE: herdr panes may lack SSH_AUTH_SOCK, so the post-remove
+// `git fetch --prune` can fail with publickey even when the user's keys are
+// fine (PMR-8JQ8). Classify auth failures as a skip instead of a scary
+// failure line; the fetch stays best-effort either way.
+export function describePruneFailure(output: string): string {
+  if (/Permission denied \(publickey\)/.test(output)) {
+    return 'prune skipped: git fetch --prune could not authenticate (ssh publickey) in this environment; remote refs may be stale'
+  }
+  return `git fetch --prune failed (non-fatal): ${output}`
+}
