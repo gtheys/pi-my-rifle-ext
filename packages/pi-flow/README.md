@@ -8,6 +8,31 @@ absorbed into this package — plan-tools, jira_create_branch, `/review`,
 agent tools now live here).
 Canonical flow documentation: [`docs/rpiv-flow.md`](../../docs/rpiv-flow.md).
 
+## Dependencies
+
+Runtime:
+
+| Package | Why | Used by |
+|---|---|---|
+| `@gtheys/pi-interactive-subagents` (`workspace:*`) | Spawn-and-watch substrate: launches agent sessions into herdr panes, keeps durable assignment records, steers results back | `review/review.ts` (reviewer spawn), `spec-review/publish.ts` (publish worker), `index.ts` (`hasLiveAssignmentForParent` for the flow loop) |
+
+Peers: `@earendil-works/pi-coding-agent` (host API), `@earendil-works/pi-tui`
+(review UI), `typebox` (config schema validation).
+
+Failure behavior:
+
+- **Package not installed** — the imports are static ESM, so pi-flow fails to
+  load at startup with a visible error. No partial registration, no silent
+  fallback. Fix: install the package (declared dependency, automatic) and
+  restart pi.
+- **No mux** (herdr binary missing or server down) — graceful per call site:
+  `/review` falls back to the in-session review path, `/spec-publish` prints
+  the manual git recipe, the flow loop reads on-disk assignment records and
+  is unaffected.
+- **Spawn fails with a mux present** — the failure steers back as a visible
+  `review_result` message; PR worktree cleanup is refcounted so a crashed
+  reviewer cannot tear down a shared worktree.
+
 ## Commands
 
 | Command | What it does |

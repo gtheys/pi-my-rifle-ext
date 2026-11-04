@@ -323,6 +323,11 @@ Slug rule: lowercase, strip non-alphanumeric, max 5 words, dashes.
 - [herdr-flow-integration.md](herdr-flow-integration.md) — the Herdr viewer
   plugin, `/flow-view` / `/herdr-sync`, and the run-state journal
   (`~/.pi/agent/pi-flow/runs/`) that renders in the viewer pane.
+
+pi-flow's only runtime dependency is `@gtheys/pi-interactive-subagents`
+(spawn/watch substrate for the review and publish workers). A missing package
+fails pi-flow's startup load loudly; a missing herdr mux degrades gracefully
+per call site. Details: pi-flow README, "Dependencies".
 - `openwiki/workflows/planning-and-implementation.md` — summary map.
 - [aven-feature-flow.md](aven-feature-flow.md) — superseded; retains the
   aven tree contract, plan-state gate, Jira pull-in script, and quick aven

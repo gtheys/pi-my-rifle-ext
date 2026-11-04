@@ -243,6 +243,18 @@ pi-flow /research /plan /implement /validate /feedback /flow
 feature-ticket ──uses──> raw `task` CLI only (no extension dependency)
 ```
 
+Package-level runtime dependencies (static imports — a missing package fails
+that extension's load loudly at startup, with no partial registration):
+
+| Consumer | Depends on | For |
+|---|---|---|
+| `pi-flow` | `@gtheys/pi-interactive-subagents` | reviewer/publish-worker spawns, in-flight-subagent check for the flow loop |
+| `pi-test-runner` | `@gtheys/pi-interactive-subagents` | isolated test-worker spawns |
+
+Runtime absence of the **mux** (herdr) is softer: each call site falls back
+(in-session review, manual publish recipe) — see the pi-flow README's
+Dependencies section.
+
 ### Rules of the road
 
 | Rule | Detail |
@@ -252,6 +264,7 @@ feature-ticket ──uses──> raw `task` CLI only (no extension dependency)
 | Tool names are contracts | A skill referencing `resolve_feature_path` or `flow_phase_complete` breaks if `pi-flow` is not loaded — pi reports the tool as unavailable and the skill's fallback path takes over. |
 | Agents are package data | `scout`/`worker`/`planner`/`reviewer` definitions live in `pi-interactive-subagents/agents/` and resolve project-local `.pi/agents/` first, then `~/.pi/agent/agents/`, then the bundled copy. |
 | Dispatch has a fallback | `/plan` in a standalone install (no `skills/` dir) falls back to the bundled generic planner workflow — feature-planning without aven. |
+| Package imports fail loud | `pi-flow` and `pi-test-runner` statically import `@gtheys/pi-interactive-subagents`; if it is not installed, those extensions do not load at all (startup error), rather than silently degrading. |
 
 ### Data contracts
 
