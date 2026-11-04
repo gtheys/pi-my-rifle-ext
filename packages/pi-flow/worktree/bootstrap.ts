@@ -142,7 +142,11 @@ async function runStep(
         output: `warning: gh auth token failed, running plain ${command}\n${tail(result.stdout + result.stderr)}`,
       }
     }
-    args = ['-c', command]
+    // AIDEV-NOTE: PMR-K8BW — spawn via bash; without this the whole
+    // `GH_TOKEN=... <cmd>` string was exec'd as one binary (ENOENT),
+    // the recurring bootstrap false-negative FAIL.
+    command = 'bash'
+    args = ['-c', step.command]
   } else {
     const parts = command.split(' ')
     args = parts.slice(1)
