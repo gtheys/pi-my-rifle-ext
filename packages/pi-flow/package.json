@@ -93,7 +93,12 @@
     "validate/personal.ts",
     "validate/prompt.ts",
     "validate/review-gate.ts",
-    "work-mode.ts"
+    "work-mode.ts",
+    "worktree/bootstrap.ts",
+    "worktree/branch.ts",
+    "worktree/herdr.ts",
+    "worktree/index.ts",
+    "worktree/remove-guards.ts"
   ],
   "pi": {
     "extensions": [
@@ -106,7 +111,6 @@
     "typebox": "*"
   },
   "dependencies": {
-    "@gtheys/pi-interactive-subagents": "workspace:*",
-    "@gtheys/pi-worktree": "workspace:*"
+    "@gtheys/pi-interactive-subagents": "workspace:*"
   }
 }

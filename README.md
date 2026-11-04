@@ -46,7 +46,6 @@ pi-my-rifle-ext/
 │   ├── pi-pr-digest/        # pr_digest tool + /pr-digest command (gh CLI)
 │   ├── pi-aven-context/     # aven workspace state session-start context
 │   ├── pi-flow/             # RPIV flow orchestrator (phases, gate tools, run-state journal, Herdr viewer, review/sonarqube/pr-quality)
-│   ├── pi-worktree/         # worktree tool (Herdr worktree workspaces)
 │   ├── pi-sudo/             # sudo_run tool (confirm dialog + masked password)
 │   └── pi-herdr-title/      # renames the herdr pane to `Pi - <cwd>` on session start
 ├── skills/            # Skills (each in a subdirectory with SKILL.md)
@@ -146,8 +145,7 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-aven-context`](packages/pi-aven-context/) | Session-start injection of live aven workspace state (`aven prime` tail: open issues, active/ready/blocked) as hidden custom-message context; non-fatal, idempotent | Context |
 | [`pi-teams-transcript`](packages/pi-teams-transcript/) | `teams_transcript` tool — list/download Microsoft Teams meeting transcripts via Microsoft Graph (app-only auth) ⚠️ *work in progress* | Integrations |
 | [`pi-pr-digest`](packages/pi-pr-digest/) | `pr_digest` tool + `/pr-digest` command — outstanding GitHub PRs in an org with human comment/review status (bots filtered) and reviewer-request table | Integrations |
-| [`pi-flow`](packages/pi-flow/) | RPIV flow orchestrator — `/research /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish` / `/review-spec`, gate tools (`flow_phase_complete`, `flow_land`, `flow_run_attempt`, `spec_approve`) that own lifecycle labels/landing/retry budget/spec approval, planning helpers (`resolve_spec_path`, `resolve_feature_path`, `open_in_pane`, `jira_create_branch` — absorbed from the retired pi-planning package), review tooling (`/review` + `review` tool, `/sonarqube` + `sonarqube` tool, `/pr-quality` + `pr_quality` tool, `/pr-watch` — absorbed from the retired pi-review package), work-mode detection (`workRoots` config), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
-| [`pi-worktree`](packages/pi-worktree/) | `worktree` tool — create/list/remove Herdr worktree workspaces with branch derivation, lockfile-based dependency bootstrap, `.env` snapshots, and a pi agent state dashboard | Git Workflow |
+| [`pi-flow`](packages/pi-flow/) | RPIV flow orchestrator — `/research /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish` / `/review-spec`, gate tools (`flow_phase_complete`, `flow_land`, `flow_run_attempt`, `spec_approve`) that own lifecycle labels/landing/retry budget/spec approval, planning helpers (`resolve_spec_path`, `resolve_feature_path`, `open_in_pane`, `jira_create_branch` — absorbed from the retired pi-planning package), review tooling (`/review` + `review` tool, `/sonarqube` + `sonarqube` tool, `/pr-quality` + `pr_quality` tool, `/pr-watch` — absorbed from the retired pi-review package), `worktree` tool (create/list/remove Herdr worktree workspaces — absorbed from the retired pi-worktree package), work-mode detection (`workRoots` config), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
 | [`pi-sudo`](packages/pi-sudo/) | `sudo_run` tool — root command execution behind an Allow/Deny confirmation + masked password prompt (password piped to `sudo -S`, never persisted) | System |
 | [`pi-herdr-title`](packages/pi-herdr-title/) | Renames the current herdr pane to `Pi - <cwd>` on session start; no-op outside herdr | UI Enhancement |
 
@@ -228,7 +226,7 @@ feature-plan-aven ──uses──> aven CLI (ticket state), resolve_feature_pat
 
 implement-plan-aven ──uses──> aven CLI, jira_create_branch      (pi-flow)
     └─uses──> worker subagents in a Herdr worktree
-                                              (pi-interactive-subagents, pi-worktree)
+                                          (pi-interactive-subagents, pi-flow)
 
 Reaching the skill: natural phrases ("implement PMR-ZTVG"),
 /skill:implement-plan-aven <ref> — or pi-flow's gated /implement phase.

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseBranchInput, personalBranch, slugify } from '../branch.ts'
+import {
+  parseBranchInput,
+  personalBranch,
+  slugify,
+} from '../worktree/branch.ts'
 
 // --- parseBranchInput: modes ---
 
@@ -120,7 +124,7 @@ import {
   parseJson,
   parseWorktrees,
   pickString,
-} from '../herdr.ts'
+} from '../worktree/herdr.ts'
 
 test('parseJson: valid JSON parses, non-JSON returns null', () => {
   assert.equal(parseJson('{"a":1}') !== null, true)
@@ -200,7 +204,7 @@ test('parseWorktrees: absent is_linked_worktree defaults to linked', () => {
 
 // --- bootstrap.ts: detectBootstrapPlan ---
 
-import { detectBootstrapPlan, selectEnvFiles } from '../bootstrap.ts'
+import { detectBootstrapPlan, selectEnvFiles } from '../worktree/bootstrap.ts'
 
 test('detectBootstrapPlan: bun.lock', () => {
   assert.deepEqual(detectBootstrapPlan(['bun.lock', 'package.json']), {
@@ -326,7 +330,7 @@ test('selectEnvFiles: empty dirs', () => {
 
 // --- decideBranchDelete: basics (full matrix in subtask 3.3) ---
 
-import { decideBranchDelete } from '../remove-guards.ts'
+import { decideBranchDelete } from '../worktree/remove-guards.ts'
 
 test('decideBranchDelete: not requested skips', () => {
   assert.deepEqual(

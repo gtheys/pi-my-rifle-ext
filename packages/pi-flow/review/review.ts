@@ -52,12 +52,12 @@ import {
   type SubagentResult,
   watchSubagent,
 } from '@gtheys/pi-interactive-subagents'
+import { Type } from 'typebox'
 import {
   herdrAvailable,
   worktreeCreate,
   worktreeRemove,
-} from '@gtheys/pi-worktree/herdr.ts'
-import { Type } from 'typebox'
+} from '../worktree/herdr.ts'
 import {
   buildSemReviewGuidance,
   getSemToolAvailability,

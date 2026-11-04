@@ -58,6 +58,7 @@ import { createLandingState, registerLandTool } from './tools/land.ts'
 import { registerPhaseCompleteTool } from './tools/phase-complete.ts'
 import { registerRunAttemptTool } from './tools/run-attempt.ts'
 import { registerSpecApproveTool } from './tools/spec-approve.ts'
+import worktreeExtension from './worktree/index.ts'
 
 // AIDEV-NOTE: test-facing export surface (PMR-T22H) — tests import these
 // from index.ts; the implementations now live in the boundary modules.
@@ -169,6 +170,11 @@ export default function (pi: ExtensionAPI) {
   reviewExtension(pi)
   sonarqubeExtension(pi)
   prQualityExtension(pi)
+
+  // AIDEV-NOTE: PMR-K0ZV — worktree/ absorbed from the retired pi-worktree
+  // package. Self-registering extension entrypoint (the `worktree` agent
+  // tool); pi-worktree is deleted, so it registers exactly once, here.
+  worktreeExtension(pi)
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
   // fully settles (blocking ask_user_question gates keep the run in flight,

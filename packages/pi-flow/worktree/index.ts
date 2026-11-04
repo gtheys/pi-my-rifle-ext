@@ -1,6 +1,8 @@
 /**
- * Worktree Extension — `worktree` tool wrapping Herdr worktree workspaces.
+ * Worktree module — `worktree` tool wrapping Herdr worktree workspaces.
  * Actions: create / list / remove. See plan 2026-09-07-pi-worktree-extension.
+ * AIDEV-NOTE: PMR-K0ZV — absorbed from the retired pi-worktree package into
+ * pi-flow; registered exactly once from pi-flow/index.ts.
  */
 
 import type {
