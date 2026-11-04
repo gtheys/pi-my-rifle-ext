@@ -311,6 +311,7 @@ inline; same steps otherwise. When in doubt, spawn the worker.
        "",
        "Write tests first, then implementation. Run the relevant tests via bash and show real output.",
        "Do NOT commit. Do NOT touch aven. Report changed files and test results in your final message.",
+       "Write your final summary as a normal text message. THEN call subagent_done, optionally passing the same summary. Never end on a bare tool call.",
      ].join("\n"),
    })
    ```

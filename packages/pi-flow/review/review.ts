@@ -190,6 +190,10 @@ export async function buildFullReviewPrompt(
     fullPrompt += target.tuicrInstructions
   }
 
+  // AIDEV-NOTE: PMR-RQBV — subagents must not end on a bare tool call; the
+  // machine-readable verdict section must land in a normal text message.
+  fullPrompt += `\n\nFinal-message contract: write your final review summary (including the verdict section) as a normal text message. THEN call subagent_done, optionally passing the same summary. Never end on a bare tool call.`
+
   return fullPrompt
 }
 
@@ -1482,6 +1486,7 @@ ${result.summary}`
       'If ocr fails, still return its full error output.',
       'Do NOT analyze, summarize, review, or fix anything. Do NOT explore the codebase.',
       'Your final message: the output file path on its first line, then the file contents verbatim.',
+      'Write your final summary as a normal text message. THEN call subagent_done, optionally passing the same summary. Never end on a bare tool call.',
     ].join('\n')
 
     try {
