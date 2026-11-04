@@ -54,25 +54,25 @@
   "dependencies": {
     "@earendil-works/pi-server": "1.1.0",
     "@gtheys/pi-per-commit-spend": "^0.2.6",
-    "@shikijs/cli": "^4.4.3",
+    "@shikijs/cli": "^4.6.0",
     "@sting8k/pi-vcc": "^0.7.3",
     "@tomooshi/caveman-milk-pi": "^0.2.0",
-    "@tomooshi/condensed-milk-pi": "^1.9.0",
+    "@tomooshi/condensed-milk-pi": "^1.13.0",
     "diff": "^9.0.0",
     "graphify-pi": "^0.3.0",
-    "pi-session-switch": "^0.4.0",
-    "shiki": "^4.4.3"
+    "pi-session-switch": "^0.4.1",
+    "shiki": "^4.6.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^1.4.0",
-    "@earendil-works/pi-coding-agent": "^1.4.0",
-    "@earendil-works/pi-tui": "^1.4.0",
-    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^1.4.0",
-    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^1.4.0",
+    "@earendil-works/pi-agent-core": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-tui": "^1.5.0",
+    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^1.5.0",
+    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^1.5.0",
     "@biomejs/biome": "2.5.12",
     "@types/diff": "^8.0.0",
     "lefthook": "2.1.12",
     "typescript": "7.0.2",
-    "bun-types": "^1.4.2"
+    "bun-types": "^1.4.4"
   }
 }
