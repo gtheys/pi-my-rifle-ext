@@ -122,6 +122,9 @@ export type DeviationDecision =
   | { route: 'validate-complete' }
   | { route: 'human-decision'; deviationsNote: string }
 
+// AIDEV-NOTE: no production caller — the deviation_review tool renders
+// the routing text inline (deviationResultToToolResult); this function stays
+// as the documented route contract and is covered by deviation-gate tests.
 // AIDEV-NOTE: Pure gate decision. 0 deviations -> proceed to
 // flow_phase_complete(validate). >0 -> a HUMAN decides: accept the deviations
 // or send the work back to /implement. This function only builds the note;

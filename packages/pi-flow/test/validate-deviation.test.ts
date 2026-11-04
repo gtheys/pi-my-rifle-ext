@@ -91,7 +91,7 @@ describe('buildValidatePrompt: deviation gate wiring', () => {
         /ERROR tool result[\s\S]*means re-run deviation_review/,
       )
       assert.match(prompt, /deviation_review/)
-      assert.match(prompt, /decideDeviationRoute/)
+      assert.match(prompt, /deviations_count/)
       assert.match(prompt, /call the deviation_review tool/)
     }
   })

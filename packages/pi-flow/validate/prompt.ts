@@ -114,7 +114,7 @@ D4. Read the tool result. The tool already parses the artifact STRICTLY
    malformed artifact) means re-run deviation_review — NEVER treat it as 0
    deviations, never silent landing. On ok, continue with the returned
 deviations_count.
-D5. Route with decideDeviationRoute:
+D5. Route on the returned deviations_count:
    - 0 deviations: record an aven note on ${ref} reading
      "no deviation from spec", then continue to flow_phase_complete with
      ref=${ref} and phase="validate", then flow_land (review-gate step 9).
