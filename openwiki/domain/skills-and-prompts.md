@@ -50,7 +50,7 @@ directly (the aven skill at `~/.pi/agent/skills/aven/` holds the CLI primer;
 extension in [Extension reference](../architecture/extensions.md) for the exact
 implementation. The full dependency map (commands → skills → tools → subagents)
 lives in `README.md` "How Extensions and Skills Fit Together"; the canonical
-planning flow doc is `docs/rpiv-flow.md`.
+planning flow doc is `docs/piv-flow.md`.
 
 ## Prompts (`prompts/`)
 

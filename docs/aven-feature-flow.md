@@ -1,8 +1,8 @@
 # Aven feature flow: plan → implement
 
-> **SUPERSEDED** by [`rpiv-flow.md`](rpiv-flow.md) — the RPIV flow
-> (`/research /plan /implement /validate /feedback /flow`, packages/pi-flow)
-> is now canonical. This doc remains for history and for the contracts still
+> **SUPERSEDED** by [`piv-flow.md`](piv-flow.md) — the PIV flow
+> (`/brainstorm` standalone + `/plan /implement /validate /feedback /flow`,
+> packages/pi-flow) is now canonical. This doc remains for history and for the contracts still
 > used inside the work-mode plan/implement phases: the aven epic tree
 > contract, the plan-state approval gate, the Jira-synced pull-in script,
 > and the aven quick command reference.

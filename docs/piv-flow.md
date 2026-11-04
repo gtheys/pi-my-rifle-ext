@@ -1,14 +1,16 @@
-# RPIV flow: research → plan → implement → validate → feedback
+# PIV flow: plan → implement → validate → feedback
 
-The canonical doc for the RPIV flow implemented in
+The canonical doc for the PIV flow implemented in
 [`packages/pi-flow`](../packages/pi-flow). It supersedes
 [`aven-feature-flow.md`](aven-feature-flow.md) (kept for history); the aven
 phase/subtask tree and Jira pull-in contracts it documents still apply inside
 the plan and implement phases.
 
-Six slash commands, one package. `/flow` chains the five phase commands;
-aven labels on the ticket ARE the run state. A cold reader should be able to
-run `/flow DP-1234` (work) or `/flow <aven-ref>` (personal) end-to-end from
+Six slash commands, one package. `/flow` chains the four phase commands;
+aven labels on the ticket ARE the run state. `/brainstorm` is a standalone
+command outside the lifecycle: it explores how/what to implement and ends at
+a confirm-gated ticket creation. A cold reader should be able to run
+`/flow DP-1234` (work) or `/flow <aven-ref>` (personal) end-to-end from
 this doc alone.
 
 Source of truth: `packages/pi-flow` — phase prompts in `<phase>/prompt.ts`,
@@ -59,7 +61,7 @@ aven project path add pi-my-rifle-ext /path/to/this/checkout
 # or force a workspace via the avenWorkspace config key above
 ```
 
-Consequences of mode: research tickets land in Jira (work) vs aven
+Consequences of mode: `/brainstorm` tickets land in Jira (work) vs aven
 (personal); plan/implement route to the `feature-plan-aven` /
 `implement-plan-aven` skills (work) vs pi-flow's own size-check flow
 (personal); validate runs the cluster gate (work) vs human-as-test-env
@@ -72,38 +74,54 @@ extension creates them best-effort on `session_start`.
 
 | Phase complete | Label |
 | --- | --- |
-| `/research` | `researched` |
 | `/plan` | `planned` |
 | `/implement` | `active` |
 | `/validate` | `review-passed` |
 | `/feedback` | `done` |
 
-Type labels: `bug`, `oneshot`, `plan` — set during research (bug flow) or
-plan (size check); they route `/implement`.
+Type labels: `bug`, `oneshot`, `plan` — set during `/brainstorm`'s ticket
+gate (bug flow) or plan (size check); they route `/implement`.
 
-## 3. The five phases
+## 3. The standalone `/brainstorm` command
 
-### 3.1 `/research <topic | symptom>`
-
-Questions first, code second, ticket only after confirmation — both modes.
+`/brainstorm <topic | symptom>` is NOT a lifecycle phase — it is a
+standalone entry point that produces understanding and a ticket. The PIV
+lifecycle (`/flow`) starts at plan and requires an existing ticket ref;
+`/brainstorm` is how a bare topic becomes one.
 
 1. **Feature flow**: ask the user one question at a time (ask_user_question
    loop) until mechanism, scope, constraints are clear; spawn parallel scout
    subagents to map the code. **Debug flow** (`--debug` or symptom input):
    drive the user's `debug` skill to a root cause, then optionally scout.
-2. Write a markdown artifact to `notes/research/<date>-<slug>.md`
-   (`$LLM_NOTES_ROOT/<repo>/notes/research/` when set, else
-   `<git-toplevel>/notes/research/`). Feature sections: Questions, Findings,
-   Diagrams, Ticket implications. Debug sections: Questions, Findings,
-   Hypothesis chain, Evidence.
+2. Write a markdown artifact to `notes/brainstorm/<date>-<slug>.md`
+   (`$LLM_NOTES_ROOT/<repo>/notes/brainstorm/` when set, else
+   `<git-toplevel>/notes/brainstorm/`). Feature sections: Questions,
+   Findings, Diagrams, Ticket implications. Debug sections: Questions,
+   Findings, Hypothesis chain, Evidence.
 3. **Ticket-creation gate**: propose destination (work: Jira project via
    acli; personal: aven workspace + project) and wait for an explicit
    "Confirm". Only then create the ticket, set the type label
-   (`bug` for debug flow), and record the confirmation as a note. Declined →
+   (`bug` for debug flow), and record the confirmation. Declined →
    nothing is created.
-4. Set the `researched` label.
+4. On aven tickets (personal mode), link the artifact as
+   `research-path=<absolute path>` metadata (the key predates the
+   `/brainstorm` rename and is kept for compatibility), so a later
+   `/validate` can read the findings from the ticket itself. Jira tickets
+   keep the artifact-header marker convention instead.
 
-### 3.2 `/plan <ref>`
+`/brainstorm` does NOT land a lifecycle label — completion is the artifact
+plus the answered gate. The lifecycle starts when you run `/flow <ref>` or
+`/plan <ref>` on the created ticket.
+
+Ticket brainstorming (`/brainstorm ID=DP-71`, or a jira-shaped topic in work
+mode) skips the creation gate: the ticket already exists. Resolution ladder:
+local epic (`jira-ref` metadata, read the dep-linked synced ticket for the
+description) → synced aven ticket (`jira-key` metadata) → `acli jira
+workitem view` fallback.
+
+## 4. The four phases
+
+### 4.1 `/plan <ref>`
 
 - **Work mode**: invoke the `feature-plan-aven` skill BY NAME and follow its
   workflow exactly (interview, scout, planner, plan.md, aven phase/subtask
@@ -132,21 +150,17 @@ Questions first, code second, ticket only after confirmation — both modes.
 Gate precondition for later phases: the `planned` label.
 
 **Completion labels are the advance gate.** Every phase prompt instructs the
-agent to set its lifecycle label on completion — `researched`, `planned`,
-`active`, `review-passed`, `done` — because the /flow loop advances by
-reading labels, never status. Implement additionally FORCES the plan route
-when the ref is an epic with open children, even if the type labels say
+agent to set its lifecycle label on completion — `planned`, `active`,
+`review-passed`, `done` — because the /flow loop advances by reading
+labels, never status. Implement additionally FORCES the plan route when the
+ref is an epic with open children, even if the type labels say
 oneshot: an oneshot prompt over an open tree batches the whole tree into one
 cycle with no per-task workers.
 
-### 3.3 `/implement <ref>`
+### 4.2 `/implement <ref>`
 
-Gate (`gates.ts` + `implement/routing.ts`):
-
-- No `planned` label → refuse ("run /plan first").
-- No `researched` label → requires the explicit `--skip-research` flag; the
-  skip is recorded durably as the `research-skipped` label (plus an aven
-  note) before work starts, so later invocations never re-demand the flag.
+Gate (`gates.ts` + `implement/routing.ts`): no `planned` label → refuse
+("run /plan first").
 
 Route by type label: `bug` → reproduce-first bug flow; `plan` →
 `implement-plan-aven` skill BY NAME; default → oneshot single cycle.
@@ -166,7 +180,7 @@ Hard rules for every route:
 
 On completion the ticket carries the `active` label.
 
-### 3.4 `/validate <ref>`
+### 4.3 `/validate <ref>`
 
 **Work mode — ordered gate, never reorder or skip** (`validate/gate.ts`):
 minikube (bounded poll: 12 attempts, 10s apart, then FAIL) →
@@ -177,11 +191,14 @@ lands. Any step failure: STOP, aven note with step + full output, never
 advance.
 
 **Personal mode — the human is the test environment** (`validate/personal.ts`):
-no cluster tools, no devctl, no acli. Read the plan/research artifacts,
-compose numbered runnable test steps + expected outcome from them (all
-sections empty → STOP, never invent filler), present via ask_user_question
-with pass/fail. Pass → aven note "validated by human, <date>". Fail → aven
-note with the description, route back to `/implement`, retry budget resets.
+no cluster tools, no devctl, no acli. Read the plan and brainstorm artifacts
+(located via the ticket's `research-path` metadata when present — absence
+is normal and tolerated; a ticket that never went through `/brainstorm` has
+no artifact to link), compose numbered runnable test steps + expected
+outcome from them (all sections empty → STOP, never invent filler), present
+via ask_user_question with pass/fail. Pass → aven note "validated by human,
+<date>". Fail → aven note with the description, route back to `/implement`,
+retry budget resets.
 
 **Review gate (both modes, after the env/human gate passes)** — review now
 gates validate:
@@ -192,13 +209,13 @@ gates validate:
    blocker. Parsing is strict — missing, duplicated, or non-integer counts
    are errors; **never treat a malformed count as 0** (a silent 0 auto-lands
    broken code). Re-run `/review` instead.
-3. `blockers_count: 0` → landing (§4).
+3. `blockers_count: 0` → landing (§5).
 4. `blockers_count > 0` → each blocker as an aven note on the ref, route
    back to `/implement` (retry budget applies), do not land.
 
 On pass the ticket carries the `review-passed` label.
 
-### 3.5 `/feedback <ref>`
+### 4.4 `/feedback <ref>`
 
 - **Work mode**: run `/sonarqube` and `/pr-quality` (pi-flow, BY NAME) on
   the PR. Triage every finding: mechanical severities (`minor`, `style`,
@@ -214,7 +231,7 @@ On pass the ticket carries the `review-passed` label.
   evidence", "Review verdict"). The ticket goes `done` ONLY once that note
   exists.
 
-## 4. Landing
+## 5. Landing
 
 | Mode | Landing |
 | --- | --- |
@@ -223,24 +240,22 @@ On pass the ticket carries the `review-passed` label.
 
 Landing happens only after the review gate reports `blockers_count: 0`.
 
-## 5. `/flow <ref>` — the orchestrator
+## 6. `/flow <ref>` — the orchestrator
 
-`/flow` runs the REMAINING phases through an **extension-owned loop**
-(`flow/loop.ts`), not a driver agent: an agent cannot invoke slash commands,
-so a prompt asking it to "run /research like a human" just made the agent
-wander. The loop injects ONE phase prompt at a time via `flow/phase-prompts.ts`
-(the exact builders the phase commands use), then advances on the
-`agent_settled` event — code sequences the phases, never the model.
+`/flow` requires an existing ticket ref (aven ref, or a Jira ID in work
+mode): a bare topic is refused with a pointer to `/brainstorm`, which is
+how a topic becomes a ticket. `/flow` runs the REMAINING phases through an
+**extension-owned loop** (`flow/loop.ts`), not a driver agent: an agent
+cannot invoke slash commands, so a prompt asking it to "run /plan like a
+human" just made the agent wander. The loop injects ONE phase prompt at a
+time via `flow/phase-prompts.ts` (the exact builders the phase commands
+use), then advances on the `agent_settled` event — code sequences the
+phases, never the model.
 
 - **Resume = first missing label** (`flow/orchestrate.ts`): the first phase
   whose completion label is absent on the ref is the one to run. Label
   present → phase skipped; label absent → (re-)run it. Killing the flow
   mid-phase resumes cleanly at that phase. All labels present → done.
-- `--skip-research`: the loop records the skip itself (deterministic) as the
-  durable `research-skipped` label + aven note and starts at plan; the SAME
-  satisfied-rule (researched OR research-skipped OR flag) governs both /flow
-  start and loop advance, and implement's gate accepts the recorded skip —
-  manual `/implement <ref>` works without retyping the flag.
 - After each settled phase turn, the loop re-reads the ref's labels
   (`aven show`) and only advances when the phase's completion label has
   landed. Blocking gates (`ask_user_question`) keep the run in flight, so
@@ -261,24 +276,23 @@ wander. The loop injects ONE phase prompt at a time via `flow/phase-prompts.ts`
   that epic ref; none → find-or-create pull-in (`aven add --epic` +
   `--metadata jira-ref=…`, dep-linked to the synced ticket found via
   `jira-key=…`); ambiguous (multiple epics) or not aven-managed → abort
-  with the reason. The research topic stays the Jira ID; every aven label,
-  journal, and halt note uses the epic ref. Personal mode refuses Jira IDs.
-  The phase commands resolve read-only: an existing epic replaces the Jira
-  ID (so `/implement DP-71` reads the epic's labels), a miss passes the ID
-  through to the prompt unchanged — `/plan DP-71` cold still lets the
-  feature-plan-aven skill do its own pull-in.
+  with the reason. Every aven label, journal, and halt note uses the epic
+  ref. Personal mode refuses Jira IDs. The phase commands resolve
+  read-only: an existing epic replaces the Jira ID (so `/implement DP-71`
+  reads the epic's labels), a miss passes the ID through to the prompt
+  unchanged — `/plan DP-71` cold still lets the feature-plan-aven skill do
+  its own pull-in.
 
 Example runs:
 
 ```text
-/flow DP-1234            # work mode: research → plan → implement → validate → feedback
+/flow DP-1234            # work mode: plan → implement → validate → feedback
 /flow PMR-ABC1           # personal mode, same phases against aven
-/flow PMR-ABC1 --skip-research
 ```
 
-## 6. Failure & escalation policy
+## 7. Failure & escalation policy
 
-- **Retry budget 3** per implement task (see §3.3); escalation = blocked
+- **Retry budget 3** per implement task (see §4.2); escalation = blocked
   status + evidence note + human.
 - Gate failures freeze the gate: validate stops at the failed step; review
   blockers route back to implement.
@@ -287,25 +301,26 @@ Example runs:
 - Feedback findings that aren't mechanical become new tickets through the
   full flow — never silent fixes during feedback.
 
-## 7. Script & artifact path resolution
+## 8. Script & artifact path resolution
 
 | What | Rule |
 | --- | --- |
 | Devctl scripts (validate, work mode) | `<first workRoot>/sh-devctl/scripts` (`resolveDevctlScriptsDir`). No `workRoots` configured → config error surfaced to the user, never a guess. |
-| Research artifacts | `$LLM_NOTES_ROOT/<repo>/notes/research/<date>-<slug>.md`, else `<git-toplevel>/notes/research/…` |
+| Brainstorm artifacts | `$LLM_NOTES_ROOT/<repo>/notes/brainstorm/<date>-<slug>.md`, else `<git-toplevel>/notes/brainstorm/…` |
 | Personal plan.md | `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md` |
 | Branch (work) | `jira_create_branch` from the Jira ref |
 | Branch (personal) | `feat/<slug>` from the ticket slug |
 
-Slug rule: lowercase, strip non-alphanumeric, max 5 words, dashes.
+Slug rule: lowercase, strip non-alphanumeric, max 5 words, dashes
+(`packages/pi-flow/slugify.ts`).
 
-## 8. Quick reference
+## 9. Quick reference
 
 | Purpose | Command |
 | --- | --- |
-| Full run, resume-aware | `/flow <ref> [--skip-research]` |
-| Single phases | `/research <topic>` · `/plan <ref>` · `/implement <ref>` · `/validate <ref>` · `/feedback <ref>` |
-| Skip research explicitly | `/implement <ref> --skip-research` (`research-skipped` label + note recorded) |
+| Topic → understanding + ticket (standalone) | `/brainstorm <topic>` · `/brainstorm --debug <symptom>` |
+| Full run, resume-aware | `/flow <ref>` |
+| Single phases | `/plan <ref>` · `/implement <ref>` · `/validate <ref>` · `/feedback <ref>` |
 | Current run state | `aven show <ref> --full` — lifecycle labels are the phase ledger |
 | Live run viewer (Herdr) | `/flow-view <ref> [right\|below\|left\|above\|tab]` — renders the run-state journal |
 | Link the Herdr plugin | `/herdr-sync` (explicit, idempotent) |
@@ -314,10 +329,10 @@ Slug rule: lowercase, strip non-alphanumeric, max 5 words, dashes.
 
 ## See also
 
-- [rpiv-flow-personal.md](rpiv-flow-personal.md) — personal-mode deep dive:
+- [piv-flow-personal.md](piv-flow-personal.md) — personal-mode deep dive:
   every transition, status change, and auto-advance vs wait-for-human point,
   with diagrams.
-- [rpiv-flow-work.md](rpiv-flow-work.md) — work-mode deep dive: the Jira↔aven
+- [piv-flow-work.md](piv-flow-work.md) — work-mode deep dive: the Jira↔aven
   epic mirror, Jira-ID resolution, the ordered cluster gate, PR landing, and
   the same auto-advance vs wait-for-human analysis.
 - [herdr-flow-integration.md](herdr-flow-integration.md) — the Herdr viewer

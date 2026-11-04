@@ -1,4 +1,4 @@
-# Herdr integration for the RPIV flow
+# Herdr integration for the PIV flow
 
 This document explains the Herdr integration shipped in this branch: what it
 is, how every piece works, why it is built the way it is, and where it can go
@@ -6,7 +6,7 @@ next. It is written for a cold reader — no prior context on
 [pi-workflows](https://github.com/osolmaz/pi-workflows) (the project whose
 Herdr design we ported) or on Herdr plugin internals is assumed.
 
-The canonical RPIV flow doc remains [`rpiv-flow.md`](rpiv-flow.md); this doc
+The canonical PIV flow doc remains [`piv-flow.md`](piv-flow.md); this doc
 extends it and does not change any contract stated there.
 
 ---
@@ -21,7 +21,7 @@ Four user-visible things, all gated on actually running inside Herdr:
    flow run, or focuses the existing pane for that run if one is already
    open. Placements: `right` (default), `below`, `left`, `above`, `tab`.
 3. **A flow run-state journal** — every `/flow` invocation now records what
-   happened (phases started/completed, research skips) to
+   happened (phases started/completed, notes) to
    `~/.pi/agent/pi-flow/runs/<ref>.json` plus an append-only
    `<ref>.journal.jsonl`.
 4. **`plugins/herdr/flow-viewer.mjs`** — the pane program Herdr runs. It
@@ -49,7 +49,7 @@ truth for gating decisions** (see §4.3).
 
 ## 2. Why port this at all
 
-The RPIV flow has one structural observability gap: its run state lives in
+The PIV flow has one structural observability gap: its run state lives in
 aven labels, which is elegant (zero infrastructure, resumable, visible in the
 task manager) but invisible in-flight. During a long `/flow` run there was no
 answer to "what phase is this in, what already completed, and when?" without
@@ -66,7 +66,7 @@ of problem with two mechanisms worth taking:
 
 We ported both, deliberately at ~10% of their size, because pi-workflows is a
 general workflow engine (SQLite server, resource managers, recovery
-contracts) while we only needed the two mechanisms above for a five-phase
+contracts) while we only needed the two mechanisms above for a four-phase
 linear flow.
 
 ## 3. How it works
@@ -79,7 +79,7 @@ Two files per flow ref under `getAgentDir()/pi-flow/runs/`:
   `run-start`, `phase-start`, `phase-complete`, `phase-skip`, `note`.
 - `<ref>.json` — the current projection (schema `gtheys.pi-flow.run.v1`):
   ref, mode, skipResearch, startedAt/updatedAt, completedPhases,
-  currentPhase, researchSkipNote, notes.
+  currentPhase, notes.
 
 Design rules, in order of importance:
 
@@ -95,10 +95,9 @@ Design rules, in order of importance:
    `[A-Za-z0-9][A-Za-z0-9._-]{0,99}` — a ticket ref can never traverse out
    of the runs directory.
 
-`/flow` writes `run-start`, a `phase-skip` note when `--skip-research` is
-active, and a `phase-start` for the phase it is about to invoke. Individual
-`/research`, `/plan` etc. commands can journal their own events the same way
-(future work, §6.2).
+`/flow` writes `run-start` and a `phase-start` for the phase it is about to
+invoke. Individual `/plan`, `/implement` etc. commands can journal their own
+events the same way (future work, §6.2).
 
 ### 3.2 The viewer pane (`plugins/herdr/flow-viewer.mjs`)
 
@@ -243,7 +242,7 @@ the orchestrator hands off to phase commands as chat prompts and completion
 is observed by *aven labels changing* — which the extension doesn't watch.
 Two options:
 
-- **Cheap**: have each phase command (`/research` etc.) journal its own
+- **Cheap**: have each phase command (`/plan` etc.) journal its own
   `phase-start` on invocation, and have `/flow` journal `phase-complete`
   for phases whose labels were already present at resume time. The viewer
   then shows "resumed past N phases" correctly.
@@ -359,4 +358,4 @@ plugin list` shows `gtheys.pi-my-rifle-ext` at the repo version.
   `docs/2026-08-18-herdr-piw-plan.md` in osolmaz/pi-workflows.
 - Their client-contract doc (why panes resolve nothing themselves):
   `docs/2026-09-21-piw-client-resolution-plan.md` in the same repo.
-- Our base flow contract: [`rpiv-flow.md`](rpiv-flow.md).
+- Our base flow contract: [`piv-flow.md`](piv-flow.md).

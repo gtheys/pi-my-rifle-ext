@@ -207,7 +207,7 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   silently skips; idempotent across resume/fork/reload via an existing-entry
   check on the session branch.
 
-## pi-flow (RPIV flow)
+## pi-flow (PIV flow)
 
 - **Files:** `packages/pi-flow/index.ts` (wiring only — registrations +
   enforcement interceptors; decisions live in pure modules), `aven/` (client:
@@ -216,12 +216,12 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   `flow/` (loop, args, label-gate, land-gate, ensure-labels, aven-resolve,
   ref-kind, jira-ref, phase-command, phase-prompts, orchestrate),
   `spec-review/` (approve, aven-spec, publish, open-in-pane, picker),
-  `research|plan|implement|validate|feedback/` (one subdir per phase: args +
+  `brainstorm|plan|implement|validate|feedback/` (one subdir per command: args +
   prompt), `plan-tools/` (absorbed from pi-planning), `review/` +
   `sonarqube/` + `pr-quality/` + `shared/` (absorbed from pi-review),
   `worktree/` (absorbed from pi-worktree), `run-state.ts`, `herdr/` (viewer,
   sync).
-- **Commands:** `/research`, `/plan`, `/implement`, `/validate`, `/feedback`,
+- **Commands:** `/brainstorm` (standalone), `/plan`, `/implement`, `/validate`, `/feedback`,
   `/flow` (orchestrator loop), `/spec-review`, `/spec-publish`, `/review-spec`,
   the absorbed `/review`, `/sonarqube`, `/pr-quality`, `/pr-watch`, plus the
   Herdr pair `/flow-view <ref>` and `/herdr-sync`.
@@ -236,8 +236,8 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   Plus the absorbed agent tools: `resolve_spec_path`, `resolve_feature_path`,
   `open_in_pane`, `jira_create_branch` (from pi-planning), `review`,
   `sonarqube`, `pr_quality` (from pi-review), `worktree` (from pi-worktree).
-- **What:** Drives the five RPIV phases with aven labels as run state
-  (`researched → planned → active → review-passed → done`). `/flow` injects one
+- **What:** Drives the PIV phases (plan → implement → validate → feedback) with aven
+  labels as run state (`planned → active → review-passed → done`). `/flow` injects one
   phase prompt at a time and advances only when the phase turn settles **and**
   its completion label landed; it no longer halts mid-phase while a subagent
   is in flight (`90f41b6`, via pi-interactive-subagents durable assignments).

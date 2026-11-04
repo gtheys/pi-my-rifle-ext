@@ -1,15 +1,15 @@
-# RPIV flow, personal mode: the complete map
+# PIV flow, personal mode: the complete map
 
-Deep-dive companion to [`rpiv-flow.md`](rpiv-flow.md). That doc covers both
+Deep-dive companion to [`piv-flow.md`](piv-flow.md). That doc covers both
 modes; this one explains **personal mode only** — every transition, every
 status change, every label, and above all: **where the flow advances by
 itself and where it stops and waits for you**.
 
 Everything here is read from the source of truth:
 `packages/pi-flow/flow/loop.ts`, `flow/orchestrate.ts`, `flow/phase-prompts.ts`,
-`flow/label-gate.ts`, `flow/land-gate.ts`, `plan/prompt.ts`, `plan/size-check.ts`,
-`plan/split-gate.ts`, `research/prompt.ts`, `research/ticket-gate.ts`,
-`implement/prompt.ts`, `implement/routing.ts`, `implement/retry.ts`,
+`flow/label-gate.ts`, `flow/land-gate.ts`, `packages/pi-flow/brainstorm/prompt.ts`,
+`plan/prompt.ts`, `plan/size-check.ts`,
+`plan/split-gate.ts`, `implement/prompt.ts`, `implement/routing.ts`, `implement/retry.ts`,
 `validate/personal.ts`, `validate/review-gate.ts`, `validate/prompt.ts`,
 `feedback/prompt.ts`, `feedback/triage.ts`, `run-state.ts`, `gates.ts`,
 `work-mode.ts`, and the tool wiring in `index.ts`.
@@ -18,7 +18,7 @@ Everything here is read from the source of truth:
 
 ## 1. When you are in personal mode
 
-Every `/flow`, `/research`, `/plan`, `/implement`, `/validate`, `/feedback`
+Every `/flow`, `/plan`, `/implement`, `/validate`, `/feedback`
 command first runs `git rev-parse --show-toplevel` on the session cwd.
 `modeForToplevel` checks that path against the `workRoots` prefixes in
 `~/.pi/agent/pi-flow/config.json`:
@@ -53,13 +53,13 @@ arbitrary.
 | Decision | Why |
 | --- | --- |
 | **Aven labels ARE the run state** (`flow/orchestrate.ts`) | The first phase whose completion label is missing is the phase to run. One rule gives you resume (kill the flow mid-phase → label absent → the same phase re-runs) and no-duplicate-work (label present → phase skipped). No separate state machine to corrupt. |
-| **The extension sequences phases, never the model** (`flow/loop.ts`) | An agent cannot invoke slash commands. The old "driver agent that runs /research like a human" prompt just made the agent wander. Now extension code injects one phase prompt at a time and advances on the `agent_settled` event when the label has landed. |
-| **Lifecycle labels are tool-gated** (`flow/label-gate.ts`, `index.ts`) | `aven edit <ref> --label planned` from the agent's bash is intercepted and blocked. Only `flow_phase_complete` can write `researched/planned/active/review-passed/done`, and it re-checks phase order first. An out-of-order or premature label is structurally impossible. |
+| **The extension sequences phases, never the model** (`flow/loop.ts`) | An agent cannot invoke slash commands. The old "driver agent that runs /plan like a human" prompt just made the agent wander. Now extension code injects one phase prompt at a time and advances on the `agent_settled` event when the label has landed. |
+| **Lifecycle labels are tool-gated** (`flow/label-gate.ts`, `index.ts`) | `aven edit <ref> --label planned` from the agent's bash is intercepted and blocked. Only `flow_phase_complete` can write `planned/active/review-passed/done`, and it re-checks phase order first. An out-of-order or premature label is structurally impossible. |
 | **Landing is gated** (`flow/land-gate.ts`, `index.ts`) | While a flow run is active, `git push` / `gh pr create` in bash are blocked until `flow_land` verifies the `review-passed` label (and cross-checks the review artifact's `blockers_count`). Broken code cannot auto-land. |
 | **Retry budget 3 is tool-owned** (`implement/retry.ts`, `index.ts`) | The agent reports every test attempt to `flow_run_attempt`; the tool decides retry vs escalate. Counting attempts "in its head" is how agents burn 10 retries at 3am. |
-| **Every decomposition waits for your "Confirm"** (`research/ticket-gate.ts`, `plan/split-gate.ts`) | A pure function returns a plan object only when `confirmed === true`. Creating a ticket or splitting a ticket into an epic tree without your explicit answer is impossible by construction. |
-| **The human is the test environment** (`validate/personal.ts`) | No cluster exists for personal repos. Test steps are composed from the plan/research artifacts — and if those sections are all empty, the agent must STOP rather than invent generic filler steps. |
-| **Fail closed everywhere** | Aven unreadable → abort, never "start from research by accident". Malformed `blockers_count` → error, never treated as 0. Unknown severity in feedback → new task, never a silent fix. |
+| **Every decomposition waits for your "Confirm"** (`brainstorm/prompt.ts`, `plan/split-gate.ts`) | A pure function returns a plan object only when `confirmed === true`. Creating a ticket or splitting a ticket into an epic tree without your explicit answer is impossible by construction. |
+| **The human is the test environment** (`validate/personal.ts`) | No cluster exists for personal repos. Test steps are composed from the plan and brainstorm artifacts (found via the ticket's `research-path` metadata when present; its absence is normal) — and if those sections are all empty, the agent must STOP rather than invent generic filler steps. |
+| **Fail closed everywhere** | Aven unreadable → abort, never "start from scratch by accident". Malformed `blockers_count` → error, never treated as 0. Unknown severity in feedback → new task, never a silent fix. |
 | **Push to main, no PR** (`validate/review-gate.ts`) | Own repos, standing no-PR rule; the review gate substitutes for PR review before the direct push. |
 | **Notes are the durable evidence record** | Every gate answer, failure, halt, and outcome lands as an aven note on the ref, so any later session can reconstruct what happened. The journal (`~/.pi/agent/pi-flow/runs/`) additionally records the run projection for the Herdr viewer. |
 
@@ -67,23 +67,23 @@ arbitrary.
 
 ## 3. The whole flow at a glance
 
+`/flow` runs the PIV lifecycle — plan → implement → validate → feedback —
+on an existing ticket. Before the flow, the standalone `/brainstorm <topic>`
+command can turn a bare topic into a ticket: question loop (WAIT per
+question) → scouts → artifact in `notes/brainstorm/` → ticket-creation gate
+(WAIT — explicit Confirm). Its completion is the ticket itself; it lands no
+lifecycle label. The chart below covers the flow proper.
+
 Legend: **AUTO** = the loop advances by itself once the phase turn settles
 and the label landed. **WAIT** = the turn blocks on you; nothing proceeds
 until you answer.
 
 ```mermaid
 flowchart TD
-    start["/flow PMR-ABC1"] --> rd{"researched OR<br/>research-skipped<br/>label present?"}
-    rd -- "no" --> res["RESEARCH phase<br/>question loop (WAIT per question)<br/>scouts (async)<br/>artifact in notes/research/"]
-    rd -- "yes (skip)" --> pln
-    res --> tg{"ticket exists?"}
-    tg -- "no: /research topic" --> tgate["TICKET-CREATION GATE<br/>WAIT — explicit Confirm<br/>aven workspace + project"]
-    tgate -- confirmed --> lblR["label: researched<br/>type label: feature|bug"]
-    tg -- "yes: /flow ref" --> lblR2["label: researched<br/>(gate skipped, ticket exists)"]
-    lblR --> pln
-    lblR2 --> pln
-    pln["PLAN phase<br/>existing-tree check → size check<br/>split verdict presented"]
-    pln --> split["SPLIT CONFIRM<br/>WAIT — oneshot vs plan"]
+    start["/flow PMR-ABC1"] --> pln{"planned<br/>label present?"}
+    pln -- "no" --> pln2["PLAN phase<br/>existing-tree check → size check<br/>split verdict presented"]
+    pln -- "yes (resume past plan)" --> impl
+    pln2 --> split["SPLIT CONFIRM<br/>WAIT — oneshot vs plan"]
     split -- oneshot --> osh["label: oneshot<br/>description IS the plan"]
     split -- plan --> epic["ticket becomes epic<br/>subtasks created<br/>label: plan<br/>plan.md written"]
     osh --> psr["status: todo<br/>plan-state: review<br/>plan.md opens in herdr pane"]
@@ -112,7 +112,6 @@ flowchart TD
     rr --> summ["OUTCOME SUMMARY note<br/>What shipped / Test evidence /<br/>Review verdict"]
     summ --> done["status: done<br/>label: done<br/>(flow_phase_complete)<br/>AUTO: flow complete"]
 
-    style tgate fill:#f9d71c
     style split fill:#f9d71c
     style appr fill:#f9d71c
     style htest fill:#f9d71c
@@ -171,7 +170,6 @@ intercepted and blocked.
 
 | Phase completes | Label lands | Set by |
 | --- | --- | --- |
-| research | `researched` | `flow_phase_complete(phase="research")` |
 | plan | `planned` | `flow_phase_complete(phase="plan")` — only AFTER spec approval |
 | implement | `active` | `flow_phase_complete(phase="implement")` |
 | validate | `review-passed` | `flow_phase_complete(phase="validate")` |
@@ -179,30 +177,24 @@ intercepted and blocked.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> researched: research phase done
-    researched --> planned: plan phase + YOUR approval
+    [*] --> planned: plan phase + YOUR approval
     planned --> active: implement green + committed
     active --> review-passed: human test passed + /review clean
     review-passed --> done: outcome summary written
-    researched --> research_skipped_label: --skip-research (alternative entry)
-    research_skipped_label --> planned
     active --> active: validate fail → implement again<br/>(budget reset)
     active --> active: review blockers → implement again
 ```
 
-### 4.2 Type and skip labels — the routing contract
+### 4.2 Type labels — the routing contract
 
-`bug`, `oneshot`, `plan` route `/implement`; `research-skipped` is the
-durable record that research was deliberately skipped (gates read labels,
-never notes — a note alone would be invisible). These stay agent-writable,
+`bug`, `oneshot`, `plan` route `/implement`. These stay agent-writable,
 unlike lifecycle labels.
 
 | Label | When it appears | Effect |
 | --- | --- | --- |
-| `bug` | research debug flow (ticket creation, or pre-existing) | implement runs reproduce-first bug flow |
+| `bug` | /brainstorm debug flow (ticket creation, or pre-existing) | implement runs reproduce-first bug flow |
 | `oneshot` | plan phase, split confirmed oneshot | implement runs a single implement→test→commit cycle |
 | `plan` | plan phase, split confirmed plan | implement walks the epic tree via `implement-plan-aven` |
-| `research-skipped` | `--skip-research` flag (recorded by /flow loop or /implement command) | research gate satisfied forever after; the flag is never re-demanded |
 
 One override: if the ref is an **epic with open children**, implement forces
 the `plan` route even when labels say oneshot — an oneshot prompt over an
@@ -215,7 +207,7 @@ labels, but the flow does move it:
 
 | Moment | Status |
 | --- | --- |
-| Ticket created at research gate | `backlog` |
+| Ticket created at the /brainstorm ticket-creation gate | `backlog` |
 | Plan enters spec review (step 6, both routes) | `todo` |
 | `spec_approve` | `todo` (pinned again) |
 | Implement retry budget exhausted | `blocked` + evidence note + escalate |
@@ -228,6 +220,7 @@ later phases own that transition.
 
 | Field | Meaning |
 | --- | --- |
+| `research-path=...` | absolute path of the brainstorm artifact, linked at the /brainstorm ticket-creation gate; /validate reads the findings from it — absence is normal (a ticket planned without /brainstorm has none) |
 | `plan-state=review` / `approved` | plan-phase approval gate state, set by the plan prompt / `spec_approve` tool |
 | `plan-path=...` | where plan.md lives, recorded at plan time so later phases find it |
 | aven notes | every gate confirmation, skip, failure, halt, human validation, outcome summary |
@@ -237,35 +230,37 @@ later phases own that transition.
 
 ## 5. Phase by phase
 
-### 5.1 Research — understand before proposing
+### 5.1 Brainstorm (standalone) — understand before ticketing
 
-**Entry variants (personal mode):**
+`/brainstorm` is NOT a phase of `/flow` — it is the standalone entry point
+that produces understanding and, on confirm, the ticket the flow later runs
+on. It lands no lifecycle label; `/flow` still starts at plan.
 
-- `/flow PMR-ABC1` — the ref itself is the topic; the ticket already exists,
-  so the creation gate is moot and the `researched` label lands on the ref.
-- `/research <topic>` — free topic; artifact written, then the
+**Variants (personal mode):**
+
+- `/brainstorm <topic>` — free topic; artifact written, then the
   ticket-creation gate runs.
-- `/research --debug <symptom>` — drives your `debug` skill to a root cause
-  (hypothesis chain + evidence sections); if a ticket is created it gets the
-  `bug` label.
-- `--skip-research` on `/flow`/`/implement` — the loop itself records the
-  durable `research-skipped` label + note before starting at plan.
+- `/brainstorm --debug <symptom>` — drives your `debug` skill to a root
+  cause (hypothesis chain + evidence sections); if a ticket is created it
+  gets the `bug` label.
 
 **Steps:** one-question-at-a-time interview (each answer is a WAIT) →
 parallel scout subagents (async; if codegraph is available it is synced and
 named in scout tasks) → artifact to
-`$LLM_NOTES_ROOT/<repo>/notes/research/<date>-<slug>.md`, else
-`<git-toplevel>/notes/research/…`, with Questions / Findings / Diagrams /
+`$LLM_NOTES_ROOT/<repo>/notes/brainstorm/<date>-<slug>.md`, else
+`<git-toplevel>/notes/brainstorm/…`, with Questions / Findings / Diagrams /
 Ticket implications sections (debug: Hypothesis chain / Evidence) → gate.
 
 **WAIT — ticket-creation gate.** The agent proposes an aven workspace AND
 project via `ask_user_question` and requires an explicit "Confirm" before
 `aven ticket create` runs. Decline → nothing is created, period. Confirm →
 ticket created with the type label (`bug` for debug flow, `feature`
-otherwise) and a note `confirmed by user, destination <destination>`.
+otherwise), a note `confirmed by user, destination <destination>`, and the
+artifact linked as `research-path=<absolute path>` metadata so a later
+`/validate` can read the findings from the ticket itself.
 
-**Exit:** `flow_phase_complete(phase="research")` → `researched` label.
-The flow then AUTO-advances to plan.
+**Exit:** the artifact is written and the gate is answered — done. Run
+`/flow <ref>` on the created ticket to start the lifecycle at plan.
 
 ### 5.2 Plan — decompose, but only with your permission
 
@@ -318,10 +313,7 @@ implement.
 ### 5.3 Implement — isolated, budgeted, committed
 
 **Gate** (checked before any prompt is even built): no `planned` label →
-refuse ("run /plan first"). No `researched` and no `research-skipped` label
-→ the explicit `--skip-research` flag is required, and the flag is
-immediately recorded as the durable `research-skipped` label so it is never
-asked for again.
+refuse ("run /plan first").
 
 **Routing:** `bug` label → reproduce-first flow (write the failing test
 first, fix, suite green, commit). `plan` label (or epic with open children)
@@ -349,8 +341,10 @@ to validate.
 
 No cluster, no devctl, no acli in personal mode. Two stages:
 
-**Stage 1 — human test.** The agent locates the plan/research artifacts
-(what changed, plan validation notes, research findings), composes numbered
+**Stage 1 — human test.** The agent locates the plan and brainstorm
+artifacts (plan-path metadata, plus research-path metadata from the
+`/brainstorm` ticket gate when present — absence is normal and tolerated),
+composes numbered
 steps you can literally run plus the expected outcome. All sections empty →
 STOP, the artifacts are missing; filler steps are never invented.
 
@@ -390,7 +384,7 @@ a silent 0 would auto-land broken code.
 - Only once that note exists: status `done` AND
   `flow_phase_complete(phase="feedback")` → `done` label.
 
-**Exit:** the loop sees all five labels → AUTO: "all phases complete", run
+**Exit:** the loop sees all four labels → AUTO: "all phases complete", run
 ends.
 
 ---
@@ -399,8 +393,8 @@ ends.
 
 | # | Point | Kind | What happens without you |
 | --- | --- | --- | --- |
-| 1 | Research interview (each question) | WAIT | Run stays in flight; nothing proceeds |
-| 2 | Ticket-creation gate | WAIT | Nothing is created if you decline |
+| 1 | Brainstorm interview (each question) — standalone /brainstorm, outside the flow | WAIT | Run stays in flight; nothing proceeds |
+| 2 | Ticket-creation gate (/brainstorm) | WAIT | Nothing is created if you decline |
 | 3 | Phase settled + label landed | AUTO | Next phase prompt injected immediately |
 | 4 | Plan split confirm (oneshot vs plan) | WAIT | No epic, no subtasks, ever |
 | 5 | Plan approval (`plan-state=review`) | WAIT | Flow PAUSES (info note); re-run `/flow` after approving |
@@ -451,9 +445,8 @@ ends.
 
 ```text
 /flow PMR-ABC1                 # run/resume the whole flow at the first missing label
-/flow PMR-ABC1 --skip-research # durable skip label, start at plan
-/research <topic>              # standalone research + ticket gate
-/research --debug <symptom>    # root-cause flow, bug label
+/brainstorm <topic>            # standalone: understand + ticket gate (no lifecycle label)
+/brainstorm --debug <symptom>  # root-cause flow, bug label
 /plan PMR-ABC1                 # size check + split confirm + spec review
 /implement PMR-ABC1            # gated: needs planned; worktree + budget
 /validate PMR-ABC1             # you test, then /review decides landing
@@ -467,7 +460,7 @@ Artifact paths:
 
 | Artifact | Path |
 | --- | --- |
-| Research artifact | `$LLM_NOTES_ROOT/<repo>/notes/research/<date>-<slug>.md`, else `<git-toplevel>/notes/research/…` |
+| Brainstorm artifact | `$LLM_NOTES_ROOT/<repo>/notes/brainstorm/<date>-<slug>.md`, else `<git-toplevel>/notes/brainstorm/…` |
 | plan.md | `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md` |
 | Run journal | `~/.pi/agent/pi-flow/runs/<ref>.json` + `<ref>.journal.jsonl` |
 | Config | `~/.pi/agent/pi-flow/config.json` (`workRoots`, `avenWorkspace`) |
@@ -477,8 +470,8 @@ Artifact paths:
 
 ## See also
 
-- [`rpiv-flow.md`](rpiv-flow.md) — the canonical two-mode reference.
-- [`rpiv-flow-work.md`](rpiv-flow-work.md) — work-mode deep dive (Jira↔aven
+- [`piv-flow.md`](piv-flow.md) — the canonical two-mode reference.
+- [`piv-flow-work.md`](piv-flow-work.md) — work-mode deep dive (Jira↔aven
   epic mirror, cluster gate, PR landing).
 - [`aven-feature-flow.md`](aven-feature-flow.md) — the epic-tree contract
   used by the plan route inside implement.

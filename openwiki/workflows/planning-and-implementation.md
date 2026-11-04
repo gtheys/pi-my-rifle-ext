@@ -1,14 +1,14 @@
 # Planning & Implementation Workflow
 
 **Map page.** The canonical, detailed flow doc is
-[`docs/rpiv-flow.md`](../../docs/rpiv-flow.md) (packages/pi-flow:
-`/research /plan /implement /validate /feedback /flow`) — read that for
+[`docs/piv-flow.md`](../../docs/piv-flow.md) (packages/pi-flow:
+`/brainstorm /plan /implement /validate /feedback /flow`) — read that for
 step-level detail, gates, and config. This page only orients.
 
 ## The flow in one screen
 
-Five phases, chained by the `/flow` orchestrator, tracked as **aven labels
-on the ticket** (`researched → planned → active → review-passed → done` —
+Four phases, chained by the `/flow` orchestrator, tracked as **aven labels
+on the ticket** (`planned → active → review-passed → done` —
 labels ARE the run state; resume = run the first phase whose label is
 missing). Labels and landings are written **only** through pi-flow's
 extension-owned gate tools — direct `aven edit --label`, `git push`, and
@@ -23,24 +23,27 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
   (explicit "approve <REF>" only); a `/flow` run pauses gracefully while a
   spec awaits approval instead of halting.
 
-1. **Research** — question loop + scouts → artifact in `notes/research/` →
-   ticket-creation gate (explicit human confirm; work: Jira via acli,
-   personal: aven) → `researched`.
-2. **Plan** — work: `feature-plan-aven` skill (epic/dep tree, plan-state
+1. **Plan** — work: `feature-plan-aven` skill (epic/dep tree, plan-state
    approval gate); personal: size check → human-confirmed oneshot-vs-plan
    split, plan.md + epic tree → `planned`.
-3. **Implement** — gate: `planned` required; worktree isolation; routes
+2. **Implement** — gate: `planned` required; worktree isolation; routes
    bug / plan / oneshot; retry budget **3 total attempts** (the 3rd failure
    escalates and refuses further attempts) → blocked + escalate →
    `active`.
-4. **Validate** — work: ordered cluster gate (minikube → connectivity →
+3. **Validate** — work: ordered cluster gate (minikube → connectivity →
    queues → deploy → manual tests → Jira evidence comment); personal: the
    human runs the test. Then the **review gate**: `/review` →
    `blockers_count` artifact; 0 → land, >0 → back to implement →
    `review-passed`.
-5. **Feedback** — work: `/sonarqube` + `/pr-quality` triage (mechanical
+4. **Feedback** — work: `/sonarqube` + `/pr-quality` triage (mechanical
    fixes committed; anything behavioral → new task through the gates);
    personal: re-review + outcome summary note → `done`.
+
+Brainstorming is standalone, not a flow phase: `/brainstorm <topic>` runs the
+question loop + scouts → artifact in `notes/brainstorm/` → ticket-creation
+gate (explicit human confirm; work: Jira via acli, personal: aven). The
+artifact path is stored on the ticket as `research-path` metadata; the
+validate phase reads findings through it, tolerating absence.
 
 Landing: work = PR + Jira comment; personal = push straight to main.
 
@@ -57,7 +60,7 @@ command reference live in the superseded-but-still-accurate
 
 ## See also
 
-- `docs/rpiv-flow.md` — canonical flow doc (gates, retry budget, resume
+- `docs/piv-flow.md` — canonical flow doc (gates, retry budget, resume
   semantics, config, script-path resolution).
 - `openwiki/workflows/code-review.md` — the review commands; review now
   gates validate.

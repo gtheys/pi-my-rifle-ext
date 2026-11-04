@@ -1,12 +1,12 @@
 # pi-flow
 
-PIV flow extension — `/research /plan /implement /validate /feedback` (research is no longer a lifecycle phase; /research stays available standalone, /brainstorm is its successor)
+PIV flow extension — `/brainstorm /plan /implement /validate /feedback`
 phase commands plus the `/flow` orchestrator, routed over
 pi-interactive-subagents (pi-planning, pi-review and pi-worktree were
 absorbed into this package — plan-tools, jira_create_branch, `/review`,
 `/sonarqube`, `/pr-quality`, `/pr-watch`, the `worktree` tool and their
 agent tools now live here).
-Canonical flow documentation: [`docs/rpiv-flow.md`](../../docs/rpiv-flow.md).
+Canonical flow documentation: [`docs/piv-flow.md`](../../docs/piv-flow.md).
 
 ## Dependencies
 
@@ -37,7 +37,7 @@ Failure behavior:
 
 | Command | What it does |
 | --- | --- |
-| `/research <topic \| ID=<jira-id> \| symptom>` | Question loop + scouts → artifact in `notes/research/` → ticket-creation gate (explicit confirm; work: Jira, personal: aven). `ID=<jira-id>` (or a bare jira-shaped topic in work mode) researches the existing ticket instead: aven local epic first (`jira-ref` metadata), `acli jira workitem view` fallback; no creation gate. Debug symptoms route through the user's `debug` skill to a root cause. |
+| `/brainstorm <topic \| ID=<jira-id> \| --debug <symptom>>` | Standalone (not a lifecycle phase): question loop + scouts → artifact in `notes/brainstorm/` → ticket-creation gate (explicit confirm; work: Jira, personal: aven). `ID=<jira-id>` (or a bare jira-shaped topic in work mode) brainstorms the existing ticket instead: aven local epic first (`jira-ref` metadata), `acli jira workitem view` fallback; no creation gate; the brainstorm artifact path is stored on the ticket as `research-path` metadata. `--debug <symptom>` routes through the user's `debug` skill to a root cause. |
 | `/plan <ref>` | Work: `feature-plan-aven` skill (epic tree, plan-state approval). Personal: size check → human-confirmed oneshot vs plan split; plan.md + epic/subtasks for plans. Ends with status `todo` + `planned` label — work mode: only after the approval-gated tree stage (premature `planned` would misroute `/implement`). |
 | `/implement <ref>` | Gate: `planned` required. Routes bug / plan / oneshot. Worktree isolation, per-task implement→test→commit, retry budget 3 then blocked + escalate. |
 | `/validate <ref>` | Work: ordered cluster gate (minikube → connectivity → queues → deploy → manual tests → Jira evidence comment). Personal: human runs the test. Then the review gate: `/review` → `blockers_count` artifact; 0 → land, >0 → back to `/implement`. |
