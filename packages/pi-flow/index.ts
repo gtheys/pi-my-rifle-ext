@@ -51,6 +51,7 @@ import { recordRunEvent, runStatePath } from './run-state.ts'
 import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
+import { registerDeviationReviewTool } from './tools/deviation.ts'
 import { createLandingState, registerLandTool } from './tools/land.ts'
 import { registerPhaseCompleteTool } from './tools/phase-complete.ts'
 import { registerRunAttemptTool } from './tools/run-attempt.ts'
@@ -149,6 +150,10 @@ export default function (pi: ExtensionAPI) {
 
   registerPhaseCompleteTool(pi)
   registerLandTool(pi, landingState)
+  // AIDEV-NOTE: PMR-R9EN — the deviation gate is a registered tool so the
+  // validate prompt can instruct the agent to CALL something (D3/D4) instead
+  // of naming TS functions it cannot invoke.
+  registerDeviationReviewTool(pi)
   registerRunAttemptTool(pi)
   registerSpecApproveTool(pi)
   // AIDEV-NOTE: PMR-XCA9 — plan-tools absorbed from the retired pi-planning

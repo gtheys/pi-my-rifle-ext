@@ -84,13 +84,15 @@ describe('buildValidatePrompt: deviation gate wiring', () => {
         scriptsDir: null,
       }),
     ]) {
+      // PMR-R9EN: D3/D4 now name the deviation_review tool (a registered
+      // tool the agent can actually call), not TS functions.
       assert.match(
         prompt,
-        /NEVER treat a missing or malformed\s+deviation artifact as 0/,
+        /ERROR tool result[\s\S]*means re-run deviation_review/,
       )
-      assert.match(prompt, /parseDeviationArtifact/)
+      assert.match(prompt, /deviation_review/)
       assert.match(prompt, /decideDeviationRoute/)
-      assert.match(prompt, /startDeviationReview/)
+      assert.match(prompt, /call the deviation_review tool/)
     }
   })
 

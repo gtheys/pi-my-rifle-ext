@@ -69,8 +69,9 @@ ${REVIEW_CONTRACT_PROMPT}
 //     metadata is omitted on aven 0.1.39)
 //   - personal oneshot (oneshot=true): the ticket description itself
 // Artifact parsing and routing delegate to the contracts the agent runs in
-// code: review/deviation.ts (startDeviationReview) and
-// validate/deviation-gate.ts (parseDeviationArtifact, decideDeviationRoute).
+// the deviation_review tool (tools/deviation.ts, which wraps
+// review/deviation.ts's startDeviationReview and
+// validate/deviation-gate.ts's parseDeviationArtifact).
 // Fail-closed everywhere: a missing/malformed spec source or artifact stops
 // the flow — never a silent pass.
 export function buildDeviationGateSection(
@@ -105,14 +106,14 @@ D2. Mine the why-inputs: commit messages via git log against the flow's base
    (the commit flow started from), and recent aven notes on ${ref} via the
    existing aven client (interview note, worktree note, oneshot outcome,
    escalation notes).
-D3. Run the deviation reviewer: call startDeviationReview from
-   review/deviation.ts with a prompt composed by buildDeviationReviewPrompt
-   (mode="${mode}", the resolved spec text, the git diff vs base, the mined
-   commit messages and aven notes) and await its artifact.
-D4. Parse the artifact STRICTLY with parseDeviationArtifact from
-   validate/deviation-gate.ts. NEVER treat a missing or malformed
-   deviation artifact as 0 — a malformed artifact means re-run the
-   deviation reviewer (step D3), never silent landing.
+D3. Run the deviation reviewer: call the deviation_review tool with
+   mode="${mode}", the resolved spec text (D1), the git diff vs base, and
+   the mined commit messages and aven notes (D2). Await its result.
+D4. Read the tool result. The tool already parses the artifact STRICTLY
+   (deviations_count contract). An ERROR tool result (spawn failure or
+   malformed artifact) means re-run deviation_review — NEVER treat it as 0
+   deviations, never silent landing. On ok, continue with the returned
+deviations_count.
 D5. Route with decideDeviationRoute:
    - 0 deviations: record an aven note on ${ref} reading
      "no deviation from spec", then continue to flow_phase_complete with
