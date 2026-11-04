@@ -70,9 +70,14 @@ export function buildValidatePrompt(input: ValidatePromptInput): string {
 Personal-mode validation: there is no cluster — the human is the test
 environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli).
 
-1. Locate the ticket's plan/research artifacts for ${input.ref} (the plan-path
-   metadata / research dir from earlier phases) and extract: what changed,
-   the plan's validation notes, and the research findings.
+1. Locate the ticket's plan/research artifacts for ${input.ref}: run
+   \`aven show ${input.ref} --full\` and look for a \`metadata ... key=research-path\`
+   block (set by /brainstorm on confirmed aven tickets). If present, read
+   that file for the research findings. If absent, that is NORMAL — most
+   tickets are never brainstormed; skip the research-findings section and
+   continue (do NOT fail or stop because of it). Extract from the remaining
+   artifacts (plan-path metadata): what changed, and the plan's validation
+   notes.
 2. Compose concrete runnable test instructions from those sections using the
    rules in validate/personal.ts (composeHumanTest): numbered steps the human
    can literally run, plus the expected outcome. If ALL sections are empty,

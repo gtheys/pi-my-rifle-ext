@@ -9,6 +9,8 @@
 // Both are side-effect-free; the command handler and the handoff prompt own
 // all I/O (aven notes, ask_user_question).
 
+import { parseMetadataBlock } from '../spec-review/aven-spec.ts'
+
 export interface HumanTestInput {
   whatChanged: string
   planValidationNotes: string
@@ -21,6 +23,17 @@ export type ComposedTest =
 
 function hasContent(value: string): boolean {
   return value.trim().length > 0
+}
+
+// AIDEV-NOTE: research-path (NOT brainstorm-path) is kept for backwards
+// compat — brainstorm tickets already carry it (see brainstorm/prompt.ts).
+// Returns null when the metadata block is absent: most tickets are never
+// brainstormed, so validate must tolerate its absence (never fail on it).
+export function readResearchPath(avenShowFullStdout: string): string | null {
+  const p = parseMetadataBlock(avenShowFullStdout, 'research-path')
+  if (p === null) return null
+  if (p.trim().length === 0) return null
+  return p.trim()
 }
 
 export function composeHumanTest(input: HumanTestInput): ComposedTest {

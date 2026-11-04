@@ -179,8 +179,9 @@ function brainstormOverrideOf(
 
 export function registerPhaseCommands(pi: ExtensionAPI): void {
   // AIDEV-NOTE: Prompt prep lives in flow/phase-prompts.ts (shared with the
-  // /flow loop). The ticket-creation gate lives in the agent prompt — the
-  // command itself never creates tickets. See brainstorm/ticket-gate.ts.
+  // /flow loop). The ticket-creation gate lives in the agent prompt (GATE_
+  // INSTRUCTIONS in brainstorm/prompt.ts) — the command itself never creates
+  // tickets, and the prompt-driven gate replaced buildTicketPlan (PMR-3EQ8).
   // Ticket refs (ID=<jira-id>, or bare jira-shaped in work mode) resolve
   // aven-first via findEpicRef and skip the creation gate — see
   // brainstorm/refs.ts.

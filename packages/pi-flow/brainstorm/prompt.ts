@@ -25,6 +25,10 @@ export interface TicketPromptInput {
   mode: 'work' | 'personal'
 }
 
+// AIDEV-NOTE: the metadata key stays 'research-path' (NOT 'brainstorm-path')
+// despite the /research -> /brainstorm rename (PMR-H7RW): existing tickets
+// already carry 'research-path' and the artifact is still a research
+// artifact conceptually. Renaming would orphan them.
 const GATE_INSTRUCTIONS = `
 TICKET CREATION GATE — after the artifact is written:
 1. Use the ask_user_question tool to propose a ticket destination and require an
@@ -41,7 +45,12 @@ TICKET CREATION GATE — after the artifact is written:
 4. Record the confirmation: aven tickets get a note "confirmed by user,
    destination <destination>"; for Jira tickets append a line
    "> confirmed by user, destination <destination>" to the artifact header.
-5. If the user declines, create nothing and say so.
+5. Link the research artifact on aven tickets (personal mode): run
+   \`aven edit <ref> --metadata research-path=<absolute artifact path>\` so a
+   later /validate can read the findings from the ticket itself. Jira tickets
+   instead keep the artifact-header marker convention — Jira has no
+   metadata fields to write.
+6. If the user declines, create nothing and say so.
 NEVER call acli or aven create before the explicit confirm answer.
 
 COMPLETION — the brainstorm is done when the artifact is written and the gate

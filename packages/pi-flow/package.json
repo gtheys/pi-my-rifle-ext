@@ -65,7 +65,6 @@
     "brainstorm/prompt.ts",
     "brainstorm/refs.ts",
     "slugify.ts",
-    "brainstorm/ticket-gate.ts",
     "review/LICENSE",
     "review/review.ts",
     "review/sem-guidance.d.mts",

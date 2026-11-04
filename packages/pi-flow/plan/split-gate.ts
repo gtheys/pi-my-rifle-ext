@@ -3,7 +3,7 @@
 // when `confirmed === true` AND at least one subtask is present. The pi command
 // must never instruct the agent to run aven epic create / subtask creation
 // unless this returned a plan. Confirmation comes from ask_user_question
-// BEFORE decomposition — same gate pattern as research/ticket-gate.ts.
+// BEFORE decomposition — same prompt-driven gate pattern that replaced brainstorm/ticket-gate.ts (PMR-3EQ8).
 
 export interface SplitInput {
   confirmed: boolean | undefined

@@ -4,7 +4,6 @@ import { parseBrainstormArgs } from '../brainstorm/args.ts'
 import { renderArtifact } from '../brainstorm/artifact.ts'
 import { resolveBrainstormDir } from '../brainstorm/paths.ts'
 import { buildBrainstormPrompt } from '../brainstorm/prompt.ts'
-import { buildTicketPlan } from '../brainstorm/ticket-gate.ts'
 import { slugify } from '../slugify.ts'
 
 // --- args ---
@@ -144,63 +143,34 @@ test('renderArtifact: empty sections rendered as none-yet', () => {
   assert.match(md, /## Questions\n\n_None yet_\n/)
 })
 
-// --- ticket gate ---
+// --- prompt ---
 
-// AIDEV-NOTE: the gate is the safety property under test — no plan object
-// escapes buildTicketPlan unless confirmed === true.
+test('buildBrainstormPrompt: gate text instructs research-path metadata on aven tickets', () => {
+  const p = buildBrainstormPrompt({
+    kind: 'feature',
+    input: 'rate limiting',
+    artifactPath: '/repo/notes/brainstorm/r.md',
+    mode: 'personal',
+  })
+  assert.match(p, /aven edit <ref> --metadata research-path=/)
+  assert.match(p, /confirmed by user/)
+  assert.match(p, /destination <destination>/)
+})
 
-test('buildTicketPlan: never returns plan without explicit confirm', () => {
-  for (const confirmed of [false, undefined]) {
-    const plan = buildTicketPlan({
-      kind: 'feature',
+test('buildBrainstormPrompt: gate text has no flow_phase_complete instruction', () => {
+  for (const kind of ['debug', 'feature'] as const) {
+    const p = buildBrainstormPrompt({
+      kind,
+      input: 'x',
+      artifactPath: '/tmp/r.md',
       mode: 'work',
-      confirmed,
-      projectKey: 'SOL',
     })
-    assert.equal(plan, null)
+    assert.ok(
+      !p.includes('flow_phase_complete'),
+      `${kind} gate mentions flow_phase_complete`,
+    )
   }
 })
-
-test('buildTicketPlan: work mode → Jira plan with project key + acli', () => {
-  const plan = buildTicketPlan({
-    kind: 'debug',
-    mode: 'work',
-    confirmed: true,
-    projectKey: 'SOL',
-  })
-  assert.ok(plan)
-  assert.equal(plan.destination, 'jira')
-  assert.equal(plan.projectKey, 'SOL')
-  assert.equal(plan.typeLabel, 'bug')
-  assert.match(plan.summary, /Jira project SOL/)
-})
-
-test('buildTicketPlan: personal mode → aven plan with workspace+project', () => {
-  const plan = buildTicketPlan({
-    kind: 'feature',
-    mode: 'personal',
-    confirmed: true,
-    workspace: 'personal',
-    project: 'ideas',
-  })
-  assert.ok(plan)
-  assert.equal(plan.destination, 'aven')
-  assert.equal(plan.typeLabel, 'feature')
-  assert.match(plan.summary, /aven workspace 'personal', project 'ideas'/)
-})
-
-test('buildTicketPlan: confirmed but missing destination details → null', () => {
-  assert.equal(
-    buildTicketPlan({ kind: 'feature', mode: 'work', confirmed: true }),
-    null,
-  )
-  assert.equal(
-    buildTicketPlan({ kind: 'debug', mode: 'personal', confirmed: true }),
-    null,
-  )
-})
-
-// --- prompt ---
 
 test('buildBrainstormPrompt: debug flow references debug skill and bug label', () => {
   const p = buildBrainstormPrompt({

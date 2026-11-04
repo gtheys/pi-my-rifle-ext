@@ -10,7 +10,11 @@ import {
   stepSucceeds,
 } from '../validate/gate.ts'
 import { DEVCTL_REPO_NAME, resolveDevctlScriptsDir } from '../validate/paths.ts'
-import { composeHumanTest, routePersonalOutcome } from '../validate/personal.ts'
+import {
+  composeHumanTest,
+  readResearchPath,
+  routePersonalOutcome,
+} from '../validate/personal.ts'
 import { buildValidatePrompt } from '../validate/prompt.ts'
 
 // --- args ---
@@ -236,6 +240,52 @@ test('buildValidatePrompt: personal mode asks for artifacts, ask_user_question, 
   assert.ok(p.includes('validated by human'))
   assert.ok(!p.includes('PMR-8449'))
   assert.ok(!p.includes('minikube'))
+})
+
+test('buildValidatePrompt: personal mode reads research-path metadata, tolerant of absence', () => {
+  const p = buildValidatePrompt({
+    mode: 'personal',
+    ref: 'PMR-F7YM',
+    scriptsDir: null,
+  })
+  assert.match(p, /key=research-path/)
+  assert.match(p, /aven show PMR-F7YM --full/)
+  assert.match(p, /do NOT fail/i)
+})
+
+describe('readResearchPath', () => {
+  const block = [
+    'title: something',
+    'metadata field_id=abc key=research-path',
+    'value<<EOF',
+    '/repo/notes/brainstorm/rate-limiting.md',
+    'EOF',
+  ].join('\n')
+
+  it('extracts the path from an aven show --full metadata block', () => {
+    assert.equal(
+      readResearchPath(block),
+      '/repo/notes/brainstorm/rate-limiting.md',
+    )
+  })
+  it('returns null when the metadata block is absent', () => {
+    assert.equal(readResearchPath('title: plain ticket\nstate: planned'), null)
+  })
+  it('returns null for an empty value', () => {
+    const empty = [
+      'metadata field_id=abc key=research-path',
+      'value<<EOF',
+      '',
+      'EOF',
+    ].join('\n')
+    assert.equal(readResearchPath(empty), null)
+  })
+  it('ignores a description merely mentioning research-path', () => {
+    assert.equal(
+      readResearchPath('description: set research-path on the ticket'),
+      null,
+    )
+  })
 })
 
 test('parseValidateArgs: kind prefixes force the kind (PMR-PCVK)', () => {
