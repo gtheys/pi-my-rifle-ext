@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { runSonarAnalysis } from '../sonarqube/sonarqube.ts'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import sonarqube, { runSonarAnalysis } from '../sonarqube/sonarqube.ts'
 
 // Canned SonarCloud API responses
 const coverageMeasures = {
@@ -166,6 +167,58 @@ test('runSonarAnalysis classifies missing token', async () => {
     )
     assert.ok(err instanceof Error)
     assert.equal((err as Error & { kind?: string }).kind, 'token')
+  } finally {
+    if (prev !== undefined) process.env.SONARQUBE_TOKEN = prev
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('sonarqube tool isError result omits details (PMR-1EJB)', async () => {
+  const dir = makeProjectDir()
+  const prev = process.env.SONARQUBE_TOKEN
+  delete process.env.SONARQUBE_TOKEN
+  try {
+    const tools: {
+      name: string
+      execute: (
+        toolCallId: string,
+        params: { pr_number?: string },
+        signal: AbortSignal,
+        onUpdate: unknown,
+        ctx: Record<string, unknown>,
+      ) => Promise<{
+        content: { type: string; text: string }[]
+        isError?: boolean
+        details?: unknown
+      }>
+    }[] = []
+    const mockPi = {
+      registerTool: (options: unknown) => {
+        tools.push(options as (typeof tools)[number])
+      },
+      registerCommand: () => {},
+      on: () => () => {},
+      sendUserMessage: async () => {},
+    } as unknown as ExtensionAPI
+    sonarqube(mockPi)
+
+    const tool = tools.find((t) => t.name === 'sonarqube')
+    assert.ok(tool, 'sonarqube tool registered')
+    const result = await tool.execute(
+      'call-1',
+      { pr_number: '1' },
+      new AbortController().signal,
+      undefined,
+      {
+        cwd: dir,
+        hasUI: false,
+        mode: 'tui',
+        ui: { notify: () => {} },
+        sessionManager: {},
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(result.details, undefined)
   } finally {
     if (prev !== undefined) process.env.SONARQUBE_TOKEN = prev
     rmSync(dir, { recursive: true, force: true })

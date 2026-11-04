@@ -782,7 +782,7 @@ export default function sonarqube(pi: ExtensionAPI) {
       signal: AbortSignal,
       _onUpdate: unknown,
       ctx: ExtensionToolContext,
-    ): Promise<AgentToolResult<SonarAnalysisDetails>> {
+    ): Promise<AgentToolResult<SonarAnalysisDetails | undefined>> {
       let filter: FilterOptions | undefined
       if (params.severity || params.types || params.files) {
         filter = {
@@ -804,6 +804,7 @@ export default function sonarqube(pi: ExtensionAPI) {
           details: result.details,
         }
       } catch (err) {
+        // AIDEV-NOTE: isError results omit details — see pr-quality/index.ts.
         return {
           content: [
             {
@@ -811,14 +812,7 @@ export default function sonarqube(pi: ExtensionAPI) {
               text: `sonarqube analysis failed: ${(err as Error).message}`,
             },
           ],
-          details: {
-            prNumber: params.pr_number ?? '',
-            projectKey: '',
-            organization: '',
-            coverageOverall: 0,
-            coverageNewCode: 0,
-            issuesTotal: 0,
-          },
+          details: undefined,
           isError: true,
         }
       }

@@ -2096,7 +2096,7 @@ ${result.summary}`
       _signal: AbortSignal,
       _onUpdate: unknown,
       ctx: ExtensionToolContext,
-    ): Promise<AgentToolResult<{ hint: string; ocr: boolean }>> {
+    ): Promise<AgentToolResult<{ hint: string; ocr: boolean } | undefined>> {
       if (!isMuxAvailable()) {
         return {
           content: [
@@ -2105,8 +2105,10 @@ ${result.summary}`
               text: 'Review requires a subagent mux (herdr). Ask the user to run the /review command instead.',
             },
           ],
+          // AIDEV-NOTE: isError results omit details — a fabricated
+          // empty hint would mislead consumers. See pr-quality/index.ts.
+          details: undefined,
           isError: true,
-          details: { hint: '', ocr: false },
         }
       }
 
@@ -2132,8 +2134,8 @@ ${result.summary}`
                 text: `PR checkout failed for ${p.ref}. See the notification for details.`,
               },
             ],
+            details: undefined,
             isError: true,
-            details: { hint: '', ocr: false },
           }
         }
         target = prTarget

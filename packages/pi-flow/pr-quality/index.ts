@@ -863,7 +863,7 @@ export default function prQuality(pi: ExtensionAPI) {
       signal: AbortSignal,
       _onUpdate: unknown,
       ctx: ExtensionToolContext,
-    ): Promise<AgentToolResult<PrQualityDetails>> {
+    ): Promise<AgentToolResult<PrQualityDetails | undefined>> {
       try {
         const result = await gatherPrQualityData({
           cwd: ctx.cwd,
@@ -881,17 +881,12 @@ export default function prQuality(pi: ExtensionAPI) {
         } else {
           text = `pr_quality failed: ${(err as Error).message}`
         }
+        // AIDEV-NOTE: isError results omit details — a zeroed payload would
+        // fabricate data the analysis never produced. The error text is
+        // authoritative. Same rule in sonarqube.ts and review/review.ts.
         return {
           content: [{ type: 'text', text }],
-          details: {
-            prNumber: params.pr_number ?? '',
-            prTitle: '',
-            prUrl: '',
-            unresolvedCount: 0,
-            issuesTotal: 0,
-            issuesBySeverity: {},
-            projectKey: '',
-          },
+          details: undefined,
           isError: true,
         }
       }

@@ -96,6 +96,8 @@ test('tool execute returns a clean error without a mux', async () => {
 
   assert.equal(result.isError, true)
   assert.match(result.content[0].text, /mux/)
+  // Pin the isError shape: no fabricated details payload (PMR-1EJB).
+  assert.equal(result.details, undefined)
 })
 
 test('buildFullReviewPrompt composes rubric + target prompt + guidelines', async () => {
