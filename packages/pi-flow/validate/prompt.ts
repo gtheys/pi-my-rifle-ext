@@ -64,7 +64,7 @@ export interface ValidatePromptInput {
 }
 
 export function buildValidatePrompt(input: ValidatePromptInput): string {
-  const header = `Validate phase (RPIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
+  const header = `Validate phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
   if (input.mode === 'personal') {
     return `${header}
 Personal-mode validation: there is no cluster — the human is the test

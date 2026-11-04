@@ -10,22 +10,16 @@ describe('parseImplementArgs', () => {
     assert.deepEqual(parseImplementArgs('dp-71'), {
       kind: 'jira',
       jiraId: 'DP-71',
-      skipResearch: false,
     })
   })
   it('parses aven ref', () => {
     assert.deepEqual(parseImplementArgs('fix-login-flow'), {
       kind: 'aven',
       ref: 'fix-login-flow',
-      skipResearch: false,
     })
   })
-  it('parses non-jira aven ref with skip flag', () => {
-    assert.deepEqual(parseImplementArgs('my-ticket --skip-research'), {
-      kind: 'aven',
-      ref: 'my-ticket',
-      skipResearch: true,
-    })
+  it('removed --skip-research flag now yields help', () => {
+    assert.equal(parseImplementArgs('my-ticket --skip-research').kind, 'help')
   })
   it('empty is help', () => {
     assert.equal(parseImplementArgs('').kind, 'help')
@@ -34,32 +28,28 @@ describe('parseImplementArgs', () => {
 
 describe('routeFor', () => {
   it('refuses without planned label', () => {
-    const r = routeFor('jira', ['bug'], false)
+    const r = routeFor('jira', ['bug'])
     assert.equal(r.kind, 'refuse')
   })
   it('bug label routes to bug', () => {
-    const r = routeFor('jira', ['planned', 'researched', 'bug'], false)
-    assert.deepEqual(r, { kind: 'ok', route: 'bug', researchSkip: false })
+    const r = routeFor('jira', ['planned', 'bug'])
+    assert.deepEqual(r, { kind: 'ok', route: 'bug' })
   })
   it('plan label routes to plan', () => {
-    const r = routeFor('aven', ['planned', 'researched', 'plan'], false)
-    assert.deepEqual(r, { kind: 'ok', route: 'plan', researchSkip: false })
+    const r = routeFor('aven', ['planned', 'plan'])
+    assert.deepEqual(r, { kind: 'ok', route: 'plan' })
   })
   it('oneshot label routes to oneshot', () => {
-    const r = routeFor('aven', ['planned', 'researched', 'oneshot'], false)
-    assert.deepEqual(r, { kind: 'ok', route: 'oneshot', researchSkip: false })
+    const r = routeFor('aven', ['planned', 'oneshot'])
+    assert.deepEqual(r, { kind: 'ok', route: 'oneshot' })
   })
   it('missing type label defaults to oneshot', () => {
-    const r = routeFor('jira', ['planned', 'researched'], false)
-    assert.deepEqual(r, { kind: 'ok', route: 'oneshot', researchSkip: false })
+    const r = routeFor('jira', ['planned'])
+    assert.deepEqual(r, { kind: 'ok', route: 'oneshot' })
   })
-  it('missing researched without flag is skip-required', () => {
-    const r = routeFor('jira', ['planned', 'bug'], false)
-    assert.deepEqual(r, { kind: 'skip-required' })
-  })
-  it('missing researched with flag records skip', () => {
-    const r = routeFor('jira', ['planned', 'bug'], true)
-    assert.deepEqual(r, { kind: 'ok', route: 'bug', researchSkip: true })
+  it('refuses without planned even when a legacy researched label exists', () => {
+    const r = routeFor('jira', ['researched', 'bug'])
+    assert.equal(r.kind, 'refuse')
   })
 })
 
@@ -167,26 +157,15 @@ describe('buildImplementPrompt', () => {
     assert.match(p, /feat-thing/)
     assert.match(p, /conventional branch/)
   })
-  it('research skip recorded via aven note', () => {
-    const p = buildImplementPrompt({
-      mode: 'personal',
-      ref: 'x',
-      route: 'oneshot',
-      researchSkip: true,
-    })
-    assert.match(p, /aven note.*research skip/i)
-  })
 
   it('kind prefixes force the kind (PMR-PCVK)', () => {
-    assert.deepEqual(parseImplementArgs('aven:DP-71 --skip-research'), {
+    assert.deepEqual(parseImplementArgs('aven:DP-71'), {
       kind: 'aven',
       ref: 'DP-71',
-      skipResearch: true,
     })
     assert.deepEqual(parseImplementArgs('jira:DP-71'), {
       kind: 'jira',
       jiraId: 'DP-71',
-      skipResearch: false,
     })
   })
 })

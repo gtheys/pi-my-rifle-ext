@@ -21,7 +21,6 @@ import {
   readAvenLabels,
   readPlanState,
   setAvenSessionCwd,
-  writeAvenLabel,
   writeAvenNote,
 } from './aven/client.ts'
 import { resolveMode } from './config.ts'
@@ -35,7 +34,6 @@ import {
   commandPhaseInput,
   registerPhaseCommands,
 } from './flow/phase-command.ts'
-import type { ResearchOverride } from './flow/phase-prompts.ts'
 import { parseRefKind } from './flow/ref-kind.ts'
 import { syncHerdrPlugin } from './herdr/sync.ts'
 import {
@@ -48,7 +46,6 @@ import { registerJiraCreateBranch } from './plan-tools/jira-branch-tool.ts'
 import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts'
 import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import prQualityExtension from './pr-quality/index.ts'
-import { findResearchedArtifact } from './research/artifact.ts'
 import reviewExtension from './review/review.ts'
 import { recordRunEvent, runStatePath } from './run-state.ts'
 import sonarqubeExtension from './sonarqube/sonarqube.ts'
@@ -103,7 +100,6 @@ export default function (pi: ExtensionAPI) {
     readLabels: (ref) => readAvenLabels(ref),
     readPlanState: (ref) => readPlanState(ref),
     avenNote: (ref, text) => writeAvenNote(ref, text),
-    avenSetLabel: (ref, label) => writeAvenLabel(ref, label),
     epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),
     hasInFlightSubagent: () => hasLiveAssignmentForParent(process.pid),
     sendPrompt: (prompt) => {
@@ -125,8 +121,8 @@ export default function (pi: ExtensionAPI) {
   // tool_call event — the ExtensionAPI does offer real interception (handler
   // returns {block, reason}), so no guard-wrapper fallback script is needed.
   // The boundary is the agent's bash TOOL: a human running aven by hand is
-  // out of scope (humans own the run). Type/skip labels (bug, oneshot, plan,
-  // research-skipped) stay agent-writable.
+  // out of scope (humans own the run). Type labels (bug, oneshot, plan) stay
+  // agent-writable.
   // AIDEV-NOTE: PMR-06RH — landing interceptor. `git push` / `gh pr create`
   // are blocked ONLY while the flow loop has an active ref, and only until
   // flow_land authorizes that ref's landing (landingState). No flow active →
@@ -192,9 +188,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('flow', {
     description:
-      'RPIV run-all. Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>> [--skip-research]',
+      'PIV run-all (plan -> implement -> validate -> feedback). Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>>. Research/brainstorm topics go through /brainstorm.',
     // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
-    // failure aborts, never starts from research by accident). nextPhase()
+    // failure aborts, never starts mid-phase by accident). nextPhase()
     // resolves the first phase whose completion label is missing, then the
     // extension-owned loop (flow/loop.ts) takes over: it injects ONE phase
     // prompt at a time (same builder the phase commands use) and advances on
@@ -204,14 +200,13 @@ export default function (pi: ExtensionAPI) {
       const parsed = parseFlowArgs(args)
       if (parsed.kind === 'help') {
         ctx.ui.notify(
-          'Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>> [--skip-research]',
+          'Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>>. Research/brainstorm topics go through /brainstorm.',
           'info',
         )
         return
       }
       const mode = await resolveMode(pi, ctx.cwd)
       let ref: string
-      let research: ResearchOverride | undefined
       if (parsed.kind === 'jira') {
         if (!MODE_PROFILE[mode].acceptsJiraRefs) {
           ctx.ui.notify(
@@ -226,49 +221,11 @@ export default function (pi: ExtensionAPI) {
           return
         }
         ref = resolved.ref
-        // Research topic stays the human-readable Jira ID; aven labels live
-        // on the epic ref. refHint 'force': the research prompt resolves the
-        // epic (research/refs.ts) instead of running the creation gate.
-        research = { kind: 'feature', text: parsed.jiraId, refHint: 'force' }
         if (resolved.created) {
           ctx.ui.notify(
             `/flow ${parsed.jiraId}: pulled in local epic ${resolved.ref}`,
             'info',
           )
-          // AIDEV-NOTE: pure-Jira research (acli fallback, no aven ref)
-          // cannot land the "researched" label; inherit it from the prior
-          // artifact so /flow resumes past research. Best-effort: a failed
-          // label write just means flow halts at research as before.
-          const { stdout: toplevel } = await pi.exec(
-            'git',
-            ['rev-parse', '--show-toplevel'],
-            {},
-          )
-          const gitRoot = toplevel.trim()
-          const artifact = await findResearchedArtifact(
-            process.env.LLM_NOTES_ROOT,
-            path.basename(gitRoot),
-            gitRoot,
-            parsed.jiraId,
-          )
-          if (artifact !== null) {
-            const labeled = await writeAvenLabel(ref, 'researched')
-            if (labeled) {
-              await writeAvenNote(
-                ref,
-                `research inherited from prior pure-Jira artifact ${path.basename(artifact)} (no aven ref existed at research time)`,
-              )
-              ctx.ui.notify(
-                `/flow ${parsed.jiraId}: prior research artifact ${path.basename(artifact)} found — marked ${ref} researched`,
-                'info',
-              )
-            } else {
-              ctx.ui.notify(
-                `/flow ${parsed.jiraId}: prior research artifact ${path.basename(artifact)} found but the researched label write failed — flow halts at research`,
-                'warning',
-              )
-            }
-          }
         }
       } else {
         ref = parsed.ref
@@ -284,7 +241,7 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const next = nextPhase(labels, parsed.skipResearch)
+      const next = nextPhase(labels)
       if (next.kind === 'done') {
         ctx.ui.notify(
           `/flow ${ref}: all phase labels present (done) — nothing to run.`,
@@ -297,28 +254,15 @@ export default function (pi: ExtensionAPI) {
         at: new Date().toISOString(),
         ref,
         mode,
-        skipResearch: parsed.skipResearch,
       })
       await loop.start({
         ref,
         phase: next.phase,
-        skipResearch: parsed.skipResearch,
-        researchSkip: next.researchSkip === true,
-        promptInput: {
-          ...(await commandPhaseInput(pi, {
-            mode,
-            ref,
-            cwd: ctx.cwd,
-            skipResearch: parsed.skipResearch,
-            onResearchFallback: (jiraId) => {
-              ctx.ui.notify(
-                `/flow ${jiraId}: no aven epic or synced ticket — research phase uses the acli fallback`,
-                'info',
-              )
-            },
-          })),
-          research,
-        },
+        promptInput: await commandPhaseInput(pi, {
+          mode,
+          ref,
+          cwd: ctx.cwd,
+        }),
       })
     },
   })

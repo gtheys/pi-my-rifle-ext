@@ -28,8 +28,6 @@ export interface FlowLoopDeps {
   readPlanState(ref: string): Promise<string | null>
   /** Write an aven note on the ref; false = write failed. */
   avenNote(ref: string, text: string): Promise<boolean>
-  /** Set an aven label on the ref; false = write failed. */
-  avenSetLabel(ref: string, label: string): Promise<boolean>
   /** True when the ref is an epic with open children (implement routing guard). */
   epicHasOpenChildren(ref: string): Promise<boolean>
   /** True while this session has an in-flight subagent (mid-phase async wait). */
@@ -40,8 +38,6 @@ export interface FlowLoopDeps {
 export interface FlowStartInput {
   ref: string
   phase: Phase
-  skipResearch: boolean
-  researchSkip: boolean
   /** Per-run inputs for buildPhasePrompt (mode, gitRoot, workRoots, ...). */
   promptInput: Omit<PhasePromptInput, 'labels'>
 }
@@ -67,7 +63,6 @@ export interface FlowLoop {
 class FlowLoopImpl implements FlowLoop {
   private readonly deps: FlowLoopDeps
   private state: FlowLoopState | null = null
-  private skipResearch = false
 
   constructor(deps: FlowLoopDeps) {
     this.deps = deps
@@ -94,10 +89,6 @@ class FlowLoopImpl implements FlowLoop {
       currentPhase: input.phase,
       awaitingOutcome: false,
       promptInput: input.promptInput,
-    }
-    this.skipResearch = input.skipResearch
-    if (input.researchSkip) {
-      await this.recordResearchSkip(input.ref)
     }
     await this.sendPhasePrompt(input.phase)
   }
@@ -157,24 +148,6 @@ class FlowLoopImpl implements FlowLoop {
     await this.advanceAfter(phase, labels)
   }
 
-  // AIDEV-NOTE: the skip must be durable LABEL state (research-skipped),
-  // not just a note — gates and the phase resolver read labels only. Label
-  // write failure is best-effort: notify, keep running; /implement with the
-  // CLI flag still works as fallback.
-  private async recordResearchSkip(ref: string): Promise<void> {
-    const reason =
-      'research skip confirmed by user (--skip-research), no researched label'
-    this.deps.journal({ kind: 'phase-skip', at: now(), ref, reason })
-    await this.deps.avenNote(ref, reason)
-    const labeled = await this.deps.avenSetLabel(ref, 'research-skipped')
-    if (!labeled) {
-      this.deps.notify(
-        `/flow ${ref}: could not set the research-skipped label — /implement will ask for --skip-research`,
-        'warning',
-      )
-    }
-  }
-
   private async halt(phase: Phase, reason: string): Promise<void> {
     const ref = this.state?.ref ?? ''
     const text = `flow halted at ${phase}: ${reason}`
@@ -230,7 +203,7 @@ class FlowLoopImpl implements FlowLoop {
       phase,
       label: PHASE_LABEL[phase],
     })
-    const next = nextPhase(labels, this.skipResearch)
+    const next = nextPhase(labels)
     if (next.kind === 'done') {
       this.deps.journal({
         kind: 'note',

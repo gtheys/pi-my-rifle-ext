@@ -1,6 +1,6 @@
 # pi-flow
 
-RPIV flow extension — `/research /plan /implement /validate /feedback`
+PIV flow extension — `/research /plan /implement /validate /feedback` (research is no longer a lifecycle phase; /research stays available standalone, /brainstorm is its successor)
 phase commands plus the `/flow` orchestrator, routed over
 pi-interactive-subagents (pi-planning, pi-review and pi-worktree were
 absorbed into this package — plan-tools, jira_create_branch, `/review`,
@@ -37,9 +37,9 @@ Failure behavior:
 
 | Command | What it does |
 | --- | --- |
-| `/research <topic \| ID=<jira-id> \| symptom>` | Question loop + scouts → artifact in `notes/research/` → ticket-creation gate (explicit confirm; work: Jira, personal: aven). `ID=<jira-id>` (or a bare jira-shaped topic in work mode) researches the existing ticket instead: aven local epic first (`jira-ref` metadata), `acli jira workitem view` fallback; no creation gate, `researched` label lands on the epic. Debug symptoms route through the user's `debug` skill to a root cause. |
+| `/research <topic \| ID=<jira-id> \| symptom>` | Question loop + scouts → artifact in `notes/research/` → ticket-creation gate (explicit confirm; work: Jira, personal: aven). `ID=<jira-id>` (or a bare jira-shaped topic in work mode) researches the existing ticket instead: aven local epic first (`jira-ref` metadata), `acli jira workitem view` fallback; no creation gate. Debug symptoms route through the user's `debug` skill to a root cause. |
 | `/plan <ref>` | Work: `feature-plan-aven` skill (epic tree, plan-state approval). Personal: size check → human-confirmed oneshot vs plan split; plan.md + epic/subtasks for plans. Ends with status `todo` + `planned` label — work mode: only after the approval-gated tree stage (premature `planned` would misroute `/implement`). |
-| `/implement <ref>` | Gate: `planned` required; missing `researched` needs `--skip-research` (recorded durably as the `research-skipped` label — never asked twice). Routes bug / plan / oneshot. Worktree isolation, per-task implement→test→commit, retry budget 3 then blocked + escalate. |
+| `/implement <ref>` | Gate: `planned` required. Routes bug / plan / oneshot. Worktree isolation, per-task implement→test→commit, retry budget 3 then blocked + escalate. |
 | `/validate <ref>` | Work: ordered cluster gate (minikube → connectivity → queues → deploy → manual tests → Jira evidence comment). Personal: human runs the test. Then the review gate: `/review` → `blockers_count` artifact; 0 → land, >0 → back to `/implement`. |
 | `/feedback <ref>` | Work: `/sonarqube` + `/pr-quality` triage (mechanical fixes committed, behavioral findings become new tasks). Personal: re-review + outcome summary note; only then `done`. |
 | `/spec-review [--workspace <name>]` | Lists every spec at `plan-state=review` (aven metadata query), batch-picks them, opens each plan.md in a herdr nvim pane, and injects a review prompt: the session fixes spec issues in place; transitions to approved only via explicit "approve <REF>" (pins `plan` label, plan-state=approved, status todo). |
@@ -51,10 +51,10 @@ Failure behavior:
 | `/pr-watch` | Background-polls PR checks; auto-triggers `/pr-quality` when they complete (absorbed from pi-review). |
 | `/herdr-sync` | Links this repo as a Herdr plugin (idempotent, explicit-only). |
 | `/flow-view <ref> [placement]` | Opens/focuses a Herdr pane rendering the run-state journal for a ref. |
-| `/flow <ref> [--skip-research]` | Extension-owned loop: injects one phase prompt at a time (same builders the phase commands use, gates intact), then advances when the phase turn settles and its completion label has landed; missing label → halt note + stop. Resume = first phase whose completion label is missing. Work mode + Jira ID: find-or-create the local epic (`jira-ref` metadata, dep-linked to the synced ticket) and run on the epic ref. |
+| `/flow <ref>` | Extension-owned loop: injects one phase prompt at a time (same builders the phase commands use, gates intact), then advances when the phase turn settles and its completion label has landed; missing label → halt note + stop. Resume = first phase whose completion label is missing. Work mode + Jira ID: find-or-create the local epic (`jira-ref` metadata, dep-linked to the synced ticket) and run on the epic ref. |
 
 Lifecycle labels on the aven ticket are the run state:
-`researched → planned → active → review-passed → done`; type labels
+`planned → active → review-passed → done`; type labels
 `bug` / `oneshot` / `plan` route `/implement`.
 
 ## Tools

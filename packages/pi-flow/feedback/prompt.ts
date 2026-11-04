@@ -66,7 +66,7 @@ invent filler.`
 }
 
 export function buildFeedbackPrompt(input: FeedbackPromptInput): string {
-  const header = `Feedback phase (RPIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
+  const header = `Feedback phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
   if (input.mode === 'personal') {
     return `${header}\n${personalSection(input.ref)}`
   }

@@ -33,7 +33,7 @@ the "planned" label and end the phase — the flow halts and resumes at plan
 via /flow once the tree exists.`
 
 export function buildPlanPrompt(input: PlanPromptInput): string {
-  const header = `Plan phase (RPIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
+  const header = `Plan phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
   if (input.mode === 'work') {
     return `${header}
 Invoke the user's existing feature-plan-aven skill (engineering:feature-plan-aven)

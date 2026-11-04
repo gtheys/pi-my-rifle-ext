@@ -16,7 +16,7 @@ export interface PromptInput {
 export interface TicketPromptInput {
   jiraId: string
   /** Where the ticket content lives. epic = local epic (jira-ref) — the
-   *  researched label lands there and /flow resumes past research. synced =
+   *  confirmed ticket; synced =
    *  aven synced ticket (jira-key) — label lands on it and the artifact
    *  marker lets a later /flow epic inherit research. null = not aven-
    *  managed, acli fallback. */
@@ -44,13 +44,10 @@ TICKET CREATION GATE — after the artifact is written:
 5. If the user declines, create nothing and say so.
 NEVER call acli or aven create before the explicit confirm answer.
 
-COMPLETION LABEL — when the research phase is fully done (artifact written,
-gate answered): ensure the ticket this research ran against — the one
-confirmed at the gate, or the existing ticket when the flow already provided
-one — carries the "researched" label: call the flow_phase_complete tool
-with ref=<ticket ref> and phase="research". The RPIV flow advances by
-reading lifecycle labels; without "researched" the
-flow halts at research. If the gate declined ticket creation, skip this.`
+COMPLETION — research is done when the artifact is written and the gate is
+answered. Research no longer lands a lifecycle label (PMR-Z2K7); /flow and
+/plan gate on the "planned" label instead. If the gate declined ticket
+creation, skip this.`
 
 // AIDEV-NOTE: scout fan-out contract — codegraph MCP, when available, must
 // be initialized and fresh (codegraph init on "not initialized", then sync)
@@ -129,16 +126,15 @@ ${noCreate}
 Run \`aven show ${input.target.ref} --full\` — the synced description is in
 there (plain --json output has no description field). The content is already
 in aven — no Jira fetch needed.`
+    // AIDEV-NOTE: PMR-Z2K7 - no flow_phase_complete call here anymore:
+    // research left the lifecycle, so completion is just the artifact plus
+    // the marker line a later pure-Jira /flow can still discover.
     const completion = isEpic
-      ? `COMPLETION LABEL — this phase advances the RPIV flow. When the artifact is
-written, call the flow_phase_complete tool with ref=${input.target.ref} and
-phase="research" (applies the "researched" label behind the gate). Without the
-label /flow halts at research.`
-      : `COMPLETION — call the flow_phase_complete tool with ref=${input.target.ref} and
-phase="research" (applies the "researched" label) AND append
+      ? `COMPLETION - the research phase is done when the artifact is written.`
+      : `COMPLETION - the research phase is done when the artifact is written. Append
 the line "> researched by pi-flow on <today's date>" to the artifact header.
-A later \`/flow ${input.jiraId}\` creates the local epic and inherits research
-from that artifact marker.`
+A later /flow ${input.jiraId} creates the local epic and can discover the
+artifact via that marker.`
     return `${header}
 ${source}
 
@@ -155,8 +151,8 @@ report the failure — do not guess the contents and do not create any ticket.
 
 ${featureSteps(input.artifactPath)}
 
-COMPLETION — no aven ref exists, so no "researched" label can land. Append a
+COMPLETION — no aven ref exists for this ticket. Append a
 line "> researched by pi-flow on <today's date>" to the artifact header, and
 note under Ticket implications that a later \`/flow ${input.jiraId}\` will
-create the local epic and re-run research once.`
+create the local epic.`
 }

@@ -1,24 +1,19 @@
-// AIDEV-NOTE: Pure /flow arg parsing — ref + optional --skip-research
-// passthrough. Same jira/aven split as implement/args.ts.
+// AIDEV-NOTE: Pure /flow arg parsing — ref only (PMR-Z2K7: --skip-research
+// removed with the research phase). Same jira/aven split as implement/args.ts.
 
 import { parseRefKind } from './ref-kind.ts'
 
 export type FlowArgs =
-  | { kind: 'jira'; jiraId: string; skipResearch: boolean }
-  | { kind: 'aven'; ref: string; skipResearch: boolean }
+  | { kind: 'jira'; jiraId: string }
+  | { kind: 'aven'; ref: string }
   | { kind: 'help' }
 
 export function parseFlowArgs(raw: string): FlowArgs {
-  const trimmed = raw.trim()
-  if (trimmed === '') return { kind: 'help' }
-  const parts = trimmed.split(/\s+/)
-  const skipResearch = parts.includes('--skip-research')
-  const rest = parts.filter((p) => p !== '--skip-research')
-  if (rest.length !== 1) return { kind: 'help' }
-  const ref = rest[0] ?? ''
-  const parsed = parseRefKind(ref)
+  const parts = raw.trim().split(/\s+/)
+  if (parts.length !== 1 || parts[0] === '') return { kind: 'help' }
+  const parsed = parseRefKind(parts[0] ?? '')
   if (parsed.kind === 'jira') {
-    return { kind: 'jira', jiraId: parsed.jiraId, skipResearch }
+    return { kind: 'jira', jiraId: parsed.jiraId }
   }
-  return { kind: 'aven', ref: parsed.ref, skipResearch }
+  return { kind: 'aven', ref: parsed.ref }
 }

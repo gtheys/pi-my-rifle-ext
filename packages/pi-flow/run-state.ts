@@ -8,12 +8,10 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 
-export type FlowPhase =
-  | 'research'
-  | 'plan'
-  | 'implement'
-  | 'validate'
-  | 'feedback'
+// AIDEV-NOTE: PMR-Z2K7 — 'research' left the flow lifecycle (PIV); old
+// journals containing research phases fail isFlowRunState and are rebuilt
+// from the journal, whose unknown events are simply ignored by projection.
+export type FlowPhase = 'plan' | 'implement' | 'validate' | 'feedback'
 
 export type FlowRunEvent =
   | {
@@ -21,7 +19,6 @@ export type FlowRunEvent =
       at: string
       ref: string
       mode: 'work' | 'personal'
-      skipResearch: boolean
     }
   | {
       kind: 'phase-start'
@@ -37,12 +34,6 @@ export type FlowRunEvent =
       label: string
     }
   | {
-      kind: 'phase-skip'
-      at: string
-      ref: string
-      reason: string
-    }
-  | {
       kind: 'note'
       at: string
       ref: string
@@ -53,12 +44,10 @@ export type FlowRunState = {
   schema: 'gtheys.pi-flow.run.v1'
   ref: string
   mode: 'work' | 'personal'
-  skipResearch: boolean
   startedAt: string
   updatedAt: string
   completedPhases: FlowPhase[]
   currentPhase: FlowPhase | null
-  researchSkipNote: string | null
   notes: { at: string; text: string }[]
 }
 
@@ -100,12 +89,10 @@ export function applyEvent(
         schema: 'gtheys.pi-flow.run.v1',
         ref: event.ref,
         mode: event.mode,
-        skipResearch: event.skipResearch,
         startedAt: event.at,
         updatedAt: event.at,
         completedPhases: [],
         currentPhase: null,
-        researchSkipNote: null,
         notes: [],
       }
     }
@@ -130,15 +117,6 @@ export function applyEvent(
         updatedAt: event.at,
       }
     }
-    case 'phase-skip': {
-      if (state === null || state.ref !== event.ref)
-        return state as FlowRunState
-      return {
-        ...state,
-        researchSkipNote: event.reason,
-        updatedAt: event.at,
-      }
-    }
     case 'note': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
@@ -153,7 +131,6 @@ export function applyEvent(
 
 const SCHEMA = 'gtheys.pi-flow.run.v1'
 const PHASES: readonly FlowPhase[] = [
-  'research',
   'plan',
   'implement',
   'validate',
@@ -166,7 +143,6 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
   if (v.schema !== SCHEMA) return false
   if (typeof v.ref !== 'string') return false
   if (v.mode !== 'work' && v.mode !== 'personal') return false
-  if (typeof v.skipResearch !== 'boolean') return false
   if (typeof v.startedAt !== 'string') return false
   if (typeof v.updatedAt !== 'string') return false
   if (!Array.isArray(v.completedPhases)) return false
@@ -174,8 +150,6 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
     return false
   const current = v.currentPhase
   if (current !== null && !PHASES.includes(current as FlowPhase)) return false
-  if (v.researchSkipNote !== null && typeof v.researchSkipNote !== 'string')
-    return false
   if (!Array.isArray(v.notes)) return false
   return v.notes.every(
     (n) =>

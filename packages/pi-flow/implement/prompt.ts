@@ -9,7 +9,6 @@ export interface ImplementPromptInput {
   mode: 'work' | 'personal'
   ref: string
   route: 'oneshot' | 'plan' | 'bug'
-  researchSkip?: boolean
 }
 
 function commonRules(ref: string): string {
@@ -34,12 +33,8 @@ Branch derivation:
 - Work mode: create the branch via the jira_create_branch tool for the ticket ref.
 - Personal mode: create a conventional branch from the ticket slug (e.g. feat/<slug>).`
 
-const SKIP_RULE = `
-The research phase was explicitly skipped (--skip-research). Record this skip as an aven note on the task ("research skip confirmed by user, no researched label") BEFORE implementing.`
-
 export function buildImplementPrompt(input: ImplementPromptInput): string {
-  const header = `Implement phase (RPIV flow). Mode: ${input.mode}. Ref: ${input.ref}. Route: ${input.route}.`
-  const skip = input.researchSkip === true ? SKIP_RULE : ''
+  const header = `Implement phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}. Route: ${input.route}.`
 
   if (input.route === 'plan') {
     return `${header}
@@ -50,7 +45,7 @@ ${BRANCH_RULES}${commonRules(input.ref)}
   subtask that is blocked by an open dependency (check each subtask's
   blocked state before starting it) — finish its blockers first.
 - EACH subtask gets its own test run + commit; mark it done only then.
-- Keep working until ALL subtasks are done (each marked done only after its own test run + commit); then set the "active" label on ${input.ref} — never mark the epic status done in this phase.${skip}`
+- Keep working until ALL subtasks are done (each marked done only after its own test run + commit); then set the "active" label on ${input.ref} — never mark the epic status done in this phase.`
   }
 
   if (input.route === 'bug') {
@@ -59,7 +54,7 @@ Reproduce-first bug flow for ${input.ref}:
 1. Read the research artifact's evidence and REPRODUCE the bug first — write a failing test that demonstrates it.
 2. Fix the bug; the test must turn green and prove the fix.
 3. Run the full test suite, then commit.
-${BRANCH_RULES}${commonRules(input.ref)}${skip}`
+${BRANCH_RULES}${commonRules(input.ref)}`
   }
 
   return `${header}
@@ -67,5 +62,5 @@ Oneshot flow for ${input.ref}:
 1. Implement the change in a single implement -> test -> commit cycle.
 2. Run the test suite; it must be green before the commit lands.
 3. Once tests are green AND the commit landed, apply the PHASE COMPLETION LABEL rule above (flow_phase_complete with phase="implement").
-${BRANCH_RULES}${commonRules(input.ref)}${skip}`
+${BRANCH_RULES}${commonRules(input.ref)}`
 }

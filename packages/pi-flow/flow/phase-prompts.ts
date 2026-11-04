@@ -21,6 +21,12 @@ import { buildValidatePrompt } from '../validate/prompt.ts'
 import type { WorkMode } from '../work-mode.ts'
 import type { Phase } from './orchestrate.ts'
 
+// AIDEV-NOTE: PMR-Z2K7 — 'research' left the lifecycle Phase union; it stays
+// here as a command-only phase so /research (and only /research) can reach
+// researchPrompt through the shared builder. The /flow loop only ever passes
+// lifecycle Phases.
+export type CommandPhase = Phase | 'research'
+
 export type PhasePrompt =
   | { kind: 'send'; prompt: string }
   | { kind: 'block'; reason: string }
@@ -39,7 +45,6 @@ export interface ResearchOverride {
 export interface PhasePromptInput {
   mode: WorkMode
   ref: string
-  skipResearch: boolean
   /** Git toplevel of the session cwd; research/plan derive repoName from it. */
   gitRoot: string
   /** Resolved pi-flow config workRoots; work-mode validate needs them. */
@@ -61,7 +66,7 @@ export interface PhasePromptInput {
 }
 
 export async function buildPhasePrompt(
-  phase: Phase,
+  phase: CommandPhase,
   input: PhasePromptInput,
 ): Promise<PhasePrompt> {
   switch (phase) {
@@ -144,16 +149,9 @@ function planPrompt(input: PhasePromptInput): PhasePrompt {
 }
 
 function implementPrompt(input: PhasePromptInput): PhasePrompt {
-  const routed = routeFor('aven', input.labels, input.skipResearch)
+  const routed = routeFor('aven', input.labels)
   if (routed.kind === 'refuse') {
     return { kind: 'block', reason: routed.reason }
-  }
-  if (routed.kind === 'skip-required') {
-    return {
-      kind: 'block',
-      reason:
-        'research not done — re-run with --skip-research to explicitly skip',
-    }
   }
   // AIDEV-NOTE: structural routing guard — labels are the routing contract,
   // but a tree with open children is plan-route work no matter what the type
@@ -169,7 +167,6 @@ function implementPrompt(input: PhasePromptInput): PhasePrompt {
       mode: input.mode,
       ref: input.ref,
       route,
-      researchSkip: routed.researchSkip,
     }),
   }
 }

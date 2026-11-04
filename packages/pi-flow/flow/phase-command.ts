@@ -13,20 +13,18 @@ import {
   avenExec,
   epicHasOpenChildren,
   readAvenLabels,
-  writeAvenLabel,
 } from '../aven/client.ts'
 import { loadConfig, resolveMode } from '../config.ts'
 import { parseFeedbackArgs } from '../feedback/args.ts'
-import { needsResearchSkip } from '../gates.ts'
 import { parseImplementArgs } from '../implement/args.ts'
 import { parsePlanArgs } from '../plan/args.ts'
 import { parseResearchArgs, type ResearchArgs } from '../research/args.ts'
 import { parseValidateArgs } from '../validate/args.ts'
 import type { WorkMode } from '../work-mode.ts'
 import { findJiraEpic, findTicketResearchTarget } from './jira-ref.ts'
-import type { Phase } from './orchestrate.ts'
 import {
   buildPhasePrompt,
+  type CommandPhase,
   type PhasePrompt,
   type PhasePromptInput,
   type ResearchOverride,
@@ -63,7 +61,6 @@ export async function commandPhaseInput(
     mode: WorkMode
     ref: string
     cwd?: string
-    skipResearch?: boolean
     labels?: readonly string[]
     onResearchFallback?: (jiraId: string) => void
   },
@@ -73,7 +70,6 @@ export async function commandPhaseInput(
   return {
     mode: input.mode,
     ref: input.ref,
-    skipResearch: input.skipResearch ?? false,
     gitRoot: stdout.trim(),
     workRoots: config.workRoots,
     labels: input.labels ?? [],
@@ -110,7 +106,7 @@ function sendOrNotify(
 }
 
 interface PhaseCommandOptions<Parsed extends { kind: string }> {
-  name: Phase
+  name: CommandPhase
   description: string
   /** Shown as `Usage: <usage>` when the parser returns kind 'help'. */
   usage: string
@@ -118,9 +114,7 @@ interface PhaseCommandOptions<Parsed extends { kind: string }> {
   /** Resolve the phase ref from parsed args; default is the shared
    *  resolvePhaseRef (aven-first Jira resolution). */
   resolveRef?: (parsed: Parsed, mode: WorkMode) => Promise<string>
-  /** Extra PhasePromptInput fields (labels, research override, epic guard).
-   *  May perform the durable side effects the phase needs (research-skipped
-   *  label write). */
+  /** Extra PhasePromptInput fields (labels, research override, epic guard). */
   extraInput?: (input: {
     parsed: Parsed
     mode: WorkMode
@@ -193,7 +187,7 @@ export function registerPhaseCommands(pi: ExtensionAPI): void {
   registerPhaseCommand(pi, {
     name: 'research',
     description:
-      'RPIV research phase. Usage: /research <topic> | /research ID=<jira-id> | /research --debug <symptom>',
+      'PIV research phase (standalone, not a lifecycle phase). Usage: /research <topic> | /research ID=<jira-id> | /research --debug <symptom>',
     usage:
       '/research <topic> | /research ID=<jira-id> | /research --debug <symptom>',
     parse: parseResearchArgs,
@@ -218,34 +212,24 @@ export function registerPhaseCommands(pi: ExtensionAPI): void {
   registerPhaseCommand(pi, {
     name: 'plan',
     description:
-      'RPIV plan phase. Usage: /plan <jira-id | aven-ref | aven:<ref> | jira:<key>>',
+      'PIV plan phase. Usage: /plan <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     usage: '/plan <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     parse: parsePlanArgs,
   })
 
   // AIDEV-NOTE: Gate wiring lives in implement/routing.ts via
   // buildPhasePrompt('implement'). Labels fetched fail-closed (aven failure
-  // -> empty labels -> routing refuses). --skip-research must leave durable
-  // label state — gates read labels, never notes — so later invocations
-  // never re-demand it.
+  // -> empty labels -> routing refuses).
   registerPhaseCommand(pi, {
     name: 'implement',
     description:
-      'RPIV implement phase. Usage: /implement <jira-id | aven-ref | aven:<ref> | jira:<key>> [--skip-research]',
-    usage:
-      '/implement <jira-id | aven-ref | aven:<ref> | jira:<key>> [--skip-research]',
+      'PIV implement phase. Usage: /implement <jira-id | aven-ref | aven:<ref> | jira:<key>>',
+    usage: '/implement <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     parse: parseImplementArgs,
-    extraInput: async ({ parsed, ref }) => {
-      const labels = (await readAvenLabels(ref)) ?? []
-      if (parsed.skipResearch && needsResearchSkip(labels)) {
-        await writeAvenLabel(ref, 'research-skipped')
-      }
-      return {
-        skipResearch: parsed.skipResearch,
-        labels,
-        epicHasOpenChildren: await epicHasOpenChildren(ref),
-      }
-    },
+    extraInput: async ({ ref }) => ({
+      labels: (await readAvenLabels(ref)) ?? [],
+      epicHasOpenChildren: await epicHasOpenChildren(ref),
+    }),
   })
 
   // AIDEV-NOTE: Work mode resolves the sh-devctl scripts dir from the first
@@ -254,7 +238,7 @@ export function registerPhaseCommands(pi: ExtensionAPI): void {
   registerPhaseCommand(pi, {
     name: 'validate',
     description:
-      'RPIV validate phase. Usage: /validate <jira-id | aven-ref | aven:<ref> | jira:<key>>',
+      'PIV validate phase. Usage: /validate <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     usage: '/validate <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     parse: parseValidateArgs,
   })
@@ -265,7 +249,7 @@ export function registerPhaseCommands(pi: ExtensionAPI): void {
   registerPhaseCommand(pi, {
     name: 'feedback',
     description:
-      'RPIV feedback phase. Usage: /feedback <jira-id | aven-ref | aven:<ref> | jira:<key>>',
+      'PIV feedback phase. Usage: /feedback <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     usage: '/feedback <jira-id | aven-ref | aven:<ref> | jira:<key>>',
     parse: parseFeedbackArgs,
   })

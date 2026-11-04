@@ -32,7 +32,7 @@ export function registerLandTool(pi: ExtensionAPI, state: LandingState): void {
     description:
       'Gate a flow landing: verifies the review-passed label (and an optional review artifact verdict) for the ref, then authorizes git push (route=push-main) or gh pr create (route=pr) for it. Direct git push / gh pr create before this tool returns ok are blocked while the flow is active.',
     promptSnippet:
-      'Gated landing for RPIV flow runs — call before pushing the branch or creating the PR.',
+      'Gated landing for PIV flow runs — call before pushing the branch or creating the PR.',
     promptGuidelines: [
       'Call flow_land AFTER flow_phase_complete(phase="validate") and BEFORE git push / gh pr create — direct landing commands are blocked until it returns ok.',
       'A refusal carries the gate reason (missing review-passed label, blockers in the artifact); fix the cause, do not retry the call.',

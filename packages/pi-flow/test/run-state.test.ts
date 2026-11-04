@@ -43,7 +43,6 @@ test('applyEvent: run-start creates state', () => {
     at: '2026-10-21T01:00:00Z',
     ref: 'PMR-1',
     mode: 'personal',
-    skipResearch: false,
   })
   assert.equal(state.ref, 'PMR-1')
   assert.deepEqual(state.completedPhases, [])
@@ -56,23 +55,22 @@ test('applyEvent: phase lifecycle start then complete', () => {
     at: '2026-10-21T01:00:00Z',
     ref: 'PMR-1',
     mode: 'work',
-    skipResearch: false,
   })
   state = applyEvent(state, {
     kind: 'phase-start',
     at: '2026-10-21T01:01:00Z',
     ref: 'PMR-1',
-    phase: 'research',
+    phase: 'plan',
   })
-  assert.equal(state.currentPhase, 'research')
+  assert.equal(state.currentPhase, 'plan')
   state = applyEvent(state, {
     kind: 'phase-complete',
     at: '2026-10-21T01:05:00Z',
     ref: 'PMR-1',
-    phase: 'research',
-    label: 'researched',
+    phase: 'plan',
+    label: 'planned',
   })
-  assert.deepEqual(state.completedPhases, ['research'])
+  assert.deepEqual(state.completedPhases, ['plan'])
   assert.equal(state.currentPhase, null)
 })
 
@@ -82,7 +80,6 @@ test('applyEvent: phase-complete is idempotent', () => {
     at: 't0',
     ref: 'PMR-1',
     mode: 'work',
-    skipResearch: false,
   })
   const complete: FlowRunEvent = {
     kind: 'phase-complete',
@@ -96,31 +93,12 @@ test('applyEvent: phase-complete is idempotent', () => {
   assert.deepEqual(again.completedPhases, ['plan'])
 })
 
-test('applyEvent: skipResearch does not suppress phase-complete', () => {
-  let state = applyEvent(null, {
-    kind: 'run-start',
-    at: 't0',
-    ref: 'PMR-1',
-    mode: 'work',
-    skipResearch: true,
-  })
-  state = applyEvent(state, {
-    kind: 'phase-complete',
-    at: 't1',
-    ref: 'PMR-1',
-    phase: 'implement',
-    label: 'active',
-  })
-  assert.deepEqual(state.completedPhases, ['implement'])
-})
-
 test('applyEvent: events for another ref are ignored', () => {
   let state = applyEvent(null, {
     kind: 'run-start',
     at: 't0',
     ref: 'PMR-1',
     mode: 'work',
-    skipResearch: false,
   })
   state = applyEvent(state, {
     kind: 'phase-start',
@@ -131,23 +109,6 @@ test('applyEvent: events for another ref are ignored', () => {
   assert.equal(state.currentPhase, null)
 })
 
-test('applyEvent: phase-skip records the reason', () => {
-  let state = applyEvent(null, {
-    kind: 'run-start',
-    at: 't0',
-    ref: 'PMR-1',
-    mode: 'work',
-    skipResearch: true,
-  })
-  state = applyEvent(state, {
-    kind: 'phase-skip',
-    at: 't1',
-    ref: 'PMR-1',
-    reason: 'skip confirmed by user',
-  })
-  assert.equal(state.researchSkipNote, 'skip confirmed by user')
-})
-
 test('projectRunState: full run replays to done', () => {
   const events: FlowRunEvent[] = [
     {
@@ -155,15 +116,6 @@ test('projectRunState: full run replays to done', () => {
       at: 't0',
       ref: 'PMR-9',
       mode: 'personal',
-      skipResearch: false,
-    },
-    { kind: 'phase-start', at: 't1', ref: 'PMR-9', phase: 'research' },
-    {
-      kind: 'phase-complete',
-      at: 't2',
-      ref: 'PMR-9',
-      phase: 'research',
-      label: 'researched',
     },
     { kind: 'phase-start', at: 't3', ref: 'PMR-9', phase: 'plan' },
     {
@@ -202,7 +154,6 @@ test('projectRunState: full run replays to done', () => {
   assert.ok(state)
   assert.equal(state.ref, 'PMR-9')
   assert.deepEqual(state.completedPhases, [
-    'research',
     'plan',
     'implement',
     'validate',
@@ -220,7 +171,6 @@ test('isFlowRunState: accepts a projected state, rejects junk', () => {
       at: 't0',
       ref: 'PMR-1',
       mode: 'work',
-      skipResearch: false,
     },
   ])
   assert.ok(state)
@@ -261,13 +211,12 @@ test('recordRunEvent: appends journal lines and rewrites projection', async () =
       at: 't0',
       ref: 'PMR-1',
       mode: 'work',
-      skipResearch: false,
     },
     fakeIo(files),
   )
   await recordRunEvent(
     agentDir,
-    { kind: 'phase-start', at: 't1', ref: 'PMR-1', phase: 'research' },
+    { kind: 'phase-start', at: 't1', ref: 'PMR-1', phase: 'plan' },
     fakeIo(files),
   )
   const journal = files.get('/agent/pi-flow/runs/PMR-1.journal.jsonl')
@@ -276,7 +225,7 @@ test('recordRunEvent: appends journal lines and rewrites projection', async () =
   const projection = JSON.parse(
     files.get('/agent/pi-flow/runs/PMR-1.json') ?? '{}',
   )
-  assert.equal(projection.currentPhase, 'research')
+  assert.equal(projection.currentPhase, 'plan')
 })
 
 test('recordRunEvent: rebuilds projection from journal when projection missing', async () => {

@@ -7,25 +7,12 @@ import { nextPhase, PHASE_LABEL } from '../flow/orchestrate.ts'
 
 test('parseFlowArgs: aven ref', () => {
   const parsed = parseFlowArgs('PMR-abc123')
-  assert.deepEqual(parsed, {
-    kind: 'aven',
-    ref: 'PMR-abc123',
-    skipResearch: false,
-  })
+  assert.deepEqual(parsed, { kind: 'aven', ref: 'PMR-abc123' })
 })
 
 test('parseFlowArgs: jira ref normalizes', () => {
   const parsed = parseFlowArgs('dp-71')
-  assert.deepEqual(parsed, {
-    kind: 'jira',
-    jiraId: 'DP-71',
-    skipResearch: false,
-  })
-})
-
-test('parseFlowArgs: --skip-research passthrough', () => {
-  const parsed = parseFlowArgs('PMR-abc --skip-research')
-  assert.deepEqual(parsed, { kind: 'aven', ref: 'PMR-abc', skipResearch: true })
+  assert.deepEqual(parsed, { kind: 'jira', jiraId: 'DP-71' })
 })
 
 test('parseFlowArgs: empty is help', () => {
@@ -37,114 +24,62 @@ test('parseFlowArgs: extra positional args are help', () => {
   assert.equal(parseFlowArgs('a b').kind, 'help')
 })
 
-// --- nextPhase (pure resolver, mapping table) ---
+// --- nextPhase (pure resolver, mapping table; PIV lifecycle, PMR-Z2K7) ---
 
-test('nextPhase: no labels -> research', () => {
-  assert.deepEqual(nextPhase([], false), { kind: 'phase', phase: 'research' })
-})
-
-test('nextPhase: skipResearch with no researched -> plan + researchSkip', () => {
-  assert.deepEqual(nextPhase([], true), {
-    kind: 'phase',
-    phase: 'plan',
-    researchSkip: true,
-  })
-})
-
-test('nextPhase: researched -> plan', () => {
-  assert.deepEqual(nextPhase(['researched'], false), {
-    kind: 'phase',
-    phase: 'plan',
-  })
+test('nextPhase: no labels -> plan', () => {
+  assert.deepEqual(nextPhase([]), { kind: 'phase', phase: 'plan' })
 })
 
 test('nextPhase: planned -> implement', () => {
-  assert.deepEqual(nextPhase(['researched', 'planned'], false), {
+  assert.deepEqual(nextPhase(['planned']), {
     kind: 'phase',
     phase: 'implement',
   })
 })
 
 test('nextPhase: active -> validate', () => {
-  assert.deepEqual(nextPhase(['researched', 'planned', 'active'], false), {
+  assert.deepEqual(nextPhase(['planned', 'active']), {
     kind: 'phase',
     phase: 'validate',
   })
 })
 
 test('nextPhase: review-passed -> feedback', () => {
-  assert.deepEqual(
-    nextPhase(['researched', 'planned', 'active', 'review-passed'], false),
-    { kind: 'phase', phase: 'feedback' },
-  )
+  assert.deepEqual(nextPhase(['planned', 'active', 'review-passed']), {
+    kind: 'phase',
+    phase: 'feedback',
+  })
 })
 
 test('nextPhase: done label -> done', () => {
-  assert.deepEqual(
-    nextPhase(
-      ['researched', 'planned', 'active', 'review-passed', 'done'],
-      false,
-    ),
-    { kind: 'done' },
-  )
+  assert.deepEqual(nextPhase(['planned', 'active', 'review-passed', 'done']), {
+    kind: 'done',
+  })
 })
 
 test('nextPhase: mid-flow kill resumes at implement without duplicates', () => {
-  // Labels as they exist after a kill during implement (research+plan done,
+  // Labels as they exist after a kill during implement (plan done,
   // active not yet set). Re-running yields implement, then the same labels
   // again yield implement — idempotent, no phase is skipped or repeated.
-  const labels = ['researched', 'planned']
-  const first = nextPhase(labels, false)
-  const second = nextPhase(labels, true)
+  const labels = ['planned']
+  const first = nextPhase(labels)
+  const second = nextPhase(labels)
   assert.deepEqual(first, { kind: 'phase', phase: 'implement' })
   assert.deepEqual(second, { kind: 'phase', phase: 'implement' })
 })
 
-test('nextPhase: skip flag with plan done advances to implement (no plan loop)', () => {
-  assert.deepEqual(nextPhase(['planned'], true), {
-    kind: 'phase',
-    phase: 'implement',
-    researchSkip: true,
-  })
-})
-
-test('nextPhase: research-skipped label satisfies research without the flag', () => {
-  assert.deepEqual(nextPhase(['research-skipped'], false), {
+test('nextPhase: legacy research-era labels do not affect resolution', () => {
+  assert.deepEqual(nextPhase(['researched', 'research-skipped']), {
     kind: 'phase',
     phase: 'plan',
   })
-  assert.deepEqual(nextPhase(['planned', 'research-skipped'], false), {
+  assert.deepEqual(nextPhase(['researched', 'research-skipped', 'planned']), {
     kind: 'phase',
     phase: 'implement',
-  })
-})
-
-test('nextPhase: research-skipped plus all lifecycle labels is done', () => {
-  assert.deepEqual(
-    nextPhase(
-      ['research-skipped', 'planned', 'active', 'review-passed', 'done'],
-      false,
-    ),
-    { kind: 'done' },
-  )
-})
-
-test('nextPhase: skip flag with skip label present does not re-flag the skip', () => {
-  assert.deepEqual(nextPhase(['planned', 'research-skipped'], true), {
-    kind: 'phase',
-    phase: 'implement',
-  })
-})
-
-test('nextPhase: skipResearch is irrelevant once researched', () => {
-  assert.deepEqual(nextPhase(['researched'], true), {
-    kind: 'phase',
-    phase: 'plan',
   })
 })
 
 test('PHASE_LABEL maps every phase to its lifecycle label', () => {
-  assert.equal(PHASE_LABEL.research, 'researched')
   assert.equal(PHASE_LABEL.plan, 'planned')
   assert.equal(PHASE_LABEL.implement, 'active')
   assert.equal(PHASE_LABEL.validate, 'review-passed')
@@ -155,11 +90,9 @@ test('parseFlowArgs: kind prefixes force the kind (PMR-PCVK)', () => {
   assert.deepEqual(parseFlowArgs('aven:DP-71'), {
     kind: 'aven',
     ref: 'DP-71',
-    skipResearch: false,
   })
-  assert.deepEqual(parseFlowArgs('jira:DP-71 --skip-research'), {
+  assert.deepEqual(parseFlowArgs('jira:DP-71'), {
     kind: 'jira',
     jiraId: 'DP-71',
-    skipResearch: true,
   })
 })

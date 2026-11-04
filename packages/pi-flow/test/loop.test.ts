@@ -7,7 +7,6 @@ interface Harness {
   deps: FlowLoopDeps
   sent: string[]
   notes: { ref: string; text: string }[]
-  labelsSet: { ref: string; label: string }[]
   events: FlowRunEvent[]
   notifications: { message: string; level: string }[]
   labels: string[] | null
@@ -20,7 +19,6 @@ function makeHarness(labels: string[] | null = []): Harness {
   const h: Harness = {
     sent: [],
     notes: [],
-    labelsSet: [],
     events: [],
     notifications: [],
     labels,
@@ -40,10 +38,6 @@ function makeHarness(labels: string[] | null = []): Harness {
       h.notes.push({ ref, text })
       return true
     },
-    avenSetLabel: async (ref, label) => {
-      h.labelsSet.push({ ref, label })
-      return true
-    },
     epicHasOpenChildren: async () => h.openChildren ?? false,
     hasInFlightSubagent: () => h.inFlight ?? false,
     sendPrompt: (prompt) => {
@@ -56,7 +50,6 @@ function makeHarness(labels: string[] | null = []): Harness {
 const PROMPT_INPUT = {
   mode: 'personal' as const,
   ref: 'TP-1',
-  skipResearch: false,
   gitRoot: '/home/x/repo',
   workRoots: [],
 }
@@ -64,9 +57,7 @@ const PROMPT_INPUT = {
 function startInput() {
   return {
     ref: 'TP-1',
-    phase: 'research' as const,
-    skipResearch: false,
-    researchSkip: false,
+    phase: 'plan' as const,
     promptInput: { ...PROMPT_INPUT },
   }
 }
@@ -76,7 +67,7 @@ test('start: sends one phase prompt and awaits outcome', async () => {
   const loop = createFlowLoop(h.deps)
   await loop.start(startInput())
   assert.equal(h.sent.length, 1)
-  assert.match(h.sent[0], /Research phase/)
+  assert.match(h.sent[0], /plan\.md|Plan phase/)
   assert.equal(loop.isActive(), true)
   assert.deepEqual(
     h.events.map((e) => e.kind),
@@ -85,12 +76,12 @@ test('start: sends one phase prompt and awaits outcome', async () => {
 })
 
 test('settled with label landed: advances to the next phase prompt', async () => {
-  const h = makeHarness(['researched'])
+  const h = makeHarness(['planned'])
   const loop = createFlowLoop(h.deps)
   await loop.start(startInput())
   await loop.onSettled()
   assert.equal(h.sent.length, 2)
-  assert.match(h.sent[1], /plan\.md|Plan phase/)
+  assert.match(h.sent[1], /Implement phase/)
   assert.deepEqual(
     h.events.map((e) => e.kind),
     ['phase-start', 'phase-complete', 'phase-start'],
@@ -106,7 +97,7 @@ test('settled without label: halt note, journal note, no advance', async () => {
   assert.deepEqual(h.notes, [
     {
       ref: 'TP-1',
-      text: 'flow halted at research: phase completed without landing the "researched" label',
+      text: 'flow halted at plan: phase completed without landing the "planned" label',
     },
   ])
   assert.equal(loop.isActive(), false)
@@ -120,7 +111,7 @@ test('settled after an aborted turn (label never landed): halts', async () => {
   await loop.start(startInput())
   await loop.onSettled()
   assert.equal(h.sent.length, 1)
-  assert.match(h.notes[0].text, /without landing the "researched" label/)
+  assert.match(h.notes[0].text, /without landing the "planned" label/)
 })
 
 test('settled without label but a subagent is in flight: stays armed, no halt, re-checks next settle', async () => {
@@ -135,10 +126,10 @@ test('settled without label but a subagent is in flight: stays armed, no halt, r
   assert.equal(h.events.at(-1)?.kind, 'note')
   // child steers back, turn settles again with the label landed: advances
   h.inFlight = false
-  h.labels = ['researched']
+  h.labels = ['planned']
   await loop.onSettled()
   assert.equal(h.sent.length, 2)
-  assert.match(h.sent[1], /plan\.md|Plan phase/)
+  assert.match(h.sent[1], /Implement phase/)
 })
 
 test('settled without label once the subagent is gone: halts', async () => {
@@ -151,7 +142,7 @@ test('settled without label once the subagent is gone: halts', async () => {
   h.inFlight = false
   await loop.onSettled()
   assert.equal(loop.isActive(), false)
-  assert.match(h.notes[0].text, /without landing the "researched" label/)
+  assert.match(h.notes[0].text, /without landing the "planned" label/)
 })
 
 test('plan settles without "planned" while plan-state=review: awaiting-approval pause, no failure halt', async () => {
@@ -206,7 +197,7 @@ test('resume after approval: /flow re-enters plan, refreshed prompt run lands th
   h.planState = 'approved'
   await loop.start({ ...startInput(), phase: 'plan' })
   assert.match(h.sent.at(-1) ?? '', /plan\.md|Plan phase/)
-  h.labels = ['researched', 'planned'] // refreshed plan prompt run lands "planned"
+  h.labels = ['planned'] // refreshed plan prompt run lands "planned"
   await loop.onSettled()
   assert.match(h.sent.at(-1) ?? '', /Implement phase/)
   assert.deepEqual(
@@ -226,26 +217,20 @@ test('settled with aven failure: halts fail-closed', async () => {
 })
 
 test('settled when idle: ignored (side conversations never advance the flow)', async () => {
-  const h = makeHarness(['researched'])
+  const h = makeHarness(['planned'])
   const loop = createFlowLoop(h.deps)
   await loop.onSettled()
   assert.equal(h.sent.length, 0)
   assert.equal(loop.isActive(), false)
   await loop.start(startInput())
-  h.labels = ['researched']
+  h.labels = ['planned']
   await loop.onSettled()
   await loop.onSettled()
   assert.equal(h.sent.length, 2)
 })
 
 test('final phase complete: flow done, loop inactive', async () => {
-  const h = makeHarness([
-    'researched',
-    'planned',
-    'active',
-    'review-passed',
-    'done',
-  ])
+  const h = makeHarness(['planned', 'active', 'review-passed', 'done'])
   const loop = createFlowLoop(h.deps)
   await loop.start({ ...startInput(), phase: 'feedback' })
   await loop.onSettled()
@@ -255,55 +240,6 @@ test('final phase complete: flow done, loop inactive', async () => {
     h.notifications.some((n) => n.message.includes('all phases complete')),
     true,
   )
-})
-
-test('researchSkip at start: skip journal + aven note, no research prompt', async () => {
-  const h = makeHarness([])
-  const loop = createFlowLoop(h.deps)
-  await loop.start({
-    ...startInput(),
-    phase: 'plan',
-    skipResearch: true,
-    researchSkip: true,
-  })
-  assert.equal(h.sent.length, 1)
-  assert.match(h.sent[0], /plan\.md|Plan phase/)
-  assert.deepEqual(
-    h.events.map((e) => e.kind),
-    ['phase-skip', 'phase-start'],
-  )
-  assert.match(h.notes[0].text, /research skip confirmed by user/)
-  assert.deepEqual(h.labelsSet, [{ ref: 'TP-1', label: 'research-skipped' }])
-})
-
-test('skip flow: plan completing advances to implement, not plan again', async () => {
-  const h = makeHarness(['planned', 'research-skipped'])
-  const loop = createFlowLoop(h.deps)
-  await loop.start({
-    ...startInput(),
-    phase: 'plan',
-    skipResearch: true,
-    researchSkip: true,
-  })
-  await loop.onSettled()
-  assert.equal(h.sent.length, 2)
-  assert.match(h.sent[1], /Implement phase/)
-  // no second skip note/label on advance
-  assert.equal(h.notes.length, 1)
-  assert.equal(h.labelsSet.length, 1)
-})
-
-test('skip flow: resume via research-skipped label without the flag', async () => {
-  const h = makeHarness(['planned', 'research-skipped'])
-  const loop = createFlowLoop(h.deps)
-  await loop.start({
-    ...startInput(),
-    phase: 'implement',
-    skipResearch: false,
-    researchSkip: false,
-  })
-  assert.match(h.sent[0], /Implement phase/)
-  assert.equal(h.labelsSet.length, 0)
 })
 
 test('implement gate block at start: halt note, nothing sent', async () => {
@@ -316,15 +252,10 @@ test('implement gate block at start: halt note, nothing sent', async () => {
 })
 
 test('implement injection with open epic children forces the plan route', async () => {
-  const h = makeHarness(['planned', 'research-skipped', 'plan'])
+  const h = makeHarness(['planned'])
   h.openChildren = true
   const loop = createFlowLoop(h.deps)
-  await loop.start({
-    ...startInput(),
-    phase: 'implement',
-    skipResearch: false,
-    researchSkip: false,
-  })
+  await loop.start({ ...startInput(), phase: 'implement' })
   assert.equal(h.sent.length, 1)
   assert.match(h.sent[0], /implement-plan-aven/)
   assert.match(h.sent[0], /Route: plan/)

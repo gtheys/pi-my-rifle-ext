@@ -10,69 +10,44 @@ import {
 
 describe('checkPhaseCompletion', () => {
   it('refuses done without review-passed, with the missing-label reason', () => {
-    const r = checkPhaseCompletion('feedback', [
-      'researched',
-      'planned',
-      'active',
-    ])
+    const r = checkPhaseCompletion('feedback', ['planned', 'active'])
     assert.equal(r.ok, false)
     assert.match(r.reason ?? '', /review-passed/)
   })
 
   it('refuses review-passed without active', () => {
-    const r = checkPhaseCompletion('validate', ['researched', 'planned'])
+    const r = checkPhaseCompletion('validate', ['planned'])
     assert.equal(r.ok, false)
     assert.match(r.reason ?? '', /active/)
   })
 
   it('refuses implement without planned via canImplement reason', () => {
-    const r = checkPhaseCompletion('implement', ['researched'])
+    const r = checkPhaseCompletion('implement', [])
     assert.equal(r.ok, false)
     assert.match(r.reason ?? '', /planned/)
     assert.match(r.reason ?? '', /\/plan/)
   })
 
-  it('refuses implement without research or skip via needsResearchSkip', () => {
-    const r = checkPhaseCompletion('implement', ['planned'])
-    assert.equal(r.ok, false)
-    assert.match(r.reason ?? '', /research/)
+  it('ok for implement with planned only (no research gate, PMR-Z2K7)', () => {
+    assert.equal(checkPhaseCompletion('implement', ['planned']).ok, true)
   })
 
-  it('ok for implement with planned + researched', () => {
-    assert.equal(
-      checkPhaseCompletion('implement', ['planned', 'researched']).ok,
-      true,
-    )
-  })
-
-  it('ok for implement with planned + research-skipped', () => {
-    assert.equal(
-      checkPhaseCompletion('implement', ['planned', 'research-skipped']).ok,
-      true,
-    )
-  })
-
-  it('ok for plan with researched (research satisfied)', () => {
-    assert.equal(checkPhaseCompletion('plan', ['researched']).ok, true)
-  })
-
-  it('ok for plan with research-skipped', () => {
-    assert.equal(checkPhaseCompletion('plan', ['research-skipped']).ok, true)
-  })
-
-  it('refuses plan without research record', () => {
-    const r = checkPhaseCompletion('plan', [])
-    assert.equal(r.ok, false)
-    assert.match(r.reason ?? '', /research/)
+  it('ok for plan with no preconditions', () => {
+    assert.equal(checkPhaseCompletion('plan', []).ok, true)
   })
 
   it('ok (already complete) when the phase label is present — idempotent', () => {
-    const r = checkPhaseCompletion('plan', ['researched', 'planned'])
+    const r = checkPhaseCompletion('plan', ['planned'])
     assert.equal(r.ok, true)
   })
 
-  it('ok for research with no preconditions', () => {
-    assert.equal(checkPhaseCompletion('research', []).ok, true)
+  it('refuses implement without planned even with legacy research labels', () => {
+    const r = checkPhaseCompletion('implement', [
+      'researched',
+      'research-skipped',
+    ])
+    assert.equal(r.ok, false)
+    assert.match(r.reason ?? '', /planned/)
   })
 })
 
@@ -107,7 +82,7 @@ describe('lifecycleLabelMutation', () => {
     assert.equal(lifecycleLabelMutation('aven edit PMR-1 --label bug'), null)
     assert.equal(lifecycleLabelMutation('aven edit PMR-1 --label plan'), null)
     assert.equal(
-      lifecycleLabelMutation('aven edit PMR-1 --label research-skipped'),
+      lifecycleLabelMutation('aven edit PMR-1 --label researched'),
       null,
     )
   })

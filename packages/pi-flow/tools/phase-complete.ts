@@ -26,9 +26,9 @@ export function registerPhaseCompleteTool(pi: ExtensionAPI): void {
     name: 'flow_phase_complete',
     label: 'flow phase complete',
     description:
-      'Record completion of an RPIV flow phase by applying its lifecycle label (research=researched, plan=planned, implement=active, validate=review-passed, feedback=done). The gate re-checks phase order and refuses out-of-order completion with the reason. This is the ONLY way to write lifecycle labels — direct aven label edits on the ticket are blocked.',
+      'Record completion of a PIV flow phase by applying its lifecycle label (plan=planned, implement=active, validate=review-passed, feedback=done). The gate re-checks phase order and refuses out-of-order completion with the reason. This is the ONLY way to write lifecycle labels — direct aven label edits on the ticket are blocked.',
     promptSnippet:
-      'Gated lifecycle-label completion for RPIV flow phases (research/plan/implement/validate/feedback).',
+      'Gated lifecycle-label completion for PIV flow phases (plan/implement/validate/feedback).',
     promptGuidelines: [
       'Call flow_phase_complete to close a flow phase — never run `aven edit <ref> --label <lifecycle>` yourself; that mutation is blocked.',
       'A refusal carries the gate reason (missing prior phase); run the missing phase, do not retry the call.',
@@ -37,7 +37,6 @@ export function registerPhaseCompleteTool(pi: ExtensionAPI): void {
       ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
       phase: Type.Union(
         [
-          Type.Literal('research'),
           Type.Literal('plan'),
           Type.Literal('implement'),
           Type.Literal('validate'),

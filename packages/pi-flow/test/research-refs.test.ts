@@ -96,8 +96,7 @@ test('ticket prompt: epic branch labels the epic and forbids creation', () => {
   assert.match(p, /epic_children/)
   assert.match(p, /aven show <synced-ref> --full/)
   assert.match(p, /acli jira workitem view DP-257/)
-  assert.match(p, /flow_phase_complete/)
-  assert.match(p, /phase="research"/)
+  assert.doesNotMatch(p, /flow_phase_complete/)
   assert.doesNotMatch(p, /aven edit PMR-ABC1 --label researched/)
   assert.match(p, /Do NOT run the ticket-creation gate/)
   assert.doesNotMatch(p, /TICKET CREATION GATE/)
@@ -113,10 +112,9 @@ test('ticket prompt: synced branch targets the aven ticket, no acli, marker for 
   assert.match(p, /synced aven ticket DPX-TFZH/)
   assert.match(p, /aven show DPX-TFZH --full/)
   assert.doesNotMatch(p, /acli/)
-  assert.match(p, /flow_phase_complete/)
-  assert.match(p, /phase="research"/)
+  assert.doesNotMatch(p, /flow_phase_complete/)
   assert.match(p, /researched by pi-flow/)
-  assert.match(p, /creates the local epic and inherits/)
+  assert.match(p, /creates the local epic and can discover/)
   assert.doesNotMatch(p, /TICKET CREATION GATE/)
 })
 
@@ -200,7 +198,6 @@ test('findResearchedArtifact: missing dir → null', async () => {
 
 const BASE = {
   ref: 'TP-1',
-  skipResearch: false,
   gitRoot: '/home/x/pi-flow-range',
   workRoots: [] as string[],
   labels: [] as string[],

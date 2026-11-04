@@ -1,25 +1,19 @@
 // AIDEV-NOTE: PMR-EZHA — pure decision module at the enforcement boundary of
 // the flow_phase_complete tool. checkPhaseCompletion re-states the phase
-// ordering (research -> plan -> implement -> validate -> feedback) over the
-// ticket's current labels; the implement case DELEGATES to the original gates
-// (canImplement / needsResearchSkip in gates.ts) so their reasons stay the
-// single source of refusal text. lifecycleLabelMutation is the matcher the
-// bash tool_call interceptor uses to block direct `aven` writes of lifecycle
-// labels. Both functions are pure — the tool in index.ts wraps them.
-import { canImplement, type GateResult, needsResearchSkip } from '../gates.ts'
+// ordering (plan -> implement -> validate -> feedback; PMR-Z2K7 dropped the
+// research stage) over the ticket's current labels; the implement case
+// DELEGATES to the original gate (canImplement in gates.ts) so its reason
+// stays the single source of refusal text. lifecycleLabelMutation is the
+// matcher the bash tool_call interceptor uses to block direct `aven` writes
+// of lifecycle labels. Both functions are pure — the tool in index.ts wraps
+// them.
+import { canImplement, type GateResult } from '../gates.ts'
 import { LIFECYCLE_LABELS } from '../phase-state.ts'
-import { PHASE_LABEL, type Phase, researchSatisfied } from './orchestrate.ts'
+import { PHASE_LABEL, type Phase } from './orchestrate.ts'
 
-const PHASES: readonly Phase[] = [
-  'research',
-  'plan',
-  'implement',
-  'validate',
-  'feedback',
-]
+const PHASES: readonly Phase[] = ['plan', 'implement', 'validate', 'feedback']
 
 function phaseComplete(phase: Phase, labels: readonly string[]): boolean {
-  if (phase === 'research') return researchSatisfied(labels, false)
   return labels.includes(PHASE_LABEL[phase])
 }
 
@@ -32,16 +26,7 @@ export function checkPhaseCompletion(
 ): GateResult {
   if (phaseComplete(phase, labels)) return { ok: true }
   if (phase === 'implement') {
-    const planned = canImplement(labels)
-    if (!planned.ok) return planned
-    if (needsResearchSkip(labels)) {
-      return {
-        ok: false,
-        reason:
-          'ticket has no "researched" label and no recorded research skip — run /research or pass --skip-research first',
-      }
-    }
-    return { ok: true }
+    return canImplement(labels)
   }
   const missing = PHASES.slice(0, PHASES.indexOf(phase)).find(
     (p) => !phaseComplete(p, labels),
@@ -56,8 +41,8 @@ export function checkPhaseCompletion(
 // Matches bash commands that directly mutate a lifecycle label (aven edit
 // --label X, aven label add/remove X). Returns the offending label so the
 // interceptor can name it in the block reason; null when the command is
-// allowed. Type/skip labels (bug, oneshot, plan, research-skipped) stay
-// agent-writable — only LIFECYCLE_LABELS are gated.
+// allowed. Type labels (bug, oneshot, plan) stay agent-writable — only
+// LIFECYCLE_LABELS are gated.
 export function lifecycleLabelMutation(command: string): string | null {
   if (!command.includes('aven')) return null
   const lifecycle = new Set<string>(LIFECYCLE_LABELS)

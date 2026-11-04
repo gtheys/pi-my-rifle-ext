@@ -5,7 +5,6 @@ import { buildPhasePrompt } from '../flow/phase-prompts.ts'
 const BASE = {
   mode: 'personal' as const,
   ref: 'TP-1',
-  skipResearch: false,
   gitRoot: '/home/x/pi-flow-range',
   workRoots: [] as string[],
   labels: [] as string[],
@@ -43,37 +42,12 @@ test('implement: refuses without the planned label', async () => {
   assert.equal(result.kind, 'block')
 })
 
-test('implement: no researched label without skip -> skip-required block', async () => {
+test('implement: planned label only -> send (no research gate, PMR-Z2K7)', async () => {
   const result = await buildPhasePrompt('implement', {
     ...BASE,
     labels: ['planned'],
   })
-  assert.equal(result.kind, 'block')
-  if (result.kind !== 'block') return
-  assert.match(result.reason, /--skip-research/)
-})
-
-test('implement: research-skipped label satisfies the research gate', async () => {
-  const result = await buildPhasePrompt('implement', {
-    ...BASE,
-    labels: ['planned', 'research-skipped'],
-  })
   assert.equal(result.kind, 'send')
-})
-
-test('implement: planned + researched (or skip) -> send', async () => {
-  for (const labels of [
-    ['planned', 'researched'],
-    ['planned', 'researched', 'bug'],
-    ['planned'],
-  ] as string[][]) {
-    const result = await buildPhasePrompt('implement', {
-      ...BASE,
-      labels,
-      skipResearch: true,
-    })
-    assert.equal(result.kind, 'send', JSON.stringify(labels))
-  }
 })
 
 test('validate: personal mode sends without scripts dir', async () => {
@@ -95,7 +69,7 @@ test('validate: work mode without workRoots blocks loudly', async () => {
 test('implement: oneshot route with open epic children forces plan route', async () => {
   const result = await buildPhasePrompt('implement', {
     ...BASE,
-    labels: ['planned', 'research-skipped'],
+    labels: ['planned'],
     epicHasOpenChildren: true,
   })
   assert.equal(result.kind, 'send')
@@ -107,7 +81,7 @@ test('implement: oneshot route with open epic children forces plan route', async
 test('implement: oneshot route without children stays oneshot', async () => {
   const result = await buildPhasePrompt('implement', {
     ...BASE,
-    labels: ['planned', 'research-skipped'],
+    labels: ['planned'],
     epicHasOpenChildren: false,
   })
   assert.equal(result.kind, 'send')

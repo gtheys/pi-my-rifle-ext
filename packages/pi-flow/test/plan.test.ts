@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { canImplement, needsResearchSkip } from '../gates.ts'
+import { canImplement } from '../gates.ts'
 import { parsePlanArgs } from '../plan/args.ts'
 import { resolvePlanDir } from '../plan/paths.ts'
 import { buildPlanPrompt } from '../plan/prompt.ts'
@@ -280,11 +280,6 @@ test('canImplement: ok with planned', () => {
   const r = canImplement(['planned'])
   assert.equal(r.ok, true)
   assert.equal(r.reason, undefined)
-})
-
-test('needsResearchSkip: true only when researched missing', () => {
-  assert.equal(needsResearchSkip(['planned']), true)
-  assert.equal(needsResearchSkip(['planned', 'researched']), false)
 })
 
 // --- paths ---
