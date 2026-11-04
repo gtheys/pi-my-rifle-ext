@@ -49,10 +49,14 @@ export function checkPhaseCompletion(
 // carrying a lifecycle label); read-only commands like
 // `aven search --label done` must pass. The separator is (?:=|\s+) so
 // `--label  done` (extra whitespace) cannot evade.
+//
+// AIDEV-NOTE: PMR-8N7C — bulk-update also mutates labels (repeatable
+// --label/--remove-label across every matched task), so it joins edit|add
+// in the gated subcommand set.
 export function lifecycleLabelMutation(command: string): string | null {
   if (!command.includes('aven')) return null
   const lifecycle = new Set<string>(LIFECYCLE_LABELS)
-  if (/\baven\s+(edit|add)\b/.test(command)) {
+  if (/\baven\s+(edit|add|bulk-update)\b/.test(command)) {
     // AIDEV-NOTE: PMR-9P9E — matchAll, not match: repeated --label flags are
     // all inspected, so `--label foo --label done` cannot smuggle a lifecycle
     // label past a first-flag-only capture.

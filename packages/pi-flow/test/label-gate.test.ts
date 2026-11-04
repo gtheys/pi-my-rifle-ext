@@ -76,6 +76,27 @@ describe('lifecycleLabelMutation', () => {
     assert.equal(lifecycleLabelMutation('aven add "title" --label bug'), null)
   })
 
+  it('blocks aven bulk-update --label with a lifecycle label (PMR-8N7C)', () => {
+    assert.equal(
+      lifecycleLabelMutation('aven bulk-update --status inbox --label done'),
+      'done',
+    )
+    assert.equal(
+      lifecycleLabelMutation(
+        'aven bulk-update --all --remove-label review-passed',
+      ),
+      'review-passed',
+    )
+    assert.equal(
+      lifecycleLabelMutation('aven bulk-update --all --label=active'),
+      'active',
+    )
+    assert.equal(
+      lifecycleLabelMutation('aven bulk-update --status inbox --label bug'),
+      null,
+    )
+  })
+
   it('blocks aven label add/remove legacy syntax', () => {
     assert.equal(
       lifecycleLabelMutation('aven label add PMR-1 planned'),
