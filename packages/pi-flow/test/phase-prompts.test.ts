@@ -89,6 +89,27 @@ test('implement: oneshot route without children stays oneshot', async () => {
   assert.match(result.prompt, /Oneshot flow/)
 })
 
+test('validate: personal oneshot label names ticket description as spec source', async () => {
+  const result = await buildPhasePrompt('validate', {
+    ...BASE,
+    labels: ['oneshot'],
+  })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  const gate = result.prompt.slice(result.prompt.indexOf('Deviation gate'))
+  assert.match(gate, /ticket description/)
+  assert.doesNotMatch(gate, /plan-path/)
+})
+
+test('validate: personal without oneshot label names plan-path as spec source', async () => {
+  const result = await buildPhasePrompt('validate', BASE)
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  const gate = result.prompt.slice(result.prompt.indexOf('Deviation gate'))
+  assert.match(gate, /plan-path/)
+  assert.doesNotMatch(gate, /ticket description/)
+})
+
 test('feedback: always sends', async () => {
   const result = await buildPhasePrompt('feedback', BASE)
   assert.equal(result.kind, 'send')

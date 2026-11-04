@@ -194,12 +194,15 @@ function validatePrompt(input: PhasePromptInput): PhasePrompt {
       }),
     }
   }
+  // AIDEV-NOTE: personal oneshot tickets have no plan.md, so the deviation
+  // gate must name the ticket description as the spec source, not plan-path.
   return {
     kind: 'send',
     prompt: buildValidatePrompt({
       mode: input.mode,
       ref: input.ref,
       scriptsDir: null,
+      oneshot: input.labels.includes('oneshot'),
     }),
   }
 }

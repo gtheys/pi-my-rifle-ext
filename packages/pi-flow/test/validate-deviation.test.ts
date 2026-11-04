@@ -49,7 +49,11 @@ describe('buildValidatePrompt: deviation gate wiring', () => {
   })
 
   it('personal prompt contains the deviation gate section', () => {
-    const prompt = buildValidatePrompt({ mode: 'personal', ref: 'PMR-A1' })
+    const prompt = buildValidatePrompt({
+      mode: 'personal',
+      ref: 'PMR-A1',
+      scriptsDir: null,
+    })
     assert.ok(prompt.includes(HEADING))
     assert.match(prompt, /plan-path/)
   })
@@ -74,7 +78,11 @@ describe('buildValidatePrompt: deviation gate wiring', () => {
   it('both prompts: fail-closed artifact parsing wording present', () => {
     for (const prompt of [
       buildValidatePrompt({ mode: 'work', ref: 'DP-1', scriptsDir: null }),
-      buildValidatePrompt({ mode: 'personal', ref: 'PMR-B2' }),
+      buildValidatePrompt({
+        mode: 'personal',
+        ref: 'PMR-B2',
+        scriptsDir: null,
+      }),
     ]) {
       assert.match(
         prompt,
@@ -89,7 +97,11 @@ describe('buildValidatePrompt: deviation gate wiring', () => {
   it('both prompts: 0 deviations records the aven note and proceeds', () => {
     for (const prompt of [
       buildValidatePrompt({ mode: 'work', ref: 'DP-1', scriptsDir: null }),
-      buildValidatePrompt({ mode: 'personal', ref: 'PMR-B2' }),
+      buildValidatePrompt({
+        mode: 'personal',
+        ref: 'PMR-B2',
+        scriptsDir: null,
+      }),
     ]) {
       assert.match(prompt, /no deviation from spec/)
     }
@@ -98,7 +110,11 @@ describe('buildValidatePrompt: deviation gate wiring', () => {
   it('both prompts: >0 deviations routes through ask_user_question with accept/fix', () => {
     for (const prompt of [
       buildValidatePrompt({ mode: 'work', ref: 'DP-1', scriptsDir: null }),
-      buildValidatePrompt({ mode: 'personal', ref: 'PMR-B2' }),
+      buildValidatePrompt({
+        mode: 'personal',
+        ref: 'PMR-B2',
+        scriptsDir: null,
+      }),
     ]) {
       assert.match(prompt, /ask_user_question/)
       assert.match(prompt, /"accept"/)
@@ -110,7 +126,11 @@ describe('buildValidatePrompt: deviation gate wiring', () => {
   it('both prompts: human decision recorded as an aven note either way', () => {
     for (const prompt of [
       buildValidatePrompt({ mode: 'work', ref: 'DP-1', scriptsDir: null }),
-      buildValidatePrompt({ mode: 'personal', ref: 'PMR-B2' }),
+      buildValidatePrompt({
+        mode: 'personal',
+        ref: 'PMR-B2',
+        scriptsDir: null,
+      }),
     ]) {
       assert.match(prompt, /Record the human decision as an aven note/)
     }
