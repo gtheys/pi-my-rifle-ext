@@ -10,6 +10,7 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+import { setFlowWorktree } from '../flow/worktree-context.ts'
 import { copyEnvFiles, runBootstrap } from './bootstrap.ts'
 import { deriveBranch, parseBranchInput, slugify } from './branch.ts'
 import {
@@ -144,6 +145,11 @@ async function createFlow(
     )
   }
   const { path, workspaceId } = created
+
+  // AIDEV-NOTE: PMR-1CCT — bind the created worktree to the active flow (if
+  // any) so the review tool resolves its diff here instead of the session
+  // checkout. No-op outside a flow run.
+  setFlowWorktree(path, derived.branch)
 
   report(`Bootstrapping dependencies in ${path}...`)
   const bootstrap = await runBootstrap(pi, path, signal, report)

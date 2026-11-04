@@ -35,6 +35,7 @@ import {
   registerPhaseCommands,
 } from './flow/phase-command.ts'
 import { parseRefKind } from './flow/ref-kind.ts'
+import { setActiveFlowRef } from './flow/worktree-context.ts'
 import { syncHerdrPlugin } from './herdr/sync.ts'
 import {
   FlowHerdrViewer,
@@ -103,6 +104,7 @@ export default function (pi: ExtensionAPI) {
     avenNote: (ref, text) => writeAvenNote(ref, text),
     epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),
     hasInFlightSubagent: () => hasLiveAssignmentForParent(process.pid),
+    setActiveRef: (ref) => setActiveFlowRef(ref),
     sendPrompt: (prompt) => {
       pi.sendUserMessage(prompt)
     },

@@ -53,6 +53,7 @@ import {
   watchSubagent,
 } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
+import { clearFlowWorktree, getFlowWorktree } from '../flow/worktree-context.ts'
 import {
   herdrAvailable,
   worktreeCreate,
@@ -171,7 +172,7 @@ export async function buildFullReviewPrompt(
   target: ReviewTarget,
   cwd: string,
 ): Promise<string> {
-  const prompt = await buildReviewPrompt(pi, target)
+  const prompt = await buildReviewPrompt(pi, target, cwd)
   const semReviewInstructions = await buildSemReviewInstructions(pi, target)
   const projectGuidelines = await loadProjectReviewGuidelines(cwd)
 
@@ -333,6 +334,50 @@ async function loadProjectReviewGuidelines(
       return null
     }
     currentDir = parentDir
+  }
+}
+
+/**
+ * AIDEV-NOTE: PMR-1CCT — prefer the active flow's worktree as the review cwd
+ * so branch/uncommitted reviews diff the tree carrying the change, not the
+ * session checkout. Stale bindings (worktree removed) are cleared and
+ * ignored.
+ */
+async function resolveFlowReviewCwd(fallback: string): Promise<string> {
+  const flowWt = getFlowWorktree()
+  if (flowWt === null) return fallback
+  try {
+    await fs.access(flowWt.path)
+    return flowWt.path
+  } catch {
+    clearFlowWorktree()
+    return fallback
+  }
+}
+
+/**
+ * AIDEV-NOTE: PMR-1CCT — empty-range guard. A baseBranch review whose merge
+ * base equals HEAD diffs nothing; flow work lives in an isolated worktree, so
+ * from the main checkout the range is main..main and OCR would return a
+ * skipped/clean-looking artifact — a silent gate pass. Callers must fail
+ * loudly instead. Unresolvable refs stay unguarded (existing prompt-fallback
+ * behavior).
+ */
+export async function isEmptyBranchRange(
+  pi: ExtensionAPI,
+  branch: string,
+  cwd: string,
+): Promise<boolean> {
+  const mergeBase = await getMergeBase(pi, branch, cwd)
+  if (mergeBase === null) return false
+  try {
+    const { stdout, code } = await pi.exec('git', ['rev-parse', 'HEAD'], {
+      cwd,
+    })
+    if (code !== 0) return false
+    return stdout.trim() === mergeBase
+  } catch {
+    return false
   }
 }
 
@@ -817,13 +862,14 @@ async function getDefaultBranch(pi: ExtensionAPI): Promise<string> {
 async function buildReviewPrompt(
   pi: ExtensionAPI,
   target: ReviewTarget,
+  cwd?: string,
 ): Promise<string> {
   switch (target.type) {
     case 'uncommitted':
       return UNCOMMITTED_PROMPT
 
     case 'baseBranch': {
-      const mergeBase = await getMergeBase(pi, target.branch)
+      const mergeBase = await getMergeBase(pi, target.branch, cwd)
       if (mergeBase) {
         return BASE_BRANCH_PROMPT_WITH_MERGE_BASE.replace(
           /{baseBranch}/g,
@@ -834,7 +880,7 @@ async function buildReviewPrompt(
     }
 
     case 'ocrDelegate': {
-      const mergeBase = await getMergeBase(pi, target.branch)
+      const mergeBase = await getMergeBase(pi, target.branch, cwd)
       const fromRef = mergeBase ?? target.branch
       return OCR_DELEGATE_PROMPT.replace(
         /{baseBranch}/g,
@@ -1614,6 +1660,10 @@ ${result.summary}`
     ctx: ExtensionContext,
     target: ReviewTarget,
     fullPrompt: string,
+    // AIDEV-NOTE: PMR-1CCT — review cwd override (flow worktree). All diff
+    // resolution (merge-base, ocr range, subagent cwd) must happen in the
+    // tree that carries the change, not the session checkout.
+    cwdOverride?: string,
   ): Promise<{
     status: 'spawned' | 'aborted' | 'failed'
     ocrStarted: boolean
@@ -1630,8 +1680,12 @@ ${result.summary}`
       target.type === 'pullRequest' && target.worktree
         ? { prNumber: target.prNumber, info: target.worktree }
         : undefined
-    const reviewCwd =
-      target.type === 'pullRequest' ? target.worktree?.path : undefined
+    let reviewCwd: string | undefined
+    if (target.type === 'pullRequest') {
+      reviewCwd = target.worktree?.path
+    } else {
+      reviewCwd = cwdOverride
+    }
     // Reserve both worktree jobs up front (reviewer + ocr scout) so a
     // fast-finishing reviewer can't tear the worktree out from under ocr.
     if (prWorktree) prWorktree.info.pending = 2
@@ -1675,7 +1729,11 @@ ${result.summary}`
         scope = `PR #${target.prNumber}`
         ocrArgs = ['review', '--from', target.baseBranch, '--to', toRef]
       } else if (target.type === 'baseBranch') {
-        const mergeBase = await getMergeBase(pi, target.branch, ctx.cwd)
+        const mergeBase = await getMergeBase(
+          pi,
+          target.branch,
+          reviewCwd ?? ctx.cwd,
+        )
         if (mergeBase) {
           scope = `${target.branch}...HEAD`
           ocrArgs = ['review', '--from', mergeBase, '--to', 'HEAD']
@@ -1719,6 +1777,18 @@ ${result.summary}`
     target: ReviewTarget,
     useFreshSession: boolean,
   ): Promise<void> {
+    // AIDEV-NOTE: PMR-1CCT — same empty-range guard as the review tool: an
+    // interactive branch review against HEAD's own merge base diffs nothing.
+    if (
+      target.type === 'baseBranch' &&
+      (await isEmptyBranchRange(pi, target.branch, ctx.cwd))
+    ) {
+      ctx.ui.notify(
+        `Empty review range: HEAD == merge-base with '${target.branch}' in ${ctx.cwd} — nothing to review here. Run /review from the checkout carrying the change.`,
+        'error',
+      )
+      return
+    }
     const fullPrompt = await buildFullReviewPrompt(pi, target, ctx.cwd)
     const hint = getUserFacingHint(target)
 
@@ -2097,6 +2167,34 @@ ${result.summary}`
       _onUpdate: unknown,
       ctx: ExtensionToolContext,
     ): Promise<AgentToolResult<{ hint: string; ocr: boolean } | undefined>> {
+      const p = params.target
+      // AIDEV-NOTE: PMR-1CCT — resolve the review cwd and the empty-range
+      // guard BEFORE the mux check: a branch review whose merge base equals
+      // HEAD diffs nothing (flow work lives in a worktree, the session
+      // checkout sits on main), and must fail loudly instead of returning a
+      // skipped/clean-looking artifact.
+      let reviewCwd = ctx.cwd
+      if (p.type === 'branch' || p.type === 'uncommitted') {
+        reviewCwd = await resolveFlowReviewCwd(ctx.cwd)
+      }
+      if (
+        p.type === 'branch' &&
+        (await isEmptyBranchRange(pi, p.branch, reviewCwd))
+      ) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Empty review range: HEAD == merge-base with '${p.branch}' in ${reviewCwd} — the change is not on this checkout/branch, so the diff would be empty. Run the review from the worktree carrying the change (or start the flow loop so its worktree binding is known). Refusing to spawn a review that would silently pass.`,
+            },
+          ],
+          // AIDEV-NOTE: isError results omit details — a fabricated
+          // empty hint would mislead consumers. See pr-quality/index.ts.
+          details: undefined,
+          isError: true,
+        }
+      }
+
       if (!isMuxAvailable()) {
         return {
           content: [
@@ -2112,7 +2210,6 @@ ${result.summary}`
         }
       }
 
-      const p = params.target
       let target: ReviewTarget
       if (p.type === 'uncommitted') {
         target = { type: 'uncommitted' }
@@ -2141,11 +2238,12 @@ ${result.summary}`
         target = prTarget
       }
 
-      const fullPrompt = await buildFullReviewPrompt(pi, target, ctx.cwd)
+      const fullPrompt = await buildFullReviewPrompt(pi, target, reviewCwd)
       const { status, ocrStarted } = await spawnReviewJobs(
         ctx,
         target,
         fullPrompt,
+        reviewCwd,
       )
       const hint = getUserFacingHint(target)
 

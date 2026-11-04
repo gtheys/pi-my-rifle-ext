@@ -33,6 +33,11 @@ export interface FlowLoopDeps {
   /** True while this session has an in-flight subagent (mid-phase async wait). */
   hasInFlightSubagent(): boolean
   sendPrompt(prompt: string): void
+  // AIDEV-NOTE: PMR-1CCT — optional active-ref sink so the review tool can
+  // resolve the flow worktree (flow/worktree-context.ts). Called with the
+  // ref on start and with null on every terminal transition (halt, pause,
+  // done). Optional so existing tests/consumers need no changes.
+  setActiveRef?(ref: string | null): void
 }
 
 export interface FlowStartInput {
@@ -90,6 +95,7 @@ class FlowLoopImpl implements FlowLoop {
       awaitingOutcome: false,
       promptInput: input.promptInput,
     }
+    this.deps.setActiveRef?.(input.ref)
     await this.sendPhasePrompt(input.phase)
   }
 
@@ -136,6 +142,7 @@ class FlowLoopImpl implements FlowLoop {
           this.deps.journal({ kind: 'note', at: now(), ref, text })
           this.deps.notify(`/flow ${ref}: ${text}`, 'info')
           this.state = null
+          this.deps.setActiveRef?.(null)
           return
         }
       }
@@ -155,6 +162,7 @@ class FlowLoopImpl implements FlowLoop {
     this.deps.journal({ kind: 'note', at: now(), ref, text })
     this.deps.notify(`/flow ${ref}: ${text}`, 'warning')
     this.state = null
+    this.deps.setActiveRef?.(null)
   }
 
   private async sendPhasePrompt(phase: Phase): Promise<void> {
@@ -213,6 +221,7 @@ class FlowLoopImpl implements FlowLoop {
       })
       this.deps.notify(`/flow ${ref}: all phases complete.`, 'info')
       this.state = null
+      this.deps.setActiveRef?.(null)
       return
     }
     await this.sendPhasePrompt(next.phase)
