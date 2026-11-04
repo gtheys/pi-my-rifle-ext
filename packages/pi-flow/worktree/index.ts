@@ -5,12 +5,13 @@
  * pi-flow; registered exactly once from pi-flow/index.ts.
  */
 
+import { promises as fs } from 'node:fs'
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { setFlowWorktree } from '../flow/worktree-context.ts'
+import { getActiveFlowRef, setFlowWorktree } from '../flow/worktree-context.ts'
 import { copyEnvFiles, runBootstrap } from './bootstrap.ts'
 import { deriveBranch, parseBranchInput, slugify } from './branch.ts'
 import {
@@ -210,6 +211,33 @@ function joinAgents(
     joined.set(wt, match)
   }
   return joined
+}
+
+// AIDEV-NOTE: PMR-8JVY — re-bind an existing worktree to the active flow.
+// Resume path: the implement skill reuses the worktree from the ticket's
+// `worktree:` note without calling create, so nothing bound it and the
+// review tool resolved its diff against the session checkout (empty range).
+async function bindFlow(params: {
+  path?: string
+  branch?: string
+}): Promise<ToolResult> {
+  if (!params.path || !params.branch) {
+    return errorResult("bind requires 'path' and 'branch'")
+  }
+  const stat = await fs.stat(params.path).catch(() => null)
+  if (!stat?.isDirectory()) {
+    return errorResult(`No directory at ${params.path}`)
+  }
+  const ref = getActiveFlowRef()
+  if (ref === null) {
+    return errorResult(
+      'No active flow ref — nothing to bind to. Run bind from inside the flow loop.',
+    )
+  }
+  setFlowWorktree(params.path, params.branch)
+  return textResult(
+    `Bound worktree ${params.path} (${params.branch}) to flow ${ref}`,
+  )
 }
 
 async function listFlow(pi: ExtensionAPI, cwd: string): Promise<ToolResult> {
@@ -441,17 +469,23 @@ export default function (pi: ExtensionAPI) {
     name: 'worktree',
     label: 'Worktree',
     description:
-      'Create, list, or remove git worktrees managed as Herdr workspaces. Create derives a branch (from a Jira issue, a conventional name+type, or a literal), creates the Herdr worktree, bootstraps dependencies from the detected lockfile, copies missing .env* files from the main checkout. List shows a worktree/agent dashboard; remove guards against dirty worktrees.',
+      'Create, list, bind, or remove git worktrees managed as Herdr workspaces. Create derives a branch (from a Jira issue, a conventional name+type, or a literal), creates the Herdr worktree, bootstraps dependencies from the detected lockfile, copies missing .env* files from the main checkout. List shows a worktree/agent dashboard. Bind re-attaches an existing worktree to the active flow (resume path) so the review tool diffs it; remove guards against dirty worktrees.',
     promptSnippet:
       'Create/list/remove git worktrees as Herdr workspaces for parallel work',
     promptGuidelines: [
       'Use worktree when implementing multiple features of the same repo in parallel — create a worktree before spawning a subagent with cwd set to the new worktree path.',
       'Use worktree list as a dashboard of worktrees and their running pi agent states.',
       'Create supports exactly one of jira_id, name (+type), or branch.',
+      'Use bind when resuming a flow with an existing worktree (from the ticket worktree: note) — create binds automatically, resume must bind explicitly.',
     ],
     parameters: Type.Object({
       action: Type.Union(
-        [Type.Literal('create'), Type.Literal('list'), Type.Literal('remove')],
+        [
+          Type.Literal('create'),
+          Type.Literal('list'),
+          Type.Literal('bind'),
+          Type.Literal('remove'),
+        ],
         { description: 'Action to perform' },
       ),
       jira_id: Type.Optional(
@@ -492,6 +526,11 @@ export default function (pi: ExtensionAPI) {
           description: 'remove: worktree path to remove (required for remove)',
         }),
       ),
+      path: Type.Optional(
+        Type.String({
+          description: 'bind: worktree path to bind to the active flow',
+        }),
+      ),
       force: Type.Optional(
         Type.Boolean({
           description: 'remove: skip dirty guard / unmerged-branch guard',
@@ -506,13 +545,14 @@ export default function (pi: ExtensionAPI) {
     async execute(
       _toolCallId: string,
       params: {
-        action: 'create' | 'list' | 'remove'
+        action: 'create' | 'list' | 'bind' | 'remove'
         jira_id?: string
         name?: string
         type?: 'feat' | 'fix' | 'chore' | 'docs' | 'refactor'
         branch?: string
         label?: string
         cwd?: string
+        path?: string
         force?: boolean
         delete_branch?: boolean
       },
@@ -527,6 +567,9 @@ export default function (pi: ExtensionAPI) {
       }
       if (params.action === 'list') {
         return listFlow(pi, cwd)
+      }
+      if (params.action === 'bind') {
+        return bindFlow(params)
       }
       return removeFlow(pi, cwd, params)
     },

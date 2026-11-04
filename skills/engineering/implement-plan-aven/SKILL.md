@@ -202,7 +202,13 @@ All `worktree`-tool requirements apply (inside Herdr, `herdr` on PATH):
    ```
 
    A worktree whose branch matches this feature (slug or Jira ID) → reuse it
-   as `WORKTREE_PATH` and skip creation.
+   as `WORKTREE_PATH` and skip creation. Then re-bind it to the active flow
+   (create binds automatically; resume must bind explicitly, otherwise the
+   review tool diffs the session checkout and the empty-range guard refuses):
+
+   ```bash
+   worktree({ action: 'bind', path: '<WORKTREE_PATH>', branch: '<branch>' })
+   ```
 
 2. Create it (one feature = one worktree):
 

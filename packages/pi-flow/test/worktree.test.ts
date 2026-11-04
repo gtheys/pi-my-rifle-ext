@@ -672,3 +672,104 @@ test('parseCreateResult: non-JSON returns empty fields, never throws', () => {
     workspaceId: '',
   })
 })
+
+// --- worktree tool: bind action (PMR-8JVY) ---
+
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { getFlowWorktree, setActiveFlowRef } from '../flow/worktree-context.ts'
+import worktreeExtension from '../worktree/index.ts'
+
+type BindExecute = (
+  toolCallId: string,
+  params: { action: string; path?: string; branch?: string },
+  signal: AbortSignal,
+  onUpdate: unknown,
+  ctx: Record<string, unknown>,
+) => Promise<{ content: { type: string; text: string }[] }>
+
+function makeWorktreeTool(): BindExecute {
+  const tools: { name: string; execute: BindExecute }[] = []
+  const mockPi = {
+    registerTool: (options: unknown) => {
+      tools.push(options as { name: string; execute: BindExecute })
+    },
+  } as unknown as ExtensionAPI
+  worktreeExtension(mockPi)
+  const tool = tools.find((t) => t.name === 'worktree')
+  assert.ok(tool, 'worktree tool registered')
+  return tool.execute
+}
+
+const bindCtx = {
+  cwd: '/tmp/main-checkout',
+  hasUI: false,
+  mode: 'tui',
+}
+
+test('worktree bind: requires path and branch', async () => {
+  const execute = makeWorktreeTool()
+  const result = await execute(
+    'call-1',
+    { action: 'bind' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /requires 'path' and 'branch'/)
+})
+
+test('worktree bind: rejects a nonexistent path', async () => {
+  const execute = makeWorktreeTool()
+  setActiveFlowRef('PMR-TEST')
+  const result = await execute(
+    'call-2',
+    {
+      action: 'bind',
+      path: '/tmp/definitely-not-here-pmr-8jvy',
+      branch: 'fix/x',
+    },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /No directory at/)
+  setActiveFlowRef(null)
+})
+
+test('worktree bind: refuses without an active flow ref', async () => {
+  const execute = makeWorktreeTool()
+  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  setActiveFlowRef(null)
+  const result = await execute(
+    'call-3',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /No active flow ref/)
+  assert.equal(getFlowWorktree(), null, 'no binding without an active ref')
+})
+
+test('worktree bind: binds the worktree to the active flow ref', async () => {
+  const execute = makeWorktreeTool()
+  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  setActiveFlowRef('PMR-TEST')
+  const result = await execute(
+    'call-4',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /Bound worktree/)
+  assert.deepEqual(getFlowWorktree(), {
+    ref: 'PMR-TEST',
+    path: dir,
+    branch: 'fix/x',
+  })
+  setActiveFlowRef(null)
+})
