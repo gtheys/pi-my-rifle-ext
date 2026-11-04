@@ -57,15 +57,93 @@ ${REVIEW_CONTRACT_PROMPT}
    not land.`
 }
 
+// AIDEV-NOTE: Deviation gate section (PMR-BAGD) — appended to BOTH validate
+// prompts, AFTER the review gate section. Ordering contract: it runs once the
+// review gate returned blockers_count: 0, and BEFORE the flow_phase_complete
+// (phase="validate") / flow_land calls that review-gate step 9 describes —
+// the prose below restates that ordering explicitly since the review section
+// already names those tools. Spec-source resolution is mode-keyed:
+//   - work: spec file via resolve_spec_path + Jira text via acli
+//   - personal planned: plan.md read from plan-path metadata (aven show --full
+//     heredoc parsing per spec-review/aven-spec.ts — NEVER `aven show --json`,
+//     metadata is omitted on aven 0.1.39)
+//   - personal oneshot (oneshot=true): the ticket description itself
+// Artifact parsing and routing delegate to the contracts the agent runs in
+// code: review/deviation.ts (startDeviationReview) and
+// validate/deviation-gate.ts (parseDeviationArtifact, decideDeviationRoute).
+// Fail-closed everywhere: a missing/malformed spec source or artifact stops
+// the flow — never a silent pass.
+export function buildDeviationGateSection(
+  mode: 'work' | 'personal',
+  ref: string,
+  oneshot = false,
+): string {
+  let specSource: string
+  if (mode === 'work') {
+    specSource = `Resolve the spec file path via the resolve_spec_path tool
+   (repo from the git remote, slug from the Jira summary) and read that spec
+   file. Also fetch the Jira ticket text via acli.`
+  } else if (oneshot) {
+    specSource = `This is a personal-mode oneshot with no plan: the spec is the
+   ticket description itself, read from \`aven show ${ref} --full\`.`
+  } else {
+    specSource = `Read the plan: run \`aven show ${ref} --full\` and trust ONLY
+   the \`metadata field_id=... key=plan-path\` / value<<EOF heredoc blocks
+   (same parsing as spec-review/aven-spec.ts). NEVER use \`aven show --json\`
+   for metadata — aven 0.1.39 omits it. Read plan.md from the resolved
+   plan-path. If the plan-path metadata is missing or the plan file is
+   unreadable: STOP and report to the human — never invent a spec, never
+   proceed without one.`
+  }
+  return `
+Deviation gate — run ONLY after the review gate returned blockers_count: 0,
+and BEFORE the flow_phase_complete(phase="validate") / flow_land calls named
+in review-gate step 9. Steps, in order:
+
+D1. Resolve the spec source. ${specSource}
+D2. Mine the why-inputs: commit messages via git log against the flow's base
+   (the commit flow started from), and recent aven notes on ${ref} via the
+   existing aven client (interview note, worktree note, oneshot outcome,
+   escalation notes).
+D3. Run the deviation reviewer: call startDeviationReview from
+   review/deviation.ts with a prompt composed by buildDeviationReviewPrompt
+   (mode="${mode}", the resolved spec text, the git diff vs base, the mined
+   commit messages and aven notes) and await its artifact.
+D4. Parse the artifact STRICTLY with parseDeviationArtifact from
+   validate/deviation-gate.ts. NEVER treat a missing or malformed
+   deviation artifact as 0 — a malformed artifact means re-run the
+   deviation reviewer (step D3), never silent landing.
+D5. Route with decideDeviationRoute:
+   - 0 deviations: record an aven note on ${ref} reading
+     "no deviation from spec", then continue to flow_phase_complete with
+     ref=${ref} and phase="validate", then flow_land (review-gate step 9).
+   - more than 0: present the full deviation report to the human via
+     ask_user_question with exactly two options: "accept" and "fix". WAIT
+     for the answer. Record the human decision as an aven note on ${ref}
+     either way. On "accept": proceed to flow_phase_complete with ref=${ref}
+     and phase="validate", then flow_land. On "fix": record the deviation
+     report as an aven note on ${ref}, route back to /implement ${ref} with
+     the deviation report, and STOP — do not land.`
+}
+
 export interface ValidatePromptInput {
   mode: 'work' | 'personal'
   ref: string
   scriptsDir: string | null
+  // AIDEV-NOTE: personal mode only — a oneshot ticket has no plan.md, so the
+  // deviation gate resolves the spec from the ticket description instead.
+  oneshot?: boolean
 }
 
 export function buildValidatePrompt(input: ValidatePromptInput): string {
   const header = `Validate phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
   if (input.mode === 'personal') {
+    let isOneshot: boolean
+    if (input.oneshot === true) {
+      isOneshot = true
+    } else {
+      isOneshot = false
+    }
     return `${header}
 Personal-mode validation: there is no cluster — the human is the test
 environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli).
@@ -92,7 +170,8 @@ environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli
 5. On "fail": ask the human for a short failure description, record it as an
    aven note on ${input.ref}, and route back to /implement ${input.ref} — the
    retry budget resets for the new attempt.
-${buildReviewGateSection('personal', input.ref)}`
+${buildReviewGateSection('personal', input.ref)}
+${buildDeviationGateSection('personal', input.ref, isOneshot)}`
   }
   const scripts = input.scriptsDir
   return `${header}
@@ -122,5 +201,6 @@ landed. Track progress against the ordered gate steps
 On ANY step failure: STOP. Write the failing step's name and its full failing
 output as an aven note on ${input.ref}, and report the failure to the human.
 Never continue past a failed step, never mark the phase validated.
-${buildReviewGateSection('work', input.ref)}`
+${buildReviewGateSection('work', input.ref)}
+${buildDeviationGateSection('work', input.ref, false)}`
 }
