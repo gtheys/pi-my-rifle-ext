@@ -87,6 +87,21 @@ export function skipOcrScout(
   return activeFlowRef !== null && mode === 'personal'
 }
 
+// AIDEV-NOTE: PMR-P1ZA — single precondition for every review spawn path
+// (command and tool). launchSubagent needs the session to run INSIDE herdr
+// (HERDR_WORKSPACE_ID / HERDR_PANE_ID), not just a reachable herdr binary;
+// gating on isMuxAvailable() alone let PR targets do checkout/worktree work
+// that the spawn then could not complete.
+export function canSpawnReviewSubagent(
+  env: NodeJS.ProcessEnv = process.env,
+  muxAvailable: () => boolean = isMuxAvailable,
+): boolean {
+  const ws = env.HERDR_WORKSPACE_ID?.trim()
+  const pane = env.HERDR_PANE_ID?.trim()
+  const insideHerdr = Boolean(ws) || Boolean(pane?.includes(':'))
+  return insideHerdr && muxAvailable()
+}
+
 const REVIEW_STATE_TYPE = 'review-session'
 
 type ReviewSessionState = {
@@ -1685,11 +1700,11 @@ ${result.summary}`
     ocrStarted: boolean
   }> {
     // AIDEV-NOTE: no-mux gate — main's executeReview only entered the spawn
-    // path behind isMuxAvailable(). launchSubagent writes a durable 'starting'
+    // path behind canSpawnReviewSubagent(). launchSubagent writes a durable 'starting'
     // assignment record BEFORE it throws outside herdr, and its throw path
     // does not clean that record — so calling it without a mux leaks durable
     // state per invocation. Fail soft to the legacy in-session path instead.
-    if (!isMuxAvailable()) {
+    if (!canSpawnReviewSubagent()) {
       return { status: 'failed', ocrStarted: false }
     }
     const prWorktree =
@@ -1998,7 +2013,7 @@ ${result.summary}`
     }
 
     let worktree: PrWorktreeInfo | undefined
-    if (isMuxAvailable()) {
+    if (canSpawnReviewSubagent()) {
       ctx.ui.notify(`Preparing review worktree for PR #${prNumber}...`, 'info')
       worktree = (await preparePrWorktree(pi, ctx, prNumber)) ?? undefined
     }
@@ -2105,7 +2120,7 @@ ${result.summary}`
 
         // With a mux available, /review always spawns a subagent — no mode
         // question needed. The selector below is the legacy no-mux flow only.
-        if (messageCount > 0 && !isMuxAvailable()) {
+        if (messageCount > 0 && !canSpawnReviewSubagent()) {
           const choice = await ctx.ui.select('Start review in:', [
             'Empty branch',
             'Current session',
@@ -2219,7 +2234,7 @@ ${result.summary}`
         }
       }
 
-      if (!isMuxAvailable()) {
+      if (!canSpawnReviewSubagent()) {
         return {
           content: [
             {

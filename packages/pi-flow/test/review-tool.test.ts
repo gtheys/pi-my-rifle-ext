@@ -7,6 +7,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { isMuxAvailable } from '@gtheys/pi-interactive-subagents'
 import reviewExtension, {
   buildFullReviewPrompt,
+  canSpawnReviewSubagent,
   skipOcrScout,
 } from '../review/review.ts'
 
@@ -138,4 +139,18 @@ test('skipOcrScout: personal flow skips ocr, work flow and no flow keep it', () 
   assert.equal(skipOcrScout('PMR-ABC1', 'work'), false)
   assert.equal(skipOcrScout(null, 'personal'), false)
   assert.equal(skipOcrScout(null, 'work'), false)
+})
+
+test('canSpawnReviewSubagent: requires running inside herdr AND a reachable mux', () => {
+  const up = () => true
+  const down = () => false
+  assert.equal(canSpawnReviewSubagent({}, up), false)
+  assert.equal(
+    canSpawnReviewSubagent({ HERDR_WORKSPACE_ID: 'w1' }, down),
+    false,
+  )
+  assert.equal(canSpawnReviewSubagent({ HERDR_WORKSPACE_ID: 'w1' }, up), true)
+  assert.equal(canSpawnReviewSubagent({ HERDR_PANE_ID: 'w1:p2' }, up), true)
+  assert.equal(canSpawnReviewSubagent({ HERDR_PANE_ID: 'nocolon' }, up), false)
+  assert.equal(canSpawnReviewSubagent({ HERDR_WORKSPACE_ID: '  ' }, up), false)
 })
