@@ -8,15 +8,16 @@ import {
   buildCodeReviewGatePrompt,
   latestWorktreeNote,
   matchHerdrWorktree,
-  matchHerdrWorktreeBySlug,
   openTuicrReview,
   parseAskAnswer,
+  parseAvenTitle,
   parseWorktreeNotes,
   pickLatestSessionSlug,
   type ReviewDeps,
   resolveReviewWorktree,
   routeReviewFail,
   routeReviewPass,
+  titleBranch,
 } from '../tools/code-review-parse.ts'
 import type { HerdrWorktree } from '../worktree/herdr.ts'
 
@@ -90,13 +91,33 @@ test('matchHerdrWorktree: no match returns null', () => {
   assert.equal(matchHerdrWorktree([wt('main', '/repo')], 'feat/x'), null)
 })
 
-test('matchHerdrWorktreeBySlug: ref slug contained in branch', () => {
-  const list = [wt('main', '/repo'), wt('feature/PMR-ABC1-fix-thing', '/wt2')]
-  assert.equal(matchHerdrWorktreeBySlug(list, 'pmr-abc1')?.path, '/wt2')
+test('parseAvenTitle: reads title from the aven metadata line', () => {
+  const stdout =
+    'PMR-ABC1 status=todo priority=high labels=active epic=yes title="feat(pi-flow): alpha gate"\nid=ABC1\n'
+  assert.equal(parseAvenTitle(stdout), 'feat(pi-flow): alpha gate')
 })
 
-test('matchHerdrWorktreeBySlug: no slug hit returns null', () => {
-  assert.equal(matchHerdrWorktreeBySlug([wt('main', '/repo')], 'zzz'), null)
+test('parseAvenTitle: null when no title or empty title', () => {
+  assert.equal(parseAvenTitle('no metadata here'), null)
+  assert.equal(parseAvenTitle('PMR-ABC1 status=todo title=""'), null)
+})
+
+test('titleBranch: conventional prefix maps to branch type + slug', () => {
+  assert.equal(
+    titleBranch('feat(pi-flow): human code-review gate'),
+    'feat/human-code-review-gate',
+  )
+  assert.equal(
+    titleBranch('fix: off-by-one in parser'),
+    'fix/off-by-one-in-parser',
+  )
+})
+
+test('titleBranch: no recognizable prefix falls back to feat', () => {
+  assert.equal(
+    titleBranch('Human code review gate'),
+    'feat/human-code-review-gate',
+  )
 })
 
 // --- resolver: sources + verification (stale fallthrough, loud failure) ---
@@ -154,29 +175,44 @@ test('resolveReviewWorktree: binding for another ref is ignored', async () => {
   )
 })
 
-test('resolveReviewWorktree: stale note path falls through to herdr list', async () => {
+const TITLE_LINE =
+  'PMR-ABC1 status=todo priority=high labels=active epic=yes title="feat(pi-flow): alpha gate"\n'
+
+test('resolveReviewWorktree: title-derived exact branch match resolves', async () => {
+  const deps = baseDeps()
+  deps.avenShowFull = async () =>
+    TITLE_LINE + NOTE_FIXTURE.replace('/repo/.worktrees/feat-b', '/gone/stale')
+  deps.exists = (p: string) => p !== '/gone/stale'
+  deps.herdrWorktreeList = async () => [
+    wt('main', '/repo'),
+    wt('feat/alpha-gate', '/repo/.wt/a'),
+  ]
+  deps.exec = async (_cmd, args) => {
+    if (args.includes('--abbrev-ref')) {
+      return { code: 0, stdout: 'feat/alpha-gate\n', stderr: '' }
+    }
+    return { code: 0, stdout: '/repo\n', stderr: '' }
+  }
+  const result = await resolveReviewWorktree('PMR-ABC1', deps)
+  // AIDEV-NOTE: the stale notes fail verification, so the herdr source
+  // (exact match on the title-derived branch) provides the verified worktree.
+  assert.deepEqual(result, {
+    path: '/repo/.wt/a',
+    branch: 'feat/alpha-gate',
+    source: 'herdr',
+  })
+})
+
+test('resolveReviewWorktree: unparseable title skips herdr title match', async () => {
   const deps = baseDeps()
   deps.avenShowFull = async () =>
     NOTE_FIXTURE.replace('/repo/.worktrees/feat-b', '/gone/stale')
   deps.exists = (p: string) => p !== '/gone/stale'
-  deps.herdrWorktreeList = async () => [
-    wt('main', '/repo'),
-    wt('feat/alpha', '/repo/.wt/a'),
-  ]
-  deps.exec = async (_cmd, args) => {
-    if (args.includes('--abbrev-ref')) {
-      return { code: 0, stdout: 'feat/alpha\n', stderr: '' }
-    }
-    return { code: 0, stdout: '/repo\n', stderr: '' }
-  }
-  const result = await resolveReviewWorktree('feat-alpha', deps)
-  // AIDEV-NOTE: the stale note had no branch, so verification drops it and the
-  // herdr source (matched via slug) provides the verified worktree.
-  assert.deepEqual(result, {
-    path: '/repo/.wt/a',
-    branch: 'feat/alpha',
-    source: 'herdr',
-  })
+  deps.herdrWorktreeList = async () => [wt('feat/alpha', '/repo/.wt/a')]
+  await assert.rejects(
+    () => resolveReviewWorktree('PMR-ABC1', deps),
+    /no title parsed/,
+  )
 })
 
 test('resolveReviewWorktree: note hit with branch mismatch falls through', async () => {

@@ -4,6 +4,7 @@
 // routing, and the /code-review gate prompt. All exec goes through the
 // injected ReviewDeps — tools/code-review.ts owns registration + wiring.
 
+import { type PersonalType, personalBranch } from '../worktree/branch.ts'
 import type { HerdrWorktree } from '../worktree/herdr.ts'
 import { extractResult, pickString } from '../worktree/herdr.ts'
 
@@ -57,21 +58,40 @@ export function matchHerdrWorktree(
   return worktrees.find((w) => w.isLinked && w.branch === branch) ?? null
 }
 
-/** Loose fallback: any linked worktree whose branch contains the ref slug
- * (separators — `/`, `-`, `_` — normalized away on both sides). */
-export function matchHerdrWorktreeBySlug(
-  worktrees: HerdrWorktree[],
-  slug: string,
-): HerdrWorktree | null {
-  const needle = slug.toLowerCase().replace(/[^a-z0-9]/g, '')
-  if (needle === '') return null
-  return (
-    worktrees.find((w) => {
-      if (!w.isLinked) return false
-      const hay = w.branch.toLowerCase().replace(/[^a-z0-9]/g, '')
-      return hay.includes(needle)
-    }) ?? null
-  )
+// AIDEV-NOTE: PMR-3ZY1 — mirrors worktree/branch.ts's PersonalType union;
+// keep in sync when branch.ts changes.
+const PERSONAL_BRANCH_TYPES: readonly PersonalType[] = [
+  'feat',
+  'fix',
+  'chore',
+  'docs',
+  'refactor',
+]
+
+/** Parse `title="..."` from the aven show --full metadata line. */
+export function parseAvenTitle(stdout: string): string | null {
+  const match = /^[^\n]*\btitle="([^"]*)"/.exec(stdout)
+  const title = match === null ? null : (match[1] ?? null)
+  if (title === null || title.trim() === '') return null
+  return title
+}
+
+/** Expected personal branch for a ticket title: `feat(pi-flow): subject`
+ * -> `feat/<slug of subject>` via worktree/branch.ts personalBranch.
+ * A recognizable conventional-commit type prefix sets the branch type;
+ * anything else falls back to 'feat'. */
+export function titleBranch(title: string): string {
+  let type: PersonalType = 'feat'
+  let name = title
+  const match = /^([a-z]+)(?:\([^)]*\))?:\s+(.+)$/.exec(title)
+  if (
+    match !== null &&
+    PERSONAL_BRANCH_TYPES.includes((match[1] ?? '') as PersonalType)
+  ) {
+    type = match[1] as PersonalType
+    name = match[2] ?? title
+  }
+  return personalBranch(name, type)
 }
 
 /** Parse the ask_user_question answer text into pass/fail (null = unclear). */
@@ -274,10 +294,17 @@ export async function resolveReviewWorktree(
       `herdr list failed: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
-  const slug = ref.toLowerCase().replace(/[^a-z0-9-]/g, '')
-  const hit =
-    matchHerdrWorktree(worktrees, ref) ??
-    matchHerdrWorktreeBySlug(worktrees, slug)
+  const title = parseAvenTitle(noteStdout)
+  let expected: string | null = null
+  if (title === null) {
+    failures.push('herdr: no title parsed from aven show output')
+  } else {
+    expected = titleBranch(title)
+  }
+  let hit: HerdrWorktree | null = matchHerdrWorktree(worktrees, ref)
+  if (hit === null && expected !== null) {
+    hit = matchHerdrWorktree(worktrees, expected)
+  }
   if (hit !== null) {
     const verified = await verifyCandidate(hit, deps)
     if (verified.ok) {
