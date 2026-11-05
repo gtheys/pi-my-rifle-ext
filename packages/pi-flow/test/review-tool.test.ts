@@ -4,10 +4,11 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { isMuxAvailable } from '@gtheys/pi-interactive-subagents'
 import reviewExtension, {
   buildFullReviewPrompt,
   canSpawnReviewSubagent,
+  releasePrJob,
+  reservePrJobs,
   skipOcrScout,
 } from '../review/review.ts'
 
@@ -15,19 +16,17 @@ type CapturedCommand = { name: string; options: unknown }
 
 type CapturedTool = {
   name: string
-  options: {
-    execute: (
-      toolCallId: string,
-      params: { target: { type: string; [k: string]: unknown } },
-      signal: AbortSignal,
-      onUpdate: unknown,
-      ctx: Record<string, unknown>,
-    ) => Promise<{
-      content: { type: string; text: string }[]
-      isError?: boolean
-      details?: unknown
-    }>
-  }
+  execute: (
+    toolCallId: string,
+    params: { target: { type: string; [k: string]: unknown } },
+    signal: AbortSignal,
+    onUpdate: unknown,
+    ctx: Record<string, unknown>,
+  ) => Promise<{
+    content: { type: string; text: string }[]
+    isError?: boolean
+    details?: unknown
+  }>
 }
 
 function makeMockPi() {
@@ -71,12 +70,20 @@ test('registers the review tool and the human commands', () => {
   )
 })
 
-test('tool execute returns a clean error without a mux', async () => {
-  if (isMuxAvailable()) {
-    // A herdr mux is running in this environment — the no-mux path is not
-    // reachable headless. Skip rather than spawn real subagents from a test.
-    return
+test('tool execute returns a clean error without a mux', async (t) => {
+  // AIDEV-NOTE: PMR-2DS4 — canSpawnReviewSubagent requires HERDR_* env, so
+  // clearing it forces the no-mux path even when a real herdr is running
+  // (the normal dev environment) — no skip, no real subagents.
+  const saved = {
+    ws: process.env.HERDR_WORKSPACE_ID,
+    pane: process.env.HERDR_PANE_ID,
   }
+  delete process.env.HERDR_WORKSPACE_ID
+  delete process.env.HERDR_PANE_ID
+  t.after(() => {
+    if (saved.ws !== undefined) process.env.HERDR_WORKSPACE_ID = saved.ws
+    if (saved.pane !== undefined) process.env.HERDR_PANE_ID = saved.pane
+  })
   const { tools, mockPi } = makeMockPi()
   reviewExtension(mockPi)
 
@@ -84,7 +91,7 @@ test('tool execute returns a clean error without a mux', async () => {
   assert.ok(tool, 'review tool registered')
 
   const notifications: string[] = []
-  const result = await tool.options.execute(
+  const result = await tool.execute(
     'call-1',
     { target: { type: 'uncommitted' } },
     new AbortController().signal,
@@ -154,3 +161,34 @@ test('canSpawnReviewSubagent: requires running inside herdr AND a reachable mux'
   assert.equal(canSpawnReviewSubagent({ HERDR_PANE_ID: 'nocolon' }, up), false)
   assert.equal(canSpawnReviewSubagent({ HERDR_WORKSPACE_ID: '  ' }, up), false)
 })
+
+// Mirrors spawnReviewJobs: reserve 2, reviewer aborted -> release now,
+// reviewer spawned -> release on completion; ocr not spawned -> release now,
+// ocr spawned -> release on completion. Worktree removal fires on the last.
+for (const reviewer of ['spawned', 'aborted'] as const) {
+  for (const ocr of [true, false]) {
+    for (const reviewerFinishesFirst of [true, false]) {
+      test(`PR job refcount: reviewer ${reviewer}, ocr ${ocr}, reviewerFirst ${reviewerFinishesFirst}`, () => {
+        const info = { pending: 0 }
+        reservePrJobs(info)
+        assert.equal(info.pending, 2)
+        let removals = 0
+        const release = () => {
+          if (releasePrJob(info)) removals += 1
+        }
+        const later: Array<() => void> = []
+        if (reviewer === 'aborted') release()
+        else later.push(release)
+        if (ocr) later.push(release)
+        else release()
+        if (!reviewerFinishesFirst) later.reverse()
+        for (const job of later) {
+          assert.equal(removals, 0, 'no removal while a job is outstanding')
+          job()
+        }
+        assert.equal(removals, 1, 'worktree removed exactly once')
+        assert.equal(info.pending, 0)
+      })
+    }
+  }
+}

@@ -190,6 +190,19 @@ export interface PrWorktreeInfo {
 
 const prWorktrees = new Map<number, PrWorktreeInfo>()
 
+// AIDEV-NOTE: PMR-2DS4 — pure refcount helpers so the reserve/release
+// matrix (reviewer spawned|aborted x ocr on|off) is testable without a mux.
+/** Reserve both jobs (reviewer + ocr scout) before either spawns. */
+export function reservePrJobs(info: Pick<PrWorktreeInfo, 'pending'>): void {
+  info.pending = 2
+}
+
+/** Release one job; returns true when this was the last one (remove worktree). */
+export function releasePrJob(info: Pick<PrWorktreeInfo, 'pending'>): boolean {
+  info.pending -= 1
+  return info.pending <= 0
+}
+
 /**
  * Compose the full review prompt: rubric + target-specific prompt + sem
  * guidance + project REVIEW_GUIDELINES.md. Shared by the /review command and
@@ -1510,8 +1523,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
   function prWorktreeJobDone(ctx: ExtensionContext, prNumber: number): void {
     const info = prWorktrees.get(prNumber)
     if (!info) return
-    info.pending -= 1
-    if (info.pending <= 0) {
+    if (releasePrJob(info)) {
       void removePrWorktree(pi, ctx, prNumber, info)
     }
   }
@@ -1719,7 +1731,7 @@ ${result.summary}`
     }
     // Reserve both worktree jobs up front (reviewer + ocr scout) so a
     // fast-finishing reviewer can't tear the worktree out from under ocr.
-    if (prWorktree) prWorktree.info.pending = 2
+    if (prWorktree) reservePrJobs(prWorktree.info)
 
     const status = await startSubagentReview(
       ctx,
