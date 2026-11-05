@@ -7,7 +7,7 @@
 import { resolve } from 'node:path'
 import { type PersonalType, personalBranch } from '../worktree/branch.ts'
 import type { HerdrWorktree } from '../worktree/herdr.ts'
-import { extractResult, pickString } from '../worktree/herdr.ts'
+import { extractResult, parseJson, pickString } from '../worktree/herdr.ts'
 
 // AIDEV-NOTE: PMR-T8ZG — pure seams of the code_review tool (PMR-3ZY1):
 // aven worktree-note parser, herdr list matchers, ask-answer parsing, tuicr
@@ -104,18 +104,32 @@ export function parseAskAnswer(answerText: string): 'pass' | 'fail' | null {
 }
 
 /**
- * Latest tuicr session slug from `tuicr review list` output. Last matching
- * line wins (tuicr lists oldest-first).
+ * Latest tuicr session slug from `tuicr review list` output.
+ * AIDEV-NOTE: PMR-G68P — tuicr v0.27.0 prints a JSON array of
+ * {slug, updated_at, ...} (verified against the installed binary), NOT
+ * `session: <slug>` lines — the previous regex never matched real output,
+ * so the fail path always fell to the free-text fallback. Array order is
+ * not a freshness guarantee, so the slug with the max updated_at wins.
  */
 export function pickLatestSessionSlug(listStdout: string): string | null {
-  const re = /^session[:= ]+ ?([A-Za-z0-9._/-]+)/gm
-  let slug: string | null = null
-  let match = re.exec(listStdout)
-  while (match !== null) {
-    slug = match[1] ?? null
-    match = re.exec(listStdout)
+  const parsed: unknown = parseJson(listStdout)
+  if (!Array.isArray(parsed)) return null
+  let bestSlug: string | null = null
+  let bestUpdatedAt = ''
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const record = entry as Record<string, unknown>
+    const slug = record.slug
+    if (typeof slug !== 'string' || slug === '') continue
+    const updatedAt = record.updated_at
+    let stamp = ''
+    if (typeof updatedAt === 'string') stamp = updatedAt
+    if (bestSlug === null || stamp > bestUpdatedAt) {
+      bestSlug = slug
+      bestUpdatedAt = stamp
+    }
   }
-  return slug
+  return bestSlug
 }
 
 export interface ReviewRouting {

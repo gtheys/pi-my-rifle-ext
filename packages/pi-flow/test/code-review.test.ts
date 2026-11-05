@@ -362,18 +362,21 @@ test('parseAskAnswer: selected labels map to pass/fail', () => {
 })
 
 // --- tuicr session slug ---
+// AIDEV-NOTE: PMR-G68P — real tuicr v0.27.0 `review list` output is a JSON
+// array; freshness is decided by updated_at, not array order.
 
-test('pickLatestSessionSlug: last session line wins', () => {
-  const out = [
-    'session: rev-2026-11-04-a  target: main..HEAD',
-    'session: rev-2026-11-05-b  target: main..HEAD',
-    '',
-  ].join('\n')
-  assert.equal(pickLatestSessionSlug(out), 'rev-2026-11-05-b')
+test('pickLatestSessionSlug: max updated_at wins regardless of array order', () => {
+  const out = JSON.stringify([
+    { slug: 'rev-newer', updated_at: '2026-11-05T10:00:00+00:00' },
+    { slug: 'rev-older', updated_at: '2026-11-04T09:00:00+00:00' },
+  ])
+  assert.equal(pickLatestSessionSlug(out), 'rev-newer')
 })
 
-test('pickLatestSessionSlug: null when no sessions', () => {
+test('pickLatestSessionSlug: null on non-JSON or session-less output', () => {
   assert.equal(pickLatestSessionSlug('no sessions'), null)
+  assert.equal(pickLatestSessionSlug('[]'), null)
+  assert.equal(pickLatestSessionSlug(JSON.stringify([{ slug: '' }])), null)
 })
 
 // --- gate prompt ---
@@ -390,44 +393,71 @@ const AVEN_FAKE_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-cr-bin-'))
 writeFileSync(path.join(AVEN_FAKE_DIR, 'aven'), '#!/bin/sh\nexit 0\n')
 chmodSync(path.join(AVEN_FAKE_DIR, 'aven'), 0o755)
 
+type ToolCtx = {
+  cwd: string
+  tools: Array<{ name: string }>
+  ui: { notify: (m: string, l: string) => void }
+  executeTool: (
+    name: string,
+    args: unknown,
+  ) => Promise<{ result: { content: Array<{ type: string; text: string }> } }>
+}
+
 type CodeReviewExecute = (
   toolCallId: string,
   params: { ref: string; outcome?: 'pass' },
   signal: AbortSignal,
   onUpdate: unknown,
-  ctx: {
-    cwd: string
-    tools: Array<{ name: string }>
-    ui: { notify: (m: string, l: string) => void }
-  },
+  ctx: ToolCtx,
 ) => Promise<{
   isError?: boolean
   content: Array<{ type: string; text: string }>
 }>
 
-function codeReviewExecute(): CodeReviewExecute {
+type MockExec = (
+  cmd: string,
+  args: string[],
+  opts?: { cwd?: string },
+) => Promise<{ code: number; stdout: string; stderr: string }>
+
+function codeReviewExecute(exec?: MockExec): {
+  execute: CodeReviewExecute
+  landingState: { authorized: string | null; humanReviewPassed: string | null }
+} {
   let execute: CodeReviewExecute | undefined
   const mockPi = {
     registerTool: (options: { execute: CodeReviewExecute }) => {
       execute = options.execute
     },
+    exec: exec ?? (async () => ({ code: 0, stdout: '', stderr: '' })),
   }
+  const landingState = { authorized: null, humanReviewPassed: null }
   registerCodeReviewTool(
     mockPi as unknown as Parameters<typeof registerCodeReviewTool>[0],
-    { authorized: null, humanReviewPassed: null },
+    landingState,
   )
   if (!execute) throw new Error('code_review tool not registered')
-  return execute
+  return { execute, landingState }
 }
 
 function ctxWith(
   tools: Array<{ name: string }>,
-): Parameters<CodeReviewExecute>[4] {
+  executeTool?: ToolCtx['executeTool'],
+): ToolCtx {
   return {
     cwd: '/repo',
     tools,
     ui: { notify: () => {} },
+    executeTool:
+      executeTool ??
+      (async () => ({ result: { content: [{ type: 'text', text: '' }] } })),
   }
+}
+
+function askAnswer(text: string): {
+  result: { content: Array<{ type: string; text: string }> }
+} {
+  return { result: { content: [{ type: 'text', text }] } }
 }
 
 async function withFakeAvenPath(fn: () => Promise<void>): Promise<void> {
@@ -441,7 +471,7 @@ async function withFakeAvenPath(fn: () => Promise<void>): Promise<void> {
 }
 
 test('execute: outcome="pass" refused when ask_user_question is available', async () => {
-  const execute = codeReviewExecute()
+  const { execute } = codeReviewExecute()
   const result = await execute(
     't1',
     { ref: 'PMR-ABC1', outcome: 'pass' },
@@ -455,7 +485,7 @@ test('execute: outcome="pass" refused when ask_user_question is available', asyn
 
 test('execute: outcome="pass" records marker when ask_user_question is absent', async () => {
   await withFakeAvenPath(async () => {
-    const execute = codeReviewExecute()
+    const { execute, landingState } = codeReviewExecute()
     const result = await execute(
       't2',
       { ref: 'PMR-ABC1', outcome: 'pass' },
@@ -464,6 +494,195 @@ test('execute: outcome="pass" records marker when ask_user_question is absent', 
       ctxWith([]),
     )
     assert.notEqual(result.isError, true)
+    assert.equal(landingState.humanReviewPassed, 'PMR-ABC1')
     assert.match(result.content.map((c) => c.text).join('\n'), /flow_land/)
   })
+})
+
+// --- registered execute: full gate paths (PMR-G68P) ---
+// AIDEV-NOTE: the worktree path must exist on disk (productionDeps.exists
+// is existsSync), so the herdr fake points at a real temp dir. Resolution
+// settles on the herdr source: aven show returns a title but no notes.
+
+const CR_WT_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-cr-wt-'))
+
+function gateExec(tuicr: { listStdout: string; commentsStdout: string }): {
+  exec: MockExec
+  calls: Array<{ cmd: string; args: string[] }>
+} {
+  const calls: Array<{ cmd: string; args: string[] }> = []
+  const exec: MockExec = async (cmd, args) => {
+    calls.push({ cmd, args })
+    if (cmd === 'aven') {
+      return {
+        code: 0,
+        stdout: 'PMR-ABC1 status=todo title="feat(pi-flow): alpha gate"\n',
+        stderr: '',
+      }
+    }
+    if (cmd === 'herdr' && args[0] === 'worktree') {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          result: {
+            worktrees: [
+              {
+                branch: 'feat/alpha-gate',
+                path: CR_WT_DIR,
+                label: 'alpha',
+                open_workspace_id: 'w1',
+                is_linked_worktree: true,
+              },
+            ],
+          },
+        }),
+        stderr: '',
+      }
+    }
+    if (cmd === 'git' && args.includes('--git-common-dir')) {
+      return { code: 0, stdout: '/repo/.git\n', stderr: '' }
+    }
+    if (cmd === 'git' && args.includes('--abbrev-ref')) {
+      return { code: 0, stdout: 'feat/alpha-gate\n', stderr: '' }
+    }
+    if (cmd === 'git' && args.includes('merge-base')) {
+      return { code: 0, stdout: 'abc123\n', stderr: '' }
+    }
+    if (cmd === 'herdr' && args[0] === 'tab') {
+      return {
+        code: 0,
+        stdout: JSON.stringify({ result: { root_pane: { pane_id: 'w1:p9' } } }),
+        stderr: '',
+      }
+    }
+    if (cmd === 'tuicr' && args[1] === 'list') {
+      return { code: 0, stdout: tuicr.listStdout, stderr: '' }
+    }
+    if (cmd === 'tuicr' && args[1] === 'comments') {
+      return { code: 0, stdout: tuicr.commentsStdout, stderr: '' }
+    }
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  return { exec, calls }
+}
+
+test('execute: pass via blocking ask records marker and note', async () => {
+  await withFakeAvenPath(async () => {
+    const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
+    const { execute, landingState } = codeReviewExecute(exec)
+    const result = await execute(
+      't3',
+      { ref: 'PMR-ABC1' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([{ name: 'ask_user_question' }], async () =>
+        askAnswer('User selected: pass (Recommended)'),
+      ),
+    )
+    assert.notEqual(result.isError, true)
+    assert.equal(landingState.humanReviewPassed, 'PMR-ABC1')
+    assert.match(result.content.map((c) => c.text).join('\n'), /human PASS/)
+  })
+})
+
+test('execute: fail with tuicr comments routes back to /implement', async () => {
+  await withFakeAvenPath(async () => {
+    const { exec } = gateExec({
+      listStdout: JSON.stringify([
+        { slug: 'rev-1', updated_at: '2026-11-05T10:00:00+00:00' },
+      ]),
+      commentsStdout: 'blocker: null deref in auth.ts',
+    })
+    const { execute, landingState } = codeReviewExecute(exec)
+    const result = await execute(
+      't4',
+      { ref: 'PMR-ABC1' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([{ name: 'ask_user_question' }], async () =>
+        askAnswer('User selected: fail'),
+      ),
+    )
+    assert.equal(result.isError, true)
+    assert.equal(landingState.humanReviewPassed, null)
+    const text = result.content.map((c) => c.text).join('\n')
+    assert.match(text, /human FAIL/)
+    assert.match(text, /\/implement PMR-ABC1/)
+  })
+})
+
+test('execute: fail with empty comments falls back to free-text findings', async () => {
+  await withFakeAvenPath(async () => {
+    const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
+    const { execute } = codeReviewExecute(exec)
+    const asked: string[] = []
+    const result = await execute(
+      't5',
+      { ref: 'PMR-ABC1' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([{ name: 'ask_user_question' }], async (_name, args) => {
+        const question = (args as { question: string }).question
+        asked.push(question)
+        if (question.includes('pass or fail'))
+          return askAnswer('User selected: fail')
+        return askAnswer('User answered: stale lock in the gate')
+      }),
+    )
+    assert.equal(result.isError, true)
+    assert.equal(asked.length, 2)
+    assert.match(asked[1] ?? '', /findings note/)
+    assert.match(
+      result.content.map((c) => c.text).join('\n'),
+      /findings recorded/,
+    )
+  })
+})
+
+test('execute: unclear ask answer does NOT point at outcome="pass"', async () => {
+  await withFakeAvenPath(async () => {
+    const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
+    const { execute } = codeReviewExecute(exec)
+    const result = await execute(
+      't6',
+      { ref: 'PMR-ABC1' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([{ name: 'ask_user_question' }], async () =>
+        askAnswer('User selected: Other'),
+      ),
+    )
+    assert.equal(result.isError, true)
+    const text = result.content.map((c) => c.text).join('\n')
+    assert.match(text, /unclear/)
+    assert.doesNotMatch(text, /outcome="pass"/)
+  })
+})
+
+test('execute: unresolved worktree is a loud refusal', async () => {
+  const exec: MockExec = async (cmd, args) => {
+    if (cmd === 'aven')
+      return { code: 0, stdout: 'PMR-ABC1 status=todo\n', stderr: '' }
+    if (cmd === 'herdr' && args[0] === 'worktree') {
+      return {
+        code: 0,
+        stdout: JSON.stringify({ result: { worktrees: [] } }),
+        stderr: '',
+      }
+    }
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  const { execute } = codeReviewExecute(exec)
+  const result = await execute(
+    't7',
+    { ref: 'PMR-ABC1' },
+    new AbortController().signal,
+    undefined,
+    ctxWith([{ name: 'ask_user_question' }]),
+  )
+  assert.equal(result.isError, true)
+  assert.match(
+    result.content.map((c) => c.text).join('\n'),
+    /no worktree found for PMR-ABC1/,
+  )
 })

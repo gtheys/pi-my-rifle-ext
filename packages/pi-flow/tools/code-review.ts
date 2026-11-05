@@ -175,7 +175,10 @@ export function registerCodeReviewTool(
       const answer = parseAskAnswer(answerText)
       if (answer === null) {
         return toolResult(
-          `code_review: the human's answer was unclear ("${answerText.slice(0, 200)}") — re-call code_review with ref="${params.ref}" and outcome="pass" if they passed, or record the fail findings manually.`,
+          // AIDEV-NOTE: PMR-G68P — do NOT point the agent at outcome="pass"
+          // here: this branch only runs when ask_user_question IS available,
+          // and outcome="pass" is refused in that case (727b939).
+          `code_review: the human's answer was unclear ("${answerText.slice(0, 200)}") — ask the human a plain pass/fail question again via ask_user_question, then re-call code_review with ref="${params.ref}" (no outcome) to record their answer through the blocking gate.`,
           { ok: false, reason: 'unclear answer' },
           { isError: true },
         )
