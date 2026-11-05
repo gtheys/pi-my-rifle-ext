@@ -4,6 +4,7 @@
 // routing, and the /code-review gate prompt. All exec goes through the
 // injected ReviewDeps — tools/code-review.ts owns registration + wiring.
 
+import { resolve } from 'node:path'
 import { type PersonalType, personalBranch } from '../worktree/branch.ts'
 import type { HerdrWorktree } from '../worktree/herdr.ts'
 import { extractResult, pickString } from '../worktree/herdr.ts'
@@ -193,15 +194,17 @@ export interface ReviewDeps {
     opts?: { cwd?: string },
   ) => Promise<ExecResult>
   exists: (path: string) => boolean
-  /** Absolute root of the session repo (ctx.cwd) — candidates must belong to it. */
+  /** Absolute root of the session repo (ctx.cwd) — candidates must share its common git dir. */
   repoRoot: string
 }
 
+// AIDEV-NOTE: PMR-9XR0 — linked worktrees have different top-level paths;
+// repository identity is the common git dir shared with the session repo.
 /**
- * Verify a candidate: path exists, `git -C <path> rev-parse --show-toplevel`
- * is the session repo, and (when the candidate carries a branch) HEAD
- * matches it. A stale note path fails verification and the resolver falls
- * through to the next source — never open tuicr on the wrong tree.
+ * Verify a candidate: path exists, its common git dir matches the session
+ * repo, and (when the candidate carries a branch) HEAD matches it. A stale
+ * note path fails verification and the resolver falls through to the next
+ * source — never open tuicr on the wrong tree.
  */
 async function verifyCandidate(
   candidate: { path: string; branch: string | null },
@@ -210,22 +213,29 @@ async function verifyCandidate(
   if (!deps.exists(candidate.path)) {
     return { ok: false, reason: `path does not exist: ${candidate.path}` }
   }
-  let topLevel = ''
+  let candidateCommonDir = ''
+  let repoCommonDir = ''
   try {
-    const result = await deps.exec(
+    const candidateResult = await deps.exec(
       'git',
-      ['-C', candidate.path, 'rev-parse', '--show-toplevel'],
+      ['-C', candidate.path, 'rev-parse', '--git-common-dir'],
       {},
     )
-    topLevel = result.stdout.trim()
+    const repoResult = await deps.exec(
+      'git',
+      ['-C', deps.repoRoot, 'rev-parse', '--git-common-dir'],
+      {},
+    )
+    candidateCommonDir = resolve(candidate.path, candidateResult.stdout.trim())
+    repoCommonDir = resolve(deps.repoRoot, repoResult.stdout.trim())
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     return { ok: false, reason: `git rev-parse failed: ${msg}` }
   }
-  if (topLevel !== deps.repoRoot) {
+  if (candidateCommonDir !== repoCommonDir) {
     return {
       ok: false,
-      reason: `${candidate.path} is a worktree of ${topLevel}, not ${deps.repoRoot}`,
+      reason: `${candidate.path} belongs to a different repository (common git dir ${candidateCommonDir}, expected ${repoCommonDir})`,
     }
   }
   if (candidate.branch === null) {
