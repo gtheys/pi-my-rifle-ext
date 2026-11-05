@@ -260,3 +260,25 @@ test('implement injection with open epic children forces the plan route', async 
   assert.match(h.sent[0], /implement-plan-aven/)
   assert.match(h.sent[0], /Route: plan/)
 })
+
+// PMR-VZEV: start resets the landing state so stale authorization (or a
+// stale human code-review pass marker) cannot leak into a later flow.
+test('start: resets the landing state (authorized + humanReviewPassed)', async () => {
+  const h = makeHarness([])
+  let resets = 0
+  h.deps.resetLandingState = () => {
+    resets += 1
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  assert.equal(resets, 1)
+  await loop.start({ ...startInput(), ref: 'TP-2' })
+  assert.equal(resets, 2)
+})
+
+test('start: works without an optional resetLandingState dep', async () => {
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  assert.equal(loop.isActive(), true)
+})

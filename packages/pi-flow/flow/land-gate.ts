@@ -56,3 +56,23 @@ export function landingBashBlock(
   if (!landing) return null
   return `landing for flow ${activeRef} is gated — call the flow_land tool (ref=${activeRef}); direct git push / gh pr create during a flow run are blocked`
 }
+
+// AIDEV-NOTE: PMR-VZEV — pure decision behind the index.ts tool_call
+// interceptor. `clear` is true only when an ALLOWED-THROUGH command was a
+// landing command while authorized === activeRef: one authorization = one
+// landing command, so the caller clears authorized + humanReviewPassed.
+export type LandingInterceptDecision =
+  | { action: 'allow'; clear: boolean }
+  | { action: 'block'; reason: string }
+
+export function landingIntercept(
+  command: string,
+  activeRef: string | null,
+  authorized: string | null,
+): LandingInterceptDecision {
+  if (activeRef === null) return { action: 'allow', clear: false }
+  const reason = landingBashBlock(command, activeRef)
+  if (reason === null) return { action: 'allow', clear: false }
+  if (authorized === activeRef) return { action: 'allow', clear: true }
+  return { action: 'block', reason }
+}

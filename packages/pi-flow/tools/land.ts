@@ -29,7 +29,13 @@ export function createLandingState(): LandingState {
   return { authorized: null, humanReviewPassed: null }
 }
 
-export function registerLandTool(pi: ExtensionAPI, state: LandingState): void {
+export function registerLandTool(
+  pi: ExtensionAPI,
+  state: LandingState,
+  // AIDEV-NOTE: PMR-VZEV — active-ref getter from the flow loop; null when
+  // no flow is in flight (hand-run landing outside a flow is allowed).
+  activeRef: () => string | null,
+): void {
   pi.registerTool({
     name: 'flow_land',
     label: 'flow land',
@@ -67,6 +73,17 @@ export function registerLandTool(pi: ExtensionAPI, state: LandingState): void {
       // (PMR-T8ZG wrote the field) so behavior flips in one child. Only
       // route=push-main (personal) requires the marker recorded by the
       // code_review tool for THIS ref; route=pr (work) is unchanged.
+      // AIDEV-NOTE: PMR-VZEV — ref validation: a live flow only lands its
+      // OWN ref. null = no flow active, the gate does not apply (matches
+      // the interceptor, which also stands down without an active ref).
+      const flowRef = activeRef()
+      if (flowRef !== null && flowRef !== params.ref) {
+        return toolResult(
+          `flow_land refused landing ${params.ref}: it does not match the active flow ref ${flowRef} — land the active flow's ref, or run outside the flow`,
+          { ok: false, reason: 'ref does not match active flow ref' },
+          { isError: true },
+        )
+      }
       if (
         params.route === 'push-main' &&
         state.humanReviewPassed !== params.ref

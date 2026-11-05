@@ -27,7 +27,7 @@ import { resolveMode } from './config.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { resolveJiraEpic } from './flow/jira-ref.ts'
 import { lifecycleLabelMutation } from './flow/label-gate.ts'
-import { landingBashBlock } from './flow/land-gate.ts'
+import { landingIntercept } from './flow/land-gate.ts'
 import { createFlowLoop } from './flow/loop.ts'
 import { nextPhase } from './flow/orchestrate.ts'
 import {
@@ -107,6 +107,10 @@ export default function (pi: ExtensionAPI) {
     epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),
     hasInFlightSubagent: () => hasLiveAssignmentForParent(process.pid),
     setActiveRef: (ref) => setActiveFlowRef(ref),
+    resetLandingState: () => {
+      landingState.authorized = null
+      landingState.humanReviewPassed = null
+    },
     sendPrompt: (prompt) => {
       pi.sendUserMessage(prompt)
     },
@@ -133,6 +137,13 @@ export default function (pi: ExtensionAPI) {
   // flow_land authorizes that ref's landing (landingState). No flow active →
   // undefined → normal git use outside pi-flow is never touched. A human
   // running git by hand is out of scope (humans own the run).
+  // AIDEV-NOTE: PMR-06RH — landing interceptor. `git push` / `gh pr create`
+  // are blocked ONLY while the flow loop has an active ref, and only until
+  // flow_land authorizes that ref's landing (landingState). PMR-VZEV: the
+  // authorization is cleared after use — one flow_land ok authorizes ONE
+  // landing command; the next push re-blocks. No flow active → normal git
+  // use outside pi-flow is never touched. A human running git by hand is
+  // out of scope (humans own the run).
   const landingState = createLandingState()
   pi.on('tool_call', (event) => {
     if (!isToolCallEventType('bash', event)) return undefined
@@ -143,17 +154,23 @@ export default function (pi: ExtensionAPI) {
         reason: `lifecycle label "${label}" is extension-governed — call the flow_phase_complete tool instead of writing aven labels directly`,
       }
     }
-    const activeRef = loop.activeRef()
-    if (activeRef === null || landingState.authorized === activeRef) {
-      return undefined
+    const decision = landingIntercept(
+      event.input.command,
+      loop.activeRef(),
+      landingState.authorized,
+    )
+    if (decision.action === 'block') {
+      return { block: true, reason: decision.reason }
     }
-    const landing = landingBashBlock(event.input.command, activeRef)
-    if (landing === null) return undefined
-    return { block: true, reason: landing }
+    if (decision.clear) {
+      landingState.authorized = null
+      landingState.humanReviewPassed = null
+    }
+    return undefined
   })
 
   registerPhaseCompleteTool(pi)
-  registerLandTool(pi, landingState)
+  registerLandTool(pi, landingState, () => loop.activeRef())
   // AIDEV-NOTE: PMR-T8ZG — the human code-review gate (PMR-3ZY1): the
   // code_review tool shares landingState with flow_land so a pass recorded
   // here is visible to the later flow_land check (PMR-C6AK, not wired yet).

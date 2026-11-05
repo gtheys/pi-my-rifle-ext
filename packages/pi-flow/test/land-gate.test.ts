@@ -1,8 +1,24 @@
 // Tests for the landing gate (PMR-06RH): pure decisions consumed by the
 // flow_land tool and the bash tool_call interceptor.
 import assert from 'node:assert/strict'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, it } from 'node:test'
-import { landDecision, landingBashBlock } from '../flow/land-gate.ts'
+import {
+  landDecision,
+  landingBashBlock,
+  landingIntercept,
+} from '../flow/land-gate.ts'
+import { createLandingState, registerLandTool } from '../tools/land.ts'
+
+type LandExecute = (
+  toolCallId: string,
+  params: { ref: string; route: 'pr' | 'push-main'; artifact?: string },
+) => Promise<{
+  content: { type: string; text: string }[]
+  isError?: boolean
+}>
 
 describe('landDecision', () => {
   it('refuses without the review-passed label', () => {
@@ -68,5 +84,130 @@ describe('landingBashBlock', () => {
 
   it('does not match git pushd-like words', () => {
     assert.equal(landingBashBlock('echo git push', 'PMR-ABC1'), null)
+  })
+})
+
+// --- PMR-VZEV: landingIntercept (pure interceptor decision) ---
+describe('landingIntercept', () => {
+  it('allows everything when no flow ref is active', () => {
+    assert.deepEqual(landingIntercept('git push origin x', null, 'PMR-ABC1'), {
+      action: 'allow',
+      clear: false,
+    })
+    assert.deepEqual(landingIntercept('git push origin x', null, null), {
+      action: 'allow',
+      clear: false,
+    })
+  })
+
+  it('blocks a landing command when the ref is not authorized', () => {
+    const d = landingIntercept('git push origin x', 'PMR-ABC1', null)
+    assert.equal(d.action, 'block')
+    if (d.action === 'block') assert.match(d.reason, /flow_land/)
+  })
+
+  it('allows a landing command when authorized and asks for a clear', () => {
+    assert.deepEqual(
+      landingIntercept('git push origin x', 'PMR-ABC1', 'PMR-ABC1'),
+      {
+        action: 'allow',
+        clear: true,
+      },
+    )
+  })
+
+  it('does not clear for non-landing commands even when authorized', () => {
+    assert.deepEqual(landingIntercept('git status', 'PMR-ABC1', 'PMR-ABC1'), {
+      action: 'allow',
+      clear: false,
+    })
+  })
+})
+
+// PMR-VZEV clear-after-use: one authorization = one landing command. The
+// second push after the state was cleared is blocked again.
+describe('landingState clear-after-use (interceptor sequence)', () => {
+  it('clears after the first allowed push and re-blocks the second', () => {
+    const state = createLandingState()
+    state.authorized = 'PMR-ABC1'
+    state.humanReviewPassed = 'PMR-ABC1'
+    const first = landingIntercept(
+      'git push origin main',
+      'PMR-ABC1',
+      state.authorized,
+    )
+    assert.deepEqual(first, { action: 'allow', clear: true })
+    if (first.action === 'allow' && first.clear) {
+      state.authorized = null
+      state.humanReviewPassed = null
+    }
+    const second = landingIntercept(
+      'git push origin main',
+      'PMR-ABC1',
+      state.authorized,
+    )
+    assert.equal(second.action, 'block')
+    assert.equal(state.humanReviewPassed, null)
+  })
+})
+
+// --- PMR-VZEV: flow_land ref validation against loop.activeRef() ---
+describe('flow_land ref validation', () => {
+  const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-refgate-bin-'))
+  writeFileSync(
+    path.join(BIN_DIR, 'aven'),
+    `#!/bin/sh\necho '{"labels":["review-passed"]}'\n`,
+  )
+  chmodSync(path.join(BIN_DIR, 'aven'), 0o755)
+
+  function executeWithActiveRef(activeRef: string | null) {
+    let execute: LandExecute | undefined
+    const mockPi = {
+      registerTool: (options: { execute: LandExecute }) => {
+        execute = options.execute
+      },
+    }
+    registerLandTool(
+      mockPi as unknown as Parameters<typeof registerLandTool>[0],
+      createLandingState(),
+      () => activeRef,
+    )
+    if (!execute) throw new Error('flow_land tool not registered')
+    return execute
+  }
+
+  async function withFakeAven(fn: () => Promise<void>): Promise<void> {
+    const previousPath = process.env.PATH ?? ''
+    process.env.PATH = `${BIN_DIR}:${previousPath}`
+    try {
+      await fn()
+    } finally {
+      process.env.PATH = previousPath
+    }
+  }
+
+  it('refuses when the ref does not match the active flow ref', async () => {
+    const execute = executeWithActiveRef('PMR-OTHER')
+    const result = await execute('r1', { ref: 'PMR-ABC1', route: 'pr' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /does not match/)
+  })
+
+  it('allows when the ref matches the active flow ref', async () => {
+    const execute = executeWithActiveRef('PMR-ABC1')
+    await withFakeAven(async () => {
+      const result = await execute('r2', { ref: 'PMR-ABC1', route: 'pr' })
+      assert.equal(result.isError, undefined)
+      assert.match(result.content[0].text, /authorized/)
+    })
+  })
+
+  it('allows when no flow is active (hand-run landing outside a flow)', async () => {
+    const execute = executeWithActiveRef(null)
+    await withFakeAven(async () => {
+      const result = await execute('r3', { ref: 'PMR-ABC1', route: 'pr' })
+      assert.equal(result.isError, undefined)
+      assert.match(result.content[0].text, /authorized/)
+    })
   })
 })

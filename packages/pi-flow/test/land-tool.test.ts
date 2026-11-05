@@ -42,6 +42,7 @@ function landExecute(): LandExecute {
   registerLandTool(
     mockPi as unknown as Parameters<typeof registerLandTool>[0],
     landingState,
+    () => null,
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return execute

@@ -38,6 +38,10 @@ export interface FlowLoopDeps {
   // ref on start and with null on every terminal transition (halt, pause,
   // done). Optional so existing tests/consumers need no changes.
   setActiveRef?(ref: string | null): void
+  // AIDEV-NOTE: PMR-VZEV — clears the landing state (authorized +
+  // humanReviewPassed) on every start so stale authorization from a
+  // superseded/prior flow cannot authorize a later landing.
+  resetLandingState?(): void
 }
 
 export interface FlowStartInput {
@@ -96,6 +100,7 @@ class FlowLoopImpl implements FlowLoop {
       promptInput: input.promptInput,
     }
     this.deps.setActiveRef?.(input.ref)
+    this.deps.resetLandingState?.()
     await this.sendPhasePrompt(input.phase)
   }
 
