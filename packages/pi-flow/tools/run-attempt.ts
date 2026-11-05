@@ -3,8 +3,9 @@
 // in-memory RetryState (per ref, per session — no persistence by design;
 // aven notes are the durable record) and nextAttempt decides retry vs
 // escalate. Escalation is surfaced as a tool error AND an aven note; after
-// it, further attempts for the ref are refused — only a human restarts
-// (clearing the state is a session restart or a passing attempt).
+// it, further attempts for the ref are refused without a new note (PMR-2HFC).
+// The state is in-memory per session: a session restart or a passing attempt
+// clears it, so the budget is NOT durable across restarts.
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -26,7 +27,7 @@ export function registerRunAttemptTool(pi: ExtensionAPI): void {
     name: 'flow_run_attempt',
     label: 'flow run attempt',
     description:
-      'Record one test attempt for a flow task and get the retry decision from the owned budget (3 total attempts, then escalate). The 3rd failing attempt returns an escalation error — STOP and report to the human; further attempts are refused.',
+      'Record one test attempt for a flow task and get the retry decision from the owned budget (3 total attempts, then escalate). The 3rd failing attempt returns an escalation error — STOP and report to the human; further attempts are refused (the budget is per session and resets when the session restarts).',
     promptSnippet:
       'Retry-budget tracking for flow test attempts — report every attempt result here.',
     promptGuidelines: [
@@ -58,6 +59,15 @@ export function registerRunAttemptTool(pi: ExtensionAPI): void {
       },
     ): Promise<AgentToolResult<{ ok: boolean; status: string }>> {
       const state = retryStates.get(params.ref) ?? startRetry()
+      // AIDEV-NOTE: PMR-2HFC — already exhausted: refuse without re-running
+      // the machine, so no duplicate escalation note is written.
+      if (state.attempts >= MAX_ATTEMPTS) {
+        return toolResult(
+          `flow_run_attempt: retry budget already exhausted for ${params.ref} — attempt refused. STOP and report to the human; do not run further attempts.`,
+          { ok: false, status: 'escalate' },
+          { isError: true },
+        )
+      }
       const transition = nextAttempt(state, params.result)
       if (transition.status === 'passed') {
         retryStates.delete(params.ref)
