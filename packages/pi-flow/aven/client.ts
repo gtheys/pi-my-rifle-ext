@@ -25,6 +25,10 @@ export type AvenRunner = (
 // cwd inference. The first ref-scoped aven call per ref resolves the
 // workspace (see flow/aven-resolve-exec.ts) and memoizes it; later calls
 // for the same ref reuse it. `avenWorkspace` config overrides everything.
+// PMR-28BR — lifetime: the memo lives for the whole process and is never
+// invalidated. A ticket moved between workspaces mid-session keeps the stale
+// --workspace flag (fail-closed: confusing aven errors, not corruption);
+// restart the session after moving a ticket.
 const resolvedRefWorkspaces = new Map<string, string | undefined>()
 // AIDEV-NOTE: PMR-8JZA — session cwd for every aven call. Set once from
 // session_start (ctx.cwd); command handlers and the flow loop all share it,
