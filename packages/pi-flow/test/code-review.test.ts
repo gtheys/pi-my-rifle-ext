@@ -128,8 +128,8 @@ function baseDeps(): ReviewDeps {
     avenShowFull: async () => '',
     herdrWorktreeList: async () => [],
     exec: async (_cmd, args) => {
-      if (args.includes('--show-toplevel')) {
-        return { code: 0, stdout: '/repo\n', stderr: '' }
+      if (args.includes('--git-common-dir')) {
+        return { code: 0, stdout: '/repo/.git\n', stderr: '' }
       }
       if (args.includes('--abbrev-ref')) {
         return { code: 0, stdout: '', stderr: '' }
@@ -259,9 +259,47 @@ test('resolveReviewWorktree: worktree of another repo is rejected', async () => 
     path: '/elsewhere/wt',
     branch: 'feat/x',
   })
-  deps.exec = async () => ({ code: 0, stdout: '/other-repo\n', stderr: '' })
-  await assert.rejects(() => resolveReviewWorktree('PMR-ABC1', deps))
+  deps.exec = async (_cmd, args) => {
+    if (args.includes('--abbrev-ref')) {
+      return { code: 0, stdout: 'feat/x\n', stderr: '' }
+    }
+    if (args.includes('/elsewhere/wt')) {
+      return { code: 0, stdout: '/other-repo/.git\n', stderr: '' }
+    }
+    return { code: 0, stdout: '/repo/.git\n', stderr: '' }
+  }
+  await assert.rejects(
+    () => resolveReviewWorktree('PMR-ABC1', deps),
+    /different repository/,
+  )
 })
+
+// failing = which side's rev-parse exits non-zero; candidate path is /repo
+// (identical to repoRoot) so a missed exit check would falsely verify.
+for (const failing of ['/repo', '/session']) {
+  test(`resolveReviewWorktree: non-zero rev-parse on ${failing} fails closed`, async () => {
+    const deps = baseDeps()
+    deps.repoRoot = '/session'
+    deps.getFlowWorktree = () => ({
+      ref: 'PMR-ABC1',
+      path: '/repo',
+      branch: 'feat/x',
+    })
+    deps.exec = async (_cmd, args) => {
+      if (args.includes('--abbrev-ref')) {
+        return { code: 0, stdout: 'feat/x\n', stderr: '' }
+      }
+      if (args[1] === failing) {
+        return { code: 128, stdout: '', stderr: 'fatal: not a git repository' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    await assert.rejects(
+      () => resolveReviewWorktree('PMR-ABC1', deps),
+      /git-common-dir failed.*exit 128/,
+    )
+  })
+}
 
 // --- openTuicrReview: exec-injected open sequence ---
 

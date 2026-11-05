@@ -240,6 +240,20 @@ async function verifyCandidate(
       ['-C', deps.repoRoot, 'rev-parse', '--git-common-dir'],
       {},
     )
+    // AIDEV-NOTE: PMR-HXPQ — pi.exec returns non-zero codes without throwing;
+    // empty stdout would otherwise resolve to the base path and falsely match.
+    for (const [label, result] of [
+      ['candidate', candidateResult],
+      ['session', repoResult],
+    ] as const) {
+      if (result.code !== 0) {
+        const detail = (result.stderr || result.stdout).trim()
+        return {
+          ok: false,
+          reason: `git rev-parse --git-common-dir failed for ${label} (exit ${result.code}): ${detail}`,
+        }
+      }
+    }
     candidateCommonDir = resolve(candidate.path, candidateResult.stdout.trim())
     repoCommonDir = resolve(deps.repoRoot, repoResult.stdout.trim())
   } catch (error) {
