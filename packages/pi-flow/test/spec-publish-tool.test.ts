@@ -11,6 +11,7 @@ import {
   type SpecPublishOutcome,
   specPublishToolResult,
 } from '../spec-review/commands.ts'
+import { buildSpawnFailureText } from '../spec-review/publish.ts'
 
 type CapturedCommand = { name: string; options: unknown }
 
@@ -137,4 +138,30 @@ test('spec_publish execute surfaces git-repo failure as a tool error', async () 
     (result.content[0] as { type: string; text: string }).text,
     /not a git repository/,
   )
+})
+
+const SPAWN_INPUT = {
+  task: 't',
+  name: 'n',
+  cwd: '/c',
+  ref: 'PMR-AB12',
+  repo: 'r',
+  root: '/root',
+  planFile: '/root/r/plan.md',
+}
+
+test('buildSpawnFailureText: tool caller is told not to run the git block', () => {
+  const text = buildSpawnFailureText(
+    { ...SPAWN_INPUT, prefix: 'spec_publish' },
+    'no mux',
+  )
+  assert.match(text, /^spec_publish: could not spawn publish worker \(no mux\)/)
+  assert.match(text, /Ask the user to publish manually/)
+  assert.doesNotMatch(text, /\/spec-publish/)
+})
+
+test('buildSpawnFailureText: command text is unchanged', () => {
+  const text = buildSpawnFailureText(SPAWN_INPUT, 'no mux')
+  assert.match(text, /^\/spec-publish: could not spawn/)
+  assert.match(text, /\nPublish manually:\n/)
 })

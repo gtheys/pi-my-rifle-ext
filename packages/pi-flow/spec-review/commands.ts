@@ -101,6 +101,7 @@ async function runSpecPublish(
     root: resolved.root,
     planFile: resolved.planFile,
     name: `spec-publish: ${params.ref}`,
+    prefix: errorPrefix,
     cwd: toplevel,
     task: buildPublishWorkerTask({
       ref: params.ref,

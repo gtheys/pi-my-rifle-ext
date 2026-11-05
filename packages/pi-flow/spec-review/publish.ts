@@ -103,6 +103,34 @@ export interface SpawnPublishWorkerInput {
   repo: string
   root: string
   planFile: string
+  // Caller label, e.g. '/spec-publish' (command) or 'spec_publish' (tool).
+  prefix?: string
+}
+
+// AIDEV-NOTE: PMR-XE3W — the manual-publish block is for a human. The tool
+// caller is an agent told never to retry with raw git, so the block is
+// addressed to the user and the agent is told not to run it.
+export function buildSpawnFailureText(
+  input: SpawnPublishWorkerInput,
+  msg: string,
+): string {
+  const prefix = input.prefix ?? '/spec-publish'
+  const isTool = prefix === 'spec_publish'
+  let lead = 'Publish manually:'
+  if (isTool) {
+    lead =
+      'Ask the user to publish manually — do NOT run these commands yourself:'
+  }
+  return [
+    `${prefix}: could not spawn publish worker (${msg}).`,
+    lead,
+    `cd ${input.root}`,
+    'git fetch origin',
+    'git pull --ff-only',
+    `git add ${input.planFile}`,
+    `git commit -m "docs(${input.repo}): publish ${input.ref} plan"`,
+    'git push origin HEAD',
+  ].join('\n')
 }
 
 // AIDEV-NOTE: wraps launchSubagent + watchSubagent. launchSubagent throws
@@ -121,19 +149,10 @@ export async function spawnPublishWorker(
     )
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
-    return [
-      `/spec-publish: could not spawn publish worker (${msg}).`,
-      'Publish manually:',
-      `cd ${input.root}`,
-      'git fetch origin',
-      'git pull --ff-only',
-      `git add ${input.planFile}`,
-      `git commit -m "docs(${input.repo}): publish ${input.ref} plan"`,
-      'git push origin HEAD',
-    ].join('\n')
+    return buildSpawnFailureText(input, msg)
   }
   const result = await watchSubagent(running, new AbortController().signal)
-  const base = `/spec-publish worker "${result.name}" exited with code ${result.exitCode}`
+  const base = `${input.prefix ?? '/spec-publish'} worker "${result.name}" exited with code ${result.exitCode}`
   if (result.exitCode === 0 && result.summary !== undefined) {
     return `${base}: ${result.summary}`
   }
