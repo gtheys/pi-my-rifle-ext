@@ -43,8 +43,22 @@ export function landDecision(
   return { ok: true }
 }
 
+// AIDEV-NOTE: PMR-4Y1Z — command position = start, or after any shell
+// separator (&& || ; | & newline), a subshell/group opener ( { , a backtick or
+// $( — but NOT after a quote, so `echo "git push"` is not a landing. Git
+// global options (-C <dir>, -c k=v, --git-dir[=]..., --no-pager, ...) and env
+// assignments may sit between the command words. Known limit (guardrail, not
+// a privilege boundary): aliases, `sh -c '...'`, and variable-built commands
+// are not detected.
+const CMD_START = String.raw`(?:^|[;&|(){}\n\x60]|\$\()\s*(?:\w+=\S*\s+)*`
+const GIT_OPTS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path)\s+\S+|--[\w-]+(?:=\S+)?|-[pP]))*`
+const GH_OPTS = String.raw`(?:\s+(?:-R|--repo)\s+\S+)*`
+const LANDING_RE = new RegExp(
+  `${CMD_START}(?:git${GIT_OPTS}\\s+push|gh${GH_OPTS}\\s+pr\\s+create)\\b`,
+)
+
 // Matches bash landing commands (git push / gh pr create) at command
-// position: start of the command or after && / ;. Returns the active ref the
+// position (see CMD_START). Returns the active ref the
 // block reason should name, or null when the command is allowed. Only called
 // while a flow ref is active — never globally.
 export function landingBashBlock(
@@ -52,7 +66,7 @@ export function landingBashBlock(
   activeRef: string | null,
 ): string | null {
   if (activeRef === null) return null
-  const landing = /(?:^|&&|;)\s*(?:git\s+push|gh\s+pr\s+create)\b/.test(command)
+  const landing = LANDING_RE.test(command)
   if (!landing) return null
   return `landing for flow ${activeRef} is gated — call the flow_land tool (ref=${activeRef}); direct git push / gh pr create during a flow run are blocked`
 }

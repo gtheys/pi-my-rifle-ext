@@ -82,6 +82,47 @@ describe('landingBashBlock', () => {
     assert.equal(landingBashBlock('gh pr view 12', 'PMR-ABC1'), null)
   })
 
+  it('blocks flag-tolerant and chained landing forms (PMR-4Y1Z)', () => {
+    const blocked = [
+      'git -C /tmp/wt push origin x',
+      'git -c user.name=x push',
+      'git --git-dir /a/.git push',
+      'git --no-pager push --force',
+      'git status || git push',
+      'make test | git push',
+      'git add . & git push',
+      'echo hi\ngit push',
+      '(cd x && git push)',
+      'echo $(git push)',
+      'FOO=1 git push',
+      'gh -R org/repo pr create --title x',
+      'true && gh --repo org/repo pr create',
+    ]
+    for (const command of blocked) {
+      assert.ok(
+        landingBashBlock(command, 'PMR-ABC1') !== null,
+        `expected block: ${command}`,
+      )
+    }
+  })
+
+  it('does not false-positive on quoted or unrelated text (PMR-4Y1Z)', () => {
+    const allowed = [
+      'echo "git push"',
+      'git log --grep push',
+      'git -C /tmp/wt status',
+      'grep -r "gh pr create" docs',
+      'git stash push',
+    ]
+    for (const command of allowed) {
+      assert.equal(
+        landingBashBlock(command, 'PMR-ABC1'),
+        null,
+        `expected allow: ${command}`,
+      )
+    }
+  })
+
   it('does not match git pushd-like words', () => {
     assert.equal(landingBashBlock('echo git push', 'PMR-ABC1'), null)
   })
