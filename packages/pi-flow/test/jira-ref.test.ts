@@ -95,8 +95,20 @@ test('resolveJiraEpic: cold start -> synced found, epic created, dep-linked', as
   const result = await resolveJiraEpic('DP-71', aven)
   assert.deepEqual(result, { kind: 'epic', ref: 'PMR-NEW1', created: true })
   // list jira-ref, list jira-key, add (with metadata + epic), dep add
-  assert.deepEqual(calls[0], ['list', '--metadata', 'jira-ref=DP-71', '--json'])
-  assert.deepEqual(calls[1], ['list', '--metadata', 'jira-key=DP-71', '--json'])
+  assert.deepEqual(calls[0], [
+    'list',
+    '--metadata',
+    'jira-ref=DP-71',
+    '--all-projects',
+    '--json',
+  ])
+  assert.deepEqual(calls[1], [
+    'list',
+    '--metadata',
+    'jira-key=DP-71',
+    '--all-projects',
+    '--json',
+  ])
   const add = calls[2] as string[]
   assert.equal(add[0], 'add')
   assert.equal(add[1], 'DP-71 — Fix the login flow')

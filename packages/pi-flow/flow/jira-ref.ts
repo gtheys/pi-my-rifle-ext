@@ -43,7 +43,17 @@ async function listByMetadata(
 > {
   let stdout: string
   try {
-    const out = await aven(['list', '--metadata', `${key}=${value}`, '--json'])
+    // AIDEV-NOTE: --all-projects is required — aven >=0.1.51 scopes a plain
+    // `list` to the project inferred from the cwd's git root name, so synced
+    // Jira tickets living in another project (e.g. dp from an account-api
+    // cwd) were invisible and /flow aborted "not aven-managed" (DP-252).
+    const out = await aven([
+      'list',
+      '--metadata',
+      `${key}=${value}`,
+      '--all-projects',
+      '--json',
+    ])
     stdout = out.stdout
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
@@ -105,9 +115,9 @@ export type TicketBrainstormTarget =
 // AIDEV-NOTE: Brainstorm-time ticket resolution, strictest source first: the
 // local epic (jira-ref) — labels land there and /flow resumes clean; else
 // the synced ticket (jira-key) — full Jira content is already in aven, no
-// acli needed; else acli fallback. Default `aven list` is workspace-scoped
-// (reaches all projects of the routed workspace), verified 2026-02-09:
-// a jira-key hit for a dp-project ticket from a flexben cwd.
+// acli needed; else acli fallback. The metadata list is run with
+// --all-projects (see listByMetadata): plain `aven list` is project-scoped
+// from the cwd's git root name since aven 0.1.51.
 export async function findTicketBrainstormTarget(
   jiraId: string,
   aven: AvenRunner,
