@@ -36,6 +36,11 @@ const resolvedRefWorkspaces = new Map<string, string | undefined>()
 // process.cwd() differs (worktree sessions, --cwd launches). Memoized per
 // resolved cwd, so two sessions in one process with different cwds each
 // load their own project config.
+// PMR-7ZEE — avenSessionCwd is process-global, last-writer-wins: with two
+// sessions of different cwds in one process, in-flight aven calls of the
+// earlier session switch to the newer session's cwd. Same limit as the
+// notifyUser holder; Pi sessions rarely coexist in one process. Key this
+// per session if multi-session-per-process ever becomes real.
 let avenSessionCwd: string | undefined
 const avenWorkspaceOverrideByCwd = new Map<string, string | undefined>()
 let lastAvenFailure: string | undefined
