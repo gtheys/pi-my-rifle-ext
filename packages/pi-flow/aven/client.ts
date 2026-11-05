@@ -135,7 +135,7 @@ export async function specApprove(params: {
   }
   return {
     ok: true,
-    text: `spec_approve: ${params.ref} approved (plan-state=approved, label=plan, status=todo) — now run /spec-publish ${params.ref}`,
+    text: `spec_approve: ${params.ref} approved (plan-state=approved, label=plan, status=todo) — now call the spec_publish tool for ${params.ref}`,
   }
 }
 

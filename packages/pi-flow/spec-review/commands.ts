@@ -11,12 +11,18 @@
 // never rolls back an approval, it only notifies.
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type {
+  AgentToolResult,
+  ExtensionAPI,
+  ExtensionContext,
+} from '@earendil-works/pi-coding-agent'
+import { Type } from 'typebox'
 import {
   avenExec,
   avenOverrideArg,
   resolveSpecWorkspace,
 } from '../aven/client.ts'
+import { toolResult } from '../tools/result.ts'
 import { parseSpecReviewArgs } from './args.ts'
 import { listSpecsInReview, readPlanPath } from './aven-spec.ts'
 import { openFileInPane } from './open-in-pane.ts'
@@ -33,6 +39,97 @@ import { parseSpecPublishArgs } from './publish-args.ts'
 async function gitToplevel(pi: ExtensionAPI): Promise<string> {
   const out = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
   return out.stdout.trim()
+}
+
+export interface SpecPublishOutcome {
+  ok: boolean
+  text: string
+}
+
+// AIDEV-NOTE: PMR-44XX — shared publish path for /spec-publish and the
+// spec_publish tool: same workspace pin, plan-path validation, root
+// resolution, worker task, and PUBLISH OK gate. Validation errors carry the
+// caller's prefix; worker outcomes stay verbatim for the existing command UI.
+async function runSpecPublish(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  params: { ref: string; workspace?: string },
+  errorPrefix: string,
+): Promise<SpecPublishOutcome> {
+  function failure(text: string): SpecPublishOutcome {
+    return { ok: false, text: `${errorPrefix}: ${text}` }
+  }
+  let toplevel = ''
+  try {
+    toplevel = await gitToplevel(pi)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    return failure(`not a git repo (${msg})`)
+  }
+  // AIDEV-NOTE: PMR-MR36 fix round — the plan-path query must run in
+  // the same workspace the ref lives in (flag > config override > per-ref
+  // resolution); a resolution failure stops the publish, never falls
+  // back to the cwd-inferred workspace silently.
+  let workspace: string | undefined
+  try {
+    workspace = await resolveSpecWorkspace(params.workspace, params.ref)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    return failure(msg)
+  }
+  const plan = await readPlanPath(avenExec, params.ref, { workspace })
+  if (plan.kind === 'error') {
+    return failure(plan.reason)
+  }
+  if (plan.kind === 'none') {
+    return failure(`${params.ref} has no plan-path metadata`)
+  }
+  if (!existsSync(plan.planPath)) {
+    return failure(`plan file missing: ${plan.planPath}`)
+  }
+  const resolved = resolvePublishRoot({
+    repo: path.basename(toplevel),
+    planPath: plan.planPath,
+    toplevel,
+  })
+  if (resolved.kind === 'error') {
+    return failure(resolved.reason)
+  }
+  const outcome = await spawnPublishWorker(ctx, {
+    ref: params.ref,
+    repo: path.basename(toplevel),
+    root: resolved.root,
+    planFile: resolved.planFile,
+    name: `spec-publish: ${params.ref}`,
+    cwd: toplevel,
+    task: buildPublishWorkerTask({
+      ref: params.ref,
+      repo: path.basename(toplevel),
+      root: resolved.root,
+      planFile: resolved.planFile,
+      isFallback: resolved.isFallback,
+    }),
+  })
+  // AIDEV-NOTE: success requires the PUBLISH OK marker from the worker
+  // contract — exit-0 alone was a false positive (PMR-MR36 fix round);
+  // exit-0 without the marker is a warning, not a success.
+  return { ok: isPublishSuccess(outcome), text: outcome }
+}
+
+// AIDEV-NOTE: PMR-44XX — result mapping for the spec_publish tool: only a
+// PUBLISH OK outcome is a success; everything else (validation failure,
+// worker failure, spawn/manual-fallback output) is a loud tool error.
+export function specPublishToolResult(
+  result: SpecPublishOutcome,
+): AgentToolResult<{ ok: boolean; reason: string }> {
+  if (result.ok) {
+    return toolResult(result.text, { ok: true, reason: '' })
+  }
+  return toolResult(
+    result.text,
+    { ok: false, reason: result.text },
+    { isError: true },
+  )
 }
 
 export function registerSpecCommands(pi: ExtensionAPI): void {
@@ -140,76 +237,46 @@ export function registerSpecCommands(pi: ExtensionAPI): void {
         )
         return
       }
-      let toplevel = ''
-      try {
-        toplevel = await gitToplevel(pi)
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error)
-        ctx.ui.notify(`/spec-publish: not a git repo (${msg})`, 'warning')
-        return
-      }
-      // AIDEV-NOTE: PMR-MR36 fix round — the plan-path query must run in
-      // the same workspace the ref lives in (flag > config override > per-ref
-      // resolution); a resolution failure stops the publish, never falls
-      // back to the cwd-inferred workspace silently.
-      let workspace: string | undefined
-      try {
-        workspace = await resolveSpecWorkspace(parsed.workspace, parsed.ref)
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error)
-        ctx.ui.notify(`/spec-publish: ${msg}`, 'warning')
-        return
-      }
-      const plan = await readPlanPath(avenExec, parsed.ref, { workspace })
-      if (plan.kind === 'error') {
-        ctx.ui.notify(`/spec-publish: ${plan.reason}`, 'warning')
-        return
-      }
-      if (plan.kind === 'none') {
-        ctx.ui.notify(
-          `/spec-publish: ${parsed.ref} has no plan-path metadata`,
-          'warning',
-        )
-        return
-      }
-      if (!existsSync(plan.planPath)) {
-        ctx.ui.notify(
-          `/spec-publish: plan file missing: ${plan.planPath}`,
-          'warning',
-        )
-        return
-      }
-      const resolved = resolvePublishRoot({
-        repo: path.basename(toplevel),
-        planPath: plan.planPath,
-        toplevel,
-      })
-      if (resolved.kind === 'error') {
-        ctx.ui.notify(`/spec-publish: ${resolved.reason}`, 'warning')
-        return
-      }
-      const outcome = await spawnPublishWorker(ctx, {
-        ref: parsed.ref,
-        repo: path.basename(toplevel),
-        root: resolved.root,
-        planFile: resolved.planFile,
-        name: `spec-publish: ${parsed.ref}`,
-        cwd: toplevel,
-        task: buildPublishWorkerTask({
-          ref: parsed.ref,
-          repo: path.basename(toplevel),
-          root: resolved.root,
-          planFile: resolved.planFile,
-          isFallback: resolved.isFallback,
-        }),
-      })
-      // AIDEV-NOTE: success requires the PUBLISH OK marker from the worker
-      // contract — exit-0 alone was a false positive (PMR-MR36 fix round);
-      // exit-0 without the marker is a warning, not a success.
-      const ok = isPublishSuccess(outcome)
+      const result = await runSpecPublish(pi, ctx, parsed, '/spec-publish')
       let severity: 'info' | 'warning' = 'info'
-      if (!ok) severity = 'warning'
-      ctx.ui.notify(outcome, severity)
+      if (!result.ok) severity = 'warning'
+      ctx.ui.notify(result.text, severity)
+    },
+  })
+
+  // AIDEV-NOTE: PMR-44XX — agent-callable form of /spec-publish. Both
+  // entrypoints share runSpecPublish (same resolution, same worker, same
+  // PUBLISH OK gate); only the result shaping differs (notify vs tool error).
+  pi.registerTool({
+    name: 'spec_publish',
+    label: 'spec publish',
+    description:
+      'Publish an approved spec plan (agent-callable /spec-publish): resolves the aven workspace and plan-path metadata, verifies the plan file, resolves the publish root (PERSONAL_FEATURES / LLM_NOTES_ROOT / project-repo fallback), and spawns a git publish worker (fetch, pull --ff-only, add ONLY the plan file, commit, push).',
+    promptSnippet:
+      'Publish an approved spec plan — call after spec_approve instead of running the /spec-publish command.',
+    promptGuidelines: [
+      'Only call spec_publish for a ref the user asked to publish (normally right after spec_approve returns ok).',
+      'On a tool error, report the reason to the user — never retry with raw git commands in the notes repo.',
+    ],
+    parameters: Type.Object({
+      ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
+      workspace: Type.Optional(
+        Type.String({
+          description:
+            'Aven workspace name — only when the spec lives outside the default workspace; normally omitted (config/per-ref resolution applies)',
+        }),
+      ),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: { ref: string; workspace?: string },
+      _signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      ctx: ExtensionContext,
+    ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
+      return specPublishToolResult(
+        await runSpecPublish(pi, ctx, params, 'spec_publish'),
+      )
     },
   })
 
