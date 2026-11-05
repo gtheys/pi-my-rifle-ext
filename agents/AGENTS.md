@@ -4,6 +4,8 @@
 
 When unsure about implementation details, ALWAYS ask the developer.
 
+Second important rule: Always explain what you are going to do and why. I want to understand this was based on skill, prompt or tool call.
+
 ---
 
 ## Non-negotiable golden rules
@@ -40,7 +42,7 @@ Add specially formatted comments throughout the codebase, where appropriate, for
 
 ## Commit discipline
 
-You will receive a prompt to execute a task. Once the task is finished provide a git commit message example AND WAIT FOR INPUT before doing anything else. Never start a new task without being prompted.
+You will receive a prompt to execute a task. Once the task is finished provide commit.
 
 - **Clear commit messages**: Explain the _why_; link to issues/ADRs if architectural.
 - **Review AI-generated code**: Never merge code you don't understand.
@@ -105,7 +107,7 @@ Recall with `cognee_recall`:
 When to use which:
 
 | Situation | Tool |
-|---|---|
+| --- | --- |
 | Short-lived working note, same session | `cognee_remember` + `session_id` |
 | Durable fact worth keeping across sessions | `cognee_remember` (no session_id) |
 | Need prior context / past decisions | `cognee_recall` |
