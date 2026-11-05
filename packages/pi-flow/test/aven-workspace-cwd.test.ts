@@ -18,7 +18,7 @@ const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-aven-bin-'))
 const ARGS_FILE = path.join(BIN_DIR, 'last-args.txt')
 writeFileSync(
   path.join(BIN_DIR, 'aven'),
-  `#!/bin/sh\nprintf '%s\\n' "$@" > ${ARGS_FILE}\necho '{"labels":[]}'\n`,
+  `#!/bin/sh\nprintf '%s\\n' "$@" > "${ARGS_FILE}"\necho '{"labels":[]}'\n`,
 )
 chmodSync(path.join(BIN_DIR, 'aven'), 0o755)
 
