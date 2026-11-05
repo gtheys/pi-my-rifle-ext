@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { test } from 'node:test'
+import { registerCodeReviewTool } from '../tools/code-review.ts'
 import {
   buildCodeReviewGatePrompt,
   latestWorktreeNote,
@@ -342,4 +346,88 @@ test('buildCodeReviewGatePrompt: instructs the code_review tool call', () => {
   const prompt = buildCodeReviewGatePrompt('PMR-ABC1')
   assert.match(prompt, /code_review/)
   assert.match(prompt, /PMR-ABC1/)
+})
+
+// --- registered execute: agent-attested pass gate (PMR-3ZY1 P1) ---
+
+const AVEN_FAKE_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-cr-bin-'))
+writeFileSync(path.join(AVEN_FAKE_DIR, 'aven'), '#!/bin/sh\nexit 0\n')
+chmodSync(path.join(AVEN_FAKE_DIR, 'aven'), 0o755)
+
+type CodeReviewExecute = (
+  toolCallId: string,
+  params: { ref: string; outcome?: 'pass' },
+  signal: AbortSignal,
+  onUpdate: unknown,
+  ctx: {
+    cwd: string
+    tools: Array<{ name: string }>
+    ui: { notify: (m: string, l: string) => void }
+  },
+) => Promise<{
+  isError?: boolean
+  content: Array<{ type: string; text: string }>
+}>
+
+function codeReviewExecute(): CodeReviewExecute {
+  let execute: CodeReviewExecute | undefined
+  const mockPi = {
+    registerTool: (options: { execute: CodeReviewExecute }) => {
+      execute = options.execute
+    },
+  }
+  registerCodeReviewTool(
+    mockPi as unknown as Parameters<typeof registerCodeReviewTool>[0],
+    { authorized: null, humanReviewPassed: null },
+  )
+  if (!execute) throw new Error('code_review tool not registered')
+  return execute
+}
+
+function ctxWith(
+  tools: Array<{ name: string }>,
+): Parameters<CodeReviewExecute>[4] {
+  return {
+    cwd: '/repo',
+    tools,
+    ui: { notify: () => {} },
+  }
+}
+
+async function withFakeAvenPath(fn: () => Promise<void>): Promise<void> {
+  const previousPath = process.env.PATH ?? ''
+  process.env.PATH = `${AVEN_FAKE_DIR}:${previousPath}`
+  try {
+    await fn()
+  } finally {
+    process.env.PATH = previousPath
+  }
+}
+
+test('execute: outcome="pass" refused when ask_user_question is available', async () => {
+  const execute = codeReviewExecute()
+  const result = await execute(
+    't1',
+    { ref: 'PMR-ABC1', outcome: 'pass' },
+    new AbortController().signal,
+    undefined,
+    ctxWith([{ name: 'ask_user_question' }]),
+  )
+  assert.equal(result.isError, true)
+  assert.match(result.content.map((c) => c.text).join('\n'), /refused/)
+})
+
+test('execute: outcome="pass" records marker when ask_user_question is absent', async () => {
+  await withFakeAvenPath(async () => {
+    const execute = codeReviewExecute()
+    const result = await execute(
+      't2',
+      { ref: 'PMR-ABC1', outcome: 'pass' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([]),
+    )
+    assert.notEqual(result.isError, true)
+    assert.match(result.content.map((c) => c.text).join('\n'), /flow_land/)
+  })
 })

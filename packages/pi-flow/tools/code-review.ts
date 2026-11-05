@@ -13,6 +13,11 @@
 // tuicr and a second code_review call with outcome="pass" records the
 // marker WITHOUT a blocking human ask. Weaker by design: the marker then
 // rests on the agent's own question to the human, not on our blocking gate.
+// Residual weakness: when the extension IS absent, the recorded pass is only
+// agent-attested — we cannot distinguish "the agent really asked" from
+// "the agent invented it". Scope is deliberately limited to that case: with
+// ask_user_question available, outcome="pass" is refused (the blocking ask
+// is the only sanctioned path).
 import { existsSync } from 'node:fs'
 import type {
   AgentToolResult,
@@ -96,6 +101,31 @@ export function registerCodeReviewTool(
       _onUpdate: unknown,
       ctx: ExtensionToolContext,
     ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
+      const askAvailable =
+        ctx.tools.find((t) => t.name === 'ask_user_question') !== undefined
+
+      // Agent-attested fallback path: the human already answered the agent's
+      // own ask — record the marker without a second blocking ask. ONLY valid
+      // when the blocking gate is unavailable (PMR-3ZY1 decision 4); with the
+      // extension present the agent could otherwise record a "human" pass
+      // with no human involved.
+      if (params.outcome === 'pass') {
+        if (askAvailable) {
+          return toolResult(
+            `code_review refused: outcome="pass" is only allowed when ask_user_question is unavailable, and it IS available here. Re-call code_review with just ref="${params.ref}" and answer the blocking pass/fail question yourself (or via the human).`,
+            { ok: false, reason: 'blocking ask available' },
+            { isError: true },
+          )
+        }
+        const routing = routeReviewPass(params.ref, new Date().toISOString())
+        landingState.humanReviewPassed = routing.marker
+        const noted = await writeAvenNote(params.ref, routing.avenNote)
+        return toolResult(
+          `${routing.message}${noted ? '' : '\n(warning: the aven note write failed — record it manually)'}`,
+          { ok: true, reason: '' },
+        )
+      }
+
       const deps = productionDeps(pi, ctx)
       let worktree: ResolvedWorktree
       try {
@@ -106,18 +136,6 @@ export function registerCodeReviewTool(
           `code_review refused: ${message}`,
           { ok: false, reason: message },
           { isError: true },
-        )
-      }
-
-      // Agent-attested fallback path: the human already answered the agent's
-      // own ask — record the marker without a second blocking ask.
-      if (params.outcome === 'pass') {
-        const routing = routeReviewPass(params.ref, new Date().toISOString())
-        landingState.humanReviewPassed = routing.marker
-        const noted = await writeAvenNote(params.ref, routing.avenNote)
-        return toolResult(
-          `${routing.message}${noted ? '' : '\n(warning: the aven note write failed — record it manually)'}`,
-          { ok: true, reason: '' },
         )
       }
 
