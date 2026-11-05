@@ -169,6 +169,10 @@ export async function resolveJiraEpic(
       reason: `${jiraId} is not aven-managed — sync the ticket first, or plan it in Jira directly`,
     }
   }
+  // AIDEV-NOTE: the pull-in epic intentionally lands in the cwd-inferred
+  // project (aven add has no --project here), NOT the synced ticket's
+  // project — confirmed correct by the owner 2026-11-05. The epic is
+  // repo-local work tracking; the dep-link ties it to the source ticket.
   let addStdout: string
   try {
     const out = await aven([
