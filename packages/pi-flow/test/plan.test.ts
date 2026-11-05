@@ -5,7 +5,6 @@ import { parsePlanArgs } from '../plan/args.ts'
 import { resolvePlanDir } from '../plan/paths.ts'
 import { buildPlanPrompt } from '../plan/prompt.ts'
 import { classifySize } from '../plan/size-check.ts'
-import { buildEpicSplitPlan, type SplitInput } from '../plan/split-gate.ts'
 
 // --- args ---
 
@@ -76,32 +75,13 @@ test('classifySize: multiple hits → multiple reasons', () => {
   assert.equal(v.reasons.length, 2)
 })
 
-// --- split gate ---
-
-const splitBase: SplitInput = {
-  confirmed: true,
-  ref: 'PMR-F7YM',
-  title: 'RPIV plan flow',
-  subtasks: ['Size check', 'Handoff prompt'],
-}
-
-test('buildEpicSplitPlan: confirmed → epic plan', () => {
-  const plan = buildEpicSplitPlan(splitBase)
-  assert.ok(plan)
-  assert.equal(plan.ref, 'PMR-F7YM')
-  assert.equal(plan.subtasks.length, 2)
-})
-
-test('buildEpicSplitPlan: not confirmed → null', () => {
-  assert.equal(buildEpicSplitPlan({ ...splitBase, confirmed: false }), null)
-  assert.equal(buildEpicSplitPlan({ ...splitBase, confirmed: undefined }), null)
-})
-
-test('buildEpicSplitPlan: no subtasks → null', () => {
-  assert.equal(buildEpicSplitPlan({ ...splitBase, subtasks: [] }), null)
-})
-
 // --- prompt ---
+
+const PERSONAL = {
+  mode: 'personal',
+  ref: 'PMR-F7YM',
+  planPath: '/x/plan.md',
+} as const
 
 // Regression guard: work-mode route must hand off to the existing
 // feature-plan-aven skill by name, carrying the Jira ref — behavior unchanged.
@@ -115,103 +95,65 @@ test('buildPlanPrompt: work mode references feature-plan-aven + Jira ref', () =>
   assert.match(prompt, /DP-123/)
 })
 
-test('buildPlanPrompt: personal mode instructs size check + confirm gate', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-F7YM',
-    planPath: '/x/plan.md',
-  })
+// AIDEV-NOTE: PMR-T6KF — personal mode's plan route delegates to the
+// feature-plan-aven skill by name, same as work mode. Only the size check +
+// oneshot escape stay inline.
+test('buildPlanPrompt: personal plan route delegates to feature-plan-aven by name', () => {
+  const prompt = buildPlanPrompt(PERSONAL)
+  assert.match(prompt, /engineering:feature-plan-aven/)
+  assert.match(prompt, /personal aven ticket PMR-F7YM/)
+  assert.match(prompt, /resume ladder owns ALL resume states/)
+  // Personal-mode approval: the skill's own approval is authoritative; the
+  // flow_phase_complete gate only reads plan-state, so /spec-review and
+  // spec_approve stay compatible.
+  assert.match(prompt, /plan-state=approved/)
+  assert.match(prompt, /authoritative/)
+  assert.match(prompt, /spec_approve/)
+})
+
+test('buildPlanPrompt: personal mode keeps size check + confirm gate', () => {
+  const prompt = buildPlanPrompt(PERSONAL)
   assert.match(prompt, /size check/i)
+  assert.match(prompt, /classifySize/)
   assert.match(prompt, /ask_user_question/)
   assert.match(prompt, /oneshot/)
   assert.match(prompt, /todo/)
   assert.match(prompt, /PMR-F7YM/)
-  assert.match(prompt, /\/x\/plan\.md/)
-  assert.match(prompt, /open_in_pane/)
 })
 
-// AIDEV-NOTE: PMR-QRJA — the plan phase must END in plan-state=review with
-// flow_phase_complete deferred until spec approval; the "planned" label only
-// lands after the human approves via spec_approve / /spec-review.
-test('buildPlanPrompt: personal mode ends phase in review, not complete', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-F7YM',
+// AIDEV-NOTE: PMR-T6KF — both modes share the same approval suffix: the
+// "planned" label lands ONLY after approval + tree; flow_phase_complete runs
+// at the end, never before.
+test('buildPlanPrompt: personal plan route shares the approval suffix', () => {
+  const personal = buildPlanPrompt(PERSONAL)
+  const work = buildPlanPrompt({
+    mode: 'work',
+    ref: 'DP-123',
     planPath: '/x/plan.md',
   })
-  assert.match(prompt, /plan-state=review/)
-  assert.match(prompt, /aven edit PMR-F7YM --metadata plan-state=review/)
-  assert.match(prompt, /do not call the\s+flow_phase_complete tool/i)
-})
-
-test('buildPlanPrompt: personal mode completes only after plan-state=approved', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-F7YM',
-    planPath: '/x/plan.md',
-  })
-  assert.match(prompt, /plan-state=approved/)
-  assert.match(prompt, /spec_approve/)
-  assert.match(
-    prompt,
-    /flow_phase_complete tool with ref=<ticket ref> and phase="plan"/,
-  )
-  assert.match(prompt, /"planned" label/)
-  const approvedIdx = prompt.indexOf('plan-state=approved')
-  const completeIdx = prompt.indexOf(
-    'flow_phase_complete tool with ref=<ticket ref>',
-  )
-  assert.ok(approvedIdx !== -1)
-  assert.ok(completeIdx > approvedIdx, 'completion must follow approval')
-})
-
-// AIDEV-NOTE: regression guard — /flow resume re-runs this prompt; without an
-// approved-check it would reset plan-state to review on already-approved
-// tickets and loop pause/approve/resume forever.
-test('buildPlanPrompt: personal mode checks plan-state before setting review', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-F7YM',
-    planPath: '/x/plan.md',
-  })
-  assert.match(prompt, /aven show PMR-F7YM --full/)
-  const checkIdx = prompt.indexOf('aven show PMR-F7YM --full')
-  const reviewIdx = prompt.indexOf('plan-state=review')
-  assert.ok(checkIdx !== -1)
-  assert.ok(reviewIdx > checkIdx, 'approved-check must precede review set')
-})
-
-test('buildPlanPrompt: personal mode skips review when already approved', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-F7YM',
-    planPath: '/x/plan.md',
-  })
-  assert.match(
-    prompt,
-    /ALREADY at plan-state=approved[\s\S]*?flow_phase_complete tool/,
-    'must go straight to flow_phase_complete when plan-state=approved',
-  )
-  assert.match(prompt, /do NOT set plan-state=review/i)
+  for (const prompt of [personal, work]) {
+    assert.match(prompt, /"planned" label lands\s+ONLY after approval/)
+    assert.match(
+      prompt,
+      /flow_phase_complete tool with ref=<ticket ref> and\s+phase="plan"/,
+    )
+    assert.match(prompt, /plan-state "review" WITHOUT\s+the "planned" label/)
+  }
 })
 
 // AIDEV-NOTE: PMR-3HMZ — the personal ONESHOT route skips the spec-approval
 // gate: no plan-state=review, no spec_approve wait; the prompt closes the
 // phase via flow_phase_complete right after the human confirms the split.
-// Only the plan route keeps the PMR-QRJA review gate.
+// Only the plan route keeps the PMR-QRJA review gate (via the skill).
 test('buildPlanPrompt: personal oneshot route skips the spec-approval gate', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-F7YM',
-    planPath: '/x/plan.md',
-  })
+  const prompt = buildPlanPrompt(PERSONAL)
   const oneshotIdx = prompt.indexOf('If confirmed as oneshot')
   const planIdx = prompt.indexOf('If confirmed as plan')
   assert.ok(oneshotIdx !== -1)
   assert.ok(planIdx > oneshotIdx)
   const oneshotBlock = prompt.slice(oneshotIdx, planIdx)
   assert.ok(
-    !oneshotBlock.includes('--metadata plan-state=review'),
+    !oneshotBlock.includes('plan-state=review'),
     'oneshot block must not send the ticket into spec review',
   )
   assert.match(oneshotBlock, /skip spec approval/)
@@ -221,51 +163,20 @@ test('buildPlanPrompt: personal oneshot route skips the spec-approval gate', () 
   )
 })
 
-// AIDEV-NOTE: regression guard — personal plan must open the review pane — parity with
-// feature-plan-aven (work mode), which opens plan.md via open_in_pane itself.
-test('buildPlanPrompt: personal mode opens plan.md in a herdr review pane', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-F7YM',
-    planPath: '/x/plan.md',
-  })
-  assert.match(
-    prompt,
-    /write the plan\.md to: \/x\/plan\.md[\s\S]*open_in_pane tool with that path/,
-  )
-  assert.match(prompt, /never block/)
-})
-
-// AIDEV-NOTE: regression guard — personal plan must handle a ticket that is
-// ALREADY an epic with children (e.g. a post-review hardening epic):
-// confirm/refresh the tree, encode order as dep links, never decompose again.
-test('buildPlanPrompt: personal mode handles existing epic trees', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-Z0M2',
-    planPath: '/x/plan.md',
-  })
-  assert.match(prompt, /aven epic list PMR-Z0M2/)
-  assert.match(prompt, /never decompose/i)
-  assert.match(prompt, /aven dep add/)
-  assert.match(prompt, /aven epic add/)
-  assert.match(prompt, /aven epic remove/)
-  assert.match(prompt, /plan-path=\/x\/plan\.md/)
-})
-
-// AIDEV-NOTE: regression guard — "aven epic create" is not a real command;
-// the ticket itself becomes the epic via aven edit --epic on.
-test('buildPlanPrompt: personal mode uses real aven commands for epic creation', () => {
-  const prompt = buildPlanPrompt({
-    mode: 'personal',
-    ref: 'PMR-F7YM',
-    planPath: '/x/plan.md',
-  })
+// AIDEV-NOTE: PMR-T6KF regression guard — the personal plan route must NOT
+// carry the old inline flow: no inline epic/subtask decomposition, no
+// existing-tree refresh step, no plan-state heredoc resume parsing. The
+// skill's workflow and resume ladder own all of these.
+test('buildPlanPrompt: personal plan route has no inline decomposition or resume parsing', () => {
+  const prompt = buildPlanPrompt(PERSONAL)
   assert.ok(
-    !/aven epic create/.test(prompt),
-    'prompt must not reference the nonexistent "aven epic create" command',
+    !/aven epic add <child-ref>/.test(prompt),
+    'no inline subtask linking on the plan branch',
   )
-  assert.match(prompt, /aven edit PMR-F7YM --epic on/)
+  assert.ok(!/aven epic list/.test(prompt), 'no existing-tree refresh step')
+  assert.ok(!/aven epic remove/.test(prompt), 'no existing-tree refresh step')
+  assert.ok(!/--epic on/.test(prompt), 'no inline epic conversion')
+  assert.ok(!/value<<EOF/.test(prompt), 'no plan-state heredoc parsing')
 })
 
 // --- W76D gates ---

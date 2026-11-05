@@ -1,17 +1,12 @@
 // AIDEV-NOTE: Prompt handed to the pi agent via sendUserMessage after /plan
-// resolves args/mode/path. Work mode routes to the user's existing
-// feature-plan-aven skill BY NAME — its logic is never reimplemented here
-// (regression-guarded by test). Personal mode is the size-check flow;
-// the decomposition gate lives in plan/split-gate.ts. Existing epics take
-// the tree-refresh path (step 2): a ticket that already has children is
-// confirmed/ordered, never decomposed again. Epic creation uses real aven
-// commands only — `aven edit <ref> --epic on` converts the ticket itself;
-// there is no "aven epic create". PMR-QRJA: the PLAN route ends in
-// plan-state=review; flow_phase_complete (and the "planned" label) runs only
-// after spec approval via spec_approve / /spec-review. PMR-3HMZ: the
-// personal ONESHOT route skips spec approval entirely — after the human
-// confirms the oneshot split the prompt closes the phase via
-// flow_phase_complete directly (no plan-state=review, no spec_approve wait).
+// resolves args/mode/path. BOTH modes delegate planning to the user's
+// existing feature-plan-aven skill BY NAME — its logic is never
+// reimplemented here (regression-guarded by test). Personal mode keeps only
+// the size check + ONESHOT escape inline (PMR-3HMZ); on a 'plan' verdict it
+// delegates to the skill exactly like work mode (PMR-T6KF). The plan route
+// ends in plan-state=review; flow_phase_complete (and the "planned" label)
+// runs only after spec approval (PMR-QRJA) — the skill's resume ladder owns
+// all resume states, so there is no tree-refresh or plan-state parsing here.
 
 export interface PlanPromptInput {
   mode: 'work' | 'personal'
@@ -19,7 +14,7 @@ export interface PlanPromptInput {
   planPath: string
 }
 
-const WORK_SUFFIX = `
+const APPROVAL_SUFFIX = `
 When the skill workflow is FULLY complete — including the user's explicit
 approval and the aven phase/subtask hierarchy — set the ticket status to
 "todo" and call the flow_phase_complete tool with ref=<ticket ref> and
@@ -39,35 +34,20 @@ export function buildPlanPrompt(input: PlanPromptInput): string {
 Invoke the user's existing feature-plan-aven skill (engineering:feature-plan-aven)
 for the Jira ticket ${input.ref}. Follow its workflow exactly — pickup,
 interview, scout, planner, plan.md, aven phase/subtask hierarchy — unchanged.
-${WORK_SUFFIX}`
+${APPROVAL_SUFFIX}`
   }
   return `${header}
 Personal aven flow. Steps:
 
 1. Fetch ticket ${input.ref} and any aven notes on it (extra info).
-2. Existing-tree check: run \`aven epic list ${input.ref}\`. If the ticket
-   already HAS children it is an existing epic — never decompose it again:
-   - Present the child list (refs, titles, statuses) via ask_user_question
-     and confirm the tree is current. Add or remove children first when the
-     human asks (aven epic add <child> ${input.ref} /
-     aven epic remove <child> ${input.ref}).
-   - When execution order matters and is not yet encoded, confirm the order
-     with the human and encode it as dependency links:
-     aven dep add <blocked-child> <blocker-child>.
-   - Write (or refresh) the plan.md to: ${input.planPath} — the tree, the
-     execution order, and per-child intent — and record its location:
-     aven edit ${input.ref} --metadata plan-path=${input.planPath}
-   - call the open_in_pane tool with that path to open it with nvim in a
-     herdr review pane for the user to review. Skippable if herdr is
-     unavailable or the user declines — never block on it.
-   - Skip to step 6.
-3. No children yet — run the size check (classifySize heuristic):
+2. Run the size check (classifySize heuristic):
    - single-file / one-module change with one test surface → 'oneshot'
    - anything touching the data model, cross-package, or with multi-step
      test implications → 'plan'
-4. Use ask_user_question to present the verdict with its reasons and let the
-   human CONFIRM the split. Never decompose without explicit confirmation.
-5. If confirmed as oneshot:
+3. Use ask_user_question to present the verdict with its reasons and let the
+   human CONFIRM the route. Never proceed past this gate without explicit
+   confirmation.
+4. If confirmed as oneshot:
    - set the type label "oneshot" on the ticket (no epic),
    - enrich the description with any useful aven-note context,
    - the plan for this ticket IS its description; skip writing a plan file,
@@ -76,40 +56,18 @@ Personal aven flow. Steps:
      (no plan-state metadata, no spec_approve or /spec-review wait). Call
      the flow_phase_complete tool with ref=${input.ref} and phase="plan"
      right away — its result confirms the "planned" label landed — then end
-     the phase. Skip steps 6-7.
-   If confirmed as plan:
-   - make the ticket itself the epic: aven edit ${input.ref} --epic on,
-   - create each subtask (aven add "<title>" --status backlog) and link it:
-     aven epic add <child-ref> ${input.ref},
-   - set the "plan" label on the epic; subtasks inherit via epic membership,
-   - write the plan.md to: ${input.planPath}
-   - record its location: aven edit ${input.ref} --metadata
-     plan-path=${input.planPath}
-   - call the open_in_pane tool with that path to open it with nvim in a
-     herdr review pane for the user to review. Skippable if herdr is
-     unavailable or the user declines — never block on it.
-6. PLAN ROUTE ONLY (oneshots already closed the phase in step 5).
-   Resume check FIRST — run \`aven show ${input.ref} --full\` and read the
-   plan-state metadata block (trust only \`metadata field_id=... key=plan-state\`
-   blocks followed by a value<<EOF ... EOF heredoc; description text may
-   mention the words). If the ticket is ALREADY at plan-state=approved, the
-   plan was approved in an earlier run — do NOT set plan-state=review again;
-   skip straight to step 7 and call the flow_phase_complete tool.
-   Otherwise put the plan in review — the PLAN route only — set the ticket
-   status to "todo" and mark the plan for human spec review:
-   aven edit ${input.ref} --metadata plan-state=review
-   (the /spec-review command lists it for the user). Do NOT call the
-   flow_phase_complete tool yet. End the phase without the "planned"
-   label — a premature "planned" misroutes /implement, which routes
-   oneshot vs plan from the type labels only after approval.
-7. ONLY after the plan is approved — plan-state=approved, set by the
-   spec_approve tool or the /spec-review command — call the
-   flow_phase_complete tool with ref=<ticket ref> and phase="plan"; it
-   applies the "planned" label after re-checking the gates and its result
-   confirms the label landed. If the user does not approve, leave the
-   ticket at plan-state "review" WITHOUT the "planned" label and end the
-   phase — the flow halts and resumes at plan via /flow.
-
-NEVER convert the ticket to an epic or create subtasks before the explicit
-confirm answer. NEVER decompose a ticket that already has children.`
+     the phase. Skip step 5.
+5. If confirmed as plan:
+   Invoke the user's existing feature-plan-aven skill
+   (engineering:feature-plan-aven) for the personal aven ticket ${input.ref}.
+   Follow its workflow exactly — pickup, interview, scout, planner, plan.md,
+   approval, aven phase/subtask hierarchy — unchanged.
+   The skill's resume ladder owns ALL resume states (no plan.md yet, draft,
+   review, approved, existing children) — do NOT re-check the epic tree or
+   parse plan-state here.
+   In personal mode the skill's own approval (plan-state=approved, set when
+   the user says "approve") is authoritative; the flow_phase_complete gate
+   only reads plan-state, so /spec-review and the spec_approve tool stay
+   compatible with this flow.
+${APPROVAL_SUFFIX}`
 }

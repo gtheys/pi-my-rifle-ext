@@ -207,9 +207,9 @@ export function registerPhaseCommands(pi: ExtensionAPI): void {
     },
   })
 
-  // AIDEV-NOTE: Work mode routes to the user's feature-plan-aven skill by
-  // name; personal mode runs the size-check flow. Decomposition only via
-  // plan/split-gate.ts after explicit confirm.
+  // AIDEV-NOTE: Both modes route to the user's feature-plan-aven skill by
+  // name; personal mode keeps only the size check + oneshot escape inline
+  // and delegates the plan verdict to the skill (PMR-T6KF).
   registerPhaseCommand(pi, {
     name: 'plan',
     description:
