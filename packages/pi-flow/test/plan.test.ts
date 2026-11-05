@@ -80,7 +80,6 @@ test('classifySize: multiple hits → multiple reasons', () => {
 const PERSONAL = {
   mode: 'personal',
   ref: 'PMR-F7YM',
-  planPath: '/x/plan.md',
 } as const
 
 // Regression guard: work-mode route must hand off to the existing
@@ -89,7 +88,6 @@ test('buildPlanPrompt: work mode references feature-plan-aven + Jira ref', () =>
   const prompt = buildPlanPrompt({
     mode: 'work',
     ref: 'DP-123',
-    planPath: '/x/plan.md',
   })
   assert.match(prompt, /feature-plan-aven/)
   assert.match(prompt, /DP-123/)
@@ -104,11 +102,16 @@ test('buildPlanPrompt: personal plan route delegates to feature-plan-aven by nam
   assert.match(prompt, /personal aven ticket PMR-F7YM/)
   assert.match(prompt, /resume ladder owns ALL resume states/)
   // Personal-mode approval: the skill's own approval is authoritative; the
-  // flow_phase_complete gate only reads plan-state, so /spec-review and
-  // spec_approve stay compatible.
+  // flow_phase_complete gate checks only lifecycle-label order (it never
+  // reads plan-state), so flow_phase_complete must wait for plan-state=approved.
   assert.match(prompt, /plan-state=approved/)
   assert.match(prompt, /authoritative/)
   assert.match(prompt, /spec_approve/)
+  assert.match(prompt, /never reads plan-state/)
+  assert.ok(
+    !/only reads plan-state/.test(prompt),
+    'prompt must not claim the gate reads plan-state',
+  )
 })
 
 test('buildPlanPrompt: personal mode keeps size check + confirm gate', () => {
@@ -129,7 +132,6 @@ test('buildPlanPrompt: personal plan route shares the approval suffix', () => {
   const work = buildPlanPrompt({
     mode: 'work',
     ref: 'DP-123',
-    planPath: '/x/plan.md',
   })
   for (const prompt of [personal, work]) {
     assert.match(prompt, /"planned" label lands\s+ONLY after approval/)

@@ -4,7 +4,6 @@
 // and phase logic can never drift between a human invocation and a
 // flow-driven one. The loop never "reimplements" a phase — it calls these
 // same builders the commands call.
-import path from 'node:path'
 import {
   brainstormArtifactPath,
   resolveBrainstormDir,
@@ -17,7 +16,6 @@ import { classifyBrainstormTarget } from '../brainstorm/refs.ts'
 import { buildFeedbackPrompt } from '../feedback/prompt.ts'
 import { buildImplementPrompt } from '../implement/prompt.ts'
 import { routeFor } from '../implement/routing.ts'
-import { resolvePlanDir } from '../plan/paths.ts'
 import { buildPlanPrompt } from '../plan/prompt.ts'
 import { resolveDevctlScriptsDir } from '../validate/paths.ts'
 import { buildValidatePrompt } from '../validate/prompt.ts'
@@ -137,18 +135,9 @@ async function brainstormPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
 }
 
 function planPrompt(input: PhasePromptInput): PhasePrompt {
-  const repoName = input.gitRoot.split('/').pop() ?? 'unknown'
-  const dir = resolvePlanDir(
-    process.env.PERSONAL_FEATURES,
-    repoName,
-    input.gitRoot,
-    new Date().toISOString().slice(0, 10),
-    input.ref,
-  )
-  const planPath = path.join(dir, 'plan.md')
   return {
     kind: 'send',
-    prompt: buildPlanPrompt({ mode: input.mode, ref: input.ref, planPath }),
+    prompt: buildPlanPrompt({ mode: input.mode, ref: input.ref }),
   }
 }
 

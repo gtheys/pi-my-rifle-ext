@@ -11,7 +11,6 @@
 export interface PlanPromptInput {
   mode: 'work' | 'personal'
   ref: string
-  planPath: string
 }
 
 const APPROVAL_SUFFIX = `
@@ -67,7 +66,9 @@ Personal aven flow. Steps:
    parse plan-state here.
    In personal mode the skill's own approval (plan-state=approved, set when
    the user says "approve") is authoritative; the flow_phase_complete gate
-   only reads plan-state, so /spec-review and the spec_approve tool stay
+   checks only lifecycle-label order — it never reads plan-state — so call
+   flow_phase_complete ONLY after the skill's approval has set
+   plan-state=approved. /spec-review and the spec_approve tool stay
    compatible with this flow.
 ${APPROVAL_SUFFIX}`
 }
