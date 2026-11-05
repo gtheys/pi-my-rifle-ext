@@ -22,6 +22,12 @@ function errorText(error: unknown): string | undefined {
   return undefined
 }
 
+// AIDEV-NOTE: PMR-XQ7Y — the 'already exists' text match is legacy
+// defence only: current `aven label create` is idempotent (a duplicate
+// prints created-label and exits 0, verified), so this branch is normally
+// unreachable. aven exposes no distinct exit code for it.
+// AIDEV-TODO: drop the message match if aven stays idempotent; key off an
+// exit code if aven ever reintroduces a duplicate error with one.
 export function classifyLabelFailure(error: unknown): LabelFailure {
   const code = (error as { code?: unknown })?.code
   if (code === 'ENOENT') {
