@@ -19,13 +19,16 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
 - `flow_land` — verifies `review-passed` (and the `blockers_count` artifact
   when given) before authorizing a push (personal) or PR creation (work).
 - `flow_run_attempt` — records each test attempt against the retry budget.
+- `deviation_review` / `code_review` — validate-phase gates (see step 3).
+- `spec_publish` — publishes an approved plan after `spec_approve`.
 - `spec_approve` — the only path from plan-state `review` → `approved`
   (explicit "approve <REF>" only); a `/flow` run pauses gracefully while a
   spec awaits approval instead of halting.
 
 1. **Plan** — work: `feature-plan-aven` skill (epic/dep tree, plan-state
-   approval gate); personal: size check → human-confirmed oneshot-vs-plan
-   split, plan.md + epic tree → `planned`.
+   approval gate); personal: now also delegates to the `feature-plan-aven`
+   skill (the old split-gate module was removed); a personal oneshot skips
+   the spec-approval gate → `planned`.
 2. **Implement** — gate: `planned` required; worktree isolation; routes
    bug / plan / oneshot; retry budget **3 total attempts** (the 3rd failure
    escalates and refuses further attempts) → blocked + escalate →
@@ -33,8 +36,10 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
 3. **Validate** — work: ordered cluster gate (minikube → connectivity →
    queues → deploy → manual tests → Jira evidence comment); personal: the
    human runs the test. Then the **review gate**: `/review` →
-   `blockers_count` artifact; 0 → land, >0 → back to implement →
-   `review-passed`.
+   `blockers_count` artifact; 0 → `deviation_review` (spec vs diff; routes
+   on `deviations_count`) → personal mode also `code_review` (human tuicr
+   pass) → `review-passed`; >0 → back to implement. `flow_land` is
+   single-use and ref-scoped.
 4. **Feedback** — work: `/sonarqube` + `/pr-quality` triage (mechanical
    fixes committed; anything behavioral → new task through the gates);
    personal: re-review + outcome summary note → `done`.

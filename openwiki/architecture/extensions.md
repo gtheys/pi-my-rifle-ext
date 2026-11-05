@@ -179,9 +179,11 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
 - **What:** Microsoft Graph (app-only) access to Teams meeting transcripts:
   list meetings, list/download transcripts, plus sync/summarize/weekly/push
   workflows over synced `.vtt` + `.md` stubs. `/teams-transcript-push` pushes
-  notes + raw transcripts into a remote ZenNotes workspace vault via the `zn`
-  CLI (config `znServer`/`znToken` or `ZENNOTES_SERVER`/`ZENNOTES_REMOTE_TOKEN`),
-  dedup-checked per file and moved to `outDir/pushed/` so re-runs are no-ops.
+  meeting notes into an Obsidian vault Meetings folder by plain filesystem copy
+  (config `vaultMeetings`; no server/token/CLI), skipping existing files and
+  moving processed staging files to `outDir/pushed/` so re-runs are no-ops.
+  `weekly` and `projects` config point at the vault too (ISO-week notes,
+  project-note cross-linking).
 - Tenant settings gate everything (Graph access master switch, speaker
   attribution) — see the README troubleshooting table for the exact 403 modes.
 
@@ -212,7 +214,8 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
 - **Files:** `packages/pi-flow/index.ts` (wiring only — registrations +
   enforcement interceptors; decisions live in pure modules), `aven/` (client:
   every aven shell-out), `config.ts` + `work-mode.ts` + `mode-profile.ts`
-  (config boundary + work/personal mode), `tools/` (the four gate tools),
+  (config boundary + work/personal mode), `tools/` (the gate tools: phase-complete, land, run-attempt, spec-approve,
+  deviation, code-review + `code-review-parse.ts`),
   `flow/` (loop, args, label-gate, land-gate, ensure-labels, aven-resolve,
   ref-kind, jira-ref, phase-command, phase-prompts, orchestrate),
   `spec-review/` (approve, aven-spec, publish, open-in-pane, picker),
@@ -223,7 +226,7 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   sync).
 - **Commands:** `/brainstorm` (standalone), `/plan`, `/implement`, `/validate`, `/feedback`,
   `/flow` (orchestrator loop), `/spec-review`, `/spec-publish`, `/review-spec`,
-  the absorbed `/review`, `/sonarqube`, `/pr-quality`, `/pr-watch`, plus the
+  `/code-review <ref>` (human review gate), the absorbed `/review`, `/sonarqube`, `/pr-quality`, `/pr-watch`, plus the
   Herdr pair `/flow-view <ref>` and `/herdr-sync`.
 - **Tools (agent-callable gates):** `flow_phase_complete` (the ONLY way to write
   lifecycle labels — direct `aven edit --label` mutations are blocked by
@@ -232,10 +235,22 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   `git push` / `gh pr create` are blocked by `flow/land-gate.ts` while a flow
   is active), `flow_run_attempt` (owns the retry budget: **3 total attempts**,
   the 3rd failure returns an escalation error and further attempts are
-  refused), `spec_approve` (only path from plan-state `review` → `approved`).
+  refused), `spec_approve` (only path from plan-state `review` → `approved`),
+  `spec_publish` (agent-callable twin of `/spec-publish`; call after
+  `spec_approve`), `deviation_review` (validate-phase spec-deviation gate:
+  spawns a fresh-context reviewer, parses the artifact strictly — an error or
+  malformed artifact is never "0 deviations"; routes on `deviations_count`),
+  `code_review` (human review gate: resolves the ref's worktree incl. external
+  ones, opens `tuicr` in a herdr tab, asks pass/fail; pass records the
+  human-review marker, fail records findings as an aven note; agent-attested
+  `outcome="pass"` is refused when the blocking ask exists).
+  `flow_land` authorization is **single-use and ref-scoped**; personal
+  `push-main` additionally requires the human code-review pass marker.
   Plus the absorbed agent tools: `resolve_spec_path`, `resolve_feature_path`,
   `open_in_pane`, `jira_create_branch` (from pi-planning), `review`,
   `sonarqube`, `pr_quality` (from pi-review), `worktree` (from pi-worktree).
+- **Research phase removed:** the old research phase is gone from the
+  lifecycle; `research/` was renamed `brainstorm/` (standalone `/brainstorm`).
 - **What:** Drives the PIV phases (plan → implement → validate → feedback) with aven
   labels as run state (`planned → active → review-passed → done`). `/flow` injects one
   phase prompt at a time and advances only when the phase turn settles **and**

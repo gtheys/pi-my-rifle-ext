@@ -56,6 +56,17 @@ offers the ocr-delegate preset, below).
   `endReviewInProgress`) — only one review can be active at a time, by design; see the
   in-file comment for why this isn't per-session state.
 
+## Validate-phase gates (`deviation_review`, `code_review`)
+
+Beyond `/review`, validate runs two more gates (`packages/pi-flow/tools/`):
+- `deviation_review` (`review/deviation.ts`, `validate/deviation-gate.ts`) —
+  fresh-context reviewer compares spec text vs the diff; strict artifact
+  parsing, parse error = re-run, never 0 deviations.
+- `code_review` (`tools/code-review.ts`, `code-review-parse.ts`) — human gate:
+  opens `tuicr` on the flow worktree (matched by title-derived branch; external
+  worktrees accepted), human answers pass/fail. Required before personal
+  `flow_land route=push-main`.
+
 ## `/sonarqube` — `packages/pi-flow/sonarqube/sonarqube.ts`
 
 Rewrite of legacy `salaryhero/opencode/bin/sonar-*` bash scripts as a typed pi
