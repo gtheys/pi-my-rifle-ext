@@ -215,6 +215,16 @@ test('resolveReviewWorktree: unparseable title skips herdr title match', async (
   )
 })
 
+test('resolveReviewWorktree: no herdr match names the expected branch', async () => {
+  const deps = baseDeps()
+  deps.avenShowFull = async () => TITLE_LINE
+  deps.herdrWorktreeList = async () => [wt('feat/other', '/repo/.wt/o')]
+  await assert.rejects(
+    () => resolveReviewWorktree('PMR-ABC1', deps),
+    /expected branch feat\/alpha-gate/,
+  )
+})
+
 test('resolveReviewWorktree: note hit with branch mismatch falls through', async () => {
   const deps = baseDeps()
   deps.avenShowFull = async () => NOTE_FIXTURE

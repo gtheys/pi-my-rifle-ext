@@ -335,6 +335,10 @@ export async function resolveReviewWorktree(
       return { path: hit.path, branch: hit.branch, source: 'herdr' }
     }
     failures.push(`herdr: ${verified.reason}`)
+  } else if (expected !== null) {
+    failures.push(
+      `herdr: no linked worktree matched ${ref} or expected branch ${expected}`,
+    )
   }
 
   throw new Error(
