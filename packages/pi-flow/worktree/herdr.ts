@@ -83,7 +83,8 @@ export function filterLinked(worktrees: HerdrWorktree[]): HerdrWorktree[] {
   return worktrees.filter((wt) => wt.isLinked)
 }
 
-function extractResult(root: unknown): unknown {
+/** Extract the `{result: ...}` envelope; the payload itself when absent. */
+export function extractResult(root: unknown): unknown {
   if (isRecord(root) && isRecord(root.result)) {
     return root.result
   }

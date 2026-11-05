@@ -17,12 +17,16 @@ import { toolResult } from './result.ts'
 // AIDEV-NOTE: shared with the bash tool_call interceptor in index.ts — the
 // interceptor refuses git push / gh pr create for the active flow ref until
 // this state names it.
+// AIDEV-NOTE: PMR-T8ZG — humanReviewPassed records the human code-review
+// gate pass for the ref (set ONLY by the code_review tool). Write-only here:
+// the flow_land CHECK that reads it is sibling ticket PMR-C6AK.
 export interface LandingState {
   authorized: string | null
+  humanReviewPassed: string | null
 }
 
 export function createLandingState(): LandingState {
-  return { authorized: null }
+  return { authorized: null, humanReviewPassed: null }
 }
 
 export function registerLandTool(pi: ExtensionAPI, state: LandingState): void {

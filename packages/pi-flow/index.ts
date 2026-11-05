@@ -52,6 +52,8 @@ import { recordRunEvent, runStatePath } from './run-state.ts'
 import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
+import { registerCodeReviewTool } from './tools/code-review.ts'
+import { buildCodeReviewGatePrompt } from './tools/code-review-parse.ts'
 import { registerDeviationReviewTool } from './tools/deviation.ts'
 import { createLandingState, registerLandTool } from './tools/land.ts'
 import { registerPhaseCompleteTool } from './tools/phase-complete.ts'
@@ -152,6 +154,10 @@ export default function (pi: ExtensionAPI) {
 
   registerPhaseCompleteTool(pi)
   registerLandTool(pi, landingState)
+  // AIDEV-NOTE: PMR-T8ZG — the human code-review gate (PMR-3ZY1): the
+  // code_review tool shares landingState with flow_land so a pass recorded
+  // here is visible to the later flow_land check (PMR-C6AK, not wired yet).
+  registerCodeReviewTool(pi, landingState)
   // AIDEV-NOTE: PMR-R9EN — the deviation gate is a registered tool so the
   // validate prompt can instruct the agent to CALL something (D3/D4) instead
   // of naming TS functions it cannot invoke.
@@ -192,6 +198,30 @@ export default function (pi: ExtensionAPI) {
 
   registerPhaseCommands(pi)
   registerSpecCommands(pi)
+
+  // AIDEV-NOTE: PMR-T8ZG — human entry point of the code-review gate. The
+  // command resolves the ref and sends the gate prompt via sendUserMessage
+  // (phase-command pattern); the code_review tool owns everything else.
+  // Agents cannot invoke slash commands, which is exactly why the tool exists.
+  pi.registerCommand('code-review', {
+    description:
+      'Run the human code-review gate for a flow ref. Usage: /code-review <jira-id | aven-ref>',
+    handler: async (args, ctx) => {
+      const raw = args.trim()
+      if (raw === '') {
+        ctx.ui.notify('Usage: /code-review <jira-id | aven-ref>', 'info')
+        return
+      }
+      const kinded = parseRefKind(raw)
+      let ref: string
+      if (kinded.kind === 'jira') {
+        ref = kinded.jiraId
+      } else {
+        ref = kinded.ref
+      }
+      pi.sendUserMessage(buildCodeReviewGatePrompt(ref))
+    },
+  })
 
   pi.registerCommand('flow', {
     description:
