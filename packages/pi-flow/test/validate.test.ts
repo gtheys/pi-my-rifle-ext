@@ -298,3 +298,129 @@ test('parseValidateArgs: kind prefixes force the kind (PMR-PCVK)', () => {
     jiraId: 'DP-71',
   })
 })
+
+// --- PMR-C6AK: personal code-review gate in the validate prompt ---
+
+test('buildValidatePrompt: personal step 9 routes through the code_review tool', () => {
+  const p = buildValidatePrompt({
+    mode: 'personal',
+    ref: 'PMR-C6AK',
+    scriptsDir: null,
+  })
+  assert.ok(p.includes('code_review tool with ref=PMR-C6AK'))
+  // ordering: human test gate -> /review blockers -> deviation gate -> code_review -> land/push
+  const codeReview = p.indexOf('code_review tool with ref=PMR-C6AK')
+  const reviewGate = p.indexOf('blockers_count')
+  const deviationGate = p.indexOf('Deviation gate')
+  const land = p.indexOf('flow_land')
+  assert.ok(reviewGate > 0)
+  assert.ok(deviationGate > reviewGate)
+  assert.ok(codeReview > deviationGate, 'code_review gate after deviation gate')
+  assert.ok(
+    land > codeReview,
+    'flow_land only after the human code-review pass',
+  )
+  assert.ok(p.includes('push-main'))
+  assert.ok(p.includes('tuicr'))
+})
+
+test('buildValidatePrompt: personal fail route names the tool-noted findings and /implement', () => {
+  const p = buildValidatePrompt({
+    mode: 'personal',
+    ref: 'PMR-C6AK',
+    scriptsDir: null,
+  })
+  assert.match(p, /On fail: the code_review tool already recorded/)
+  assert.ok(p.includes('/implement PMR-C6AK'))
+})
+
+test('buildValidatePrompt: work-mode output is byte-identical (pin, PMR-C6AK)', () => {
+  const p = buildValidatePrompt({
+    mode: 'work',
+    ref: 'DP-71',
+    scriptsDir: '/x/sh-devctl/scripts',
+  })
+  const expected = `Validate phase (PIV flow). Mode: work. Ref: DP-71.
+Run the work-mode validation gate. Execute these steps IN ORDER and do not skip
+or reorder any of them. Every step must succeed before the next one starts.
+
+1. Minikube (bounded): run \`minikube status\`. If it is not Running:
+   run \`minikube start\`, then poll \`minikube status\` until Running —
+   at most 12 attempts,
+   10s apart. If it is still not
+   Running after the bound, the gate FAILS (never hang the flow).
+2. Connectivity: run \`/x/sh-devctl/scripts/test-services-connectivity.sh\` — must exit 0.
+3. SQS queues: run \`/x/sh-devctl/scripts/add-sqs-queues.sh\` — must exit 0.
+4. Deploy: use the user's devctl skill to deploy the affected services
+   (from the plan's validation notes) to the local cluster.
+5. Manual tests: read the plan's validation notes for the manual checks.
+   Collect each check's result from the human via ask_user_question
+   (pass/fail + evidence). A single fail fails the gate.
+6. Jira evidence comment: via acli, post a comment on DP-71 describing
+   HOW the change was validated — what was deployed, which tests ran, and the
+   evidence from steps 1-5.
+
+Completion rule: the phase passes ONLY after the Jira comment from step 6 has
+landed. Track progress against the ordered gate steps
+(minikube, connectivity, queues, deploy, manual-tests, jira-comment).
+
+On ANY step failure: STOP. Write the failing step's name and its full failing
+output as an aven note on DP-71, and report the failure to the human.
+Never continue past a failed step, never mark the phase validated.
+
+Review gate — run ONLY after validation has fully passed:
+
+7. Run /review on this change (the fresh-context reviewer). When it returns,
+   write the review artifact's verdict as machine-readable lines — exactly
+   one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
+   0 when clean) plus one "- blocker: <description>" line per blocker:
+   blockers_count: 0
+   - blocker: <description> (omit this line entirely when N is 0)
+8. Read the count. NEVER treat a missing or malformed count as 0 — a
+   malformed artifact means re-run /review, not silent landing.
+9. If blockers_count is 0: call the flow_phase_complete tool with ref=DP-71
+   and phase="validate" — it applies the "review-passed" label after
+   re-checking the gates, and its result confirms the label landed; without
+   it the flow halts at validate. Then call the flow_land tool with
+   ref=DP-71 and the route (pr) — it authorizes the landing;
+   while the flow is active, direct git push / gh pr create are BLOCKED
+   until flow_land returns ok. On ok, run the landing step:
+   push the branch and create a PR via
+   the gh CLI, then post a Jira comment on
+   DP-71 linking the PR URL.
+10. If blockers_count > 0: record each blocker as an aven note on DP-71,
+   route back to /implement DP-71 (retry budget applies), and STOP — do
+   not land.
+
+Deviation gate — run ONLY after the review gate returned blockers_count: 0,
+and BEFORE the flow_phase_complete(phase="validate") / flow_land calls named
+in review-gate step 9. Steps, in order:
+
+D1. Resolve the spec source. Resolve the spec file path via the resolve_spec_path tool
+   (repo from the git remote, slug from the Jira summary) and read that spec
+   file. Also fetch the Jira ticket text via acli.
+D2. Mine the why-inputs: commit messages via git log against the flow's base
+   (the commit flow started from), and recent aven notes on DP-71 via the
+   existing aven client (interview note, worktree note, oneshot outcome,
+   escalation notes).
+D3. Run the deviation reviewer: call the deviation_review tool with
+   mode="work", the resolved spec text (D1), the git diff vs base, and
+   the mined commit messages and aven notes (D2). Await its result.
+D4. Read the tool result. The tool already parses the artifact STRICTLY
+   (deviations_count contract). An ERROR tool result (spawn failure or
+   malformed artifact) means re-run deviation_review — NEVER treat it as 0
+   deviations, never silent landing. On ok, continue with the returned
+deviations_count.
+D5. Route on the returned deviations_count:
+   - 0 deviations: record an aven note on DP-71 reading
+     "no deviation from spec", then continue to flow_phase_complete with
+     ref=DP-71 and phase="validate", then flow_land (review-gate step 9).
+   - more than 0: present the full deviation report to the human via
+     ask_user_question with exactly two options: "accept" and "fix". WAIT
+     for the answer. Record the human decision as an aven note on DP-71
+     either way. On "accept": proceed to flow_phase_complete with ref=DP-71
+     and phase="validate", then flow_land. On "fix": record the deviation
+     report as an aven note on DP-71, route back to /implement DP-71 with
+     the deviation report, and STOP — do not land.`
+  assert.equal(p, expected)
+})

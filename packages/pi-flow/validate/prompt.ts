@@ -18,6 +18,13 @@ import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
 // route. The contract wording lives in review-gate.ts; review/verdict.ts
 // emits the verdict section natively from those shared constants
 // (PMR-5PCB), and this prompt restates it for artifacts written by hand.
+// AIDEV-NOTE: PMR-C6AK — the personal branch's step 9 is the HUMAN
+// code-review gate: the agent calls the code_review tool (tuicr on the flow
+// worktree), and only a human pass unlocks flow_phase_complete -> flow_land
+// (push-main) -> push. Ordering: human test gate -> /review blockers ->
+// deviation gate -> code_review -> labels/land/push, so review-passed can
+// only land after the human pass and the loop cannot advance to feedback
+// before the push.
 function buildReviewGateSection(
   mode: 'work' | 'personal',
   ref: string,
@@ -25,6 +32,23 @@ function buildReviewGateSection(
   // AIDEV-NOTE: the landing route is data (mode-profile.ts); only the prose
   // below is mode-keyed here.
   const landingRoute = MODE_PROFILE[mode].landingRoute
+  if (mode === 'personal') {
+    return `
+Review gate (part 1: /review + blockers) — run ONLY after validation has
+fully passed:
+
+7. Run /review on this change (the fresh-context reviewer). When it returns,
+   write the review artifact's verdict as machine-readable lines — exactly
+   one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
+   0 when clean) plus one "- blocker: <description>" line per blocker:
+${REVIEW_CONTRACT_PROMPT}
+8. Read the count. NEVER treat a missing or malformed count as 0 — a
+   malformed artifact means re-run /review, not silent landing.
+   On blockers_count > 0: record each blocker as an aven note on ${ref},
+   route back to /implement ${ref} (retry budget applies), and STOP. When
+   blockers_count is 0, the deviation gate below runs next, THEN the human
+   code-review gate at the end of this prompt.`
+  }
   let landing: string
   if (mode === 'work') {
     landing = `push the branch and create a PR via
@@ -57,6 +81,32 @@ ${REVIEW_CONTRACT_PROMPT}
    not land.`
 }
 
+// AIDEV-NOTE: PMR-C6AK — the personal human code-review gate, appended AFTER
+// the deviation gate so the textual order matches the execution order:
+// human test gate -> /review blockers -> deviation gate -> code_review ->
+// labels/land/push. Only a human pass unlocks flow_phase_complete ->
+// flow_land (push-main) -> push, so review-passed cannot land before the
+// human has seen the final state and the loop cannot reach feedback before
+// the push.
+function buildPersonalCodeReviewGate(ref: string): string {
+  return `
+Human code-review gate — run ONLY after the deviation gate returned
+0 deviations (or the human accepted the deviations):
+
+9. Call the code_review tool with ref=${ref} — it opens tuicr on the flow
+   worktree and waits for the human's pass/fail.
+   On pass: call the flow_phase_complete tool with ref=${ref} and
+   phase="validate" — it applies the "review-passed" label after
+   re-checking the gates; without it the flow halts at validate. Then call
+   the flow_land tool with ref=${ref} and the route (push-main) — direct
+   git push is BLOCKED until flow_land returns ok. On ok, push the branch
+   straight to main — the standing no-PR rule on own repos. No PR, no Jira
+   link step.
+10. On fail: the code_review tool already recorded the tuicr findings as an
+   aven note on ${ref}. Route back to /implement ${ref} (retry budget
+   applies), and STOP — do not land.`
+}
+
 // AIDEV-NOTE: Deviation gate section (PMR-BAGD) — appended to BOTH validate
 // prompts, AFTER the review gate section. Ordering contract: it runs once the
 // review gate returned blockers_count: 0, and BEFORE the flow_phase_complete
@@ -74,6 +124,11 @@ ${REVIEW_CONTRACT_PROMPT}
 // validate/deviation-gate.ts's parseDeviationArtifact).
 // Fail-closed everywhere: a missing/malformed spec source or artifact stops
 // the flow — never a silent pass.
+// AIDEV-NOTE: PMR-C6AK — mode-keyed routing targets. Work: unchanged (D5
+// continues into flow_phase_complete -> flow_land). Personal: the deviation
+// gate runs BEFORE the human code-review gate, so the 0-deviation and
+// "accept" routes continue into review-gate step 9's code_review call, not
+// straight to flow_land — the human still sees the final state.
 export function buildDeviationGateSection(
   mode: 'work' | 'personal',
   ref: string,
@@ -96,10 +151,27 @@ export function buildDeviationGateSection(
    unreadable: STOP and report to the human — never invent a spec, never
    proceed without one.`
   }
+  let gateBefore: string
+  let continueTarget: string
+  let acceptTarget: string
+  if (mode === 'work') {
+    gateBefore = `and BEFORE the flow_phase_complete(phase="validate") / flow_land calls named
+in review-gate step 9`
+    continueTarget = `then continue to flow_phase_complete with
+     ref=${ref} and phase="validate", then flow_land (review-gate step 9).`
+    acceptTarget = `On "accept": proceed to flow_phase_complete with ref=${ref}
+     and phase="validate", then flow_land.`
+  } else {
+    gateBefore = `and BEFORE the code_review call named in review-gate
+   step 9`
+    continueTarget = `then continue to the human code-review gate
+     (review-gate step 9: the code_review tool with ref=${ref}).`
+    acceptTarget = `On "accept": proceed to the human code-review gate
+     (review-gate step 9).`
+  }
   return `
 Deviation gate — run ONLY after the review gate returned blockers_count: 0,
-and BEFORE the flow_phase_complete(phase="validate") / flow_land calls named
-in review-gate step 9. Steps, in order:
+${gateBefore}. Steps, in order:
 
 D1. Resolve the spec source. ${specSource}
 D2. Mine the why-inputs: commit messages via git log against the flow's base
@@ -116,13 +188,11 @@ D4. Read the tool result. The tool already parses the artifact STRICTLY
 deviations_count.
 D5. Route on the returned deviations_count:
    - 0 deviations: record an aven note on ${ref} reading
-     "no deviation from spec", then continue to flow_phase_complete with
-     ref=${ref} and phase="validate", then flow_land (review-gate step 9).
+     "no deviation from spec", ${continueTarget}
    - more than 0: present the full deviation report to the human via
      ask_user_question with exactly two options: "accept" and "fix". WAIT
      for the answer. Record the human decision as an aven note on ${ref}
-     either way. On "accept": proceed to flow_phase_complete with ref=${ref}
-     and phase="validate", then flow_land. On "fix": record the deviation
+     either way. ${acceptTarget} On "fix": record the deviation
      report as an aven note on ${ref}, route back to /implement ${ref} with
      the deviation report, and STOP — do not land.`
 }
@@ -172,7 +242,8 @@ environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli
    aven note on ${input.ref}, and route back to /implement ${input.ref} — the
    retry budget resets for the new attempt.
 ${buildReviewGateSection('personal', input.ref)}
-${buildDeviationGateSection('personal', input.ref, isOneshot)}`
+${buildDeviationGateSection('personal', input.ref, isOneshot)}
+${buildPersonalCodeReviewGate(input.ref)}`
   }
   const scripts = input.scriptsDir
   return `${header}

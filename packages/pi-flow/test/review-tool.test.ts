@@ -5,7 +5,10 @@ import path from 'node:path'
 import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { isMuxAvailable } from '@gtheys/pi-interactive-subagents'
-import reviewExtension, { buildFullReviewPrompt } from '../review/review.ts'
+import reviewExtension, {
+  buildFullReviewPrompt,
+  skipOcrScout,
+} from '../review/review.ts'
 
 type CapturedCommand = { name: string; options: unknown }
 
@@ -126,4 +129,13 @@ test('buildFullReviewPrompt composes rubric + target prompt + guidelines', async
   } finally {
     await fs.rm(tmp, { recursive: true, force: true })
   }
+})
+
+// --- PMR-C6AK: ocr scout skip during personal-mode flows ---
+
+test('skipOcrScout: personal flow skips ocr, work flow and no flow keep it', () => {
+  assert.equal(skipOcrScout('PMR-ABC1', 'personal'), true)
+  assert.equal(skipOcrScout('PMR-ABC1', 'work'), false)
+  assert.equal(skipOcrScout(null, 'personal'), false)
+  assert.equal(skipOcrScout(null, 'work'), false)
 })

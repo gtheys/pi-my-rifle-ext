@@ -53,7 +53,12 @@ import {
   watchSubagent,
 } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
-import { clearFlowWorktree, getFlowWorktree } from '../flow/worktree-context.ts'
+import { resolveMode } from '../config.ts'
+import {
+  clearFlowWorktree,
+  getActiveFlowRef,
+  getFlowWorktree,
+} from '../flow/worktree-context.ts'
 import {
   herdrAvailable,
   worktreeCreate,
@@ -70,6 +75,17 @@ import { REVIEW_VERDICT_INSTRUCTIONS } from './verdict.ts'
 // This is intentional - the UI and /end-review command assume a single active review.
 let reviewOriginId: string | undefined
 let endReviewInProgress = false
+
+// AIDEV-NOTE: PMR-C6AK — pure gate for the ocr scout skip in
+// spawnReviewJobs. During an active personal-mode flow the code_review
+// human gate IS the second opinion, so the scout would only add noise; a
+// work-mode flow and a manual /review (no active flow) keep ocr.
+export function skipOcrScout(
+  activeFlowRef: string | null,
+  mode: 'work' | 'personal',
+): boolean {
+  return activeFlowRef !== null && mode === 'personal'
+}
 
 const REVIEW_STATE_TYPE = 'review-session'
 
@@ -1721,7 +1737,15 @@ ${result.summary}`
     // ocrDelegate is excluded — the reviewer itself applies the ocr rules.
     // custom is excluded — no diff equivalent.
     let ocrSpawned = false
-    if (await commandExists(pi, 'ocr')) {
+    // AIDEV-NOTE: PMR-C6AK — skip the scout during a personal-mode flow:
+    // the code_review human gate is the second opinion there. Manual /review
+    // without an active flow, and work-mode flows, keep ocr.
+    let skipScout = false
+    if (getActiveFlowRef() !== null) {
+      const mode = await resolveMode(pi, ctx.cwd)
+      skipScout = skipOcrScout(getActiveFlowRef(), mode)
+    }
+    if (!skipScout && (await commandExists(pi, 'ocr'))) {
       let scope: string | null = null
       let ocrArgs: string[] = []
       if (target.type === 'pullRequest') {

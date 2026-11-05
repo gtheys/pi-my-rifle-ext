@@ -18,8 +18,8 @@ import { toolResult } from './result.ts'
 // interceptor refuses git push / gh pr create for the active flow ref until
 // this state names it.
 // AIDEV-NOTE: PMR-T8ZG — humanReviewPassed records the human code-review
-// gate pass for the ref (set ONLY by the code_review tool). Write-only here:
-// the flow_land CHECK that reads it is sibling ticket PMR-C6AK.
+// gate pass for the ref (set ONLY by the code_review tool). The flow_land
+// CHECK that reads it lives below (PMR-C6AK) and gates route=push-main.
 export interface LandingState {
   authorized: string | null
   humanReviewPassed: string | null
@@ -39,7 +39,8 @@ export function registerLandTool(pi: ExtensionAPI, state: LandingState): void {
       'Gated landing for PIV flow runs — call before pushing the branch or creating the PR.',
     promptGuidelines: [
       'Call flow_land AFTER flow_phase_complete(phase="validate") and BEFORE git push / gh pr create — direct landing commands are blocked until it returns ok.',
-      'A refusal carries the gate reason (missing review-passed label, blockers in the artifact); fix the cause, do not retry the call.',
+      'For route=push-main (personal), call the code_review tool first — flow_land refuses until the human pass marker for the ref is recorded.',
+      'A refusal carries the gate reason (missing review-passed label, blockers in the artifact, missing human code-review pass); fix the cause, do not retry the call.',
     ],
     parameters: Type.Object({
       ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
@@ -62,6 +63,20 @@ export function registerLandTool(pi: ExtensionAPI, state: LandingState): void {
         artifact?: string
       },
     ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
+      // AIDEV-NOTE: PMR-C6AK — the human code-review gate check lives here
+      // (PMR-T8ZG wrote the field) so behavior flips in one child. Only
+      // route=push-main (personal) requires the marker recorded by the
+      // code_review tool for THIS ref; route=pr (work) is unchanged.
+      if (
+        params.route === 'push-main' &&
+        state.humanReviewPassed !== params.ref
+      ) {
+        return toolResult(
+          `flow_land refused landing ${params.ref} via push-main: the human code-review gate has not passed — call the code_review tool with ref=${params.ref} and collect the human's pass first`,
+          { ok: false, reason: 'human code-review gate not passed' },
+          { isError: true },
+        )
+      }
       const labels = await readAvenLabels(params.ref)
       const decision = landDecision(labels, params.artifact ?? null)
       if (!decision.ok) {

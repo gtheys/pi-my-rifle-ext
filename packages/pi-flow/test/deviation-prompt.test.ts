@@ -4,6 +4,7 @@ import {
   buildDeviationReviewPrompt,
   DEVIATION_MIN_SPEC_LENGTH,
 } from '../review/deviation.ts'
+import { buildDeviationGateSection } from '../validate/prompt.ts'
 
 const FULL_SPEC =
   'Add a save button to the settings panel. The button must persist the form to /api/settings and disable while the request is in flight.'
@@ -84,4 +85,29 @@ test('buildDeviationReviewPrompt: insufficient-spec prompt still carries the ver
   assert.ok(prompt.includes('## Deviation Verdict'))
   assert.ok(prompt.includes('deviations_count:'))
   assert.ok(prompt.includes('- deviation:'))
+})
+
+// --- PMR-C6AK: personal deviation gate routes to the code_review gate ---
+
+test('personal deviation gate: 0-deviation and accept targets are the code_review gate', () => {
+  const section = buildDeviationGateSection('personal', 'PMR-C6AK', false)
+  assert.match(section, /continue to the human code-review gate/)
+  assert.match(section, /On "accept": proceed to the human code-review gate/)
+  assert.match(section, /BEFORE the code_review call/)
+  assert.ok(!section.includes('then flow_land (review-gate step 9).'))
+})
+
+test('personal oneshot deviation gate keeps the same code_review targets', () => {
+  const section = buildDeviationGateSection('personal', 'PMR-C6AK', true)
+  assert.match(section, /continue to the human code-review gate/)
+})
+
+test('work deviation gate: targets unchanged (flow_phase_complete then flow_land)', () => {
+  const section = buildDeviationGateSection('work', 'DP-71', false)
+  assert.match(section, /continue to flow_phase_complete with/)
+  assert.match(section, /then flow_land \(review-gate step 9\)\./)
+  assert.match(
+    section,
+    /BEFORE the flow_phase_complete\(phase="validate"\) \/ flow_land calls/,
+  )
 })
