@@ -85,41 +85,6 @@ misclassified as the user); it is still used as an extraction caveat when set.
 Recall and observations are project-scoped (`autoRecallTags: ["{project}"]`) — do
 not re-add a global `user:` scope to recall unless cross-project leakage is wanted.
 
-## Memory (Cognee)
-
-Cognee is graph-based memory, separate from Hindsight. Two storage modes:
-
-- **Session cache** (`cognee_remember` with `session_id`): fast scratch notes for
-  THIS session only. No entity extraction. Use for temporary facts, decisions,
-  intermediate findings you may need later in the same session.
-- **Permanent graph** (`cognee_remember` without `session_id`): runs the full
-  add + cognify pipeline (entity extraction, graph build). Slower. Use for
-  durable knowledge: architectural decisions, project conventions, user
-  preferences, solutions to hard-won bugs.
-
-Recall with `cognee_recall`:
-
-- Ask a natural-language question; auto-routing picks the search strategy.
-- Pass `session_id` to search session cache first.
-- Use at session/task start to recover prior context, and before making
-  decisions that past sessions may have already settled.
-
-When to use which:
-
-| Situation | Tool |
-| --- | --- |
-| Short-lived working note, same session | `cognee_remember` + `session_id` |
-| Durable fact worth keeping across sessions | `cognee_remember` (no session_id) |
-| Need prior context / past decisions | `cognee_recall` |
-| Bridge session notes into permanent graph afterwards | `cognee_improve` with `session_ids` |
-
-Rule of thumb: Hindsight = automatic session flush; Cognee = explicit
-remember/recall for knowledge you deliberately want to keep or find.
-
-All SalaryHero specs are ingested into Cognee. When planning or speccing
-SalaryHero work, run `cognee_recall` first to surface relevant existing specs
-before writing new ones.
-
 ---
 
 ## Domain Glossary (learn these!)
