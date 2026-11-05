@@ -635,7 +635,7 @@ test('execute: pass via blocking ask records marker and note', async () => {
 
 test('execute: fail with tuicr comments routes back to /implement', async () => {
   await withFakeAvenPath(async () => {
-    const { exec } = gateExec({
+    const { exec, calls } = gateExec({
       listStdout: JSON.stringify([
         { slug: 'rev-1', updated_at: '2026-11-05T10:00:00+00:00' },
       ]),
@@ -656,6 +656,10 @@ test('execute: fail with tuicr comments routes back to /implement', async () => 
     const text = result.content.map((c) => c.text).join('\n')
     assert.match(text, /human FAIL/)
     assert.match(text, /\/implement PMR-ABC1/)
+    const tuicrCalls = calls
+      .filter((c) => c.cmd === 'tuicr')
+      .map((c) => c.args[1])
+    assert.deepEqual(tuicrCalls, ['list', 'comments'])
   })
 })
 
