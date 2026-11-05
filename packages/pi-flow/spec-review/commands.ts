@@ -55,6 +55,7 @@ async function runSpecPublish(
   ctx: ExtensionContext,
   params: { ref: string; workspace?: string },
   errorPrefix: string,
+  signal?: AbortSignal,
 ): Promise<SpecPublishOutcome> {
   function failure(text: string): SpecPublishOutcome {
     return { ok: false, text: `${errorPrefix}: ${text}` }
@@ -102,6 +103,7 @@ async function runSpecPublish(
     planFile: resolved.planFile,
     name: `spec-publish: ${params.ref}`,
     prefix: errorPrefix,
+    signal,
     cwd: toplevel,
     task: buildPublishWorkerTask({
       ref: params.ref,
@@ -271,12 +273,12 @@ export function registerSpecCommands(pi: ExtensionAPI): void {
     async execute(
       _toolCallId: string,
       params: { ref: string; workspace?: string },
-      _signal: AbortSignal | undefined,
+      signal: AbortSignal | undefined,
       _onUpdate: unknown,
       ctx: ExtensionContext,
     ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
       return specPublishToolResult(
-        await runSpecPublish(pi, ctx, params, 'spec_publish'),
+        await runSpecPublish(pi, ctx, params, 'spec_publish', signal),
       )
     },
   })

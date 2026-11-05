@@ -11,7 +11,7 @@ import {
   type SpecPublishOutcome,
   specPublishToolResult,
 } from '../spec-review/commands.ts'
-import { buildSpawnFailureText } from '../spec-review/publish.ts'
+import { buildSpawnFailureText, raceAbort } from '../spec-review/publish.ts'
 
 type CapturedCommand = { name: string; options: unknown }
 
@@ -164,4 +164,44 @@ test('buildSpawnFailureText: command text is unchanged', () => {
   const text = buildSpawnFailureText(SPAWN_INPUT, 'no mux')
   assert.match(text, /^\/spec-publish: could not spawn/)
   assert.match(text, /\nPublish manually:\n/)
+})
+
+test('raceAbort: abort releases a never-settling wait', async () => {
+  const controller = new AbortController()
+  const pending = raceAbort(
+    new Promise<string>(() => {}),
+    controller.signal,
+    () => 'aborted',
+  )
+  controller.abort()
+  assert.equal(await pending, 'aborted')
+})
+
+test('raceAbort: already-aborted signal short-circuits', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  assert.equal(
+    await raceAbort(
+      new Promise<string>(() => {}),
+      controller.signal,
+      () => 'aborted',
+    ),
+    'aborted',
+  )
+})
+
+test('raceAbort: wait result wins without abort, and no signal passes through', async () => {
+  const controller = new AbortController()
+  assert.equal(
+    await raceAbort(
+      Promise.resolve('done'),
+      controller.signal,
+      () => 'aborted',
+    ),
+    'done',
+  )
+  assert.equal(
+    await raceAbort(Promise.resolve('done'), undefined, () => 'aborted'),
+    'done',
+  )
 })

@@ -105,6 +105,28 @@ export interface SpawnPublishWorkerInput {
   planFile: string
   // Caller label, e.g. '/spec-publish' (command) or 'spec_publish' (tool).
   prefix?: string
+  // Releases the caller's wait only; the detached worker keeps running.
+  signal?: AbortSignal
+}
+
+// AIDEV-NOTE: PMR-YB4E — do NOT pass the caller signal into watchSubagent:
+// its abort path closes the worker pane, killing git mid-publish. Race the
+// wait against the signal instead so Esc releases the tool call while the
+// worker finishes on its own.
+export function raceAbort<T>(
+  wait: Promise<T>,
+  signal: AbortSignal | undefined,
+  onAbort: () => T,
+): Promise<T> {
+  if (signal === undefined) return wait
+  if (signal.aborted) return Promise.resolve(onAbort())
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => resolve(onAbort())
+    signal.addEventListener('abort', abort, { once: true })
+    wait.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', abort)
+    })
+  })
 }
 
 // AIDEV-NOTE: PMR-XE3W — the manual-publish block is for a human. The tool
@@ -151,8 +173,16 @@ export async function spawnPublishWorker(
     const msg = error instanceof Error ? error.message : String(error)
     return buildSpawnFailureText(input, msg)
   }
-  const result = await watchSubagent(running, new AbortController().signal)
-  const base = `${input.prefix ?? '/spec-publish'} worker "${result.name}" exited with code ${result.exitCode}`
+  const prefix = input.prefix ?? '/spec-publish'
+  const result = await raceAbort(
+    watchSubagent(running, new AbortController().signal),
+    input.signal,
+    () => null,
+  )
+  if (result === null) {
+    return `${prefix}: wait aborted; the publish worker "${input.name}" keeps running in the background — check the notes repo before retrying.`
+  }
+  const base = `${prefix} worker "${result.name}" exited with code ${result.exitCode}`
   if (result.exitCode === 0 && result.summary !== undefined) {
     return `${base}: ${result.summary}`
   }
