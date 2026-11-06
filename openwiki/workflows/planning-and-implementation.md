@@ -42,7 +42,7 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
    single-use and ref-scoped.
 4. **Feedback** — work: `/sonarqube` + `/pr-quality` triage (mechanical
    fixes committed; anything behavioral → new task through the gates);
-   personal: re-review + outcome summary note → `done`.
+   personal: no feedback phase — `/validate` writes the outcome summary note and sets `done` after the push.
 
 Brainstorming is standalone, not a flow phase: `/brainstorm <topic>` runs the
 question loop + scouts → artifact in `notes/brainstorm/` → ticket-creation

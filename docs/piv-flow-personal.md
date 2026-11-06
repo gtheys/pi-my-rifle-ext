@@ -40,7 +40,7 @@ What personal mode changes, in one table:
 | Plan phase | `feature-plan-aven` skill | pi-flow's own size-check + split-confirm flow |
 | Validate environment | minikube cluster gate | **you are the test environment** |
 | Landing | PR via gh | **push straight to main** (standing no-PR rule) |
-| Feedback | /sonarqube + /pr-quality triage | re-review + outcome summary note |
+| Feedback | /sonarqube + /pr-quality triage | no phase — validate writes the outcome summary note and sets `done` after the push |
 
 ---
 
@@ -67,7 +67,7 @@ arbitrary.
 
 ## 3. The whole flow at a glance
 
-`/flow` runs the PIV lifecycle — plan → implement → validate → feedback —
+`/flow` runs the PIV lifecycle — plan → implement → validate (personal; work adds feedback) —
 on an existing ticket. Before the flow, the standalone `/brainstorm <topic>`
 command can turn a bare topic into a ticket: question loop (WAIT per
 question) → scouts → artifact in `notes/brainstorm/` → ticket-creation gate
@@ -105,11 +105,7 @@ flowchart TD
     rev -- "count = 0" --> lblV["label: review-passed<br/>(flow_phase_complete)"]
     lblV --> land["flow_land route=push-main<br/>authorizes the push"]
     land --> push["git push to main<br/>(now unblocked)"]
-    push --> fb["FEEDBACK phase"]
-    fb --> rerev{"validate produced<br/>post-review fixes?"}
-    rerev -- yes --> rr["re-run /review<br/>same triage rules"]
-    rerev -- no --> summ
-    rr --> summ["OUTCOME SUMMARY note<br/>What shipped / Test evidence /<br/>Review verdict"]
+    push --> summ["OUTCOME SUMMARY note<br/>What shipped / Test evidence /<br/>Review verdict"]
     summ --> done["status: done<br/>label: done<br/>(flow_phase_complete)<br/>AUTO: flow complete"]
 
     style split fill:#f9d71c
@@ -369,23 +365,22 @@ a silent 0 would auto-land broken code.
   (label required, artifact cross-checked when supplied) and authorizes the
   landing — only then does `git push` to main pass the interceptor.
 
-**Exit:** `review-passed` label + pushed branch → AUTO to feedback.
+**Exit:** `review-passed` label + pushed branch → AUTO close-out (below).
 
-### 5.5 Feedback — the audit trail, then done
+### 5.5 Close-out — the audit trail, then done (inside validate)
 
-- If validate produced fixes after its review, `/review` re-runs on the
-  final state; blockers follow the same triage rules as work mode
-  (mechanical → fix + commit; anything behavioral/architectural/data, any
-  major+, any unknown severity → a NEW ticket through the full flow gates —
-  never a silent fix, never ignored).
+Personal mode has no separate feedback phase (PMR-GFM5) and no re-review
+step; after the push the validate prompt closes the ticket:
+
 - The **outcome summary** note is written on the ref: `## Outcome summary`
   with `### What shipped`, `### Test evidence`, `### Review verdict`. Any
   empty section → STOP and ask you, never filler.
 - Only once that note exists: status `done` AND
   `flow_phase_complete(phase="feedback")` → `done` label.
+- `/feedback` is blocked in personal mode.
 
-**Exit:** the loop sees all four labels → AUTO: "all phases complete", run
-ends.
+**Exit:** the personal loop ends once `review-passed` lands (phase list is
+mode-keyed); `done` is applied by the close-out above.
 
 ---
 
@@ -405,7 +400,7 @@ ends.
 | 10 | Validate fail → re-implement | AUTO (after your answer) | Back to implement, budget reset |
 | 11 | Review gate parse/decision | AUTO | 0 → land; >0 → back to implement with notes |
 | 12 | Landing (`flow_land` ok) | AUTO | Agent pushes to main immediately |
-| 13 | Feedback outcome summary | AUTO | Note written from real evidence; empty section → STOP and ask |
+| 13 | Post-push outcome summary + done (in validate) | AUTO | Note written from real evidence; empty section → STOP and ask |
 | 14 | All labels present | AUTO | Flow complete; `/flow` re-run says "nothing to run" |
 
 ---
@@ -450,7 +445,7 @@ ends.
 /plan PMR-ABC1                 # size check + split confirm + spec review
 /implement PMR-ABC1            # gated: needs planned; worktree + budget
 /validate PMR-ABC1             # you test, then /review decides landing
-/feedback PMR-ABC1             # outcome summary, then done
+/feedback PMR-ABC1             # work mode only (personal: blocked)
 /spec-review                   # list + review specs at plan-state=review
 /flow-view PMR-ABC1            # render the run journal in Herdr
 aven show PMR-ABC1 --full      # the label ledger is the run state
