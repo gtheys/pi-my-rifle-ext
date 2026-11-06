@@ -32,17 +32,18 @@ function buildDeltaReviewStep(ref: string): string {
 // AIDEV-NOTE: PMR-TPN7 — one pinned diff base for the review AND deviation
 // gates. pi-review resolves its base from <base>@{upstream}; comparing that to
 // `git diff main...HEAD` made unpushed commits look like a reviewer mix-up
-// (PMR-KKDC). The agent records ONE sha here and reuses it in 7a, D2 and D3.
+// (PMR-KKDC). The agent records ONE sha here and reuses it in 7, D2 and D3.
 function buildBasePinStep(): string {
   return `6a. Pin the diff base ONCE, before the review gate: resolve <base> (the
    flow's base branch) and run
    \`git merge-base HEAD "$(git rev-parse --abbrev-ref <base>@{upstream})"\`,
    falling back to \`git merge-base HEAD <base>\` when there is no upstream.
    Record the SHA as BASE_SHA, then run \`git log BASE_SHA..HEAD --oneline\`
-   and \`git diff --stat BASE_SHA..HEAD\`. Use this same BASE_SHA for the delta
-   review (7a), for D2 (commit messages) and for D3 (the diff passed to
+   and \`git diff --stat BASE_SHA..HEAD\`. Use this same BASE_SHA for the
+   review (7), for D2 (commit messages) and for D3 (the diff passed to
    deviation_review). If the range the reviewer describes differs from the
-   recorded one, ASK the human — never call it a reviewer or tool error.`
+   recorded one, ASK the human — never call it a reviewer or tool error. If
+   <base> cannot be resolved unambiguously, STOP and ask the human.`
 }
 
 // AIDEV-NOTE: Review gate section (PMR-JTAM) — appended to BOTH validate
