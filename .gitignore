@@ -11,3 +11,4 @@ graphify-out/.graphify_python
 /extensions/graphify-out/cache/ast
 /.aislop
 /.pi/guard
+/.codegraph
