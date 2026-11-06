@@ -76,25 +76,30 @@ export function restoreFlowBinding(snapshot: FlowBindingSnapshot): void {
 
 /** Set (or clear, null) the active flow ref. Clearing the ref clears the binding. */
 export function setActiveFlowRef(ref: string | null): void {
-  // AIDEV-NOTE: the loop clears the ref on every halt/pause, which used to
-  // lose the worktree binding so a rerun /flow came back unbound and the
-  // review gates fell back to the main checkout (PMR-182S). Remember the
-  // cleared binding; re-activating the SAME ref restores it if the path
-  // still exists.
+  // AIDEV-NOTE: the loop clears the ref on every halt/pause; remember the
+  // cleared binding so a rerun can restore it via reactivateFlowRef (PMR-182S).
   if (ref === null && worktree !== null) {
     lastWorktree = worktree
   }
   activeRef = ref
   if (ref === null) {
     worktree = null
-  } else if (
-    worktree === null &&
-    lastWorktree?.ref === ref &&
-    existsSync(lastWorktree.path)
-  ) {
-    worktree = lastWorktree
   }
   notifyChange()
+}
+
+/**
+ * Loop entry point for /flow: activate the ref and, when the SAME ref's
+ * worktree was dropped by a halt/pause and its path still exists, restore it.
+ * Kept separate from setActiveFlowRef so plain activation stays a clean slate.
+ */
+export function reactivateFlowRef(ref: string): void {
+  const remembered = lastWorktree
+  setActiveFlowRef(ref)
+  if (remembered?.ref === ref && existsSync(remembered.path)) {
+    worktree = remembered
+    notifyChange()
+  }
 }
 
 export function getActiveFlowRef(): string | null {

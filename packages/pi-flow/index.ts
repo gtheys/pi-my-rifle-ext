@@ -39,6 +39,7 @@ import { parseRefKind } from './flow/ref-kind.ts'
 import {
   type FlowBindingSnapshot,
   parseFlowBindingSnapshot,
+  reactivateFlowRef,
   restoreFlowBinding,
   setActiveFlowRef,
   setBindingChangeListener,
@@ -114,7 +115,13 @@ export default function (pi: ExtensionAPI) {
     avenNote: (ref, text) => writeAvenNote(ref, text),
     epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),
     hasInFlightSubagent: () => hasLiveAssignmentForParent(process.pid),
-    setActiveRef: (ref) => setActiveFlowRef(ref),
+    setActiveRef: (ref) => {
+      if (ref === null) {
+        setActiveFlowRef(null)
+      } else {
+        reactivateFlowRef(ref)
+      }
+    },
     resetLandingState: () => {
       landingState.authorized = null
       landingState.humanReviewPassed = null
