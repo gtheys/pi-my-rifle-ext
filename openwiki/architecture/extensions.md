@@ -264,7 +264,15 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   review spawned with no active flow and no worktree binding while linked
   flow worktrees exist elsewhere is flagged with a warning naming those
   worktrees and pointing at `/flow <ref>` — both on the spawn response and
-  on the `/review` command.
+  on the `/review` command. Per-subtask ranges (PMR-6EEW): every implement
+  commit carries a `Subtask: <ref>` trailer (required by the implement
+  prompt); at gate spawn the deviation and flow-scoped `/review` gates
+  derive the subtask → commits attribution from history and journal it as a
+  `subtask-ranges` event (unattributed commits surfaced, never guessed). A
+  subtask-scoped gate pins the exact commit set (`buildSubtaskGateTarget`)
+  and the reviewer must echo `reviewed_commits: <sha>,...` — compared
+  element by element, order included, on top of the range echo. Manual
+  `/review PR N` (no active flow) is untouched.
   Plus the absorbed agent tools: `resolve_spec_path`, `resolve_feature_path`,
   `open_in_pane`, `jira_create_branch` (from pi-planning), `review`,
   `sonarqube`, `pr_quality` (from pi-review), `worktree` (from pi-worktree).

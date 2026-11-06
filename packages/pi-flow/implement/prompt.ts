@@ -45,6 +45,10 @@ ${BRANCH_RULES}${commonRules(input.ref)}
   subtask that is blocked by an open dependency (check each subtask's
   blocked state before starting it) — finish its blockers first.
 - EACH subtask gets its own test run + commit; mark it done only then.
+- EVERY commit message ends with a \`Subtask: <subtask-ref>\` trailer naming
+  the subtask it implements (e.g. "Subtask: PMR-AB12"). The review gates
+  derive per-subtask diff ranges from these trailers; a commit without the
+  trailer is unattributed and will be surfaced as such.
 - Keep working until ALL subtasks are done (each marked done only after its own test run + commit); then set the "active" label on ${input.ref} — never mark the epic status done in this phase.`
   }
 

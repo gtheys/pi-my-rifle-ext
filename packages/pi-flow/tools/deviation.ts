@@ -36,6 +36,7 @@ import {
 } from '../validate/deviation-gate.ts'
 import {
   buildGateTarget,
+  deriveSubtaskAttribution,
   type GateTarget,
   type GateVerification,
   gateTargetId,
@@ -252,6 +253,32 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
           headSha: target.headSha,
           diffSha256: target.diffSha256,
         })
+        // AIDEV-NOTE: PMR-6EEW per-subtask ranges — journal the subtask →
+        // commits attribution of the pinned range (Subtask: trailers).
+        // Best-effort by design; unattributed commits are surfaced in the
+        // event, never guessed at.
+        try {
+          const attribution = await deriveSubtaskAttribution(
+            exec,
+            cwd,
+            target.baseSha,
+            target.headSha,
+          )
+          if (attribution.ok) {
+            await journalGateEvent({
+              kind: 'subtask-ranges',
+              at: new Date().toISOString(),
+              ref: params.ref,
+              gate: 'deviation',
+              baseSha: target.baseSha,
+              headSha: target.headSha,
+              bySubtask: attribution.attribution.bySubtask,
+              unattributed: attribution.attribution.unattributed,
+            })
+          }
+        } catch {
+          // best-effort — the gate itself is unaffected
+        }
       }
       const prompt = deviationReviewPromptFrom(params, resolved.value, target)
       const rangeLine = describeRange(resolved.value.flowRange)
