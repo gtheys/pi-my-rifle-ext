@@ -230,7 +230,8 @@ export async function readPlanState(ref: string): Promise<string | null> {
     const { stdout, stderr } = await execFileAsync('aven', args, {
       timeout: AVEN_TIMEOUT_MS,
     })
-    if (avenErrorText(stdout, stderr) !== null) return null
+    // AIDEV-NOTE: PMR-69V8 — stderr only; note bodies may quote "Error:".
+    if (avenErrorText('', stderr) !== null) return null
     return parseMetadataBlock(stdout, 'plan-state')
   } catch {
     return null
