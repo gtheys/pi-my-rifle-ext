@@ -195,6 +195,18 @@ function createMockExtensionApi() {
   }
 }
 
+// AIDEV-NOTE: tests run as a subagent (e.g. spec-publish pre-push hook) inherit
+// PI_SUBAGENT_ID/PI_DENY_TOOLS, which makes the extension skip tool
+// registration and fails registration tests. Scrub them for the whole run.
+for (const name of [
+  'PI_SUBAGENT_ID',
+  'PI_SUBAGENT_SESSION',
+  'PI_SUBAGENT_AGENT',
+  'PI_DENY_TOOLS',
+]) {
+  delete process.env[name]
+}
+
 function restoreEnvVar(name: string, value: string | undefined) {
   if (value === undefined) {
     delete process.env[name]
