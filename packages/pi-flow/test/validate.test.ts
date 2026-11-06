@@ -379,11 +379,12 @@ Review gate — run ONLY after validation has fully passed:
    \`git merge-base HEAD "$(git rev-parse --abbrev-ref <base>@{upstream})"\`,
    falling back to \`git merge-base HEAD <base>\` when there is no upstream.
    Record the SHA as BASE_SHA, then run \`git log BASE_SHA..HEAD --oneline\`
-   and \`git diff --stat BASE_SHA..HEAD\`. Use this same BASE_SHA for the
-   review (7), for D2 (commit messages) and for D3 (the diff passed to
-   deviation_review). If the range the reviewer describes differs from the
-   recorded one, ASK the human — never call it a reviewer or tool error. If
-   <base> cannot be resolved unambiguously, STOP and ask the human.
+   and \`git diff --stat BASE_SHA..HEAD\`. Use this BASE_SHA for the review
+   (7). The deviation gate resolves its own range (base recorded at worktree
+   create) and reports the base SHA: if it differs from BASE_SHA, or the
+   range the reviewer describes differs from the recorded one, ASK the human
+   — never call it a reviewer or tool error. If <base> cannot be resolved
+   unambiguously, STOP and ask the human.
 7. Run /review on this change (the fresh-context reviewer). When it returns,
    write the review artifact's verdict as machine-readable lines — exactly
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
@@ -422,13 +423,16 @@ in review-gate step 9. Steps, in order:
 D1. Resolve the spec source. Resolve the spec file path via the resolve_spec_path tool
    (repo from the git remote, slug from the Jira summary) and read that spec
    file. Also fetch the Jira ticket text via acli.
-D2. Mine the why-inputs: commit messages via
-   \`git log BASE_SHA..HEAD\` (the SHA pinned in step 6a), and recent aven notes on DP-71 via the
+D2. Mine the why-inputs: recent aven notes on DP-71 via the
    existing aven client (interview note, worktree note, oneshot outcome,
-   escalation notes).
+   escalation notes). Commit messages are resolved by the tool itself.
 D3. Run the deviation reviewer: call the deviation_review tool with
-   mode="work", the resolved spec text (D1), the diff \`git diff BASE_SHA..HEAD\` (same pinned SHA), and
-   the mined commit messages and aven notes (D2). Await its result.
+   mode="work", the resolved spec text (D1) and the mined aven notes (D2).
+   Do NOT pass a diff or commit messages: the tool resolves the base, diff
+   and commits itself in the flow worktree and reports the base SHA and
+   range in its result. Compare that base SHA to BASE_SHA (6a); if it
+   differs, or the tool errors on a missing base / empty range, STOP and ask
+   the human. Await its result.
 D4. Read the tool result. The tool already parses the artifact STRICTLY
    (deviations_count contract). An ERROR tool result (spawn failure or
    malformed artifact) means re-run deviation_review — NEVER treat it as 0
@@ -482,8 +486,7 @@ for (const mode of ['personal', 'work'] as const) {
     assert.ok(p.includes('git merge-base HEAD <base>'))
     assert.ok(p.includes('git log BASE_SHA..HEAD --oneline'))
     assert.ok(p.includes('git diff --stat BASE_SHA..HEAD'))
-    assert.ok(p.includes('git log BASE_SHA..HEAD'))
-    assert.ok(p.includes('git diff BASE_SHA..HEAD'))
+    assert.ok(p.includes('Do NOT pass a diff or commit messages'))
     assert.ok(p.includes('ASK the human'))
     assert.ok(p.includes('never call it a reviewer or tool error'))
     // pinned before the review step and the deviation gate

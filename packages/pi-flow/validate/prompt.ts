@@ -39,11 +39,12 @@ function buildBasePinStep(): string {
    \`git merge-base HEAD "$(git rev-parse --abbrev-ref <base>@{upstream})"\`,
    falling back to \`git merge-base HEAD <base>\` when there is no upstream.
    Record the SHA as BASE_SHA, then run \`git log BASE_SHA..HEAD --oneline\`
-   and \`git diff --stat BASE_SHA..HEAD\`. Use this same BASE_SHA for the
-   review (7), for D2 (commit messages) and for D3 (the diff passed to
-   deviation_review). If the range the reviewer describes differs from the
-   recorded one, ASK the human — never call it a reviewer or tool error. If
-   <base> cannot be resolved unambiguously, STOP and ask the human.`
+   and \`git diff --stat BASE_SHA..HEAD\`. Use this BASE_SHA for the review
+   (7). The deviation gate resolves its own range (base recorded at worktree
+   create) and reports the base SHA: if it differs from BASE_SHA, or the
+   range the reviewer describes differs from the recorded one, ASK the human
+   — never call it a reviewer or tool error. If <base> cannot be resolved
+   unambiguously, STOP and ask the human.`
 }
 
 // AIDEV-NOTE: Review gate section (PMR-JTAM) — appended to BOTH validate
@@ -230,13 +231,16 @@ Deviation gate — run ONLY after the review gate returned blockers_count: 0,
 ${gateBefore}. Steps, in order:
 
 D1. Resolve the spec source. ${specSource}
-D2. Mine the why-inputs: commit messages via
-   \`git log BASE_SHA..HEAD\` (the SHA pinned in step 6a), and recent aven notes on ${ref} via the
+D2. Mine the why-inputs: recent aven notes on ${ref} via the
    existing aven client (interview note, worktree note, oneshot outcome,
-   escalation notes).
+   escalation notes). Commit messages are resolved by the tool itself.
 D3. Run the deviation reviewer: call the deviation_review tool with
-   mode="${mode}", the resolved spec text (D1), the diff \`git diff BASE_SHA..HEAD\` (same pinned SHA), and
-   the mined commit messages and aven notes (D2). Await its result.
+   mode="${mode}", the resolved spec text (D1) and the mined aven notes (D2).
+   Do NOT pass a diff or commit messages: the tool resolves the base, diff
+   and commits itself in the flow worktree and reports the base SHA and
+   range in its result. Compare that base SHA to BASE_SHA (6a); if it
+   differs, or the tool errors on a missing base / empty range, STOP and ask
+   the human. Await its result.
 D4. Read the tool result. The tool already parses the artifact STRICTLY
    (deviations_count contract). An ERROR tool result (spawn failure or
    malformed artifact) means re-run deviation_review — NEVER treat it as 0
