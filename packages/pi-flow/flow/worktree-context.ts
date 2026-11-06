@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+
 // AIDEV-NOTE: PMR-1CCT — flow worktree context. The review tool resolves its
 // diff in ctx.cwd (the session checkout), but flow work lands in an isolated
 // Herdr worktree — so a review from the main checkout diffs main..main (empty
@@ -15,6 +17,7 @@ export interface FlowWorktree {
 
 let activeRef: string | null = null
 let worktree: FlowWorktree | null = null
+let lastWorktree: FlowWorktree | null = null
 
 // AIDEV-NOTE: PMR-PJM0 — module state dies on pi reload/restart. index.ts
 // persists every change as a session entry (appendEntry) and replays the last
@@ -73,9 +76,23 @@ export function restoreFlowBinding(snapshot: FlowBindingSnapshot): void {
 
 /** Set (or clear, null) the active flow ref. Clearing the ref clears the binding. */
 export function setActiveFlowRef(ref: string | null): void {
+  // AIDEV-NOTE: the loop clears the ref on every halt/pause, which used to
+  // lose the worktree binding so a rerun /flow came back unbound and the
+  // review gates fell back to the main checkout (PMR-182S). Remember the
+  // cleared binding; re-activating the SAME ref restores it if the path
+  // still exists.
+  if (ref === null && worktree !== null) {
+    lastWorktree = worktree
+  }
   activeRef = ref
   if (ref === null) {
     worktree = null
+  } else if (
+    worktree === null &&
+    lastWorktree?.ref === ref &&
+    existsSync(lastWorktree.path)
+  ) {
+    worktree = lastWorktree
   }
   notifyChange()
 }
