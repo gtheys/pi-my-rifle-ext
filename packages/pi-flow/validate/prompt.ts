@@ -20,7 +20,7 @@ import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
 // review-passed still only comes from a fresh 0 against the current tree.
 function buildDeltaReviewStep(ref: string): string {
   return `7a. Fix round? Check the aven notes on ${ref} for a prior review-blockers
-   note carrying "reviewed-at: <sha>". If none, the step 7 full review stands.
+   note carrying "reviewed-at: <sha>" (use the MOST RECENT one). If none, the step 7 full review stands.
    If one exists, run the review as a DELTA instead: /review with custom
    instructions containing (i) the recorded blockers and (ii) the output of
    "git diff <sha>..HEAD". The reviewer must verify each recorded blocker is

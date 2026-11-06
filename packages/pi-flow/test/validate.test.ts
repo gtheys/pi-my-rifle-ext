@@ -377,7 +377,7 @@ Review gate — run ONLY after validation has fully passed:
    blockers_count: 0
    - blocker: <description> (omit this line entirely when N is 0)
 7a. Fix round? Check the aven notes on DP-71 for a prior review-blockers
-   note carrying "reviewed-at: <sha>". If none, the step 7 full review stands.
+   note carrying "reviewed-at: <sha>" (use the MOST RECENT one). If none, the step 7 full review stands.
    If one exists, run the review as a DELTA instead: /review with custom
    instructions containing (i) the recorded blockers and (ii) the output of
    "git diff <sha>..HEAD". The reviewer must verify each recorded blocker is
