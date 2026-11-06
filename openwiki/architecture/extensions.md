@@ -239,7 +239,14 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   `spec_publish` (agent-callable twin of `/spec-publish`; call after
   `spec_approve`), `deviation_review` (validate-phase spec-deviation gate:
   spawns a fresh-context reviewer, parses the artifact strictly — an error or
-  malformed artifact is never "0 deviations"; routes on `deviations_count`),
+  malformed artifact is never "0 deviations"; routes on `deviations_count`;
+  gate integrity (PMR-6EEW): the review target is pinned at spawn — base/head
+  SHAs + sha256 of the exact diff — journaled as a `gate_target` event, the
+  reviewer must echo `reviewed_range: <base>..<head>` and the harness compares
+  it character by character (mismatch = `target-mismatch` hard fail), and HEAD
+  is re-resolved after the verdict (moved = `stale`, gate re-runs); accepted
+  and rejected verdicts are journaled as `gate-decision` events citing the
+  pinned `targetId`),
   `code_review` (human review gate: resolves the ref's worktree incl. external
   ones, opens `tuicr` in a herdr tab, asks pass/fail; pass records the
   human-review marker, fail records findings as an aven note; agent-attested

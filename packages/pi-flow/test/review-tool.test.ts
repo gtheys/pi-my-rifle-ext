@@ -192,3 +192,93 @@ for (const reviewer of ['spawned', 'aborted'] as const) {
     }
   }
 }
+
+// --- PMR-6EEW gate integrity: /review target pinning ---
+
+import { buildReviewGatePin, reviewEchoSection } from '../review/review.ts'
+import type { Exec } from '../shared/diff-base.ts'
+import { buildGateTarget, reviewedRangeLine } from '../validate/gate-target.ts'
+
+const R_BASE = 'a'.repeat(40)
+const R_HEAD = 'b'.repeat(40)
+
+function gitFake(
+  map: Record<string, { stdout?: string; code?: number }>,
+): Exec {
+  return async (_cmd, args) => {
+    const hit = map[args.join(' ')]
+    if (hit === undefined) return { stdout: '', code: 1 }
+    return { stdout: hit.stdout ?? '', code: hit.code ?? 0 }
+  }
+}
+
+const PIN_GIT = {
+  'rev-parse --abbrev-ref main@{upstream}': { stdout: 'origin/main\n' },
+  'merge-base HEAD origin/main': { stdout: `${R_BASE}\n` },
+  'rev-parse HEAD': { stdout: `${R_HEAD}\n` },
+  [`rev-parse ${R_BASE}`]: { stdout: `${R_BASE}\n` },
+  [`diff ${R_BASE}..${R_HEAD}`]: { stdout: 'diff --git a/x b/x\n+fix\n' },
+}
+
+test('buildReviewGatePin pins baseBranch reviews against the merge-base', async () => {
+  const pin = await buildReviewGatePin(
+    gitFake(PIN_GIT),
+    { type: 'baseBranch', branch: 'main' },
+    '/repo',
+  )
+  assert.ok(pin !== null)
+  assert.equal(pin.gate, 'review')
+  assert.equal(pin.baseSha, R_BASE)
+  assert.equal(pin.headSha, R_HEAD)
+  assert.equal(pin.ref, 'review-branch-main')
+})
+
+test('buildReviewGatePin returns null for unpinnable and unresolvable targets', async () => {
+  const uncommitted = await buildReviewGatePin(gitFake(PIN_GIT), {
+    type: 'uncommitted',
+  })
+  assert.equal(uncommitted, null)
+
+  const folder = await buildReviewGatePin(gitFake(PIN_GIT), {
+    type: 'folder',
+    paths: ['src/'],
+  })
+  assert.equal(folder, null)
+
+  const unresolvable = await buildReviewGatePin(
+    gitFake({ 'rev-parse HEAD': { stdout: `${R_HEAD}\n` } }),
+    { type: 'baseBranch', branch: 'main' },
+  )
+  assert.equal(unresolvable, null)
+})
+
+test('buildReviewGatePin pins commit reviews as sha^..sha', async () => {
+  const commit = 'c'.repeat(40)
+  const pin = await buildReviewGatePin(
+    gitFake({
+      [`rev-parse ${commit}^`]: { stdout: R_BASE },
+      [`rev-parse ${commit}`]: { stdout: commit },
+      [`diff ${R_BASE}..${commit}`]: { stdout: 'diff --git a/y b/y\n+z\n' },
+    }),
+    { type: 'commit', sha: commit },
+  )
+  assert.ok(pin !== null)
+  assert.equal(pin.baseSha, R_BASE)
+  assert.equal(pin.headSha, commit)
+  assert.match(pin.ref, /^review-commit-/)
+})
+
+test('reviewEchoSection instructs the reviewer to echo the pin exactly', () => {
+  const built = buildGateTarget({
+    gate: 'review',
+    ref: 'review-branch-main',
+    baseSha: R_BASE,
+    headSha: R_HEAD,
+    diff: 'x',
+  })
+  if (!('diffSha256' in built)) throw new Error('fixture failed')
+  const section = reviewEchoSection(built)
+  assert.ok(section.includes(reviewedRangeLine(built)))
+  assert.match(section, /character by character/)
+  assert.match(section, /final line/)
+})
