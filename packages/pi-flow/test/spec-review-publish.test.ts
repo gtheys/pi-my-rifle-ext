@@ -210,5 +210,6 @@ describe('buildPublishWorkerTask', () => {
     })
     assert.ok(fallback.includes('committed locally as <sha>, not pushed'))
     assert.ok(fallback.includes('NEVER use --no-verify'))
+    assert.ok(fallback.includes('git status --short'))
   })
 })

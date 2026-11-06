@@ -85,7 +85,7 @@ export function buildPublishWorkerTask(input: PublishWorkerTaskInput): string {
     `5. git commit -m "docs(${input.repo}): publish ${input.ref} plan"`,
     '6. git push origin HEAD',
     'Rules: touch NOTHING except that single file. If a step fails, retry at most 2 times, then STOP and report the failure loudly with the exact error output — do not roll anything back, do not clean the repo, do not stash.',
-    'If step 6 is rejected by a hook (e.g. pre-push running tests), do NOT retry and NEVER use --no-verify. The commit stays local: run "git rev-parse --short HEAD" and finish with "PUBLISH FAILED: committed locally as <sha>, not pushed — <hook error>".',
+    'If step 6 is rejected by a hook (e.g. pre-push running tests), do NOT retry and NEVER use --no-verify. The commit stays local: run "git rev-parse --short HEAD" and also run "git status --short" (read-only) and quote the failing hook lines plus any dirty files outside the plan file, since unrelated dirty state often breaks the hook. Finish with "PUBLISH FAILED: committed locally as <sha>, not pushed — <hook error>".',
     'Your final message: one line per step (ok/failed + detail), then "PUBLISH OK" if the push succeeded or "PUBLISH FAILED: <reason>" otherwise.',
   ].join('\n')
 }
