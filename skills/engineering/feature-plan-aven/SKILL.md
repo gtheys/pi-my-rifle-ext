@@ -219,7 +219,7 @@ subagent({
     "",
     "Write the final plan to: <absolute plan.md path>",
     "",
-    "After writing the plan file, call the open_in_pane tool with that path to open it with nvim in a review pane. Skippable if the user declines or the tool is unavailable — never block on it.",
+    "After the plan.md write call has RETURNED, call the open_in_pane tool with that same absolute path (reuse it verbatim, never recompute it) to open it with nvim in a review pane. Never issue the write and open_in_pane in parallel — call them sequentially. Skippable if the user declines or the tool is unavailable — never block on it.",
     "",
     "Write plan.md only. Do NOT create aven phases/subtasks — the tree is",
     "created in stage 2, only after the user approves the plan.",
@@ -304,8 +304,8 @@ Do the scout work in the main session (`fast_context_search` / `grep` /
 `read`) and write `plan.md` yourself. The two-stage split still applies:
 plan first, tree only after explicit user approval, using the identical
 commands from the contract below. Everything else — interview, notes,
-metadata, verification — is unchanged. Call `open_in_pane` with the
-plan path after writing (skippable on request; tool failure never blocks).
+metadata, verification — is unchanged. After the write has returned (never in parallel), call `open_in_pane` with the
+plan path (skippable on request; tool failure never blocks).
 
 ## Resuming a plan in a later session
 
