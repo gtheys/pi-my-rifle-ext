@@ -212,6 +212,7 @@ describe('flow_land ref validation', () => {
       mockPi as unknown as Parameters<typeof registerLandTool>[0],
       createLandingState(),
       () => activeRef,
+      async () => ({ ok: true, summary: 'ok' }),
     )
     if (!execute) throw new Error('flow_land tool not registered')
     return execute

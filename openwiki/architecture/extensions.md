@@ -252,7 +252,12 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   human-review marker, fail records findings as an aven note; agent-attested
   `outcome="pass"` is refused when the blocking ask exists).
   `flow_land` authorization is **single-use and ref-scoped**; personal
-  `merge-main` additionally requires the human code-review pass marker.
+  `merge-main` additionally requires the human code-review pass marker, and
+  every route requires a **green test suite the gate ran itself**
+  (PMR-05HX): before authorizing, `flow_land` executes the configured
+  `landTestCommand` (default `bun run test`) in the flow worktree and
+  refuses the landing with the failing output on red — claimed-green suites
+  are never trusted.
   Plus the absorbed agent tools: `resolve_spec_path`, `resolve_feature_path`,
   `open_in_pane`, `jira_create_branch` (from pi-planning), `review`,
   `sonarqube`, `pr_quality` (from pi-review), `worktree` (from pi-worktree).

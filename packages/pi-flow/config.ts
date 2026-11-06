@@ -28,6 +28,13 @@ const PiFlowConfigSchema = Type.Object({
         'Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and search fallback)',
     }),
   ),
+  landTestCommand: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        'Argv of the test command flow_land runs before authorizing a landing (default ["bun","run","test"]). PMR-05HX: the landing gate never trusts a claimed-green suite.',
+      minItems: 1,
+    }),
+  ),
 })
 
 export type PiFlowConfig = Static<typeof PiFlowConfigSchema>
