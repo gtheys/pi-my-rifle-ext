@@ -102,10 +102,10 @@ test('canClose: only a written summary closes', () => {
 
 // --- prompt ---
 
-test('work prompt: invokes /sonarqube and /pr-quality by name, forbids silent fixes', () => {
+test('work prompt: names the sonarqube and pr_quality tools, forbids silent fixes', () => {
   const prompt = buildFeedbackPrompt({ mode: 'work', ref: 'DP-12' })
-  assert.match(prompt, /\/sonarqube/)
-  assert.match(prompt, /\/pr-quality/)
+  assert.match(prompt, /sonarqube tool/)
+  assert.match(prompt, /pr_quality tool/)
   assert.match(prompt, /never fix.*silently/is)
   assert.match(prompt, /DP-12/)
 })

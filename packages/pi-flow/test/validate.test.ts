@@ -236,7 +236,7 @@ test('buildValidatePrompt: personal mode asks for artifacts, ask_user_question, 
   })
   assert.ok(p.includes('PMR-F7YM'))
   assert.ok(p.includes('ask_user_question'))
-  assert.ok(p.includes('/implement'))
+  assert.ok(p.includes('flow loop re-runs implement'))
   assert.ok(p.includes('validated by human'))
   assert.ok(!p.includes('PMR-8449'))
   assert.ok(!p.includes('minikube'))
@@ -308,7 +308,7 @@ test('buildValidatePrompt: personal step 9 routes through the code_review tool',
     scriptsDir: null,
   })
   assert.ok(p.includes('code_review tool with ref=PMR-C6AK'))
-  // ordering: human test gate -> /review blockers -> deviation gate -> code_review -> land/push
+  // ordering: human test gate -> review blockers -> deviation gate -> code_review -> land/push
   const codeReview = p.indexOf('code_review tool with ref=PMR-C6AK')
   const reviewGate = p.indexOf('blockers_count')
   const deviationGate = p.indexOf('Deviation gate')
@@ -328,14 +328,15 @@ test('buildValidatePrompt: personal step 9 routes through the code_review tool',
   assert.ok(p.includes('tuicr'))
 })
 
-test('buildValidatePrompt: personal fail route names the tool-noted findings and /implement', () => {
+test('buildValidatePrompt: personal fail route names the tool-noted findings and the loop retry', () => {
   const p = buildValidatePrompt({
     mode: 'personal',
     ref: 'PMR-C6AK',
     scriptsDir: null,
   })
   assert.match(p, /On fail: the code_review tool already recorded/)
-  assert.ok(p.includes('/implement PMR-C6AK'))
+  assert.ok(p.includes('flow loop'))
+  assert.ok(!p.includes('/implement'))
 })
 
 test('buildValidatePrompt: work-mode output is byte-identical (pin, PMR-C6AK)', () => {
@@ -385,7 +386,7 @@ Review gate — run ONLY after validation has fully passed:
    range the reviewer describes differs from the recorded one, ASK the human
    — never call it a reviewer or tool error. If <base> cannot be resolved
    unambiguously, STOP and ask the human.
-7. Run /review on this change (the fresh-context reviewer). When it returns,
+7. Call the review tool on this change (the fresh-context reviewer). When it returns,
    write the review artifact's verdict as machine-readable lines — exactly
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
    0 when clean) plus one "- blocker: <description>" line per blocker:
@@ -393,14 +394,14 @@ Review gate — run ONLY after validation has fully passed:
    - blocker: <description> (omit this line entirely when N is 0)
 7a. Fix round? Check the aven notes on DP-71 for a prior review-blockers
    note carrying "reviewed-at: <sha>" (use the MOST RECENT one). If none, the step 7 full review stands.
-   If one exists, run the review as a DELTA instead: /review with custom
+   If one exists, run the review as a DELTA instead: call the review tool with custom
    instructions containing (i) the recorded blockers and (ii) the output of
    "git diff <sha>..HEAD". The reviewer must verify each recorded blocker is
    resolved (an unresolved one counts as a blocker) and scan the fix diff for
    new blockers, then emit the same blockers_count verdict as above. If the
    sha is missing or unresolvable, or the diff is empty, run the full review.
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
-   malformed artifact means re-run /review, not silent landing.
+   malformed artifact means call the review tool again, not silent landing.
 9. If blockers_count is 0: call the flow_phase_complete tool with ref=DP-71
    and phase="validate" — it applies the "review-passed" label after
    re-checking the gates, and its result confirms the label landed; without
@@ -412,9 +413,9 @@ Review gate — run ONLY after validation has fully passed:
    the gh CLI, then post a Jira comment on
    DP-71 linking the PR URL.
 10. If blockers_count > 0: record each blocker as an aven note on DP-71
-   (append "reviewed-at: <git rev-parse HEAD>" to the note),
-   route back to /implement DP-71 (retry budget applies), and STOP — do
-   not land.
+   (append "reviewed-at: <git rev-parse HEAD>" to the note) and STOP — do
+   not land. The flow loop re-runs implement automatically (retry budget
+   applies); do not run implement yourself.
 
 Deviation gate — run ONLY after the review gate returned blockers_count: 0,
 and BEFORE the flow_phase_complete(phase="validate") / flow_land calls named
@@ -447,8 +448,9 @@ D5. Route on the returned deviations_count:
      for the answer. Record the human decision as an aven note on DP-71
      either way. On "accept": proceed to flow_phase_complete with ref=DP-71
      and phase="validate", then flow_land. On "fix": record the deviation
-     report as an aven note on DP-71, route back to /implement DP-71 with
-     the deviation report, and STOP — do not land.`
+     report as an aven note on DP-71 (append "reviewed-at: <git rev-parse
+     HEAD>") and STOP — do not land. The flow loop re-runs implement
+     automatically with the report as context.`
   assert.equal(p, expected)
 })
 
@@ -490,7 +492,7 @@ for (const mode of ['personal', 'work'] as const) {
     assert.ok(p.includes('ASK the human'))
     assert.ok(p.includes('never call it a reviewer or tool error'))
     // pinned before the review step and the deviation gate
-    assert.ok(p.indexOf('6a.') < p.indexOf('7. Run /review'))
+    assert.ok(p.indexOf('6a.') < p.indexOf('7. Call the review tool'))
     assert.ok(p.indexOf('6a.') < p.indexOf('D2.'))
   })
 }

@@ -44,7 +44,9 @@ export function buildReviewPrompt(picked: PickedSpec[]): string {
   )
   lines.push(`  with that ref. Never run the aven edit command yourself —`)
   lines.push(`  spec_approve owns the workspace pin and fails loud on error.`)
-  lines.push(`  After spec_approve returns ok, run /spec-publish <REF>.`)
+  lines.push(
+    `  After spec_approve returns ok, call the spec_publish tool with that ref.`,
+  )
   lines.push(
     '- NEVER approve a spec without that explicit word, and never approve',
   )

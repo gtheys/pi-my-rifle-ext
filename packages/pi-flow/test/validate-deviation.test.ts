@@ -121,7 +121,7 @@ describe('buildValidatePrompt: deviation gate wiring', () => {
       assert.match(prompt, /ask_user_question/)
       assert.match(prompt, /"accept"/)
       assert.match(prompt, /"fix"/)
-      assert.match(prompt, /\/implement DP-1|\/implement PMR-B2/)
+      assert.match(prompt, /flow loop re-runs implement automatically/)
     }
   })
 

@@ -21,7 +21,7 @@ import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
 function buildDeltaReviewStep(ref: string): string {
   return `7a. Fix round? Check the aven notes on ${ref} for a prior review-blockers
    note carrying "reviewed-at: <sha>" (use the MOST RECENT one). If none, the step 7 full review stands.
-   If one exists, run the review as a DELTA instead: /review with custom
+   If one exists, run the review as a DELTA instead: call the review tool with custom
    instructions containing (i) the recorded blockers and (ii) the output of
    "git diff <sha>..HEAD". The reviewer must verify each recorded blocker is
    resolved (an unresolved one counts as a blocker) and scan the fix diff for
@@ -48,7 +48,7 @@ function buildBasePinStep(): string {
 }
 
 // AIDEV-NOTE: Review gate section (PMR-JTAM) — appended to BOTH validate
-// prompts. Runs after the env/human gate passes: /review (fresh-context
+// prompts. Runs after the env/human gate passes: the review tool (fresh-context
 // reviewer, in-package since PMR-W8SG) -> parse blockers_count artifact ->
 // route. The contract wording lives in review-gate.ts; review/verdict.ts
 // emits the verdict section natively from those shared constants
@@ -57,7 +57,7 @@ function buildBasePinStep(): string {
 // code-review gate: the agent calls the code_review tool (tuicr on the flow
 // worktree), and only a human pass unlocks flow_phase_complete -> flow_land
 // (merge-main) -> LOCAL ff-only merge into main (never a push). Ordering:
-// human test gate -> /review blockers ->
+// human test gate -> review blockers ->
 // deviation gate -> code_review -> labels/land/merge, so review-passed can
 // only land after the human pass and the loop cannot advance to feedback
 // before the merge.
@@ -70,21 +70,22 @@ function buildReviewGateSection(
   const landingRoute = MODE_PROFILE[mode].landingRoute
   if (mode === 'personal') {
     return `
-Review gate (part 1: /review + blockers) — run ONLY after validation has
+Review gate (part 1: review tool + blockers) — run ONLY after validation has
 fully passed:
 
 ${buildBasePinStep()}
-7. Run /review on this change (the fresh-context reviewer). When it returns,
+7. Call the review tool on this change (the fresh-context reviewer). When it returns,
    write the review artifact's verdict as machine-readable lines — exactly
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
    0 when clean) plus one "- blocker: <description>" line per blocker:
 ${REVIEW_CONTRACT_PROMPT}
 ${buildDeltaReviewStep(ref)}
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
-   malformed artifact means re-run /review, not silent landing.
+   malformed artifact means call the review tool again, not silent landing.
    On blockers_count > 0: record each blocker as an aven note on ${ref}
-   (append "reviewed-at: <git rev-parse HEAD>" to the note),
-   route back to /implement ${ref} (retry budget applies), and STOP. When
+   (append "reviewed-at: <git rev-parse HEAD>" to the note) and STOP — the
+   flow loop re-runs implement automatically (retry budget applies); do not
+   run implement yourself. When
    blockers_count is 0, the deviation gate below runs next, THEN the human
    code-review gate at the end of this prompt.`
   }
@@ -103,14 +104,14 @@ ${buildDeltaReviewStep(ref)}
 Review gate — run ONLY after validation has fully passed:
 
 ${buildBasePinStep()}
-7. Run /review on this change (the fresh-context reviewer). When it returns,
+7. Call the review tool on this change (the fresh-context reviewer). When it returns,
    write the review artifact's verdict as machine-readable lines — exactly
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
    0 when clean) plus one "- blocker: <description>" line per blocker:
 ${REVIEW_CONTRACT_PROMPT}
 ${buildDeltaReviewStep(ref)}
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
-   malformed artifact means re-run /review, not silent landing.
+   malformed artifact means call the review tool again, not silent landing.
 9. If blockers_count is 0: call the flow_phase_complete tool with ref=${ref}
    and phase="validate" — it applies the "review-passed" label after
    re-checking the gates, and its result confirms the label landed; without
@@ -120,14 +121,14 @@ ${buildDeltaReviewStep(ref)}
    until flow_land returns ok. On ok, run the landing step:
    ${landing}
 10. If blockers_count > 0: record each blocker as an aven note on ${ref}
-   (append "reviewed-at: <git rev-parse HEAD>" to the note),
-   route back to /implement ${ref} (retry budget applies), and STOP — do
-   not land.`
+   (append "reviewed-at: <git rev-parse HEAD>" to the note) and STOP — do
+   not land. The flow loop re-runs implement automatically (retry budget
+   applies); do not run implement yourself.`
 }
 
 // AIDEV-NOTE: PMR-C6AK — the personal human code-review gate, appended AFTER
 // the deviation gate so the textual order matches the execution order:
-// human test gate -> /review blockers -> deviation gate -> code_review ->
+// human test gate -> review blockers -> deviation gate -> code_review ->
 // labels/land/push. Only a human pass unlocks flow_phase_complete ->
 // flow_land (merge-main) -> local ff-only merge, so review-passed cannot
 // land before the human has seen the final state and the loop cannot reach
@@ -160,8 +161,9 @@ Human code-review gate — run ONLY after the deviation gate returned
       flow_phase_complete tool with ref=${ref} and phase="feedback" — it
       applies the "done" label after re-checking the gates.
 10. On fail: the code_review tool already recorded the tuicr findings as an
-   aven note on ${ref}. Route back to /implement ${ref} (retry budget
-   applies), and STOP — do not land.`
+   aven note on ${ref}. Add your own note on ${ref} containing
+   "reviewed-at: <git rev-parse HEAD>" and STOP — do not land. The flow loop
+   re-runs implement automatically (retry budget applies).`
 }
 
 // AIDEV-NOTE: Deviation gate section (PMR-BAGD) — appended to BOTH validate
@@ -253,8 +255,9 @@ D5. Route on the returned deviations_count:
      ask_user_question with exactly two options: "accept" and "fix". WAIT
      for the answer. Record the human decision as an aven note on ${ref}
      either way. ${acceptTarget} On "fix": record the deviation
-     report as an aven note on ${ref}, route back to /implement ${ref} with
-     the deviation report, and STOP — do not land.`
+     report as an aven note on ${ref} (append "reviewed-at: <git rev-parse
+     HEAD>") and STOP — do not land. The flow loop re-runs implement
+     automatically with the report as context.`
 }
 
 export interface ValidatePromptInput {
@@ -299,8 +302,8 @@ environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli
    "validated by human, <today's date>" and report validation complete (the
    review gate runs next).
 5. On "fail": ask the human for a short failure description, record it as an
-   aven note on ${input.ref}, and route back to /implement ${input.ref} — the
-   retry budget resets for the new attempt.
+   aven note on ${input.ref} (append "reviewed-at: <git rev-parse HEAD>") and
+   STOP — the flow loop re-runs implement automatically.
 ${buildReviewGateSection('personal', input.ref)}
 ${buildDeviationGateSection('personal', input.ref, isOneshot)}
 ${buildPersonalCodeReviewGate(input.ref)}`
@@ -336,3 +339,9 @@ Never continue past a failed step, never mark the phase validated.
 ${buildReviewGateSection('work', input.ref)}
 ${buildDeviationGateSection('work', input.ref, false)}`
 }
+
+// AIDEV-NOTE: PMR-69V8 — route-backs are NOT agent actions. Every fail path
+// above writes a note carrying "reviewed-at:" and stops; flow/loop.ts sees the
+// fresh marker note on the unlabelled validate settle and re-injects the
+// implement prompt (bounded by MAX_ATTEMPTS). Keep the marker in any new
+// fail path or the loop will plain-halt instead.

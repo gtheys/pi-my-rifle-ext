@@ -30,11 +30,11 @@ test('buildReviewPrompt: instructs review-stage behavior and in-place fixes', ()
   assert.match(prompt, /in place/i)
 })
 
-test('buildReviewPrompt: approval requires explicit "approve <REF>" via spec_approve tool + /spec-publish', () => {
+test('buildReviewPrompt: approval requires explicit "approve <REF>" via spec_approve tool + spec_publish tool', () => {
   const prompt = buildReviewPrompt(PICKED)
   assert.match(prompt, /approve PMR-AAAA/)
   assert.match(prompt, /spec_approve/)
-  assert.match(prompt, /\/spec-publish <REF>/)
+  assert.match(prompt, /spec_publish tool/)
   assert.match(prompt, /never approve/i)
 })
 

@@ -1,8 +1,7 @@
 // AIDEV-NOTE: Feedback-phase handoff prompts (PMR-XDRB phase 5), sent via
 // sendUserMessage (same pattern as validate/prompt.ts). Work mode runs
-// /sonarqube and /pr-quality — in-package commands since PMR-W8SG absorbed
-// pi-review; the prompt still names them because command invocation is a
-// runtime act, not an import.
+// the sonarqube and pr_quality TOOLS (PMR-69V8: agents cannot invoke slash
+// commands).
 // The triage rules mirror classify() in feedback/triage.ts; the escalation
 // rule (new work = new task through the gates) is stated as an absolute in
 // the prompt so the agent can never fix silently or ignore a finding.
@@ -23,18 +22,18 @@ const MECHANICAL = [...FIX_NOW_SEVERITIES].join(', ')
 function workSection(ref: string): string {
   return `Run the feedback work gate on ${ref}'s PR. Execute IN ORDER:
 
-1. Run /sonarqube on the PR and read its report.
+1. Call the sonarqube tool on the PR and read its report.
 2. For EACH unresolved finding, triage it with these rules:
    - Mechanical findings (severity ${MECHANICAL}) that do NOT touch
      behavior, architecture, data, migrations, schema, or API contracts are
      fixed immediately.
    - Anything touching behavior/architecture/data — regardless of severity —
      and every major/critical/blocker, and every finding whose severity you
-     cannot determine, becomes a NEW Jira/aven task that goes back through
-     the flow gates (/research /plan /implement /validate). NEVER fix such a
+     cannot determine, becomes a NEW Jira/aven task (plan it via the
+     normal flow phases). NEVER fix such a
      finding silently inside feedback. NEVER ignore a finding: every finding
      ends as either a fix commit or a new task. Nothing is left unresolved.
-3. Fix-now findings: fix via /pr-quality semantics and COMMIT each fix.
+3. Fix-now findings: use the pr_quality tool for review-thread context, fix, and COMMIT each fix.
 4. Address all unresolved GitHub review comments on the PR (same triage
    rules; reply to comments you escalated, linking the new task).
 
