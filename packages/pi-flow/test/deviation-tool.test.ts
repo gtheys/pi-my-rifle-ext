@@ -141,7 +141,8 @@ function gitFake(
 const GOOD_GIT = {
   'rev-parse --abbrev-ref HEAD': { stdout: 'feat/x\n' },
   'config branch.feat/x.flowbase': { stdout: 'develop\n' },
-  'merge-base HEAD develop': { stdout: 'bbb\n' },
+  'config branch.feat/x.flowbasesha': { stdout: 'bbb\n' },
+  'merge-base HEAD bbb': { stdout: 'bbb\n' },
   'rev-parse HEAD': { stdout: 'ccc\n' },
   'rev-list --count bbb..HEAD': { stdout: '2\n' },
   'diff bbb..HEAD': { stdout: 'diff --git a/x\n+y\n' },

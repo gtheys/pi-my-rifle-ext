@@ -71,12 +71,19 @@ export async function resolveFlowRange(
   exec: Exec,
   cwd: string,
   baseBranch: string,
+  baseRef: string = baseBranch,
 ): Promise<FlowRangeResult> {
-  const baseSha = await getMergeBase(exec, baseBranch, cwd)
-  if (baseSha === null) {
+  // AIDEV-NOTE: PMR-R4AP — deliberately NO @{upstream} lookup here. Flow work
+  // is local-first: origin/<base> can be behind local <base> (unpushed local
+  // merges), which would drag unrelated commits into the range. baseRef is
+  // the exact SHA recorded at worktree create (or the local base branch for
+  // legacy worktrees).
+  const mb = await exec('git', ['merge-base', 'HEAD', baseRef], { cwd })
+  const baseSha = mb.stdout.trim()
+  if (mb.code !== 0 || baseSha === '') {
     return {
       ok: false,
-      reason: `cannot resolve merge-base of HEAD and '${baseBranch}' in ${cwd}`,
+      reason: `cannot resolve merge-base of HEAD and '${baseRef}' (base '${baseBranch}') in ${cwd}`,
     }
   }
   const head = await exec('git', ['rev-parse', 'HEAD'], { cwd })

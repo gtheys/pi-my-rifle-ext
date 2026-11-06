@@ -39,6 +39,8 @@ test('getMergeBase null when unresolvable or exec throws', async () => {
 test('resolveFlowRange ok', async () => {
   const exec = fake({
     'merge-base HEAD main': { stdout: 'bbb\n' },
+    'rev-parse --abbrev-ref main@{upstream}': { stdout: 'origin/main\n' },
+    'merge-base HEAD origin/main': { stdout: 'WRONG-upstream\n' },
     'rev-parse HEAD': { stdout: 'ccc\n' },
     'rev-list --count bbb..HEAD': { stdout: '3\n' },
   })

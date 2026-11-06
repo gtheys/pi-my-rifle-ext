@@ -16,7 +16,12 @@ import {
   NO_ACTIVE_FLOW_WARNING,
   setFlowWorktree,
 } from '../flow/worktree-context.ts'
-import { currentBranch, recordFlowBase } from '../shared/flow-base.ts'
+import {
+  clearFlowBase,
+  currentBranch,
+  recordFlowBase,
+  resolveBaseSha,
+} from '../shared/flow-base.ts'
 import { copyEnvFiles, runBootstrap } from './bootstrap.ts'
 import { deriveBranch, parseBranchInput, slugify } from './branch.ts'
 import {
@@ -154,11 +159,33 @@ async function createFlow(
     return errorResult(`Cannot record flow base: ${base.reason}`)
   }
 
-  report(`Creating worktree ${derived.branch}...`)
+  const baseShaResult = await resolveBaseSha(execFn, mainPath, base.branch)
+  if (!baseShaResult.ok) {
+    return errorResult(`Cannot record flow base: ${baseShaResult.reason}`)
+  }
+  const baseSha = baseShaResult.branch
+
+  // Record BEFORE creating: no half-created worktree if recording fails
+  // (git config is repo-shared and works for a not-yet-existing branch).
+  const preRecorded = await recordFlowBase(
+    execFn,
+    mainPath,
+    derived.branch,
+    base.branch,
+    baseSha,
+  )
+  if (!preRecorded.ok) {
+    return errorResult(`Cannot record flow base: ${preRecorded.reason}`)
+  }
+
+  report(
+    `Creating worktree ${derived.branch} from ${base.branch}@${baseSha.slice(0, 9)}...`,
+  )
   let created: { path: string; workspaceId: string }
   try {
-    created = await worktreeCreate(pi, cwd, derived.branch, label)
+    created = await worktreeCreate(pi, cwd, derived.branch, label, baseSha)
   } catch (error) {
+    await clearFlowBase(execFn, mainPath, derived.branch)
     return errorResult((error as Error).message)
   }
   if (created.path === '') {
@@ -168,15 +195,11 @@ async function createFlow(
   }
   const { path, workspaceId } = created
 
-  const recorded = await recordFlowBase(
-    execFn,
-    path,
-    derived.branch,
-    base.branch,
-  )
-  if (!recorded.ok) {
+  // Verify herdr really branched from the recorded SHA.
+  const head = await execFn('git', ['rev-parse', 'HEAD'], { cwd: path })
+  if (head.code !== 0 || head.stdout.trim() !== baseSha) {
     return errorResult(
-      `Worktree created at ${path} but flow base not recorded: ${recorded.reason}`,
+      `Worktree created at ${path} but its HEAD (${head.stdout.trim()}) is not the recorded base ${base.branch}@${baseSha} — herdr did not honour --base. Remove the worktree and report this.`,
     )
   }
 
@@ -210,7 +233,7 @@ async function createFlow(
   const lines = [
     `Worktree ready: ${derived.branch}`,
     `Path: ${path}`,
-    `Flow base: ${base.branch}`,
+    `Flow base: ${base.branch} @ ${baseSha}`,
     `Workspace: ${workspaceId || '(unknown)'}`,
     `Bootstrap:\n${bootstrapLines}`,
     `Env files copied: ${envLine}`,

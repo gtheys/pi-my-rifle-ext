@@ -185,16 +185,44 @@ export function parseCreateResult(stdout: string): {
   }
 }
 
+// AIDEV-NOTE: PMR-R4AP — always pass --base <sha>: without it herdr branches
+// from the HEAD of --cwd, which is NOT necessarily the main checkout's branch
+// (e.g. session running inside another worktree).
+export function worktreeCreateArgs(
+  cwd: string,
+  branch: string,
+  label: string,
+  baseSha?: string,
+): string[] {
+  const args = [
+    'worktree',
+    'create',
+    '--cwd',
+    cwd,
+    '--branch',
+    branch,
+    '--label',
+    label,
+  ]
+  if (baseSha !== undefined) {
+    args.push('--base', baseSha)
+  }
+  return args
+}
+
 export async function worktreeCreate(
   pi: ExtensionAPI,
   cwd: string,
   branch: string,
   label: string,
+  baseSha?: string,
 ): Promise<{ path: string; workspaceId: string }> {
   const result = await pi.exec(
     'herdr',
-    ['worktree', 'create', '--cwd', cwd, '--branch', branch, '--label', label],
-    { cwd },
+    worktreeCreateArgs(cwd, branch, label, baseSha),
+    {
+      cwd,
+    },
   )
   if (result.code !== 0) {
     throw new Error(

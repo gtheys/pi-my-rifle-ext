@@ -63,7 +63,12 @@ export async function resolveDeviationRange(
 ): Promise<ResolvedRangeResult> {
   const base = await readFlowBase(exec, cwd)
   if (!base.ok) return base
-  const range = await resolveFlowRange(exec, cwd, base.branch)
+  const range = await resolveFlowRange(
+    exec,
+    cwd,
+    base.value.branch,
+    base.value.sha ?? base.value.branch,
+  )
   if (!range.ok) return range
   try {
     const diff = await diffForRange(exec, cwd, range.value.range)

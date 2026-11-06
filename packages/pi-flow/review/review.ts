@@ -60,6 +60,7 @@ import {
   getFlowWorktree,
 } from '../flow/worktree-context.ts'
 import { type Exec, getMergeBase } from '../shared/diff-base.ts'
+import { readFlowBase } from '../shared/flow-base.ts'
 import {
   herdrAvailable,
   worktreeCreate,
@@ -2192,15 +2193,26 @@ ${result.summary}`
       if (p.type === 'branch' || p.type === 'uncommitted') {
         reviewCwd = await resolveFlowReviewCwd(ctx.cwd)
       }
+      // AIDEV-NOTE: PMR-R4AP — in a flow worktree the review base is the SHA
+      // recorded at worktree create (same value deviation_review uses), not
+      // whatever branch name the agent typed or origin/<branch>.
+      let branchRef = ''
+      if (p.type === 'branch') {
+        branchRef = p.branch
+        const recorded = await readFlowBase(execOf(pi), reviewCwd)
+        if (recorded.ok && recorded.value.sha !== null) {
+          branchRef = recorded.value.sha
+        }
+      }
       if (
         p.type === 'branch' &&
-        (await isEmptyBranchRange(pi, p.branch, reviewCwd))
+        (await isEmptyBranchRange(pi, branchRef, reviewCwd))
       ) {
         return {
           content: [
             {
               type: 'text',
-              text: `Empty review range: HEAD == merge-base with '${p.branch}' in ${reviewCwd} — the change is not on this checkout/branch, so the diff would be empty. Run the review from the worktree carrying the change (or start the flow loop so its worktree binding is known). Refusing to spawn a review that would silently pass.`,
+              text: `Empty review range: HEAD == merge-base with '${branchRef}' in ${reviewCwd} — the change is not on this checkout/branch, so the diff would be empty. Run the review from the worktree carrying the change (or start the flow loop so its worktree binding is known). Refusing to spawn a review that would silently pass.`,
             },
           ],
           // AIDEV-NOTE: isError results omit details — a fabricated
@@ -2229,7 +2241,7 @@ ${result.summary}`
       if (p.type === 'uncommitted') {
         target = { type: 'uncommitted' }
       } else if (p.type === 'branch') {
-        target = { type: 'baseBranch', branch: p.branch }
+        target = { type: 'baseBranch', branch: branchRef }
       } else if (p.type === 'commit') {
         target = { type: 'commit', sha: p.sha, title: p.title }
       } else if (p.type === 'folder') {
