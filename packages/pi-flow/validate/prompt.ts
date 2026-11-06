@@ -257,7 +257,7 @@ D5. Route on the returned deviations_count:
      either way. ${acceptTarget} On "fix": record the deviation
      report as an aven note on ${ref} (append "reviewed-at: <git rev-parse
      HEAD>") and STOP — do not land. The flow loop re-runs implement
-     automatically with the report as context.`
+     automatically and points the agent at that note.`
 }
 
 export interface ValidatePromptInput {

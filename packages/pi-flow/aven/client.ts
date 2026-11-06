@@ -249,10 +249,13 @@ export function hasBlockersNoteSince(
 ): boolean {
   const since = Date.parse(sinceIso)
   if (Number.isNaN(since)) return false
-  for (const chunk of showFullOutput.split(/^note id=/m).slice(1)) {
-    const created = Date.parse(/^\S+ created=(\S+)/.exec(chunk)?.[1] ?? '')
+  // Anchored heredoc shape (same as parseWorktreeNotes): a pasted
+  // "note id=" line inside a body cannot start a new note.
+  const re = /^note id=\S+ created=(\S+).*$\n^body<<EOF$\n([\s\S]*?)\n^EOF$/gm
+  for (const match of showFullOutput.matchAll(re)) {
+    const created = Date.parse(match[1] ?? '')
     if (Number.isNaN(created) || created < since) continue
-    if (chunk.includes('reviewed-at:')) return true
+    if (/^reviewed-at:/m.test(match[2] ?? '')) return true
   }
   return false
 }
@@ -267,7 +270,9 @@ export async function readFreshBlockers(
     const { stdout, stderr } = await execFileAsync('aven', args, {
       timeout: AVEN_TIMEOUT_MS,
     })
-    if (avenErrorText(stdout, stderr) !== null) return false
+    // AIDEV-NOTE: PMR-69V8 — check stderr ONLY: note bodies quote failing
+    // tests ("Error: ...") and must not be mistaken for an aven failure.
+    if (avenErrorText('', stderr) !== null) return false
     return hasBlockersNoteSince(stdout, sinceIso)
   } catch {
     return false

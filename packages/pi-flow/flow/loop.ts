@@ -203,7 +203,13 @@ class FlowLoopImpl implements FlowLoop {
       ref: state.ref,
       text: `validate left review blockers — re-running implement (retry ${state.blockerRetries}/${MAX_ATTEMPTS - 1})`,
     })
-    await this.sendPhasePrompt('implement')
+    this.deps.notify(
+      `/flow ${state.ref}: validate left review blockers — re-running implement (retry ${state.blockerRetries}/${MAX_ATTEMPTS - 1})`,
+      'info',
+    )
+    // AIDEV-NOTE: the blockers live in the aven note, not in loop state — the
+    // suffix points the retried agent at it so the retry fixes something.
+    await this.sendPhasePrompt('implement', fixRoundSuffix(state.ref))
     return true
   }
 
@@ -217,7 +223,7 @@ class FlowLoopImpl implements FlowLoop {
     this.deps.setActiveRef?.(null)
   }
 
-  private async sendPhasePrompt(phase: Phase): Promise<void> {
+  private async sendPhasePrompt(phase: Phase, suffix = ''): Promise<void> {
     if (this.state === null) return
     const labels = await this.deps.readLabels(this.state.ref)
     if (labels === null) {
@@ -247,7 +253,7 @@ class FlowLoopImpl implements FlowLoop {
     })
     this.state.currentPhase = phase
     if (phase === 'validate') this.state.validateStartedAt = now()
-    this.deps.sendPrompt(result.prompt)
+    this.deps.sendPrompt(result.prompt + suffix)
     this.state.awaitingOutcome = true
   }
 
@@ -283,6 +289,12 @@ class FlowLoopImpl implements FlowLoop {
 
 export function createFlowLoop(deps: FlowLoopDeps): FlowLoop {
   return new FlowLoopImpl(deps)
+}
+
+function fixRoundSuffix(ref: string): string {
+  return `
+
+FIX ROUND (automatic retry after validate): read the MOST RECENT aven note on ${ref} containing "reviewed-at:" (aven show ${ref} --full). It lists the review blockers or deviation report. Fix EVERY item in it first, then run tests and commit.`
 }
 
 function now(): string {

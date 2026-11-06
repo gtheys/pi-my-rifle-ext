@@ -357,3 +357,26 @@ test('hasBlockersNoteSince: only fresh notes with reviewed-at count', async () =
   assert.equal(hasBlockersNoteSince(out, '2026-01-01T12:00:00Z'), false)
   assert.equal(hasBlockersNoteSince('', '2026-01-01T00:00:00Z'), false)
 })
+
+test('retry prompt points the agent at the reviewed-at blockers note', async () => {
+  const h = blockersHarness([true])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled()
+  assert.match(h.sent[1], /FIX ROUND/)
+  assert.match(h.sent[1], /reviewed-at:/)
+  assert.ok(h.notifications.some((n) => /re-running implement/.test(n.message)))
+})
+
+test('hasBlockersNoteSince: error text and pasted note ids in bodies do not break it', async () => {
+  const { hasBlockersNoteSince } = await import('../aven/client.ts')
+  const out = [
+    'note id=A created=2026-01-01T00:00:00Z',
+    'body<<EOF',
+    'Error: test failed',
+    'note id=Z created=2020-01-01T00:00:00Z',
+    'reviewed-at: abc',
+    'EOF',
+  ].join('\n')
+  assert.equal(hasBlockersNoteSince(out, '2025-12-31T00:00:00Z'), true)
+})
