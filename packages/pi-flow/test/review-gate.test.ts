@@ -188,10 +188,10 @@ test('decideReviewRoute: zero blockers, work mode -> PR landing', () => {
   })
 })
 
-test('decideReviewRoute: zero blockers, personal mode -> push main', () => {
+test('decideReviewRoute: zero blockers, personal mode -> merge into main', () => {
   assert.deepEqual(decideReviewRoute('personal', 0), {
     route: 'landing',
-    landing: 'push-main',
+    landing: 'merge-main',
   })
 })
 

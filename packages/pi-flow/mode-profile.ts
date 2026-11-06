@@ -8,8 +8,9 @@ import type { WorkMode } from './work-mode.ts'
 
 export interface ModeProfile {
   /** flow_land route for the landing step: work lands via PR, personal
-   *  pushes straight to main (the standing no-PR rule on own repos). */
-  landingRoute: 'pr' | 'push-main'
+   *  merges the flow branch into main LOCALLY in the main (non-worktree)
+   *  checkout — never a push (PMR-HYZA). */
+  landingRoute: 'pr' | 'merge-main'
   /** Env var naming the external notes/artifact root for this mode. */
   artifactRootEnv: 'LLM_NOTES_ROOT' | 'PERSONAL_FEATURES'
   /** Whether Jira IDs are valid flow/research refs (work repos sync Jira;
@@ -31,7 +32,7 @@ export const MODE_PROFILE: Record<WorkMode, ModeProfile> = {
     phases: ['plan', 'implement', 'validate', 'feedback'],
   },
   personal: {
-    landingRoute: 'push-main',
+    landingRoute: 'merge-main',
     artifactRootEnv: 'PERSONAL_FEATURES',
     acceptsJiraRefs: false,
     branchRule: 'conventional-slug',

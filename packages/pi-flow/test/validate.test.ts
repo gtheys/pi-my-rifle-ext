@@ -320,7 +320,11 @@ test('buildValidatePrompt: personal step 9 routes through the code_review tool',
     land > codeReview,
     'flow_land only after the human code-review pass',
   )
-  assert.ok(p.includes('push-main'))
+  assert.ok(p.includes('merge-main'))
+  assert.ok(!p.includes('push-main'))
+  assert.match(p, /merge --ff-only/)
+  assert.match(p, /do not push|Do not push|never push|NEVER push/)
+  assert.ok(!p.includes('BLOCKED until flow_land'))
   assert.ok(p.includes('tuicr'))
 })
 

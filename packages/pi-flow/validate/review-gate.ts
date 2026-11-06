@@ -16,7 +16,9 @@
 // non-integer or negative counts are explicit errors — never a silent 0 (a
 // silent 0 would auto-land broken code).
 
-export type LandingRoute = 'pr' | 'push-main'
+// PMR-HYZA: personal landing is a LOCAL ff-only merge into main in the
+// main checkout — never a push.
+export type LandingRoute = 'pr' | 'merge-main'
 
 // AIDEV-NOTE: Contract pieces shared with the emitter (review/verdict.ts).
 // parseReviewArtifact scopes parsing to the verdict section, so the heading
@@ -122,7 +124,7 @@ export function decideReviewRoute(
     if (mode === 'work') {
       return { route: 'landing', landing: 'pr' }
     }
-    return { route: 'landing', landing: 'push-main' }
+    return { route: 'landing', landing: 'merge-main' }
   }
   const listed = blockers.filter((b) => b.length > 0)
   let blockersNote: string

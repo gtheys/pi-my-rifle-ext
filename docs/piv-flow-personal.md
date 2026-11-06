@@ -103,7 +103,7 @@ flowchart TD
     rev -- "count &gt; 0" --> bl["blocker notes<br/>route back to /implement"]
     bl --> impl
     rev -- "count = 0" --> lblV["label: review-passed<br/>(flow_phase_complete)"]
-    lblV --> land["flow_land route=push-main<br/>authorizes the push"]
+    lblV --> land["flow_land route=merge-main<br/>then local ff-only merge into main"]
     land --> push["git push to main<br/>(now unblocked)"]
     push --> summ["OUTCOME SUMMARY note<br/>What shipped / Test evidence /<br/>Review verdict"]
     summ --> done["status: done<br/>label: done<br/>(flow_phase_complete)<br/>AUTO: flow complete"]
@@ -361,7 +361,7 @@ a silent 0 would auto-land broken code.
 - `blockers_count > 0` → each blocker becomes an aven note; route back to
   `/implement` (budget applies); do not land.
 - `blockers_count: 0` → `flow_phase_complete(phase="validate")` lands
-  `review-passed`, then `flow_land ref route=push-main` re-checks the gate
+  `review-passed`, then `flow_land ref route=merge-main` re-checks the gate
   (label required, artifact cross-checked when supplied) and authorizes the
   landing — only then does `git push` to main pass the interceptor.
 

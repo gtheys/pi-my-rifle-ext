@@ -65,7 +65,7 @@ Beyond `/review`, validate runs two more gates (`packages/pi-flow/tools/`):
 - `code_review` (`tools/code-review.ts`, `code-review-parse.ts`) — human gate:
   opens `tuicr` on the flow worktree (matched by title-derived branch; external
   worktrees accepted), human answers pass/fail. Required before personal
-  `flow_land route=push-main`.
+  `flow_land route=merge-main`.
 
 ## `/sonarqube` — `packages/pi-flow/sonarqube/sonarqube.ts`
 

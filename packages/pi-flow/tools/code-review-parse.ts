@@ -145,7 +145,7 @@ export function routeReviewPass(ref: string, date: string): ReviewRouting {
     avenNote: `human code review passed, ${date}`,
     message:
       `code_review: human PASS recorded for ${ref} (aven note: "${`human code review passed, ${date}`}").\n` +
-      `Next: call flow_phase_complete(phase="validate"), then flow_land (route=push-main), then git push.`,
+      `Next: call flow_phase_complete(phase="validate"), then flow_land (route=merge-main), then a LOCAL ff-only merge into main — never a push.`,
   }
 }
 

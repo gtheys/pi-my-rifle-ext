@@ -77,9 +77,9 @@ export function registerCodeReviewTool(
     name: 'code_review',
     label: 'code review gate',
     description:
-      "Human code-review gate for a flow run: resolves the ref's worktree, opens tuicr (branch-scope diff) in a focused herdr tab for the human, then asks them pass/fail. Pass records the human-review marker (required by flow_land push-main later); fail records the tuicr findings as an aven note and routes back to /implement.",
+      "Human code-review gate for a flow run: resolves the ref's worktree, opens tuicr (branch-scope diff) in a focused herdr tab for the human, then asks them pass/fail. Pass records the human-review marker (required by flow_land merge-main later); fail records the tuicr findings as an aven note and routes back to /implement.",
     promptSnippet:
-      'Human code-review gate — call for the active flow ref before flow_land (personal mode push-main).',
+      'Human code-review gate — call for the active flow ref before flow_land (personal mode merge-main).',
     promptGuidelines: [
       'Call code_review with the flow ref when the validate phase reaches the human review gate (step H1).',
       'A failure result names what broke and the manual tuicr command — fix the cause or open it manually, then re-call.',

@@ -245,7 +245,7 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   human-review marker, fail records findings as an aven note; agent-attested
   `outcome="pass"` is refused when the blocking ask exists).
   `flow_land` authorization is **single-use and ref-scoped**; personal
-  `push-main` additionally requires the human code-review pass marker.
+  `merge-main` additionally requires the human code-review pass marker.
   Plus the absorbed agent tools: `resolve_spec_path`, `resolve_feature_path`,
   `open_in_pane`, `jira_create_branch` (from pi-planning), `review`,
   `sonarqube`, `pr_quality` (from pi-review), `worktree` (from pi-worktree).

@@ -14,7 +14,7 @@ import { createLandingState, registerLandTool } from '../tools/land.ts'
 
 type LandExecute = (
   toolCallId: string,
-  params: { ref: string; route: 'pr' | 'push-main'; artifact?: string },
+  params: { ref: string; route: 'pr' | 'merge-main'; artifact?: string },
 ) => Promise<{
   content: { type: string; text: string }[]
   isError?: boolean

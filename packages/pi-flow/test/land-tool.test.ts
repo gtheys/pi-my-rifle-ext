@@ -1,4 +1,4 @@
-// Tests for the flow_land tool (PMR-C6AK): route=push-main requires the
+// Tests for the flow_land tool (PMR-C6AK): route=merge-main requires the
 // human code-review marker (LandingState.humanReviewPassed === ref) recorded
 // by the code_review tool; route=pr is unchanged. Uses a fake `aven` on PATH
 // (same pattern as aven-workspace-cwd.test.ts) to satisfy the review-passed
@@ -24,7 +24,7 @@ after(() => {
 
 type LandExecute = (
   toolCallId: string,
-  params: { ref: string; route: 'pr' | 'push-main'; artifact?: string },
+  params: { ref: string; route: 'pr' | 'merge-main'; artifact?: string },
 ) => Promise<{
   content: { type: string; text: string }[]
   isError?: boolean
@@ -58,34 +58,67 @@ async function withFakeAven(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-test('push-main is refused without the human code-review marker', async () => {
+test('merge-main is refused without the human code-review marker', async () => {
   const execute = landExecute()
   await withFakeAven(async () => {
-    const result = await execute('t1', { ref: 'PMR-ABC1', route: 'push-main' })
+    const result = await execute('t1', { ref: 'PMR-ABC1', route: 'merge-main' })
     assert.equal(result.isError, true)
     assert.match(result.content[0].text, /code_review tool/)
     assert.match(result.content[0].text, /human code-review gate/)
   })
 })
 
-test('push-main is refused when the marker names a different ref', async () => {
+test('merge-main is refused when the marker names a different ref', async () => {
   const execute = landExecute()
   landingState.humanReviewPassed = 'PMR-OTHER'
   await withFakeAven(async () => {
-    const result = await execute('t2', { ref: 'PMR-ABC1', route: 'push-main' })
+    const result = await execute('t2', { ref: 'PMR-ABC1', route: 'merge-main' })
     assert.equal(result.isError, true)
     assert.match(result.content[0].text, /code_review tool/)
   })
 })
 
-test('push-main is authorized when the marker matches the ref', async () => {
+test('merge-main succeeds when the marker matches the ref', async () => {
   const execute = landExecute()
   landingState.humanReviewPassed = 'PMR-ABC1'
   await withFakeAven(async () => {
-    const result = await execute('t3', { ref: 'PMR-ABC1', route: 'push-main' })
+    const result = await execute('t3', { ref: 'PMR-ABC1', route: 'merge-main' })
     assert.equal(result.isError, undefined)
-    assert.match(result.content[0].text, /authorized/)
+    assert.match(result.content[0].text, /merge --ff-only/)
+    assert.match(result.content[0].text, /Do not push/)
   })
+})
+
+test('merge-main does NOT authorize a git push (PMR-HYZA)', async () => {
+  const execute = landExecute()
+  landingState.humanReviewPassed = 'PMR-ABC1'
+  await withFakeAven(async () => {
+    await execute('t6', { ref: 'PMR-ABC1', route: 'merge-main' })
+    assert.equal(landingState.authorized, null)
+  })
+})
+
+test('schema rejects route push-main (PMR-HYZA)', async () => {
+  const { Value } = await import('typebox/value')
+  let parameters: unknown
+  const mockPi = {
+    registerTool: (options: { parameters: unknown }) => {
+      parameters = options.parameters
+    },
+  }
+  registerLandTool(
+    mockPi as unknown as Parameters<typeof registerLandTool>[0],
+    landingState,
+    () => null,
+  )
+  assert.equal(
+    Value.Check(parameters as never, { ref: 'PMR-ABC1', route: 'merge-main' }),
+    true,
+  )
+  assert.equal(
+    Value.Check(parameters as never, { ref: 'PMR-ABC1', route: 'push-main' }),
+    false,
+  )
 })
 
 test('route=pr is unchanged — no human-review marker required', async () => {
@@ -103,7 +136,7 @@ test('label gate still runs before authorization (fail-closed, PMR-06RH)', async
   landingState.humanReviewPassed = 'PMR-ABC1'
   const previousPath = process.env.PATH ?? ''
   process.env.PATH = previousPath // no fake aven -> labels unreadable
-  const result = await execute('t5', { ref: 'PMR-ABC1', route: 'push-main' })
+  const result = await execute('t5', { ref: 'PMR-ABC1', route: 'merge-main' })
   assert.equal(result.isError, true)
   assert.match(result.content[0].text, /fail-closed/)
 })

@@ -38,10 +38,11 @@ function buildDeltaReviewStep(ref: string): string {
 // AIDEV-NOTE: PMR-C6AK — the personal branch's step 9 is the HUMAN
 // code-review gate: the agent calls the code_review tool (tuicr on the flow
 // worktree), and only a human pass unlocks flow_phase_complete -> flow_land
-// (push-main) -> push. Ordering: human test gate -> /review blockers ->
-// deviation gate -> code_review -> labels/land/push, so review-passed can
+// (merge-main) -> LOCAL ff-only merge into main (never a push). Ordering:
+// human test gate -> /review blockers ->
+// deviation gate -> code_review -> labels/land/merge, so review-passed can
 // only land after the human pass and the loop cannot advance to feedback
-// before the push.
+// before the merge.
 function buildReviewGateSection(
   mode: 'work' | 'personal',
   ref: string,
@@ -74,8 +75,10 @@ ${buildDeltaReviewStep(ref)}
    the gh CLI, then post a Jira comment on
    ${ref} linking the PR URL.`
   } else {
-    landing = `push the branch straight to main —
-   the standing no-PR rule on own repos. No PR, no Jira link step.`
+    landing = `merge the branch into main LOCALLY —
+   git -C <main repo> merge --ff-only <branch> (main repo = first entry of
+   \`git worktree list\`). NEVER push. No PR, no Jira link step. On ff-only
+   failure STOP and ask the human.`
   }
   return `
 Review gate — run ONLY after validation has fully passed:
@@ -106,9 +109,10 @@ ${buildDeltaReviewStep(ref)}
 // the deviation gate so the textual order matches the execution order:
 // human test gate -> /review blockers -> deviation gate -> code_review ->
 // labels/land/push. Only a human pass unlocks flow_phase_complete ->
-// flow_land (push-main) -> push, so review-passed cannot land before the
-// human has seen the final state and the loop cannot reach feedback before
-// the push.
+// flow_land (merge-main) -> local ff-only merge, so review-passed cannot
+// land before the human has seen the final state and the loop cannot reach
+// feedback before the merge. PMR-HYZA: never a push — the landing is a
+// LOCAL merge into main in the main (non-worktree) checkout.
 function buildPersonalCodeReviewGate(ref: string): string {
   return `
 Human code-review gate — run ONLY after the deviation gate returned
@@ -119,11 +123,14 @@ Human code-review gate — run ONLY after the deviation gate returned
    On pass: call the flow_phase_complete tool with ref=${ref} and
    phase="validate" — it applies the "review-passed" label after
    re-checking the gates; without it the flow halts at validate. Then call
-   the flow_land tool with ref=${ref} and the route (push-main) — direct
-   git push is BLOCKED until flow_land returns ok. On ok, push the branch
-   straight to main — the standing no-PR rule on own repos. No PR, no Jira
-   link step.
-   After the push succeeds (personal mode has no separate feedback phase —
+   the flow_land tool with ref=${ref} and the route (merge-main). After it
+   returns ok, merge the flow branch into main LOCALLY: first run
+   \`git worktree list\` — its first entry is the MAIN (non-worktree)
+   checkout — then run \`git -C <main repo path> merge --ff-only <branch>\`.
+   NEVER push; git push stays blocked for the whole flow. No PR, no Jira
+   link step. If the ff-only merge fails, STOP and ask the human — do not
+   force, reset or rebase.
+   After the merge succeeds (personal mode has no separate feedback phase —
    PMR-GFM5), close out the ticket IN ORDER:
    a. Write the outcome summary as an aven note on ${ref}: "## Outcome
       summary" with "### What shipped", "### Test evidence" and "### Review
