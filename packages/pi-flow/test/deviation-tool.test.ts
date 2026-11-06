@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import type { Exec } from '../shared/diff-base.ts'
 import {
   deviationResultToToolResult,
   deviationReviewPromptFrom,
   registerDeviationReviewTool,
+  resolveDeviationRange,
 } from '../tools/deviation.ts'
 import { DEVIATION_VERDICT_HEADING } from '../validate/deviation-gate.ts'
 
@@ -35,38 +37,43 @@ function textOf(result: {
   return ''
 }
 
+const RESOLVED = {
+  diff: 'diff --git a/settings.ts\n+save()',
+  commitMessages: 'feat: settings persistence',
+}
+
 // --- prompt composition pass-through ---
 
 const BASE_PARAMS = {
   mode: 'personal' as const,
   ref: 'PMR-TEST1',
   spec: 'The feature must persist user settings across restarts.',
-  diff: 'diff --git a/settings.ts\n+save()',
-  commitMessages: 'feat: settings persistence',
   avenNotes: 'interview: user wants settings saved',
 }
 
 test('deviationReviewPromptFrom passes spec, diff and why-inputs through', () => {
-  const prompt = deviationReviewPromptFrom(BASE_PARAMS)
+  const prompt = deviationReviewPromptFrom(BASE_PARAMS, RESOLVED)
   assert.match(prompt, /fresh-context spec-deviation reviewer/)
   assert.ok(prompt.includes(BASE_PARAMS.spec))
-  assert.ok(prompt.includes(BASE_PARAMS.diff))
-  assert.ok(prompt.includes(BASE_PARAMS.commitMessages))
+  assert.ok(prompt.includes(RESOLVED.diff))
+  assert.ok(prompt.includes(RESOLVED.commitMessages))
   assert.ok(prompt.includes(BASE_PARAMS.avenNotes))
   assert.match(prompt, /Mode: personal\./)
 })
 
 test('deviationReviewPromptFrom empty why-inputs degrade to placeholders', () => {
-  const prompt = deviationReviewPromptFrom({
-    ...BASE_PARAMS,
-    commitMessages: '',
-    avenNotes: '',
-  })
+  const prompt = deviationReviewPromptFrom(
+    { ...BASE_PARAMS, avenNotes: '' },
+    { ...RESOLVED, commitMessages: '' },
+  )
   assert.match(prompt, /\(none recorded\)/)
 })
 
 test('deviationReviewPromptFrom thin spec triggers the insufficient-spec route', () => {
-  const prompt = deviationReviewPromptFrom({ ...BASE_PARAMS, spec: 'short' })
+  const prompt = deviationReviewPromptFrom(
+    { ...BASE_PARAMS, spec: 'short' },
+    RESOLVED,
+  )
   assert.match(prompt, /INSUFFICIENT SPEC/)
 })
 
@@ -117,4 +124,71 @@ test('registers the deviation_review tool with description and params', () => {
   assert.equal(tools.length, 1)
   assert.equal(tools[0]?.name, 'deviation_review')
   assert.match(tools[0]?.description ?? '', /deviation/)
+})
+
+// --- self-resolved range (PMR-R4AP) ---
+
+function gitFake(
+  map: Record<string, { stdout?: string; code?: number }>,
+): Exec {
+  return async (_cmd, args) => {
+    const hit = map[args.join(' ')]
+    if (hit === undefined) return { stdout: '', code: 1 }
+    return { stdout: hit.stdout ?? '', code: hit.code ?? 0 }
+  }
+}
+
+const GOOD_GIT = {
+  'rev-parse --abbrev-ref HEAD': { stdout: 'feat/x\n' },
+  'config branch.feat/x.flowbase': { stdout: 'develop\n' },
+  'merge-base HEAD develop': { stdout: 'bbb\n' },
+  'rev-parse HEAD': { stdout: 'ccc\n' },
+  'rev-list --count bbb..HEAD': { stdout: '2\n' },
+  'diff bbb..HEAD': { stdout: 'diff --git a/x\n+y\n' },
+  'log bbb..HEAD': { stdout: 'commit ccc\n    feat: y\n' },
+}
+
+test('resolveDeviationRange resolves base, diff and commits itself', async () => {
+  const r = await resolveDeviationRange(gitFake(GOOD_GIT), '/w')
+  assert.equal(r.ok, true)
+  if (r.ok) {
+    assert.equal(r.value.flowRange.baseSha, 'bbb')
+    assert.equal(r.value.flowRange.range, 'bbb..HEAD')
+    assert.match(r.value.diff, /diff --git/)
+    assert.match(r.value.commitMessages, /feat: y/)
+  }
+})
+
+test('resolveDeviationRange errors when flow base is not recorded', async () => {
+  const r = await resolveDeviationRange(
+    gitFake({ 'rev-parse --abbrev-ref HEAD': { stdout: 'feat/x\n' } }),
+    '/w',
+  )
+  assert.equal(r.ok, false)
+})
+
+test('resolveDeviationRange errors on empty range', async () => {
+  const r = await resolveDeviationRange(
+    gitFake({ ...GOOD_GIT, 'rev-parse HEAD': { stdout: 'bbb\n' } }),
+    '/w',
+  )
+  assert.equal(r.ok, false)
+  if (!r.ok) assert.match(r.reason, /empty range/)
+})
+
+test('resolveDeviationRange errors on empty diff', async () => {
+  const r = await resolveDeviationRange(
+    gitFake({ ...GOOD_GIT, 'diff bbb..HEAD': { stdout: '  \n' } }),
+    '/w',
+  )
+  assert.equal(r.ok, false)
+})
+
+test('tool schema has no diff/commitMessages params', () => {
+  const { tools, mockPi } = makeMockPi()
+  registerDeviationReviewTool(mockPi)
+  const params = JSON.stringify(
+    (tools[0] as unknown as { parameters: unknown }).parameters,
+  )
+  assert.doesNotMatch(params, /"diff"|commitMessages/)
 })

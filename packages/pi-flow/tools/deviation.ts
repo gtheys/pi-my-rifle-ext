@@ -14,11 +14,20 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import type { SubagentResult } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
+import { getFlowWorktree } from '../flow/worktree-context.ts'
 import {
   buildDeviationReviewPrompt,
   type DeviationReviewInput,
   startDeviationReview,
 } from '../review/deviation.ts'
+import {
+  commitMessagesForRange,
+  diffForRange,
+  type Exec,
+  type FlowRange,
+  resolveFlowRange,
+} from '../shared/diff-base.ts'
+import { readFlowBase } from '../shared/flow-base.ts'
 import {
   type DeviationArtifact,
   parseDeviationArtifact,
@@ -29,23 +38,70 @@ export interface DeviationReviewToolParams {
   mode: 'work' | 'personal'
   ref: string
   spec: string
-  diff: string
-  commitMessages: string
   avenNotes: string
 }
 
-/** Compose the reviewer prompt from the tool's resolved params. */
+/** Diff + commit messages the tool resolved itself (PMR-R4AP). */
+export interface ResolvedRange {
+  diff: string
+  commitMessages: string
+  flowRange: FlowRange
+}
+
+export type ResolvedRangeResult =
+  | { ok: true; value: ResolvedRange }
+  | { ok: false; reason: string }
+
+// AIDEV-NOTE: PMR-R4AP — the tool, not the agent, owns the diff range: base
+// branch recorded at worktree create (shared/flow-base.ts) -> shared
+// resolver (shared/diff-base.ts, same one pi-review uses) -> diff + commit
+// messages. Missing base, unresolvable base or empty range is an error —
+// the gate never runs on an empty diff.
+export async function resolveDeviationRange(
+  exec: Exec,
+  cwd: string,
+): Promise<ResolvedRangeResult> {
+  const base = await readFlowBase(exec, cwd)
+  if (!base.ok) return base
+  const range = await resolveFlowRange(exec, cwd, base.branch)
+  if (!range.ok) return range
+  try {
+    const diff = await diffForRange(exec, cwd, range.value.range)
+    if (diff.trim() === '') {
+      return { ok: false, reason: `empty diff for ${range.value.range}` }
+    }
+    const commitMessages = await commitMessagesForRange(
+      exec,
+      cwd,
+      range.value.range,
+    )
+    return { ok: true, value: { diff, commitMessages, flowRange: range.value } }
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+/** Compose the reviewer prompt from the tool params + the resolved range. */
 export function deviationReviewPromptFrom(
   params: DeviationReviewToolParams,
+  resolved: Pick<ResolvedRange, 'diff' | 'commitMessages'>,
 ): string {
   const input: DeviationReviewInput = {
     mode: params.mode,
     spec: params.spec,
-    diff: params.diff,
-    commitMessages: params.commitMessages,
+    diff: resolved.diff,
+    commitMessages: resolved.commitMessages,
     avenNotes: params.avenNotes,
   }
   return buildDeviationReviewPrompt(input)
+}
+
+/** One-line description of the range, shown to agent and human. */
+export function describeRange(r: FlowRange): string {
+  return `base ${r.baseBranch} @ ${r.baseSha}, range ${r.range} (${r.commitCount} commit(s), HEAD ${r.headSha})`
 }
 
 export type DeviationReviewDetails = DeviationArtifact
@@ -93,7 +149,8 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
     promptSnippet:
       'Spec-deviation gate for the validate phase — call after the review gate returned 0 blockers.',
     promptGuidelines: [
-      'Call deviation_review with the resolved spec text, the git diff vs the flow base, and the mined commit messages / aven notes (validate prompt steps D1/D2).',
+      'Call deviation_review with mode, ref, the resolved spec text and the mined aven notes (validate prompt steps D1/D2). Do NOT pass a diff or commit messages: the tool resolves base, diff and commits itself in the flow worktree and reports the base SHA and range in its result.',
+      'If the result says the flow base is missing or the range is empty, STOP and tell the human — never retry with a hand-written diff.',
       'An error result means re-run deviation_review — NEVER treat an error or malformed artifact as 0 deviations.',
     ],
     parameters: Type.Object({
@@ -102,12 +159,6 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
       spec: Type.String({
         description:
           'The resolved spec text (D1) — authoritative comparison base',
-      }),
-      diff: Type.String({
-        description: 'The git diff vs the flow base branch',
-      }),
-      commitMessages: Type.String({
-        description: 'Commit messages mined per D2 (empty string when none)',
       }),
       avenNotes: Type.String({
         description: 'Recent aven notes mined per D2 (empty string when none)',
@@ -120,10 +171,21 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
       _onUpdate: unknown,
       ctx: ExtensionToolContext,
     ): Promise<AgentToolResult<DeviationReviewDetails>> {
-      const prompt = deviationReviewPromptFrom(params)
+      const cwd = getFlowWorktree()?.path ?? ctx.cwd
+      const exec: Exec = (cmd, args, options) => pi.exec(cmd, args, options)
+      const resolved = await resolveDeviationRange(exec, cwd)
+      if (!resolved.ok) {
+        return toolResult(
+          `deviation_review: cannot resolve the diff range — ${resolved.reason}. No reviewer was spawned. Tell the human; NEVER treat this as 0 deviations.`,
+          { ok: false as const, reason: resolved.reason },
+          { isError: true },
+        )
+      }
+      const prompt = deviationReviewPromptFrom(params, resolved.value)
+      const rangeLine = describeRange(resolved.value.flowRange)
       let result: SubagentResult
       try {
-        result = await startDeviationReview(ctx, prompt, params.ref)
+        result = await startDeviationReview({ ...ctx, cwd }, prompt, params.ref)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return toolResult(
@@ -142,7 +204,12 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
           { isError: true },
         )
       }
-      return deviationResultToToolResult(result.summary)
+      const mapped = deviationResultToToolResult(result.summary)
+      const first = mapped.content[0]
+      if (first !== undefined && first.type === 'text') {
+        first.text = `Resolved ${rangeLine}\n${first.text}`
+      }
+      return mapped
     },
   })
 }
