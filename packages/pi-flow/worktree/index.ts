@@ -16,6 +16,7 @@ import {
   NO_ACTIVE_FLOW_WARNING,
   setFlowWorktree,
 } from '../flow/worktree-context.ts'
+import { currentBranch, recordFlowBase } from '../shared/flow-base.ts'
 import { copyEnvFiles, runBootstrap } from './bootstrap.ts'
 import { deriveBranch, parseBranchInput, slugify } from './branch.ts'
 import {
@@ -138,6 +139,21 @@ async function createFlow(
     label = slugify(derived.branch)
   }
 
+  // AIDEV-NOTE: PMR-R4AP — capture the main checkout's branch as the flow's
+  // diff base BEFORE creating the worktree; refuse on detached HEAD.
+  const execFn = (c: string, a: string[], o?: { cwd?: string }) =>
+    pi.exec(c, a, o)
+  let mainPath: string
+  try {
+    mainPath = await mainCheckout(pi, cwd)
+  } catch (error) {
+    return errorResult((error as Error).message)
+  }
+  const base = await currentBranch(execFn, mainPath)
+  if (!base.ok) {
+    return errorResult(`Cannot record flow base: ${base.reason}`)
+  }
+
   report(`Creating worktree ${derived.branch}...`)
   let created: { path: string; workspaceId: string }
   try {
@@ -152,6 +168,18 @@ async function createFlow(
   }
   const { path, workspaceId } = created
 
+  const recorded = await recordFlowBase(
+    execFn,
+    path,
+    derived.branch,
+    base.branch,
+  )
+  if (!recorded.ok) {
+    return errorResult(
+      `Worktree created at ${path} but flow base not recorded: ${recorded.reason}`,
+    )
+  }
+
   // AIDEV-NOTE: PMR-1CCT — bind the created worktree to the active flow (if
   // any) so the review tool resolves its diff here instead of the session
   // checkout. Skipped (with a loud warning in the result) outside a flow run.
@@ -160,7 +188,7 @@ async function createFlow(
   report(`Bootstrapping dependencies in ${path}...`)
   const bootstrap = await runBootstrap(pi, path, signal, report)
 
-  const main = await mainCheckout(pi, cwd)
+  const main = mainPath
 
   report('Copying env files...')
   const envCopied = await copyEnvFiles(pi, main, path)
@@ -182,6 +210,7 @@ async function createFlow(
   const lines = [
     `Worktree ready: ${derived.branch}`,
     `Path: ${path}`,
+    `Flow base: ${base.branch}`,
     `Workspace: ${workspaceId || '(unknown)'}`,
     `Bootstrap:\n${bootstrapLines}`,
     `Env files copied: ${envLine}`,
