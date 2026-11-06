@@ -68,8 +68,11 @@ import {
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
 import {
+  filterLinked,
+  type HerdrWorktree,
   herdrAvailable,
   worktreeCreate,
+  worktreeList,
   worktreeRemove,
 } from '../worktree/herdr.ts'
 import {
@@ -507,6 +510,53 @@ export async function isEmptyBranchRange(
 // resolver's try/catch (null), not at call-site bind time.
 function execOf(pi: ExtensionAPI): Exec {
   return (cmd, args, options) => pi.exec(cmd, args, options)
+}
+
+// AIDEV-NOTE: PMR-7TPN — linked flow worktrees other than the review cwd.
+// Pure: fixture-tested against `herdr worktree list` payloads.
+export function unboundFlowWorktrees(
+  worktrees: HerdrWorktree[],
+  cwd: string,
+): HerdrWorktree[] {
+  return filterLinked(worktrees).filter((w) => w.path !== cwd)
+}
+
+/**
+ * AIDEV-NOTE: PMR-7TPN — warning for a review launched with NO active flow
+ * and NO worktree binding while linked flow worktrees exist elsewhere: the
+ * real change likely lives in one of them, and a review from this checkout
+ * would read the wrong diff (the PMR-PKSS failure mode). Null = no warning.
+ */
+export function unboundWorktreeWarning(
+  worktrees: HerdrWorktree[],
+  cwd: string,
+): string | null {
+  const others = unboundFlowWorktrees(worktrees, cwd)
+  if (others.length === 0) return null
+  const names = others.map((w) => `${w.branch} (${w.path})`).join(', ')
+  return `WARNING: no flow is active in this session, but linked flow worktree(s) exist: ${names}. If this review belongs to a flow ticket, the change likely lives in that worktree, not this checkout — run the review from there or restart the flow (/flow <ref>) so the worktree binding is known. This review runs against ${cwd}; check the Reviewed-range line in the result before trusting the verdict.`
+}
+
+/** Async wrapper: herdr unavailable or failing list = no warning (best-effort). */
+async function unboundWorktreeWarningFor(
+  pi: ExtensionAPI,
+  cwd: string,
+): Promise<string | null> {
+  try {
+    return unboundWorktreeWarning(await worktreeList(pi, cwd), cwd)
+  } catch {
+    return null
+  }
+}
+
+// AIDEV-NOTE: PMR-7TPN — pure header builders for delivered review results;
+// every result states the reviewed range (when pinned) and the cwd.
+export function pinnedRangeHeader(pin: GateTarget, cwd: string): string {
+  return `Reviewed range: ${pin.baseSha}..${pin.headSha} in ${cwd} (verified against the pinned target)`
+}
+
+export function legacyRangeHeader(cwd: string | undefined): string {
+  return `Reviewed in: ${cwd ?? 'the session checkout'} (no pin — legacy mode; range unverified)`
 }
 
 /**
@@ -1553,8 +1603,14 @@ export default function reviewExtension(pi: ExtensionAPI) {
     void (async () => {
       let content: string
       let verificationFailed = false
+      // AIDEV-NOTE: PMR-7TPN — every delivered review result states the
+      // reviewed range and cwd so a wrong-range verdict is visible at a
+      // glance. Pinned reviews state the exact verified base..head; legacy
+      // (unpinned) reviews state the cwd and say the range is unverified.
+      let rangeHeader: string
       if (failed) {
-        content = `Code review failed (${hint}): ${result.errorMessage ?? `exit code ${result.exitCode}`}`
+        rangeHeader = `Reviewed in: ${reviewCwd ?? 'the session checkout'}. The review did not complete; no range was reviewed.`
+        content = `Code review failed (${hint}): ${result.errorMessage ?? `exit code ${result.exitCode}`}\n\n${rangeHeader}`
       } else if (pin !== null && pin !== undefined && reviewCwd !== undefined) {
         const verification = await verifyGateWithExec(
           execOf(pi),
@@ -1564,12 +1620,15 @@ export default function reviewExtension(pi: ExtensionAPI) {
         )
         verificationFailed = !verification.ok
         if (verification.ok) {
-          content = `Code review finished (${hint}). Reviewer findings:\n\n${result.summary}\n\nSession: ${result.sessionFile}`
+          rangeHeader = pinnedRangeHeader(pin, reviewCwd)
+          content = `Code review finished (${hint}). ${rangeHeader}\n\nReviewer findings:\n\n${result.summary}\n\nSession: ${result.sessionFile}`
         } else {
-          content = `Code review finished (${hint}) but GATE INTEGRITY FAILED (${verification.status}) — ${verification.reason}.\n\nThe findings below were NOT verified against the pinned range; treat them as unverified and re-run /review.\n\n${result.summary}\n\nSession: ${result.sessionFile}`
+          rangeHeader = `Reviewed in: ${reviewCwd}. Range verification FAILED (${verification.status}): ${verification.reason}`
+          content = `Code review finished (${hint}) but GATE INTEGRITY FAILED (${verification.status}) — ${verification.reason}.\n\n${rangeHeader}\n\nThe findings below were NOT verified against the pinned range; treat them as unverified and re-run /review.\n\n${result.summary}\n\nSession: ${result.sessionFile}`
         }
       } else {
-        content = `Code review finished (${hint}). Reviewer findings:\n\n${result.summary}\n\nSession: ${result.sessionFile}`
+        rangeHeader = legacyRangeHeader(reviewCwd)
+        content = `Code review finished (${hint}). ${rangeHeader}\n\nReviewer findings:\n\n${result.summary}\n\nSession: ${result.sessionFile}`
       }
       pi.sendMessage(
         {
@@ -1924,6 +1983,16 @@ ${result.summary}`
         'error',
       )
       return
+    }
+    // AIDEV-NOTE: PMR-7TPN — warn when the review runs from a checkout with
+    // no active flow while linked flow worktrees exist elsewhere.
+    if (
+      (target.type === 'baseBranch' || target.type === 'uncommitted') &&
+      getActiveFlowRef() === null &&
+      getFlowWorktree() === null
+    ) {
+      const warn = await unboundWorktreeWarningFor(pi, ctx.cwd)
+      if (warn !== null) ctx.ui.notify(warn, 'info')
     }
     const fullPrompt = await buildFullReviewPrompt(pi, target, ctx.cwd)
     const hint = getUserFacingHint(target)
@@ -2398,6 +2467,16 @@ ${result.summary}`
         let text = `Review spawned: ${hint}. Findings will arrive here as messages when the reviewer finishes.`
         if (ocrStarted) {
           text += ' An ocr second-opinion scout was also started.'
+        }
+        // AIDEV-NOTE: PMR-7TPN — surface the unbound-flow-worktree risk on
+        // the spawn response too, not only in the delivered result.
+        if (
+          (target.type === 'baseBranch' || target.type === 'uncommitted') &&
+          getActiveFlowRef() === null &&
+          getFlowWorktree() === null
+        ) {
+          const warn = await unboundWorktreeWarningFor(pi, reviewCwd)
+          if (warn !== null) text += `\n\n${warn}`
         }
         return {
           content: [{ type: 'text', text }],

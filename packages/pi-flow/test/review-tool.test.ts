@@ -282,3 +282,76 @@ test('reviewEchoSection instructs the reviewer to echo the pin exactly', () => {
   assert.match(section, /character by character/)
   assert.match(section, /final line/)
 })
+
+// --- PMR-7TPN: review results state the range/cwd; unbound-worktree warning ---
+
+import {
+  legacyRangeHeader,
+  pinnedRangeHeader,
+  unboundFlowWorktrees,
+  unboundWorktreeWarning,
+} from '../review/review.ts'
+import type { HerdrWorktree } from '../worktree/herdr.ts'
+
+test('PMR-7TPN: pinned result header states base..head and cwd', () => {
+  const header = pinnedRangeHeader(
+    {
+      gate: 'review',
+      ref: 'PMR-X',
+      baseSha: R_BASE,
+      headSha: R_HEAD,
+      diffSha256: 'd',
+    },
+    '/wt/flow-x',
+  )
+  assert.match(
+    header,
+    new RegExp(`Reviewed range: ${R_BASE}\\.\\.${R_HEAD} in /wt/flow-x`),
+  )
+  assert.match(header, /verified against the pinned target/)
+})
+
+test('PMR-7TPN: legacy result header states the cwd and flags the range unverified', () => {
+  const header = legacyRangeHeader('/repo/main-checkout')
+  assert.match(header, /Reviewed in: \/repo\/main-checkout/)
+  assert.match(header, /no pin — legacy mode; range unverified/)
+  assert.match(legacyRangeHeader(undefined), /the session checkout/)
+})
+
+test('PMR-7TPN: linked worktrees other than the review cwd are flagged', () => {
+  const wt = (
+    path: string,
+    branch: string,
+    isLinked: boolean,
+  ): HerdrWorktree => ({
+    path,
+    branch,
+    label: branch,
+    workspaceId: 'w',
+    isLinked,
+  })
+  const list = [
+    wt('/repo', 'main', true),
+    wt('/wt/flow-x', 'feat/x', true),
+    wt('/wt/dead', 'feat/dead', false),
+  ]
+  const others = unboundFlowWorktrees(list, '/repo')
+  assert.equal(others.length, 1)
+  assert.equal(others[0]?.path, '/wt/flow-x')
+
+  const warn = unboundWorktreeWarning(list, '/repo')
+  assert.notEqual(warn, null)
+  assert.match(warn ?? '', /feat\/x \(\$?\/wt\/flow-x\)/)
+  assert.match(warn ?? '', /\/flow <ref>/)
+  assert.match(warn ?? '', /This review runs against \/repo/)
+
+  // Review launched from the only linked worktree: no warning (the main
+  // checkout in the first list is itself linked, so it is correctly flagged
+  // when reviewing from the worktree against it).
+  assert.equal(unboundWorktreeWarning([list[1] ?? list[0]], '/wt/flow-x'), null)
+  // No linked worktrees anywhere: no warning.
+  assert.equal(
+    unboundWorktreeWarning([wt('/repo', 'main', true)], '/repo'),
+    null,
+  )
+})
