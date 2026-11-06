@@ -12,10 +12,26 @@ type OpenInPaneResult = {
   details: { ok: boolean; paneId?: string }
 }
 
+type WaitOptions = { attempts?: number; delayMs?: number }
+
+// AIDEV-NOTE: PMR-R0JD — a plan write can race the open_in_pane call, so
+// poll briefly (default 5 x 200ms) before reporting the file missing.
+async function waitForFile(
+  file: string,
+  { attempts = 5, delayMs = 200 }: WaitOptions,
+): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (existsSync(file)) return true
+    await new Promise((r) => setTimeout(r, delayMs))
+  }
+  return existsSync(file)
+}
+
 export async function openFileInPane(
   pi: ExtensionAPI,
   file: string,
   command = 'nvim',
+  wait: WaitOptions = {},
 ): Promise<OpenInPaneResult> {
   const absFile = resolve(file)
   // AIDEV-NOTE: shell-quote for herdr pane send-text — the pane's shell
@@ -24,7 +40,7 @@ export async function openFileInPane(
   // duplicate on purpose — no cross-package imports).
   const quotedFile = absFile.replace(/'/g, "'\\''")
 
-  if (!existsSync(absFile)) {
+  if (!(await waitForFile(absFile, wait))) {
     return {
       content: [{ type: 'text', text: `File not found: ${absFile}` }],
       details: { ok: false },
