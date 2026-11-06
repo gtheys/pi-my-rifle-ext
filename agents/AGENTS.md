@@ -46,7 +46,6 @@ You will receive a prompt to execute a task. Once the task is finished provide c
 
 - **Clear commit messages**: Explain the _why_; link to issues/ADRs if architectural.
 - **Review AI-generated code**: Never merge code you don't understand.
-- NEVER push or do any ations on the remote branch.
 
 ---
 
@@ -84,6 +83,8 @@ fiction, articles, or other people's writing (prevents third parties being
 misclassified as the user); it is still used as an extraction caveat when set.
 Recall and observations are project-scoped (`autoRecallTags: ["{project}"]`) — do
 not re-add a global `user:` scope to recall unless cross-project leakage is wanted.
+
+VERY IMPORTANT: Memories can be stale. Verify first! Update it when it is stale!
 
 ---
 
