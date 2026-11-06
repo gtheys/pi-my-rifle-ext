@@ -55,6 +55,19 @@ test('parseWorktreeNotes: only heredoc note bodies count', () => {
   ])
 })
 
+test('parseWorktreeNotes: single-line note the skill writes', () => {
+  const out = `PMR-R4AP status=active title="x"
+
+note id=n9 author=pi at=2026-01-05
+body<<EOF
+worktree: /home/u/wt/fix-a branch: fix/a-b
+EOF
+`
+  assert.deepEqual(parseWorktreeNotes(out), [
+    { path: '/home/u/wt/fix-a', branch: 'fix/a-b' },
+  ])
+})
+
 test('parseWorktreeNotes: empty output yields empty list', () => {
   assert.deepEqual(parseWorktreeNotes('no notes here'), [])
 })

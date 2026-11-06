@@ -33,9 +33,11 @@ export function parseWorktreeNotes(stdout: string): WorktreeNote[] {
   while (match !== null) {
     const body = match[1] ?? ''
     match = re.exec(stdout)
-    const pathLine = /^worktree: (\S+)$/m.exec(body)
+    // AIDEV-NOTE: PMR-DE2P — accepts the skill's single-line form
+    // `worktree: <path> branch: <b>` and the two-line form.
+    const pathLine = /^worktree: (\S+)/m.exec(body)
     if (pathLine === null) continue
-    const branchLine = /^branch: (\S+)$/m.exec(body)
+    const branchLine = /^(?:worktree: \S+ )?branch: (\S+)\s*$/m.exec(body)
     notes.push({
       path: pathLine[1] ?? '',
       branch: branchLine === null ? null : (branchLine[1] ?? null),
