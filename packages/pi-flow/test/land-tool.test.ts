@@ -9,12 +9,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, test } from 'node:test'
 import { readAvenLabels, setAvenSessionCwd } from '../index.ts'
+import type { SuiteRunner } from '../tools/land.ts'
 import { createLandingState, registerLandTool } from '../tools/land.ts'
 
 const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-land-bin-'))
 writeFileSync(
   path.join(BIN_DIR, 'aven'),
-  `#!/bin/sh\necho '{"labels":["review-passed"]}'\n`,
+  `#!/bin/sh\necho '{"ref":"PMR-ABC1","labels":["review-passed"]}'\n`,
 )
 chmodSync(path.join(BIN_DIR, 'aven'), 0o755)
 
@@ -32,7 +33,9 @@ type LandExecute = (
 
 const landingState = createLandingState()
 
-function landExecute(): LandExecute {
+const greenSuite: SuiteRunner = async () => ({ ok: true, summary: 'ok' })
+
+function landExecute(runSuite: SuiteRunner = greenSuite): LandExecute {
   let execute: LandExecute | undefined
   const mockPi = {
     registerTool: (options: { execute: LandExecute }) => {
@@ -43,6 +46,7 @@ function landExecute(): LandExecute {
     mockPi as unknown as Parameters<typeof registerLandTool>[0],
     landingState,
     () => null,
+    runSuite,
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return execute
@@ -110,6 +114,7 @@ test('schema rejects route push-main (PMR-HYZA)', async () => {
     mockPi as unknown as Parameters<typeof registerLandTool>[0],
     landingState,
     () => null,
+    greenSuite,
   )
   assert.equal(
     Value.Check(parameters as never, { ref: 'PMR-ABC1', route: 'merge-main' }),
@@ -147,4 +152,61 @@ test('fake aven shim returns review-passed labels', async () => {
     const labels = await readAvenLabels('PMR-ABC1')
     assert.deepEqual(labels, ['review-passed'])
   })
+})
+
+// --- PMR-05HX: flow_land runs the suite itself; red suite refuses landing ---
+
+test('merge-main refused when the suite the gate ran is red', async () => {
+  const execute = landExecute(async () => ({
+    ok: false,
+    summary: '2 tests failed',
+  }))
+  await withFakeAven(async () => {
+    landingState.humanReviewPassed = 'PMR-ABC1'
+    const result = await execute('t7', { ref: 'PMR-ABC1', route: 'merge-main' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0]?.text ?? '', /test suite FAILED/)
+    assert.match(result.content[0]?.text ?? '', /2 tests failed/)
+  })
+})
+
+test('route=pr authorization also requires the suite green', async () => {
+  const execute = landExecute(async () => ({
+    ok: false,
+    summary: 'suite crashed',
+  }))
+  await withFakeAven(async () => {
+    landingState.authorized = null
+    const result = await execute('t8', { ref: 'PMR-ABC1', route: 'pr' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0]?.text ?? '', /test suite FAILED/)
+    assert.equal(landingState.authorized, null, 'no authorization on red suite')
+  })
+})
+
+test('suite runs in the flow worktree when one is bound', async () => {
+  let seenCwd: string | null = null
+  const execute = landExecute(async (cwd) => {
+    seenCwd = cwd
+    return { ok: true, summary: 'ok' }
+  })
+  await withFakeAven(async () => {
+    landingState.humanReviewPassed = 'PMR-ABC1'
+    const result = await execute('t9', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.notEqual(result.isError, true)
+    assert.equal(typeof seenCwd, 'string')
+    assert.ok((seenCwd ?? '').length > 0)
+  })
+})
+
+test('suiteSummary bounds the refusal output', async () => {
+  const { suiteSummary } = await import('../tools/land.ts')
+  const short = suiteSummary('ok\n')
+  assert.equal(short, 'ok')
+  const long = suiteSummary(`${'x'.repeat(5000)}\n`)
+  assert.ok(long.length <= 2001)
+  assert.ok(long.startsWith('…'))
 })

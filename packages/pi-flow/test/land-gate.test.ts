@@ -197,7 +197,7 @@ describe('flow_land ref validation', () => {
   const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-refgate-bin-'))
   writeFileSync(
     path.join(BIN_DIR, 'aven'),
-    `#!/bin/sh\necho '{"labels":["review-passed"]}'\n`,
+    `#!/bin/sh\necho '{"ref":"PMR-ABC1","labels":["review-passed"]}'\n`,
   )
   chmodSync(path.join(BIN_DIR, 'aven'), 0o755)
 
@@ -212,6 +212,7 @@ describe('flow_land ref validation', () => {
       mockPi as unknown as Parameters<typeof registerLandTool>[0],
       createLandingState(),
       () => activeRef,
+      async () => ({ ok: true, summary: 'ok' }),
     )
     if (!execute) throw new Error('flow_land tool not registered')
     return execute

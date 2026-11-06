@@ -15,6 +15,7 @@ import {
 import { hasLiveAssignmentForParent } from '@gtheys/pi-interactive-subagents'
 import {
   avenExec,
+  discoverAvenPrefixes,
   ensureLabels,
   epicHasOpenChildren,
   lastAvenResolutionFailure,
@@ -35,7 +36,7 @@ import {
   commandPhaseInput,
   registerPhaseCommands,
 } from './flow/phase-command.ts'
-import { parseRefKind } from './flow/ref-kind.ts'
+import { parseRefKind, registerAvenPrefixes } from './flow/ref-kind.ts'
 import {
   type FlowBindingSnapshot,
   parseFlowBindingSnapshot,
@@ -63,7 +64,11 @@ import { registerOpenInPane } from './spec-review/open-in-pane.ts'
 import { registerCodeReviewTool } from './tools/code-review.ts'
 import { buildCodeReviewGatePrompt } from './tools/code-review-parse.ts'
 import { registerDeviationReviewTool } from './tools/deviation.ts'
-import { createLandingState, registerLandTool } from './tools/land.ts'
+import {
+  createLandingState,
+  defaultSuiteRunner,
+  registerLandTool,
+} from './tools/land.ts'
 import { registerPhaseCompleteTool } from './tools/phase-complete.ts'
 import { registerRunAttemptTool } from './tools/run-attempt.ts'
 import { registerSpecApproveTool } from './tools/spec-approve.ts'
@@ -135,6 +140,15 @@ export default function (pi: ExtensionAPI) {
     notifyUser = (message, level) => ctx.ui.notify(message, level)
     setAvenSessionCwd(ctx.cwd)
     void ensureLabels(notifyUser)
+    // AIDEV-NOTE: PMR-F8HB — register this workspace's aven project
+    // prefixes so bare Jira-shaped aven refs (PMR-2424) classify as aven
+    // instead of colliding with JIRA_RE. Best-effort: aven unavailable or
+    // no projects keeps the historical Jira-first heuristic.
+    void discoverAvenPrefixes().then((prefixes) => {
+      if (prefixes.length > 0) {
+        registerAvenPrefixes(prefixes)
+      }
+    })
     // AIDEV-NOTE: PMR-PJM0 — rebuild the flow ref/worktree binding after
     // reload/restart from the last persisted session entry.
     let saved: FlowBindingSnapshot | null = null
@@ -209,7 +223,7 @@ export default function (pi: ExtensionAPI) {
   })
 
   registerPhaseCompleteTool(pi)
-  registerLandTool(pi, landingState, () => loop.activeRef())
+  registerLandTool(pi, landingState, () => loop.activeRef(), defaultSuiteRunner)
   // AIDEV-NOTE: PMR-T8ZG — the human code-review gate (PMR-3ZY1): the
   // code_review tool shares landingState with flow_land so a pass recorded
   // here is visible to the later flow_land check (PMR-C6AK, not wired yet).

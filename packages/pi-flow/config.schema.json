@@ -18,6 +18,12 @@
     "avenWorkspace": {
       "type": "string",
       "description": "Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and the search fallback)."
+    },
+    "landTestCommand": {
+      "type": "array",
+      "description": "Argv of the test command flow_land runs before authorizing a landing (default [\"bun\",\"run\",\"test\"]). PMR-05HX: the landing gate never trusts a claimed-green suite.",
+      "items": { "type": "string" },
+      "minItems": 1
     }
   },
   "required": ["workRoots"],
