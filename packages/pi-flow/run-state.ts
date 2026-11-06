@@ -69,6 +69,17 @@ export type FlowRunEvent =
       status: GateDecisionStatus
     }
   | {
+      /** AIDEV-NOTE: PMR-6EEW per-subtask ranges — subtask → commits map */
+      kind: 'subtask-ranges'
+      at: string
+      ref: string
+      gate: GateJournalKind
+      baseSha: string
+      headSha: string
+      bySubtask: Array<{ subtask: string; commits: string[] }>
+      unattributed: string[]
+    }
+  | {
       kind: 'note'
       at: string
       ref: string
@@ -104,6 +115,16 @@ export type FlowRunState = {
   // journals rebuilt without gate events) stay valid.
   gateTargets?: GateTargetRecord[]
   gateDecisions?: GateDecisionRecord[]
+  subtaskRanges?: SubtaskRangesRecord[]
+}
+
+export interface SubtaskRangesRecord {
+  gate: GateJournalKind
+  baseSha: string
+  headSha: string
+  bySubtask: Array<{ subtask: string; commits: string[] }>
+  unattributed: string[]
+  at: string
 }
 
 export function runFileName(ref: string): string | null {
@@ -212,6 +233,25 @@ export function applyEvent(
         updatedAt: event.at,
       }
     }
+    case 'subtask-ranges': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      return {
+        ...state,
+        subtaskRanges: [
+          ...(state.subtaskRanges ?? []),
+          {
+            gate: event.gate,
+            baseSha: event.baseSha,
+            headSha: event.headSha,
+            bySubtask: event.bySubtask,
+            unattributed: event.unattributed,
+            at: event.at,
+          },
+        ],
+        updatedAt: event.at,
+      }
+    }
     case 'note': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
@@ -303,6 +343,24 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
         typeof (d as Record<string, unknown>).at === 'string',
     )
     if (!decisionsOk) return false
+  }
+  // AIDEV-NOTE: PMR-6EEW per-subtask ranges — optional, validated when present.
+  if (v.subtaskRanges !== undefined) {
+    if (!Array.isArray(v.subtaskRanges)) return false
+    const rangesOk = v.subtaskRanges.every(
+      (r) =>
+        typeof r === 'object' &&
+        r !== null &&
+        GATE_KINDS.includes(
+          (r as Record<string, unknown>).gate as GateJournalKind,
+        ) &&
+        typeof (r as Record<string, unknown>).baseSha === 'string' &&
+        typeof (r as Record<string, unknown>).headSha === 'string' &&
+        Array.isArray((r as Record<string, unknown>).bySubtask) &&
+        Array.isArray((r as Record<string, unknown>).unattributed) &&
+        typeof (r as Record<string, unknown>).at === 'string',
+    )
+    if (!rangesOk) return false
   }
   return true
 }

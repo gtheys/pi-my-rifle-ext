@@ -39,6 +39,7 @@ import {
   BorderedLoader,
   CONFIG_DIR_NAME,
   DynamicBorder,
+  getAgentDir,
 } from '@earendil-works/pi-coding-agent'
 import {
   Container,
@@ -59,11 +60,15 @@ import {
   getActiveFlowRef,
   getFlowWorktree,
 } from '../flow/worktree-context.ts'
+import { recordRunEvent } from '../run-state.ts'
 import { type Exec, getMergeBase } from '../shared/diff-base.ts'
 import { readFlowBase } from '../shared/flow-base.ts'
 import {
   buildGateTarget,
+  deriveSubtaskAttribution,
   type GateTarget,
+  gateTargetId,
+  reviewedCommitsLine,
   reviewedRangeLine,
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
@@ -307,6 +312,10 @@ export async function buildReviewGatePin(
 
 /** Echo-contract section appended to the reviewer prompt when pinned. */
 export function reviewEchoSection(target: GateTarget): string {
+  let subtaskSection = ''
+  if (target.subtask !== undefined) {
+    subtaskSection = `\n\nThis review is scoped to subtask ${target.subtask.ref}. Also end with a SECOND final line:\n   ${reviewedCommitsLine(target)}\ncopied EXACTLY (reviewed_commits: <sha>,<sha>,...). Both lines are compared against the pin; any difference invalidates your review.`
+  }
   return `
 
 ---
@@ -314,7 +323,7 @@ export function reviewEchoSection(target: GateTarget): string {
 ## Pinned review target (gate integrity)
 
 The harness pinned the exact range you must review:
-   ${reviewedRangeLine(target)}
+   ${reviewedRangeLine(target)}${subtaskSection}
 
 End your review with that line copied EXACTLY (reviewed_range: <base>..<head>), as the final line of your output. It is compared character by character against the pin; any difference invalidates your review. Do not recompute the merge-base — review the pinned range only.`
 }
@@ -1875,6 +1884,47 @@ ${result.summary}`
     )
     const pinnedPrompt =
       pin !== null ? `${fullPrompt}${reviewEchoSection(pin)}` : fullPrompt
+
+    // AIDEV-NOTE: PMR-6EEW per-subtask ranges + /review journaling — when a
+    // flow is active, journal the pinned range and its subtask → commits
+    // attribution (Subtask: trailers). Best-effort: journal failures never
+    // break the review. No active flow (e.g. manual `/review PR N`) = no
+    // journaling; that path is untouched.
+    const activeRef = getActiveFlowRef()
+    if (pin !== null && activeRef !== null) {
+      try {
+        await recordRunEvent(getAgentDir(), {
+          kind: 'gate-target',
+          at: new Date().toISOString(),
+          ref: activeRef,
+          gate: 'review',
+          targetId: gateTargetId(pin),
+          baseSha: pin.baseSha,
+          headSha: pin.headSha,
+          diffSha256: pin.diffSha256,
+        })
+        const attribution = await deriveSubtaskAttribution(
+          execOf(pi),
+          reviewCwd ?? ctx.cwd,
+          pin.baseSha,
+          pin.headSha,
+        )
+        if (attribution.ok) {
+          await recordRunEvent(getAgentDir(), {
+            kind: 'subtask-ranges',
+            at: new Date().toISOString(),
+            ref: activeRef,
+            gate: 'review',
+            baseSha: pin.baseSha,
+            headSha: pin.headSha,
+            bySubtask: attribution.attribution.bySubtask,
+            unattributed: attribution.attribution.unattributed,
+          })
+        }
+      } catch {
+        // best-effort — the review itself is unaffected
+      }
+    }
 
     const status = await startSubagentReview(
       ctx,
