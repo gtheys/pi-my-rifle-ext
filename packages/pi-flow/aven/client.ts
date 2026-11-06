@@ -237,6 +237,43 @@ export async function readPlanState(ref: string): Promise<string | null> {
   }
 }
 
+// AIDEV-NOTE: PMR-69V8 — pure parser for the flow loop's blockers signal.
+// `aven show --full` prints notes as `note id=… created=<iso>` followed by a
+// `body<<EOF … EOF` block. A note counts as a review-blockers note when its
+// body carries the "reviewed-at:" marker the validate prompt tells the agent
+// to append. Only notes created at/after sinceIso count, so a blockers note
+// from an earlier round never retriggers a retry.
+export function hasBlockersNoteSince(
+  showFullOutput: string,
+  sinceIso: string,
+): boolean {
+  const since = Date.parse(sinceIso)
+  if (Number.isNaN(since)) return false
+  for (const chunk of showFullOutput.split(/^note id=/m).slice(1)) {
+    const created = Date.parse(/^\S+ created=(\S+)/.exec(chunk)?.[1] ?? '')
+    if (Number.isNaN(created) || created < since) continue
+    if (chunk.includes('reviewed-at:')) return true
+  }
+  return false
+}
+
+// Fail-closed: any aven failure -> false (no retry, the loop halts as before).
+export async function readFreshBlockers(
+  ref: string,
+  sinceIso: string,
+): Promise<boolean> {
+  try {
+    const args = await avenArgsWithWorkspace(['show', ref, '--full'], ref)
+    const { stdout, stderr } = await execFileAsync('aven', args, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    if (avenErrorText(stdout, stderr) !== null) return false
+    return hasBlockersNoteSince(stdout, sinceIso)
+  } catch {
+    return false
+  }
+}
+
 export async function writeAvenLabel(
   ref: string,
   label: string,

@@ -295,3 +295,65 @@ test('personal: review-passed after validate ends the flow (no feedback prompt)'
   assert.equal(h.sent.length, 1)
   assert.equal(loop.isActive(), false)
 })
+
+// PMR-69V8: extension-driven route-back on review blockers.
+function blockersHarness(blockers: boolean[]) {
+  const h = makeHarness(['planned', 'active'])
+  const queue = [...blockers]
+  h.deps.hasFreshBlockers = async () => queue.shift() ?? false
+  return h
+}
+
+test('validate settled with fresh blockers: re-injects implement prompt', async () => {
+  const h = blockersHarness([true])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled()
+  assert.equal(h.sent.length, 2)
+  assert.match(h.sent[1], /Implement phase/)
+  assert.equal(loop.isActive(), true)
+  assert.equal(h.notes.length, 0)
+})
+
+test('validate blockers persist: halts after the retry budget', async () => {
+  const h = blockersHarness([true, true, true])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled() // retry 1 -> implement sent
+  h.labels = ['planned', 'active']
+  await loop.onSettled() // implement settled -> validate sent
+  await loop.onSettled() // retry 2 -> implement sent
+  await loop.onSettled() // -> validate sent
+  const before = h.sent.length
+  await loop.onSettled() // budget exhausted -> halt
+  assert.equal(h.sent.length, before)
+  assert.equal(loop.isActive(), false)
+  assert.match(h.notes[0].text, /budget exhausted/)
+})
+
+test('validate settled without blockers: plain halt, no retry', async () => {
+  const h = blockersHarness([false])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled()
+  assert.equal(h.sent.length, 1)
+  assert.equal(loop.isActive(), false)
+  assert.match(h.notes[0].text, /without landing/)
+})
+
+test('hasBlockersNoteSince: only fresh notes with reviewed-at count', async () => {
+  const { hasBlockersNoteSince } = await import('../aven/client.ts')
+  const out = [
+    'note id=A created=2026-01-01T00:00:00Z',
+    'body<<EOF',
+    'blocker x\nreviewed-at: abc',
+    'EOF',
+    'note id=B created=2026-01-02T00:00:00Z',
+    'body<<EOF',
+    'plain note',
+    'EOF',
+  ].join('\n')
+  assert.equal(hasBlockersNoteSince(out, '2025-12-31T00:00:00Z'), true)
+  assert.equal(hasBlockersNoteSince(out, '2026-01-01T12:00:00Z'), false)
+  assert.equal(hasBlockersNoteSince('', '2026-01-01T00:00:00Z'), false)
+})

@@ -10,6 +10,7 @@
 // not a phase outcome — the loop stays armed and re-checks on the next
 // settle (hasInFlightSubagent guard). The model never sequences phases —
 // extension code does.
+import { MAX_ATTEMPTS } from '../implement/retry.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 import { nextPhase, PHASE_LABEL, type Phase } from './orchestrate.ts'
 import { buildPhasePrompt, type PhasePromptInput } from './phase-prompts.ts'
@@ -28,6 +29,12 @@ export interface FlowLoopDeps {
   readPlanState(ref: string): Promise<string | null>
   /** Write an aven note on the ref; false = write failed. */
   avenNote(ref: string, text: string): Promise<boolean>
+  /**
+   * PMR-69V8: true when an aven review-blockers note ("reviewed-at:") was
+   * written at/after sinceIso. Optional + fail-closed: absent or false keeps
+   * the plain halt, so a validate failure without blockers never retries.
+   */
+  hasFreshBlockers?(ref: string, sinceIso: string): Promise<boolean>
   /** True when the ref is an epic with open children (implement routing guard). */
   epicHasOpenChildren(ref: string): Promise<boolean>
   /** True while this session has an in-flight subagent (mid-phase async wait). */
@@ -55,6 +62,10 @@ interface FlowLoopState {
   ref: string
   currentPhase: Phase
   awaitingOutcome: boolean
+  /** PMR-69V8: implement re-injections used this run (budget = MAX_ATTEMPTS - 1). */
+  blockerRetries: number
+  /** ISO time the current validate prompt was sent (blockers-note cutoff). */
+  validateStartedAt: string
   promptInput: Omit<PhasePromptInput, 'labels'>
 }
 
@@ -97,6 +108,8 @@ class FlowLoopImpl implements FlowLoop {
       ref: input.ref,
       currentPhase: input.phase,
       awaitingOutcome: false,
+      blockerRetries: 0,
+      validateStartedAt: now(),
       promptInput: input.promptInput,
     }
     this.deps.setActiveRef?.(input.ref)
@@ -151,6 +164,19 @@ class FlowLoopImpl implements FlowLoop {
           return
         }
       }
+      // AIDEV-NOTE: PMR-69V8 — route-back is extension sequencing, not a
+      // prompt instruction: validate settled unlabelled and the agent left a
+      // fresh review-blockers note -> re-inject the implement prompt, bounded
+      // by the same 3-attempt budget as implement/retry.ts (2 retries).
+      if (phase === 'validate' && this.deps.hasFreshBlockers !== undefined) {
+        const retried = await this.retryAfterBlockers(
+          await this.deps.hasFreshBlockers(
+            this.state.ref,
+            this.state.validateStartedAt,
+          ),
+        )
+        if (retried) return
+      }
       await this.halt(
         phase,
         `phase completed without landing the "${label}" label`,
@@ -158,6 +184,27 @@ class FlowLoopImpl implements FlowLoop {
       return
     }
     await this.advanceAfter(phase, labels)
+  }
+
+  private async retryAfterBlockers(hasBlockers: boolean): Promise<boolean> {
+    const state = this.state
+    if (state === null || !hasBlockers) return false
+    if (state.blockerRetries >= MAX_ATTEMPTS - 1) {
+      await this.halt(
+        'validate',
+        `review blockers persist after ${state.blockerRetries} implement retries (budget exhausted)`,
+      )
+      return true
+    }
+    state.blockerRetries += 1
+    this.deps.journal({
+      kind: 'note',
+      at: now(),
+      ref: state.ref,
+      text: `validate left review blockers — re-running implement (retry ${state.blockerRetries}/${MAX_ATTEMPTS - 1})`,
+    })
+    await this.sendPhasePrompt('implement')
+    return true
   }
 
   private async halt(phase: Phase, reason: string): Promise<void> {
@@ -199,6 +246,7 @@ class FlowLoopImpl implements FlowLoop {
       phase,
     })
     this.state.currentPhase = phase
+    if (phase === 'validate') this.state.validateStartedAt = now()
     this.deps.sendPrompt(result.prompt)
     this.state.awaitingOutcome = true
   }
