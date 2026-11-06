@@ -29,6 +29,22 @@ function buildDeltaReviewStep(ref: string): string {
    sha is missing or unresolvable, or the diff is empty, run the full review.`
 }
 
+// AIDEV-NOTE: PMR-TPN7 — one pinned diff base for the review AND deviation
+// gates. pi-review resolves its base from <base>@{upstream}; comparing that to
+// `git diff main...HEAD` made unpushed commits look like a reviewer mix-up
+// (PMR-KKDC). The agent records ONE sha here and reuses it in 7a, D2 and D3.
+function buildBasePinStep(): string {
+  return `6a. Pin the diff base ONCE, before the review gate: resolve <base> (the
+   flow's base branch) and run
+   \`git merge-base HEAD "$(git rev-parse --abbrev-ref <base>@{upstream})"\`,
+   falling back to \`git merge-base HEAD <base>\` when there is no upstream.
+   Record the SHA as BASE_SHA, then run \`git log BASE_SHA..HEAD --oneline\`
+   and \`git diff --stat BASE_SHA..HEAD\`. Use this same BASE_SHA for the delta
+   review (7a), for D2 (commit messages) and for D3 (the diff passed to
+   deviation_review). If the range the reviewer describes differs from the
+   recorded one, ASK the human — never call it a reviewer or tool error.`
+}
+
 // AIDEV-NOTE: Review gate section (PMR-JTAM) — appended to BOTH validate
 // prompts. Runs after the env/human gate passes: /review (fresh-context
 // reviewer, in-package since PMR-W8SG) -> parse blockers_count artifact ->
@@ -55,6 +71,7 @@ function buildReviewGateSection(
 Review gate (part 1: /review + blockers) — run ONLY after validation has
 fully passed:
 
+${buildBasePinStep()}
 7. Run /review on this change (the fresh-context reviewer). When it returns,
    write the review artifact's verdict as machine-readable lines — exactly
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
@@ -83,6 +100,7 @@ ${buildDeltaReviewStep(ref)}
   return `
 Review gate — run ONLY after validation has fully passed:
 
+${buildBasePinStep()}
 7. Run /review on this change (the fresh-context reviewer). When it returns,
    write the review artifact's verdict as machine-readable lines — exactly
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
@@ -211,12 +229,12 @@ Deviation gate — run ONLY after the review gate returned blockers_count: 0,
 ${gateBefore}. Steps, in order:
 
 D1. Resolve the spec source. ${specSource}
-D2. Mine the why-inputs: commit messages via git log against the flow's base
-   (the commit flow started from), and recent aven notes on ${ref} via the
+D2. Mine the why-inputs: commit messages via
+   \`git log BASE_SHA..HEAD\` (the SHA pinned in step 6a), and recent aven notes on ${ref} via the
    existing aven client (interview note, worktree note, oneshot outcome,
    escalation notes).
 D3. Run the deviation reviewer: call the deviation_review tool with
-   mode="${mode}", the resolved spec text (D1), the git diff vs base, and
+   mode="${mode}", the resolved spec text (D1), the diff \`git diff BASE_SHA..HEAD\` (same pinned SHA), and
    the mined commit messages and aven notes (D2). Await its result.
 D4. Read the tool result. The tool already parses the artifact STRICTLY
    (deviations_count contract). An ERROR tool result (spawn failure or

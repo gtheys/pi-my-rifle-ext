@@ -374,6 +374,15 @@ Never continue past a failed step, never mark the phase validated.
 
 Review gate — run ONLY after validation has fully passed:
 
+6a. Pin the diff base ONCE, before the review gate: resolve <base> (the
+   flow's base branch) and run
+   \`git merge-base HEAD "$(git rev-parse --abbrev-ref <base>@{upstream})"\`,
+   falling back to \`git merge-base HEAD <base>\` when there is no upstream.
+   Record the SHA as BASE_SHA, then run \`git log BASE_SHA..HEAD --oneline\`
+   and \`git diff --stat BASE_SHA..HEAD\`. Use this same BASE_SHA for the delta
+   review (7a), for D2 (commit messages) and for D3 (the diff passed to
+   deviation_review). If the range the reviewer describes differs from the
+   recorded one, ASK the human — never call it a reviewer or tool error.
 7. Run /review on this change (the fresh-context reviewer). When it returns,
    write the review artifact's verdict as machine-readable lines — exactly
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
@@ -412,12 +421,12 @@ in review-gate step 9. Steps, in order:
 D1. Resolve the spec source. Resolve the spec file path via the resolve_spec_path tool
    (repo from the git remote, slug from the Jira summary) and read that spec
    file. Also fetch the Jira ticket text via acli.
-D2. Mine the why-inputs: commit messages via git log against the flow's base
-   (the commit flow started from), and recent aven notes on DP-71 via the
+D2. Mine the why-inputs: commit messages via
+   \`git log BASE_SHA..HEAD\` (the SHA pinned in step 6a), and recent aven notes on DP-71 via the
    existing aven client (interview note, worktree note, oneshot outcome,
    escalation notes).
 D3. Run the deviation reviewer: call the deviation_review tool with
-   mode="work", the resolved spec text (D1), the git diff vs base, and
+   mode="work", the resolved spec text (D1), the diff \`git diff BASE_SHA..HEAD\` (same pinned SHA), and
    the mined commit messages and aven notes (D2). Await its result.
 D4. Read the tool result. The tool already parses the artifact STRICTLY
    (deviations_count contract). An ERROR tool result (spawn failure or
@@ -455,5 +464,29 @@ for (const mode of ['personal', 'work'] as const) {
     // verdict contract and later gates stay put, after the delta step
     assert.ok(p.indexOf('7a.') < p.indexOf('8. Read the count'))
     assert.ok(p.includes('blockers_count: 0'))
+  })
+}
+
+// --- PMR-TPN7: one pinned diff base for review + deviation gates ---
+
+for (const mode of ['personal', 'work'] as const) {
+  test(`buildValidatePrompt: ${mode} pins one diff base (PMR-TPN7)`, () => {
+    const p = buildValidatePrompt({
+      mode,
+      ref: 'PMR-TPN7',
+      scriptsDir: '/x/sh-devctl/scripts',
+    })
+    assert.ok(p.includes('6a. Pin the diff base ONCE'))
+    assert.ok(p.includes('<base>@{upstream}'))
+    assert.ok(p.includes('git merge-base HEAD <base>'))
+    assert.ok(p.includes('git log BASE_SHA..HEAD --oneline'))
+    assert.ok(p.includes('git diff --stat BASE_SHA..HEAD'))
+    assert.ok(p.includes('git log BASE_SHA..HEAD'))
+    assert.ok(p.includes('git diff BASE_SHA..HEAD'))
+    assert.ok(p.includes('ASK the human'))
+    assert.ok(p.includes('never call it a reviewer or tool error'))
+    // pinned before the review step and the deviation gate
+    assert.ok(p.indexOf('6a.') < p.indexOf('7. Run /review'))
+    assert.ok(p.indexOf('6a.') < p.indexOf('D2.'))
   })
 }
