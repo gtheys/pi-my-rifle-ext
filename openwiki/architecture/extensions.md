@@ -257,7 +257,14 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   (PMR-05HX): before authorizing, `flow_land` executes the configured
   `landTestCommand` (default `bun run test`) in the flow worktree and
   refuses the landing with the failing output on red — claimed-green suites
-  are never trusted.
+  are never trusted. Review-result labeling (PMR-7TPN): every delivered
+  subagent review result opens with a `Reviewed range: <base>..<head> in
+  <cwd>` line (pinned + verified), a `Reviewed in: <cwd>` line (legacy /
+  verification-failed), or an explicit no-range note (failed run); and a
+  review spawned with no active flow and no worktree binding while linked
+  flow worktrees exist elsewhere is flagged with a warning naming those
+  worktrees and pointing at `/flow <ref>` — both on the spawn response and
+  on the `/review` command.
   Plus the absorbed agent tools: `resolve_spec_path`, `resolve_feature_path`,
   `open_in_pane`, `jira_create_branch` (from pi-planning), `review`,
   `sonarqube`, `pr_quality` (from pi-review), `worktree` (from pi-worktree).
