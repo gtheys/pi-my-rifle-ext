@@ -2,8 +2,8 @@
 name: reviewer
 description: Code review agent - reviews changes for quality, security, and correctness
 tools: read, bash
-model: kimi-coding/k3
-thinking: medium
+model: zai/glm-5.3-flash
+thinking: high
 spawning: false
 auto-exit: true
 system-prompt: append
