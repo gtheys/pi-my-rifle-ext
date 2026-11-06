@@ -110,14 +110,6 @@ test('work prompt: invokes /sonarqube and /pr-quality by name, forbids silent fi
   assert.match(prompt, /DP-12/)
 })
 
-test('personal prompt: reruns /review, requires outcome summary before done', () => {
-  const prompt = buildFeedbackPrompt({ mode: 'personal', ref: 'PMR-XDRB' })
-  assert.match(prompt, /\/review/)
-  assert.match(prompt, /outcome summary/i)
-  assert.match(prompt, /PMR-XDRB/)
-  assert.match(prompt, /done/i)
-})
-
 test('parseFeedbackArgs: kind prefixes force the kind (PMR-PCVK)', () => {
   assert.deepEqual(parseFeedbackArgs('aven:DP-71'), {
     kind: 'aven',

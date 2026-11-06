@@ -102,6 +102,15 @@ Human code-review gate — run ONLY after the deviation gate returned
    git push is BLOCKED until flow_land returns ok. On ok, push the branch
    straight to main — the standing no-PR rule on own repos. No PR, no Jira
    link step.
+   After the push succeeds (personal mode has no separate feedback phase —
+   PMR-GFM5), close out the ticket IN ORDER:
+   a. Write the outcome summary as an aven note on ${ref}: "## Outcome
+      summary" with "### What shipped", "### Test evidence" and "### Review
+      verdict" sections. If a section has no content, STOP and ask the
+      human — never invent filler.
+   b. ONLY once that note exists: set ${ref} status to done, then call the
+      flow_phase_complete tool with ref=${ref} and phase="feedback" — it
+      applies the "done" label after re-checking the gates.
 10. On fail: the code_review tool already recorded the tuicr findings as an
    aven note on ${ref}. Route back to /implement ${ref} (retry budget
    applies), and STOP — do not land.`

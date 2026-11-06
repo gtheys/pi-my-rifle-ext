@@ -197,8 +197,15 @@ function validatePrompt(input: PhasePromptInput): PhasePrompt {
 }
 
 function feedbackPrompt(input: PhasePromptInput): PhasePrompt {
+  if (input.mode === 'personal') {
+    return {
+      kind: 'block',
+      reason:
+        'personal mode has no feedback phase — validate writes the outcome summary note and sets done after the push.',
+    }
+  }
   return {
     kind: 'send',
-    prompt: buildFeedbackPrompt({ mode: input.mode, ref: input.ref }),
+    prompt: buildFeedbackPrompt({ mode: 'work', ref: input.ref }),
   }
 }

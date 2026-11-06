@@ -232,7 +232,11 @@ test('settled when idle: ignored (side conversations never advance the flow)', a
 test('final phase complete: flow done, loop inactive', async () => {
   const h = makeHarness(['planned', 'active', 'review-passed', 'done'])
   const loop = createFlowLoop(h.deps)
-  await loop.start({ ...startInput(), phase: 'feedback' })
+  await loop.start({
+    ...startInput(),
+    phase: 'feedback',
+    promptInput: { ...PROMPT_INPUT, mode: 'work' },
+  })
   await loop.onSettled()
   assert.equal(h.sent.length, 1)
   assert.equal(loop.isActive(), false)
@@ -281,4 +285,13 @@ test('start: works without an optional resetLandingState dep', async () => {
   const loop = createFlowLoop(h.deps)
   await loop.start(startInput())
   assert.equal(loop.isActive(), true)
+})
+
+test('personal: review-passed after validate ends the flow (no feedback prompt)', async () => {
+  const h = makeHarness(['planned', 'active', 'review-passed'])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled()
+  assert.equal(h.sent.length, 1)
+  assert.equal(loop.isActive(), false)
 })

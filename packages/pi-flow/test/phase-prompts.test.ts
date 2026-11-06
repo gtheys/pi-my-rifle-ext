@@ -110,7 +110,20 @@ test('validate: personal without oneshot label names plan-path as spec source', 
   assert.doesNotMatch(gate, /ticket description/)
 })
 
-test('feedback: always sends', async () => {
-  const result = await buildPhasePrompt('feedback', BASE)
+test('feedback: work mode sends', async () => {
+  const result = await buildPhasePrompt('feedback', { ...BASE, mode: 'work' })
   assert.equal(result.kind, 'send')
+})
+
+test('feedback: personal mode is blocked (folded into validate, PMR-GFM5)', async () => {
+  const result = await buildPhasePrompt('feedback', BASE)
+  assert.equal(result.kind, 'block')
+})
+
+test('validate: personal prompt writes summary note and done after push', async () => {
+  const result = await buildPhasePrompt('validate', BASE)
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  assert.match(result.prompt, /Outcome\s+summary/)
+  assert.match(result.prompt, /phase="feedback"/)
 })

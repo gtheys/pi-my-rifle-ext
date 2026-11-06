@@ -6,14 +6,15 @@
 // The triage rules mirror classify() in feedback/triage.ts; the escalation
 // rule (new work = new task through the gates) is stated as an absolute in
 // the prompt so the agent can never fix silently or ignore a finding.
-// Personal mode: re-run /review after validate's fixes, write the outcome
-// summary aven note (outcomeSummary() shapes it), and only then set done —
-// the completion guard canClose() is enforced here by prompt contract.
+// Personal mode has no feedback phase (PMR-GFM5): validate's personal gate
+// writes the outcome summary note (outcomeSummary() shapes it) and sets done
+// after the push — the canClose() guard is enforced there by prompt contract.
 
 import { classify, FIX_NOW_SEVERITIES } from './triage.ts'
 
 export interface FeedbackPromptInput {
-  mode: 'work' | 'personal'
+  /** Work only: personal folds feedback into validate (PMR-GFM5). */
+  mode: 'work'
   ref: string
 }
 
@@ -44,32 +45,8 @@ phase="feedback" — it applies the "done" label after re-checking the gates,
 and its result confirms the label landed.`
 }
 
-function personalSection(ref: string): string {
-  return `Run the feedback personal flow on ${ref}:
-
-1. If the validate phase produced fixes after its /review, re-run /review
-   on the final state and address its blockers via the same rules
-   as the work mode (mechanical fixes committed; bigger findings become new
-   tasks through the gates — never silent, never ignored).
-2. Write the outcome summary as an aven note on ${ref}: what shipped, the
-   test evidence, and the review verdict (use the outcomeSummary shape:
-   "## Outcome summary" with "### What shipped", "### Test evidence",
-   "### Review verdict" sections).
-3. ONLY once the outcome summary note exists, transition ${ref} to status
-   done AND call the flow_phase_complete tool with ref=${ref} and
-   phase="feedback" — it applies the "done" label after re-checking the
-   gates, and its result confirms the label landed.
-
-Completion rule: the ticket is NEVER marked done without the outcome summary
-note on it. If a section has no content, STOP and ask the human — never
-invent filler.`
-}
-
 export function buildFeedbackPrompt(input: FeedbackPromptInput): string {
   const header = `Feedback phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
-  if (input.mode === 'personal') {
-    return `${header}\n${personalSection(input.ref)}`
-  }
   return `${header}\n${workSection(input.ref)}`
 }
 
