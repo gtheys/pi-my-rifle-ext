@@ -12,6 +12,23 @@ import { MODE_PROFILE } from '../mode-profile.ts'
 import { DEFAULT_POLL_CONFIG } from './gate.ts'
 import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
 
+// AIDEV-NOTE: PMR-PKSS — delta re-review on fix rounds. Detection is
+// prompt-level (no run-state): a prior blockers aven note carrying
+// "reviewed-at: <sha>" marks a fix round. Fail-closed toward MORE review: a
+// missing sha or empty diff falls back to a full /review. The verdict
+// contract (blockers_count) and every later gate are unchanged, so
+// review-passed still only comes from a fresh 0 against the current tree.
+function buildDeltaReviewStep(ref: string): string {
+  return `7a. Fix round? Check the aven notes on ${ref} for a prior review-blockers
+   note carrying "reviewed-at: <sha>". If none, the step 7 full review stands.
+   If one exists, run the review as a DELTA instead: /review with custom
+   instructions containing (i) the recorded blockers and (ii) the output of
+   "git diff <sha>..HEAD". The reviewer must verify each recorded blocker is
+   resolved (an unresolved one counts as a blocker) and scan the fix diff for
+   new blockers, then emit the same blockers_count verdict as above. If the
+   sha is missing or unresolvable, or the diff is empty, run the full review.`
+}
+
 // AIDEV-NOTE: Review gate section (PMR-JTAM) — appended to BOTH validate
 // prompts. Runs after the env/human gate passes: /review (fresh-context
 // reviewer, in-package since PMR-W8SG) -> parse blockers_count artifact ->
@@ -42,9 +59,11 @@ fully passed:
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
    0 when clean) plus one "- blocker: <description>" line per blocker:
 ${REVIEW_CONTRACT_PROMPT}
+${buildDeltaReviewStep(ref)}
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
    malformed artifact means re-run /review, not silent landing.
-   On blockers_count > 0: record each blocker as an aven note on ${ref},
+   On blockers_count > 0: record each blocker as an aven note on ${ref}
+   (append "reviewed-at: <git rev-parse HEAD>" to the note),
    route back to /implement ${ref} (retry budget applies), and STOP. When
    blockers_count is 0, the deviation gate below runs next, THEN the human
    code-review gate at the end of this prompt.`
@@ -66,6 +85,7 @@ Review gate — run ONLY after validation has fully passed:
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
    0 when clean) plus one "- blocker: <description>" line per blocker:
 ${REVIEW_CONTRACT_PROMPT}
+${buildDeltaReviewStep(ref)}
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
    malformed artifact means re-run /review, not silent landing.
 9. If blockers_count is 0: call the flow_phase_complete tool with ref=${ref}
@@ -76,7 +96,8 @@ ${REVIEW_CONTRACT_PROMPT}
    while the flow is active, direct git push / gh pr create are BLOCKED
    until flow_land returns ok. On ok, run the landing step:
    ${landing}
-10. If blockers_count > 0: record each blocker as an aven note on ${ref},
+10. If blockers_count > 0: record each blocker as an aven note on ${ref}
+   (append "reviewed-at: <git rev-parse HEAD>" to the note),
    route back to /implement ${ref} (retry budget applies), and STOP — do
    not land.`
 }

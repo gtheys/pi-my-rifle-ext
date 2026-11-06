@@ -376,6 +376,14 @@ Review gate — run ONLY after validation has fully passed:
    0 when clean) plus one "- blocker: <description>" line per blocker:
    blockers_count: 0
    - blocker: <description> (omit this line entirely when N is 0)
+7a. Fix round? Check the aven notes on DP-71 for a prior review-blockers
+   note carrying "reviewed-at: <sha>". If none, the step 7 full review stands.
+   If one exists, run the review as a DELTA instead: /review with custom
+   instructions containing (i) the recorded blockers and (ii) the output of
+   "git diff <sha>..HEAD". The reviewer must verify each recorded blocker is
+   resolved (an unresolved one counts as a blocker) and scan the fix diff for
+   new blockers, then emit the same blockers_count verdict as above. If the
+   sha is missing or unresolvable, or the diff is empty, run the full review.
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
    malformed artifact means re-run /review, not silent landing.
 9. If blockers_count is 0: call the flow_phase_complete tool with ref=DP-71
@@ -388,7 +396,8 @@ Review gate — run ONLY after validation has fully passed:
    push the branch and create a PR via
    the gh CLI, then post a Jira comment on
    DP-71 linking the PR URL.
-10. If blockers_count > 0: record each blocker as an aven note on DP-71,
+10. If blockers_count > 0: record each blocker as an aven note on DP-71
+   (append "reviewed-at: <git rev-parse HEAD>" to the note),
    route back to /implement DP-71 (retry budget applies), and STOP — do
    not land.
 
@@ -424,3 +433,23 @@ D5. Route on the returned deviations_count:
      the deviation report, and STOP — do not land.`
   assert.equal(p, expected)
 })
+
+// --- PMR-PKSS: delta re-review on fix rounds ---
+
+for (const mode of ['personal', 'work'] as const) {
+  test(`buildValidatePrompt: ${mode} gate has full/delta review branch (PMR-PKSS)`, () => {
+    const p = buildValidatePrompt({
+      mode,
+      ref: 'PMR-PKSS',
+      scriptsDir: '/x/sh-devctl/scripts',
+    })
+    assert.ok(p.includes('7a. Fix round?'))
+    assert.ok(p.includes('git diff <sha>..HEAD'))
+    assert.ok(p.includes('reviewed-at: <git rev-parse HEAD>'))
+    assert.ok(p.includes('unresolved one counts as a blocker'))
+    assert.ok(p.includes('run the full review'))
+    // verdict contract and later gates stay put, after the delta step
+    assert.ok(p.indexOf('7a.') < p.indexOf('8. Read the count'))
+    assert.ok(p.includes('blockers_count: 0'))
+  })
+}
