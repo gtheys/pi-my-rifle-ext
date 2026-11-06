@@ -200,4 +200,15 @@ describe('buildPublishWorkerTask', () => {
     assert.ok(task.includes('2'))
     assert.ok(!task.includes('git add -A'))
   })
+  it('reports a hook-rejected push as local-only and forbids --no-verify', () => {
+    const fallback = buildPublishWorkerTask({
+      ref: 'PMR-AB12',
+      repo: 'my-repo',
+      root: '/repo',
+      planFile: '/repo/.pi/plans/plan.md',
+      isFallback: true,
+    })
+    assert.ok(fallback.includes('committed locally as <sha>, not pushed'))
+    assert.ok(fallback.includes('NEVER use --no-verify'))
+  })
 })

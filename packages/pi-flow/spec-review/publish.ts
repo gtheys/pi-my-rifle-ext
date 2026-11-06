@@ -64,7 +64,9 @@ export interface PublishWorkerTaskInput {
 
 // AIDEV-NOTE: pure string builder — the task text is the worker's contract.
 // Fetch+pull must be ff-only with NO conflict resolution; the retry cap (2)
-// bounds a flaky network, not a broken repo state.
+// bounds a flaky network, not a broken repo state. PMR-Z0C9: a failing
+// pre-push hook (common in project-repo fallback publishes) must surface as a
+// loud local-only failure with the sha, never a silent unreported commit.
 export function buildPublishWorkerTask(input: PublishWorkerTaskInput): string {
   let fallbackNote: string
   if (input.isFallback === true) {
@@ -83,6 +85,7 @@ export function buildPublishWorkerTask(input: PublishWorkerTaskInput): string {
     `5. git commit -m "docs(${input.repo}): publish ${input.ref} plan"`,
     '6. git push origin HEAD',
     'Rules: touch NOTHING except that single file. If a step fails, retry at most 2 times, then STOP and report the failure loudly with the exact error output — do not roll anything back, do not clean the repo, do not stash.',
+    'If step 6 is rejected by a hook (e.g. pre-push running tests), do NOT retry and NEVER use --no-verify. The commit stays local: run "git rev-parse --short HEAD" and finish with "PUBLISH FAILED: committed locally as <sha>, not pushed — <hook error>".',
     'Your final message: one line per step (ok/failed + detail), then "PUBLISH OK" if the push succeeded or "PUBLISH FAILED: <reason>" otherwise.',
   ].join('\n')
 }
