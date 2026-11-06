@@ -272,3 +272,62 @@ test('recordRunEvent: invalid ref is a no-op, not a crash', async () => {
   )
   assert.equal(files.size, 0)
 })
+
+// --- PMR-6EEW gate integrity journal events ---
+
+test('applyEvent: gate-target pins accumulate idempotently by targetId', () => {
+  const run = applyEvent(null, {
+    kind: 'run-start',
+    at: 't0',
+    ref: 'PMR-1',
+    mode: 'work',
+  })
+  const pin = {
+    kind: 'gate-target' as const,
+    at: 't1',
+    ref: 'PMR-1',
+    gate: 'deviation' as const,
+    targetId: 'abc123def456',
+    baseSha: 'a'.repeat(40),
+    headSha: 'b'.repeat(40),
+    diffSha256: 'c'.repeat(64),
+  }
+  let state = applyEvent(run, pin)
+  state = applyEvent(state, { ...pin, at: 't2' })
+  const targets = state.gateTargets
+  assert.equal(targets?.length, 1)
+  assert.equal(targets?.[0]?.targetId, 'abc123def456')
+
+  const decision = applyEvent(state, {
+    kind: 'gate-decision',
+    at: 't3',
+    ref: 'PMR-1',
+    gate: 'deviation',
+    targetId: 'abc123def456',
+    status: 'target-mismatch',
+  })
+  assert.equal(decision.gateDecisions?.length, 1)
+})
+
+test('isFlowRunState: states without gate arrays stay valid (pre-M7 journals)', () => {
+  const legacy = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+    mode: 'work',
+    startedAt: 't0',
+    updatedAt: 't0',
+    completedPhases: [],
+    currentPhase: null,
+    notes: [],
+  }
+  assert.ok(isFlowRunState(legacy))
+  assert.ok(!isFlowRunState({ ...legacy, gateTargets: 'nope' }))
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      gateDecisions: [
+        { targetId: 7, gate: 'deviation', status: 'pass', at: 't1' },
+      ],
+    }),
+  )
+})

@@ -26,6 +26,12 @@ export interface DeviationReviewInput {
   diff: string
   commitMessages: string
   avenNotes: string
+  /**
+   * AIDEV-NOTE: PMR-6EEW gate integrity — pinned range the reviewer must
+   * echo back. When present the prompt requires a reviewed_range line and
+   * the harness compares it against the pin character by character.
+   */
+  pinnedRange?: { baseSha: string; headSha: string }
 }
 
 const DEVIATION_EMITTER_INSTRUCTIONS = `End the review with a machine-readable deviation verdict section:
@@ -34,6 +40,10 @@ const DEVIATION_EMITTER_INSTRUCTIONS = `End the review with a machine-readable d
 ${DEVIATION_CONTRACT_PROMPT}
    where N is the number of deviations, 0 when the diff matches the spec.
    Emit the count line EXACTLY ONCE, directly under the heading.`
+
+const ECHO_INSTRUCTIONS = `Pinned range you are reviewing (set by the harness — do NOT recompute it):
+   reviewed_range: <baseSha>..<headSha>
+   Copy that line EXACTLY into your verdict section, directly under the heading, before deviations_count. It is compared character by character against the pin; any difference invalidates your review.`
 
 export function buildDeviationReviewPrompt(
   input: DeviationReviewInput,
@@ -65,6 +75,13 @@ The resolved spec is too thin to compare against (${trimmedSpec.length} chars, m
     notesSection = '(none recorded)'
   }
 
+  let pinnedLine: string
+  if (input.pinnedRange !== undefined) {
+    pinnedLine = `   reviewed_range: ${input.pinnedRange.baseSha}..${input.pinnedRange.headSha}`
+  } else {
+    pinnedLine = '(no pin supplied — plain legacy mode)'
+  }
+
   return `You are a fresh-context spec-deviation reviewer. You have no knowledge of the work beyond the inputs below.
 
 Mode: ${input.mode}. Compare the resolved spec against the git diff and report every place the implementation DEVIATES from the spec. Do not review code quality — deviation from the spec is the only finding type. Do not invent deviations: if the diff matches the spec, report 0.
@@ -76,6 +93,11 @@ Ground rules:
 - Empty why-input sections simply carry no extra context.
 
 ${specSection}
+
+## Pinned review target (PMR-6EEW gate integrity)
+
+${ECHO_INSTRUCTIONS}
+${pinnedLine}
 
 ## Git diff vs base
 

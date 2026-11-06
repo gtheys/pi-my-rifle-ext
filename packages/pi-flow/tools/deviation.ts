@@ -12,6 +12,7 @@ import type {
   ExtensionAPI,
   ExtensionToolContext,
 } from '@earendil-works/pi-coding-agent'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import type { SubagentResult } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
@@ -20,6 +21,7 @@ import {
   type DeviationReviewInput,
   startDeviationReview,
 } from '../review/deviation.ts'
+import { recordRunEvent } from '../run-state.ts'
 import {
   commitMessagesForRange,
   diffForRange,
@@ -32,6 +34,13 @@ import {
   type DeviationArtifact,
   parseDeviationArtifact,
 } from '../validate/deviation-gate.ts'
+import {
+  buildGateTarget,
+  type GateTarget,
+  type GateVerification,
+  gateTargetId,
+  verifyGateResult,
+} from '../validate/gate-target.ts'
 import { toolResult } from './result.ts'
 
 export interface DeviationReviewToolParams {
@@ -89,10 +98,15 @@ export async function resolveDeviationRange(
   }
 }
 
-/** Compose the reviewer prompt from the tool params + the resolved range. */
+/**
+ * Compose the reviewer prompt from the tool params + the resolved range.
+ * When a gate target is supplied the pinned range rides along so the
+ * reviewer can echo it back (PMR-6EEW echo contract).
+ */
 export function deviationReviewPromptFrom(
   params: DeviationReviewToolParams,
   resolved: Pick<ResolvedRange, 'diff' | 'commitMessages'>,
+  target: GateTarget | null = null,
 ): string {
   const input: DeviationReviewInput = {
     mode: params.mode,
@@ -101,7 +115,49 @@ export function deviationReviewPromptFrom(
     commitMessages: resolved.commitMessages,
     avenNotes: params.avenNotes,
   }
+  if (target !== null) {
+    input.pinnedRange = { baseSha: target.baseSha, headSha: target.headSha }
+  }
   return buildDeviationReviewPrompt(input)
+}
+
+/**
+ * AIDEV-NOTE: PMR-6EEW gate integrity — verify the verifier. Echo first
+ * (character-compare against the pin, before any finding is read), then
+ * staleness (HEAD re-resolved after the gate returned; a moved HEAD means
+ * the verdict applies to bytes that are no longer the tip). Pure seams:
+ * exec is injected so tests never touch a real repo.
+ */
+export async function verifyDeviationGateResult(
+  exec: Exec,
+  cwd: string,
+  target: GateTarget,
+  artifact: string,
+): Promise<GateVerification> {
+  const head = await exec('git', ['rev-parse', 'HEAD'], { cwd })
+  if (head.code !== 0 || head.stdout.trim() === '') {
+    return {
+      ok: false,
+      status: 'fail',
+      reason: `cannot re-resolve HEAD for staleness check in ${cwd}: ${head.stderr ?? ''}`,
+    }
+  }
+  return verifyGateResult({
+    target,
+    artifact,
+    currentHeadSha: head.stdout.trim(),
+  })
+}
+
+/** Best-effort journal write — never breaks the gate (house rule). */
+async function journalGateEvent(
+  event: Parameters<typeof recordRunEvent>[1],
+): Promise<void> {
+  try {
+    await recordRunEvent(getAgentDir(), event)
+  } catch {
+    // best-effort by design
+  }
 }
 
 /** One-line description of the range, shown to agent and human. */
@@ -157,6 +213,7 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
       'Call deviation_review with mode, ref, the resolved spec text and the mined aven notes (validate prompt steps D1/D2). Do NOT pass a diff or commit messages: the tool resolves base, diff and commits itself in the flow worktree and reports the base SHA and range in its result.',
       'If the result says the flow base is missing or the range is empty, STOP and tell the human — never retry with a hand-written diff.',
       'An error result means re-run deviation_review — NEVER treat an error or malformed artifact as 0 deviations.',
+      'The gate pins its review target at spawn and verifies the reviewer echoed the pinned range (PMR-6EEW). A target_mismatch or stale result invalidates the verdict — re-run the tool; do not hand-wave a verdict around it.',
     ],
     parameters: Type.Object({
       mode: Type.Union([Type.Literal('work'), Type.Literal('personal')]),
@@ -186,7 +243,31 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
           { isError: true },
         )
       }
-      const prompt = deviationReviewPromptFrom(params, resolved.value)
+      // AIDEV-NOTE: PMR-6EEW — pin at spawn. The reviewer prompt is built
+      // from this pinned target, and its verdict is only accepted if it
+      // echoes the pin and HEAD has not moved since.
+      const built = buildGateTarget({
+        gate: 'deviation',
+        ref: params.ref,
+        baseSha: resolved.value.flowRange.baseSha,
+        headSha: resolved.value.flowRange.headSha,
+        diff: resolved.value.diff,
+      })
+      let target: GateTarget | null = null
+      if ('diffSha256' in built) {
+        target = built
+        await journalGateEvent({
+          kind: 'gate-target',
+          at: new Date().toISOString(),
+          ref: params.ref,
+          gate: 'deviation',
+          targetId: gateTargetId(target),
+          baseSha: target.baseSha,
+          headSha: target.headSha,
+          diffSha256: target.diffSha256,
+        })
+      }
+      const prompt = deviationReviewPromptFrom(params, resolved.value, target)
       const rangeLine = describeRange(resolved.value.flowRange)
       let result: SubagentResult
       try {
@@ -208,6 +289,40 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
           },
           { isError: true },
         )
+      }
+      // AIDEV-NOTE: PMR-6EEW — verify the verifier BEFORE parsing findings:
+      // echo contract first, staleness second. A mismatch or stale verdict
+      // is a hard error; the gate re-runs on the (possibly new) range.
+      if (target !== null) {
+        const verification = await verifyDeviationGateResult(
+          exec,
+          cwd,
+          target,
+          result.summary,
+        )
+        if (!verification.ok) {
+          await journalGateEvent({
+            kind: 'gate-decision',
+            at: new Date().toISOString(),
+            ref: params.ref,
+            gate: 'deviation',
+            targetId: gateTargetId(target),
+            status: verification.status,
+          })
+          return toolResult(
+            `deviation_review: gate integrity check FAILED (${verification.status}) — ${verification.reason}. The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
+            { ok: false as const, reason: verification.reason },
+            { isError: true },
+          )
+        }
+        await journalGateEvent({
+          kind: 'gate-decision',
+          at: new Date().toISOString(),
+          ref: params.ref,
+          gate: 'deviation',
+          targetId: gateTargetId(target),
+          status: 'pass',
+        })
       }
       const mapped = deviationResultToToolResult(result.summary)
       const first = mapped.content[0]

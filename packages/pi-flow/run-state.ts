@@ -13,6 +13,23 @@ import path from 'node:path'
 // from the journal, whose unknown events are simply ignored by projection.
 export type FlowPhase = 'plan' | 'implement' | 'validate' | 'feedback'
 
+// AIDEV-NOTE: PMR-6EEW gate integrity — journal event kinds for pinned gate
+// targets and the decisions that cite them. gate-target is recorded when a
+// gate spawns (pin at spawn); gate-decision when its verdict is accepted,
+// rejected or invalidated (echo missing / target mismatch / stale).
+export type GateJournalKind =
+  | 'review'
+  | 'deviation'
+  | 'code-review'
+  | 'spec-review'
+
+export type GateDecisionStatus =
+  | 'pass'
+  | 'fail'
+  | 'echo-missing'
+  | 'target-mismatch'
+  | 'stale'
+
 export type FlowRunEvent =
   | {
       kind: 'run-start'
@@ -34,11 +51,45 @@ export type FlowRunEvent =
       label: string
     }
   | {
+      kind: 'gate-target'
+      at: string
+      ref: string
+      gate: GateJournalKind
+      targetId: string
+      baseSha: string
+      headSha: string
+      diffSha256: string
+    }
+  | {
+      kind: 'gate-decision'
+      at: string
+      ref: string
+      gate: GateJournalKind
+      targetId: string
+      status: GateDecisionStatus
+    }
+  | {
       kind: 'note'
       at: string
       ref: string
       text: string
     }
+
+export interface GateTargetRecord {
+  targetId: string
+  gate: GateJournalKind
+  baseSha: string
+  headSha: string
+  diffSha256: string
+  at: string
+}
+
+export interface GateDecisionRecord {
+  targetId: string
+  gate: GateJournalKind
+  status: GateDecisionStatus
+  at: string
+}
 
 export type FlowRunState = {
   schema: 'gtheys.pi-flow.run.v1'
@@ -49,6 +100,10 @@ export type FlowRunState = {
   completedPhases: FlowPhase[]
   currentPhase: FlowPhase | null
   notes: { at: string; text: string }[]
+  // AIDEV-NOTE: PMR-6EEW — optional so pre-gate-integrity projections (and
+  // journals rebuilt without gate events) stay valid.
+  gateTargets?: GateTargetRecord[]
+  gateDecisions?: GateDecisionRecord[]
 }
 
 export function runFileName(ref: string): string | null {
@@ -117,6 +172,46 @@ export function applyEvent(
         updatedAt: event.at,
       }
     }
+    case 'gate-target': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      const targets = state.gateTargets ?? []
+      // idempotent by targetId — the same pin re-recorded is a no-op
+      if (targets.some((t) => t.targetId === event.targetId)) return state
+      return {
+        ...state,
+        gateTargets: [
+          ...targets,
+          {
+            targetId: event.targetId,
+            gate: event.gate,
+            baseSha: event.baseSha,
+            headSha: event.headSha,
+            diffSha256: event.diffSha256,
+            at: event.at,
+          },
+        ],
+        updatedAt: event.at,
+      }
+    }
+    case 'gate-decision': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      const decisions = state.gateDecisions ?? []
+      return {
+        ...state,
+        gateDecisions: [
+          ...decisions,
+          {
+            targetId: event.targetId,
+            gate: event.gate,
+            status: event.status,
+            at: event.at,
+          },
+        ],
+        updatedAt: event.at,
+      }
+    }
     case 'note': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
@@ -137,6 +232,21 @@ const PHASES: readonly FlowPhase[] = [
   'feedback',
 ]
 
+const GATE_KINDS: readonly GateJournalKind[] = [
+  'review',
+  'deviation',
+  'code-review',
+  'spec-review',
+]
+
+const GATE_STATUSES: readonly GateDecisionStatus[] = [
+  'pass',
+  'fail',
+  'echo-missing',
+  'target-mismatch',
+  'stale',
+]
+
 export function isFlowRunState(value: unknown): value is FlowRunState {
   if (typeof value !== 'object' || value === null) return false
   const v = value as Record<string, unknown>
@@ -151,13 +261,50 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
   const current = v.currentPhase
   if (current !== null && !PHASES.includes(current as FlowPhase)) return false
   if (!Array.isArray(v.notes)) return false
-  return v.notes.every(
+  const notesOk = v.notes.every(
     (n) =>
       typeof n === 'object' &&
       n !== null &&
       typeof (n as Record<string, unknown>).at === 'string' &&
       typeof (n as Record<string, unknown>).text === 'string',
   )
+  if (!notesOk) return false
+  // AIDEV-NOTE: PMR-6EEW — optional arrays validated only when present.
+  if (v.gateTargets !== undefined) {
+    if (!Array.isArray(v.gateTargets)) return false
+    const targetsOk = v.gateTargets.every(
+      (t) =>
+        typeof t === 'object' &&
+        t !== null &&
+        typeof (t as Record<string, unknown>).targetId === 'string' &&
+        GATE_KINDS.includes(
+          (t as Record<string, unknown>).gate as GateJournalKind,
+        ) &&
+        typeof (t as Record<string, unknown>).baseSha === 'string' &&
+        typeof (t as Record<string, unknown>).headSha === 'string' &&
+        typeof (t as Record<string, unknown>).diffSha256 === 'string' &&
+        typeof (t as Record<string, unknown>).at === 'string',
+    )
+    if (!targetsOk) return false
+  }
+  if (v.gateDecisions !== undefined) {
+    if (!Array.isArray(v.gateDecisions)) return false
+    const decisionsOk = v.gateDecisions.every(
+      (d) =>
+        typeof d === 'object' &&
+        d !== null &&
+        typeof (d as Record<string, unknown>).targetId === 'string' &&
+        GATE_KINDS.includes(
+          (d as Record<string, unknown>).gate as GateJournalKind,
+        ) &&
+        GATE_STATUSES.includes(
+          (d as Record<string, unknown>).status as GateDecisionStatus,
+        ) &&
+        typeof (d as Record<string, unknown>).at === 'string',
+    )
+    if (!decisionsOk) return false
+  }
+  return true
 }
 
 /**

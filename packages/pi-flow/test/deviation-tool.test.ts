@@ -7,8 +7,14 @@ import {
   deviationReviewPromptFrom,
   registerDeviationReviewTool,
   resolveDeviationRange,
+  verifyDeviationGateResult,
 } from '../tools/deviation.ts'
 import { DEVIATION_VERDICT_HEADING } from '../validate/deviation-gate.ts'
+import {
+  buildGateTarget,
+  type GateTarget,
+  reviewedRangeLine,
+} from '../validate/gate-target.ts'
 
 type CapturedTool = { name: string; description: string }
 
@@ -192,4 +198,84 @@ test('tool schema has no diff/commitMessages params', () => {
     (tools[0] as unknown as { parameters: unknown }).parameters,
   )
   assert.doesNotMatch(params, /"diff"|commitMessages/)
+})
+
+// --- PMR-6EEW gate integrity: pinned target + echo contract ---
+
+const PIN_BASE = 'a'.repeat(40)
+const PIN_HEAD = 'b'.repeat(40)
+
+function pinnedTarget(): GateTarget {
+  const built = buildGateTarget({
+    gate: 'deviation',
+    ref: BASE_PARAMS.ref,
+    baseSha: PIN_BASE,
+    headSha: PIN_HEAD,
+    diff: RESOLVED.diff,
+  })
+  if (!('diffSha256' in built))
+    throw new Error('fixture target failed to build')
+  return built
+}
+
+test('deviationReviewPromptFrom embeds the pinned range when a target is supplied', () => {
+  const withPin = deviationReviewPromptFrom(
+    BASE_PARAMS,
+    RESOLVED,
+    pinnedTarget(),
+  )
+  assert.match(withPin, /Pinned review target/)
+  assert.match(withPin, /reviewed_range: a{40}\.\.b{40}/)
+  assert.ok(withPin.includes(reviewedRangeLine(pinnedTarget())))
+
+  const legacy = deviationReviewPromptFrom(BASE_PARAMS, RESOLVED, null)
+  assert.ok(!/[0-9a-f]{40}\.\.[0-9a-f]{40}/.test(legacy))
+  assert.match(legacy, /no pin supplied/)
+})
+
+test('verifyDeviationGateResult passes on exact echo with unchanged HEAD', async () => {
+  const exec = gitFake({ 'rev-parse HEAD': { stdout: `${PIN_HEAD}\n` } })
+  const v = await verifyDeviationGateResult(
+    exec,
+    '/w',
+    pinnedTarget(),
+    `reviewed_range: ${PIN_BASE}..${PIN_HEAD}\ndeviations_count: 0`,
+  )
+  assert.deepEqual(v, { ok: true, status: 'pass' })
+})
+
+test('verifyDeviationGateResult rejects a reviewer that echoed a different range', async () => {
+  const exec = gitFake({ 'rev-parse HEAD': { stdout: `${PIN_HEAD}\n` } })
+  const v = await verifyDeviationGateResult(
+    exec,
+    '/w',
+    pinnedTarget(),
+    `reviewed_range: ${PIN_BASE}..${'c'.repeat(40)}`,
+  )
+  assert.ok(!v.ok)
+  assert.equal(v.status, 'target-mismatch')
+})
+
+test('verifyDeviationGateResult rejects a stale verdict when HEAD moved', async () => {
+  const exec = gitFake({ 'rev-parse HEAD': { stdout: `${'d'.repeat(40)}\n` } })
+  const v = await verifyDeviationGateResult(
+    exec,
+    '/w',
+    pinnedTarget(),
+    `reviewed_range: ${PIN_BASE}..${PIN_HEAD}`,
+  )
+  assert.ok(!v.ok)
+  assert.equal(v.status, 'stale')
+})
+
+test('verifyDeviationGateResult fails closed when HEAD cannot be re-resolved', async () => {
+  const exec = gitFake({ 'rev-parse HEAD': { code: 1 } })
+  const v = await verifyDeviationGateResult(
+    exec,
+    '/w',
+    pinnedTarget(),
+    `reviewed_range: ${PIN_BASE}..${PIN_HEAD}`,
+  )
+  assert.ok(!v.ok)
+  assert.equal(v.status, 'fail')
 })
