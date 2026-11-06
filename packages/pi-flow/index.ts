@@ -15,6 +15,7 @@ import {
 import { hasLiveAssignmentForParent } from '@gtheys/pi-interactive-subagents'
 import {
   avenExec,
+  discoverAvenPrefixes,
   ensureLabels,
   epicHasOpenChildren,
   lastAvenResolutionFailure,
@@ -35,7 +36,7 @@ import {
   commandPhaseInput,
   registerPhaseCommands,
 } from './flow/phase-command.ts'
-import { parseRefKind } from './flow/ref-kind.ts'
+import { parseRefKind, registerAvenPrefixes } from './flow/ref-kind.ts'
 import {
   type FlowBindingSnapshot,
   parseFlowBindingSnapshot,
@@ -135,6 +136,15 @@ export default function (pi: ExtensionAPI) {
     notifyUser = (message, level) => ctx.ui.notify(message, level)
     setAvenSessionCwd(ctx.cwd)
     void ensureLabels(notifyUser)
+    // AIDEV-NOTE: PMR-F8HB — register this workspace's aven project
+    // prefixes so bare Jira-shaped aven refs (PMR-2424) classify as aven
+    // instead of colliding with JIRA_RE. Best-effort: aven unavailable or
+    // no projects keeps the historical Jira-first heuristic.
+    void discoverAvenPrefixes().then((prefixes) => {
+      if (prefixes.length > 0) {
+        registerAvenPrefixes(prefixes)
+      }
+    })
     // AIDEV-NOTE: PMR-PJM0 — rebuild the flow ref/worktree binding after
     // reload/restart from the last persisted session entry.
     let saved: FlowBindingSnapshot | null = null

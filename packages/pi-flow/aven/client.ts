@@ -157,21 +157,64 @@ export async function readAvenLabels(ref: string): Promise<string[] | null> {
     const { stdout } = await execFileAsync('aven', args, {
       timeout: AVEN_TIMEOUT_MS,
     })
-    const parsedTicket: unknown = JSON.parse(stdout)
-    if (
-      typeof parsedTicket === 'object' &&
-      parsedTicket !== null &&
-      Array.isArray((parsedTicket as { labels?: unknown }).labels)
-    ) {
-      return (parsedTicket as { labels: unknown[] }).labels.filter(
-        (l): l is string => typeof l === 'string',
-      )
+    const snapshot = ticketSnapshotFor(JSON.parse(stdout), ref)
+    if (snapshot.ok) {
+      return snapshot.labels
     }
+    // PMR-F8HB: aven prefix-matches refs (`aven show PMR-TPN` happily
+    // returns PMR-TPN7), so a truncated or typo'd ref would silently read
+    // (and later write) the WRONG ticket's labels. Fail closed instead.
+    recordAvenFailure(
+      snapshot.kind === 'fuzzy-match'
+        ? `aven matched ${ref} to ${snapshot.resolvedRef} — not an exact ticket ref; use the full ref`
+        : 'aven show returned a ticket without a labels array',
+    )
     return null
   } catch (error: unknown) {
     recordAvenFailure(error)
     return null
   }
+}
+
+/**
+ * PMR-F8HB — pure classification of an `aven show --json` result against
+ * the ref that was asked for. `fuzzy-match` means aven resolved the ref to
+ * a DIFFERENT ticket (prefix match); every caller must treat that as a
+ * failure, never as data about the requested ticket.
+ */
+export type AvenTicketSnapshot =
+  | { ok: true; labels: string[]; resolvedRef: string }
+  | {
+      ok: false
+      kind: 'bad-json' | 'fuzzy-match'
+      resolvedRef: string | null
+    }
+
+export function ticketSnapshotFor(
+  raw: unknown,
+  requestedRef: string,
+): AvenTicketSnapshot {
+  if (typeof raw !== 'object' || raw === null) {
+    return { ok: false, kind: 'bad-json', resolvedRef: null }
+  }
+  const record = raw as { labels?: unknown; ref?: unknown }
+  if (!Array.isArray(record.labels)) {
+    return { ok: false, kind: 'bad-json', resolvedRef: null }
+  }
+  const labels = record.labels.filter((l): l is string => typeof l === 'string')
+  const resolvedRef =
+    typeof record.ref === 'string' && record.ref !== '' ? record.ref : null
+  // A ticket without a ref field cannot be identity-verified: fail closed
+  // (bad-json) rather than trusting an unverifiable identity.
+  if (resolvedRef === null) {
+    return { ok: false, kind: 'bad-json', resolvedRef: null }
+  }
+  // Case-insensitive compare: a case variant of the same ref is the same
+  // ticket; anything else (PMR-TPN vs PMR-TPN7) is a different ticket.
+  if (resolvedRef.toUpperCase() === requestedRef.toUpperCase()) {
+    return { ok: true, labels, resolvedRef }
+  }
+  return { ok: false, kind: 'fuzzy-match', resolvedRef }
 }
 
 export async function writeAvenNote(
@@ -284,6 +327,12 @@ export async function writeAvenLabel(
   ref: string,
   label: string,
 ): Promise<boolean> {
+  // PMR-F8HB: `aven edit` prefix-matches like `aven show`, so an inexact
+  // ref would write a LIFECYCLE LABEL onto the wrong ticket. Guard the
+  // write with the exact-ref read; the fuzzy-match message lands in
+  // lastAvenResolutionFailure for the caller to surface.
+  const labels = await readAvenLabels(ref)
+  if (labels === null) return false
   try {
     const args = await avenArgsWithWorkspace(
       ['edit', ref, '--label', label],
@@ -296,6 +345,34 @@ export async function writeAvenLabel(
   } catch (error: unknown) {
     recordAvenFailure(error)
     return false
+  }
+}
+
+/**
+ * PMR-F8HB — best-effort discovery of aven project prefixes (PMR, MNT, …)
+ * via `aven project list --json`. Feeds registerAvenPrefixes (flow/ref-kind)
+ * so bare Jira-shaped aven refs (PMR-2424) classify as aven. Never throws;
+ * an empty result keeps the historical Jira-first heuristic.
+ */
+export async function discoverAvenPrefixes(): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'aven',
+      ['project', 'list', '--json'],
+      { timeout: AVEN_TIMEOUT_MS, cwd: avenSessionCwd },
+    )
+    const parsed: unknown = JSON.parse(stdout)
+    if (!Array.isArray(parsed)) return []
+    const prefixes: string[] = []
+    for (const entry of parsed) {
+      const prefix = (entry as { prefix?: unknown })?.prefix
+      if (typeof prefix === 'string' && prefix.trim() !== '') {
+        prefixes.push(prefix)
+      }
+    }
+    return prefixes
+  } catch {
+    return []
   }
 }
 
