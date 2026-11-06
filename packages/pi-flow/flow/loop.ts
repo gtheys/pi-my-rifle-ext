@@ -216,7 +216,7 @@ class FlowLoopImpl implements FlowLoop {
       phase,
       label: PHASE_LABEL[phase],
     })
-    const next = nextPhase(labels)
+    const next = nextPhase(labels, this.state?.promptInput.mode)
     if (next.kind === 'done') {
       this.deps.journal({
         kind: 'note',

@@ -295,7 +295,7 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      const next = nextPhase(labels)
+      const next = nextPhase(labels, mode)
       if (next.kind === 'done') {
         ctx.ui.notify(
           `/flow ${ref}: all phase labels present (done) — nothing to run.`,

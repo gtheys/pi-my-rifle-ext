@@ -3,6 +3,7 @@
 // re-deriving it from `mode === 'work'`; the prompt prose itself stays in
 // the prompt modules. Add a row here when a mode decision is data, not
 // prose.
+import type { Phase } from './flow/orchestrate.ts'
 import type { WorkMode } from './work-mode.ts'
 
 export interface ModeProfile {
@@ -16,6 +17,9 @@ export interface ModeProfile {
   acceptsJiraRefs: boolean
   /** Branch derivation rule for the implement phase. */
   branchRule: 'jira_create_branch' | 'conventional-slug'
+  /** Phases /flow runs, in order. Personal folds feedback (summary note +
+   *  done) into validate/land (PMR-GFM5). */
+  phases: readonly Phase[]
 }
 
 export const MODE_PROFILE: Record<WorkMode, ModeProfile> = {
@@ -24,11 +28,13 @@ export const MODE_PROFILE: Record<WorkMode, ModeProfile> = {
     artifactRootEnv: 'LLM_NOTES_ROOT',
     acceptsJiraRefs: true,
     branchRule: 'jira_create_branch',
+    phases: ['plan', 'implement', 'validate', 'feedback'],
   },
   personal: {
     landingRoute: 'push-main',
     artifactRootEnv: 'PERSONAL_FEATURES',
     acceptsJiraRefs: false,
     branchRule: 'conventional-slug',
+    phases: ['plan', 'implement', 'validate'],
   },
 }

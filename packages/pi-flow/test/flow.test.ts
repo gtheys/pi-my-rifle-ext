@@ -51,6 +51,20 @@ test('nextPhase: review-passed -> feedback', () => {
   })
 })
 
+test('nextPhase: personal review-passed -> done (feedback folded into validate)', () => {
+  assert.deepEqual(
+    nextPhase(['planned', 'active', 'review-passed'], 'personal'),
+    { kind: 'done' },
+  )
+})
+
+test('nextPhase: work review-passed -> feedback (explicit mode)', () => {
+  assert.deepEqual(nextPhase(['planned', 'active', 'review-passed'], 'work'), {
+    kind: 'phase',
+    phase: 'feedback',
+  })
+})
+
 test('nextPhase: done label -> done', () => {
   assert.deepEqual(nextPhase(['planned', 'active', 'review-passed', 'done']), {
     kind: 'done',

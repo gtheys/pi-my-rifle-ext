@@ -8,6 +8,9 @@
 // Research is no longer a lifecycle phase — the /brainstorm command
 // (renamed from /research, PMR-H7RW) still exists outside the gates.
 
+import { MODE_PROFILE } from '../mode-profile.ts'
+import type { WorkMode } from '../work-mode.ts'
+
 export type Phase = 'plan' | 'implement' | 'validate' | 'feedback'
 
 // phase -> the aven label that marks this phase complete
@@ -20,15 +23,14 @@ export const PHASE_LABEL: Record<Phase, string> = {
 
 export type NextPhase = { kind: 'phase'; phase: Phase } | { kind: 'done' }
 
-const PHASE_ORDER: readonly Phase[] = [
-  'plan',
-  'implement',
-  'validate',
-  'feedback',
-]
-
-export function nextPhase(labels: readonly string[]): NextPhase {
-  const first = PHASE_ORDER.find(
+// AIDEV-NOTE: PMR-GFM5 — the phase list is mode-keyed (MODE_PROFILE.phases);
+// personal never runs feedback as a separate phase. Default 'work' keeps the
+// full PIV order for callers that don't pass a mode.
+export function nextPhase(
+  labels: readonly string[],
+  mode: WorkMode = 'work',
+): NextPhase {
+  const first = MODE_PROFILE[mode].phases.find(
     (phase) => !labels.includes(PHASE_LABEL[phase]),
   )
   if (first === undefined) return { kind: 'done' }
