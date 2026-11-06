@@ -69,3 +69,29 @@ test('readFlowBase errors clearly when unset', async () => {
   assert.equal(r.ok, false)
   if (!r.ok) assert.match(r.reason, /no recorded flow base/)
 })
+
+test('recordFlowBase retries a locked config write then succeeds', async () => {
+  let failures = 2
+  const exec: Exec = async () => {
+    if (failures > 0) {
+      failures--
+      return { stdout: '', stderr: 'could not lock config file', code: 255 }
+    }
+    return { stdout: '', code: 0 }
+  }
+  const r = await recordFlowBase(exec, '/w', 'feat/x', 'main', 'abc', 1)
+  assert.equal(r.ok, true)
+  assert.equal(failures, 0)
+})
+
+test('recordFlowBase gives up after bounded attempts with the last error', async () => {
+  let calls = 0
+  const exec: Exec = async () => {
+    calls++
+    return { stdout: '', stderr: 'could not lock config file', code: 255 }
+  }
+  const r = await recordFlowBase(exec, '/w', 'feat/x', 'main', 'abc', 1)
+  assert.equal(r.ok, false)
+  assert.equal(calls, 4)
+  if (!r.ok) assert.match(r.reason, /could not lock config file/)
+})

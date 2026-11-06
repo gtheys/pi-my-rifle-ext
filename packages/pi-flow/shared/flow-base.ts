@@ -2,7 +2,7 @@
 // was on when the worktree was created (main/develop/staging/...). It is
 // stored as git config `branch.<feature>.flowbase` (repo-shared config, so
 // the worktree can read it). No recorded base => callers error, never guess.
-import type { Exec } from './diff-base.ts'
+import type { Exec, ExecResult } from './diff-base.ts'
 
 export type BaseResult =
   | { ok: true; branch: string }
@@ -53,6 +53,30 @@ export async function resolveBaseSha(
   return { ok: true, branch: sha }
 }
 
+const CONFIG_WRITE_ATTEMPTS = 4
+const CONFIG_WRITE_DELAY_MS = 50
+
+async function writeConfigWithRetry(
+  exec: Exec,
+  cwd: string,
+  key: string,
+  value: string,
+  delayMs: number,
+): Promise<ExecResult> {
+  // AIDEV-NOTE: PMR-R4AP — concurrent sessions share .git/config; git takes
+  // config.lock and a simultaneous writer fails immediately. Retry with a short
+  // linear backoff, then surface the last error.
+  let last: ExecResult = { stdout: '', code: 1 }
+  for (let attempt = 1; attempt <= CONFIG_WRITE_ATTEMPTS; attempt++) {
+    last = await exec('git', ['config', key, value], { cwd })
+    if (last.code === 0) return last
+    if (attempt < CONFIG_WRITE_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt))
+    }
+  }
+  return last
+}
+
 /** Record base branch + exact SHA as branch.<feature>.flowbase / .flowbasesha. */
 export async function recordFlowBase(
   exec: Exec,
@@ -60,20 +84,23 @@ export async function recordFlowBase(
   featureBranch: string,
   baseBranch: string,
   baseSha: string,
+  delayMs: number = CONFIG_WRITE_DELAY_MS,
 ): Promise<BaseResult> {
   for (const [key, value] of [
     ['flowbase', baseBranch],
     ['flowbasesha', baseSha],
-  ]) {
-    const r = await exec(
-      'git',
-      ['config', `branch.${featureBranch}.${key}`, value as string],
-      { cwd },
+  ] as const) {
+    const r = await writeConfigWithRetry(
+      exec,
+      cwd,
+      `branch.${featureBranch}.${key}`,
+      value,
+      delayMs,
     )
     if (r.code !== 0) {
       return {
         ok: false,
-        reason: `git config branch.${featureBranch}.${key} failed: ${r.stderr ?? ''}`,
+        reason: `git config branch.${featureBranch}.${key} failed after ${CONFIG_WRITE_ATTEMPTS} attempts: ${r.stderr ?? ''}`,
       }
     }
   }
