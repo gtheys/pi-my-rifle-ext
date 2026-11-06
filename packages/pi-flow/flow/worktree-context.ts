@@ -35,6 +35,33 @@ function notifyChange(): void {
   changeListener?.({ ref: activeRef, worktree })
 }
 
+// AIDEV-NOTE: PMR-P2MK — session entry data is untrusted (old/hand-edited
+// sessions). Validate before restoring; a bad shape yields null, never a throw.
+export function parseFlowBindingSnapshot(
+  value: unknown,
+): FlowBindingSnapshot | null {
+  if (typeof value !== 'object' || value === null) return null
+  const v = value as Record<string, unknown>
+  if (v.ref !== null && typeof v.ref !== 'string') return null
+  const wt = v.worktree
+  if (wt === null || wt === undefined) {
+    return { ref: v.ref, worktree: null }
+  }
+  if (typeof wt !== 'object') return null
+  const w = wt as Record<string, unknown>
+  if (
+    typeof w.ref !== 'string' ||
+    typeof w.path !== 'string' ||
+    typeof w.branch !== 'string'
+  ) {
+    return null
+  }
+  return {
+    ref: v.ref,
+    worktree: { ref: w.ref, path: w.path, branch: w.branch },
+  }
+}
+
 /** Restore a persisted snapshot. Does not fire the change listener. */
 export function restoreFlowBinding(snapshot: FlowBindingSnapshot): void {
   activeRef = snapshot.ref

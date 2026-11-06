@@ -38,6 +38,7 @@ import {
 import { parseRefKind } from './flow/ref-kind.ts'
 import {
   type FlowBindingSnapshot,
+  parseFlowBindingSnapshot,
   restoreFlowBinding,
   setActiveFlowRef,
   setBindingChangeListener,
@@ -130,9 +131,12 @@ export default function (pi: ExtensionAPI) {
     // AIDEV-NOTE: PMR-PJM0 — rebuild the flow ref/worktree binding after
     // reload/restart from the last persisted session entry.
     let saved: FlowBindingSnapshot | null = null
-    for (const entry of ctx.sessionManager.getEntries()) {
+    // AIDEV-NOTE: PMR-P2MK — getBranch() walks the current leaf path only, so
+    // an abandoned fork's binding cannot win; entry data is shape-validated.
+    for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === 'custom' && entry.customType === 'pi-flow-binding') {
-        saved = entry.data as FlowBindingSnapshot
+        const parsed = parseFlowBindingSnapshot(entry.data)
+        if (parsed !== null) saved = parsed
       }
     }
     if (saved?.ref) {
