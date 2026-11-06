@@ -11,7 +11,11 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { getActiveFlowRef, setFlowWorktree } from '../flow/worktree-context.ts'
+import {
+  getActiveFlowRef,
+  NO_ACTIVE_FLOW_WARNING,
+  setFlowWorktree,
+} from '../flow/worktree-context.ts'
 import { copyEnvFiles, runBootstrap } from './bootstrap.ts'
 import { deriveBranch, parseBranchInput, slugify } from './branch.ts'
 import {
@@ -150,8 +154,8 @@ async function createFlow(
 
   // AIDEV-NOTE: PMR-1CCT — bind the created worktree to the active flow (if
   // any) so the review tool resolves its diff here instead of the session
-  // checkout. No-op outside a flow run.
-  setFlowWorktree(path, derived.branch)
+  // checkout. Skipped (with a loud warning in the result) outside a flow run.
+  const flowBound = setFlowWorktree(path, derived.branch)
 
   report(`Bootstrapping dependencies in ${path}...`)
   const bootstrap = await runBootstrap(pi, path, signal, report)
@@ -175,14 +179,18 @@ async function createFlow(
     envLine = envCopied.join(', ')
   }
 
-  const text = [
+  const lines = [
     `Worktree ready: ${derived.branch}`,
     `Path: ${path}`,
     `Workspace: ${workspaceId || '(unknown)'}`,
     `Bootstrap:\n${bootstrapLines}`,
     `Env files copied: ${envLine}`,
     `Next: cd ${path} && pi -c  (or spawn a subagent with cwd ${path})`,
-  ].join('\n')
+  ]
+  if (!flowBound) {
+    lines.push(NO_ACTIVE_FLOW_WARNING)
+  }
+  const text = lines.join('\n')
 
   return textResult(text, {
     branch: derived.branch,
@@ -190,6 +198,7 @@ async function createFlow(
     workspaceId,
     bootstrap,
     envCopied,
+    flowBound,
   })
 }
 
@@ -232,7 +241,7 @@ async function bindFlow(params: {
   const ref = getActiveFlowRef()
   if (ref === null) {
     return errorResult(
-      'No active flow ref — nothing to bind to. Run bind from inside the flow loop.',
+      `No active flow ref — nothing to bind to. ${NO_ACTIVE_FLOW_WARNING}`,
     )
   }
   setFlowWorktree(params.path, params.branch)

@@ -28,10 +28,19 @@ export function getActiveFlowRef(): string | null {
   return activeRef
 }
 
-/** Bind a created worktree to the active flow ref. No-op when no flow runs. */
-export function setFlowWorktree(path: string, branch: string): void {
-  if (activeRef === null) return
+// AIDEV-NOTE: PMR-2424 — a skipped bind used to be silent, so the review tool
+// diffed the main checkout and returned a bogus pass. Callers surface this.
+export const NO_ACTIVE_FLOW_WARNING =
+  'WARNING: no active flow — the worktree was NOT bound to a flow, so review/land gates will not apply to it. Tell the human to run `/flow aven:<ref>` (or `/flow <ref>`) before continuing with implement/validate.'
+
+/**
+ * Bind a created worktree to the active flow ref. Returns false (and binds
+ * nothing) when no flow runs, so callers can warn instead of failing silently.
+ */
+export function setFlowWorktree(path: string, branch: string): boolean {
+  if (activeRef === null) return false
   worktree = { ref: activeRef, path, branch }
+  return true
 }
 
 export function getFlowWorktree(): FlowWorktree | null {

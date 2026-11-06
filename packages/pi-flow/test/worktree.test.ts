@@ -699,7 +699,12 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { getFlowWorktree, setActiveFlowRef } from '../flow/worktree-context.ts'
+import {
+  getFlowWorktree,
+  NO_ACTIVE_FLOW_WARNING,
+  setActiveFlowRef,
+  setFlowWorktree,
+} from '../flow/worktree-context.ts'
 import worktreeExtension from '../worktree/index.ts'
 
 type BindExecute = (
@@ -771,7 +776,19 @@ test('worktree bind: refuses without an active flow ref', async () => {
     bindCtx,
   )
   assert.match(result.content[0]?.text ?? '', /No active flow ref/)
+  assert.match(result.content[0]?.text ?? '', /\/flow/)
   assert.equal(getFlowWorktree(), null, 'no binding without an active ref')
+})
+
+test('setFlowWorktree: reports skipped bind when no flow is active (create path)', () => {
+  setActiveFlowRef(null)
+  assert.equal(setFlowWorktree('/tmp/x', 'fix/x'), false)
+  assert.equal(getFlowWorktree(), null)
+  assert.match(NO_ACTIVE_FLOW_WARNING, /NOT bound/)
+  assert.match(NO_ACTIVE_FLOW_WARNING, /\/flow/)
+  setActiveFlowRef('PMR-TEST')
+  assert.equal(setFlowWorktree('/tmp/x', 'fix/x'), true)
+  setActiveFlowRef(null)
 })
 
 test('worktree bind: binds the worktree to the active flow ref', async () => {

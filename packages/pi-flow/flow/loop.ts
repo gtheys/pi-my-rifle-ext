@@ -142,7 +142,7 @@ class FlowLoopImpl implements FlowLoop {
         const planState = await this.deps.readPlanState(this.state.ref)
         if (planState === 'review') {
           const ref = this.state.ref
-          const text = `flow paused at plan: awaiting spec approval (plan-state=review) — approve via the spec_approve tool or /spec-review, then rerun /flow ${ref}`
+          const text = `flow paused at plan: awaiting spec approval (plan-state=review) — approve via the spec_approve tool or /spec-review, then rerun /flow ${ref} (typing 'implement' as a plain message does NOT restart the flow — agent: tell the human to run /flow ${ref} before any implement/validate work)`
           await this.deps.avenNote(ref, text)
           this.deps.journal({ kind: 'note', at: now(), ref, text })
           this.deps.notify(`/flow ${ref}: ${text}`, 'info')
