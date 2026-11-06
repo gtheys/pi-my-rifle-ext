@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { afterEach, test } from 'node:test'
 import {
   parseBranchInput,
   personalBranch,
@@ -715,9 +715,25 @@ type BindExecute = (
   ctx: Record<string, unknown>,
 ) => Promise<{ content: { type: string; text: string }[] }>
 
-function makeWorktreeTool(): BindExecute {
+// AIDEV-NOTE: PMR-MQT2 — bind validates against `herdr worktree list`;
+// the mock exec serves the given worktrees as that command's JSON.
+function makeWorktreeTool(
+  herdrWorktrees: { path: string; branch: string }[] = [],
+): BindExecute {
   const tools: { name: string; execute: BindExecute }[] = []
   const mockPi = {
+    exec: async () => ({
+      code: 0,
+      stderr: '',
+      stdout: JSON.stringify({
+        result: {
+          worktrees: herdrWorktrees.map((w) => ({
+            ...w,
+            is_linked: true,
+          })),
+        },
+      }),
+    }),
     registerTool: (options: unknown) => {
       tools.push(options as { name: string; execute: BindExecute })
     },
@@ -727,6 +743,12 @@ function makeWorktreeTool(): BindExecute {
   assert.ok(tool, 'worktree tool registered')
   return tool.execute
 }
+
+// AIDEV-NOTE: PMR-MQT2 — flow state is module-global; reset after every
+// test so a failing assertion cannot leak a ref/binding into later tests.
+afterEach(() => {
+  setActiveFlowRef(null)
+})
 
 const bindCtx = {
   cwd: '/tmp/main-checkout',
@@ -761,7 +783,6 @@ test('worktree bind: rejects a nonexistent path', async () => {
     bindCtx,
   )
   assert.match(result.content[0]?.text ?? '', /No directory at/)
-  setActiveFlowRef(null)
 })
 
 test('worktree bind: refuses without an active flow ref', async () => {
@@ -788,12 +809,11 @@ test('setFlowWorktree: reports skipped bind when no flow is active (create path)
   assert.match(NO_ACTIVE_FLOW_WARNING, /\/flow/)
   setActiveFlowRef('PMR-TEST')
   assert.equal(setFlowWorktree('/tmp/x', 'fix/x'), true)
-  setActiveFlowRef(null)
 })
 
 test('worktree bind: binds the worktree to the active flow ref', async () => {
-  const execute = makeWorktreeTool()
   const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }])
   setActiveFlowRef('PMR-TEST')
   const result = await execute(
     'call-4',
@@ -803,10 +823,73 @@ test('worktree bind: binds the worktree to the active flow ref', async () => {
     bindCtx,
   )
   assert.match(result.content[0]?.text ?? '', /Bound worktree/)
+  assert.doesNotMatch(result.content[0]?.text ?? '', /replacing/)
   assert.deepEqual(getFlowWorktree(), {
     ref: 'PMR-TEST',
     path: dir,
     branch: 'fix/x',
   })
-  setActiveFlowRef(null)
+})
+
+test('worktree bind: resolves a relative path against the session cwd', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }])
+  setActiveFlowRef('PMR-TEST')
+  const result = await execute(
+    'call-5',
+    { action: 'bind', path: path.basename(dir), branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    { ...bindCtx, cwd: tmpdir() },
+  )
+  assert.match(result.content[0]?.text ?? '', /Bound worktree/)
+  assert.equal(getFlowWorktree()?.path, dir)
+})
+
+test('worktree bind: rejects a path herdr does not know', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const execute = makeWorktreeTool([])
+  setActiveFlowRef('PMR-TEST')
+  const result = await execute(
+    'call-6',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /No Herdr worktree found/)
+  assert.equal(getFlowWorktree(), null)
+})
+
+test('worktree bind: rejects a branch mismatch and reports the actual branch', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/actual' }])
+  setActiveFlowRef('PMR-TEST')
+  const result = await execute(
+    'call-7',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /fix\/actual/)
+  assert.equal(getFlowWorktree(), null)
+})
+
+test('worktree bind: reports a replaced binding', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }])
+  setActiveFlowRef('PMR-TEST')
+  setFlowWorktree('/tmp/old-binding', 'fix/old')
+  const result = await execute(
+    'call-8',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(
+    result.content[0]?.text ?? '',
+    /replacing previous binding \/tmp\/old-binding/,
+  )
 })

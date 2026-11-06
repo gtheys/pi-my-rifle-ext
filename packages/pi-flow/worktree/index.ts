@@ -1,11 +1,12 @@
 /**
  * Worktree module — `worktree` tool wrapping Herdr worktree workspaces.
- * Actions: create / list / remove. See plan 2026-09-07-pi-worktree-extension.
+ * Actions: create / list / bind / remove. See plan 2026-09-07-pi-worktree-extension.
  * AIDEV-NOTE: PMR-K0ZV — absorbed from the retired pi-worktree package into
  * pi-flow; registered exactly once from pi-flow/index.ts.
  */
 
 import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -13,6 +14,7 @@ import type {
 import { Type } from 'typebox'
 import {
   getActiveFlowRef,
+  getFlowWorktree,
   NO_ACTIVE_FLOW_WARNING,
   setFlowWorktree,
 } from '../flow/worktree-context.ts'
@@ -279,16 +281,24 @@ function joinAgents(
 // Resume path: the implement skill reuses the worktree from the ticket's
 // `worktree:` note without calling create, so nothing bound it and the
 // review tool resolved its diff against the session checkout (empty range).
-async function bindFlow(params: {
-  path?: string
-  branch?: string
-}): Promise<ToolResult> {
+// AIDEV-NOTE: PMR-MQT2 — path is resolved against the session cwd (not the
+// extension host's process.cwd()) and validated against herdr state, like
+// removeFlow's "No Herdr worktree found" guard.
+async function bindFlow(
+  pi: ExtensionAPI,
+  cwd: string,
+  params: {
+    path?: string
+    branch?: string
+  },
+): Promise<ToolResult> {
   if (!params.path || !params.branch) {
     return errorResult("bind requires 'path' and 'branch'")
   }
-  const stat = await fs.stat(params.path).catch(() => null)
+  const wtPath = path.resolve(cwd, params.path)
+  const stat = await fs.stat(wtPath).catch(() => null)
   if (!stat?.isDirectory()) {
-    return errorResult(`No directory at ${params.path}`)
+    return errorResult(`No directory at ${wtPath}`)
   }
   const ref = getActiveFlowRef()
   if (ref === null) {
@@ -296,9 +306,29 @@ async function bindFlow(params: {
       `No active flow ref — nothing to bind to. ${NO_ACTIVE_FLOW_WARNING}`,
     )
   }
-  setFlowWorktree(params.path, params.branch)
+  let worktrees: HerdrWorktree[]
+  try {
+    worktrees = await worktreeList(pi, cwd)
+  } catch (error) {
+    return errorResult((error as Error).message)
+  }
+  const target = worktrees.find((wt) => wt.path === wtPath)
+  if (!target) {
+    return errorResult(`No Herdr worktree found at path ${wtPath}`)
+  }
+  if (target.branch !== params.branch) {
+    return errorResult(
+      `Herdr worktree at ${wtPath} is on branch ${target.branch}, not ${params.branch}`,
+    )
+  }
+  const previous = getFlowWorktree()
+  setFlowWorktree(wtPath, params.branch)
+  let replaced = ''
+  if (previous) {
+    replaced = ` (replacing previous binding ${previous.path})`
+  }
   return textResult(
-    `Bound worktree ${params.path} (${params.branch}) to flow ${ref}`,
+    `Bound worktree ${wtPath} (${params.branch}) to flow ${ref}${replaced}`,
   )
 }
 
@@ -533,7 +563,7 @@ export default function (pi: ExtensionAPI) {
     description:
       'Create, list, bind, or remove git worktrees managed as Herdr workspaces. Create derives a branch (from a Jira issue, a conventional name+type, or a literal), creates the Herdr worktree, bootstraps dependencies from the detected lockfile, copies missing .env* files from the main checkout. List shows a worktree/agent dashboard. Bind re-attaches an existing worktree to the active flow (resume path) so the review tool diffs it; remove guards against dirty worktrees.',
     promptSnippet:
-      'Create/list/remove git worktrees as Herdr workspaces for parallel work',
+      'Create/list/bind/remove git worktrees as Herdr workspaces for parallel work',
     promptGuidelines: [
       'Use worktree when implementing multiple features of the same repo in parallel — create a worktree before spawning a subagent with cwd set to the new worktree path.',
       'Use worktree list as a dashboard of worktrees and their running pi agent states.',
@@ -575,7 +605,8 @@ export default function (pi: ExtensionAPI) {
       ),
       branch: Type.Optional(
         Type.String({
-          description: 'Create mode 3: literal branch name',
+          description:
+            'Create mode 3: literal branch name; bind: branch the worktree is on (required)',
         }),
       ),
       label: Type.Optional(
@@ -631,7 +662,7 @@ export default function (pi: ExtensionAPI) {
         return listFlow(pi, cwd)
       }
       if (params.action === 'bind') {
-        return bindFlow(params)
+        return bindFlow(pi, cwd, params)
       }
       return removeFlow(pi, cwd, params)
     },
