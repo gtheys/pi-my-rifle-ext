@@ -70,6 +70,18 @@ test('readFlowBase errors clearly when unset', async () => {
   if (!r.ok) assert.match(r.reason, /no recorded flow base/)
 })
 
+test('readFlowBase unset: reports worktree not bound with resume steps, no flowbase hint', async () => {
+  const exec = fake({ 'rev-parse --abbrev-ref HEAD': { stdout: 'main\n' } })
+  const r = await readFlowBase(exec, '/w')
+  assert.equal(r.ok, false)
+  if (!r.ok) {
+    assert.match(r.reason, /worktree is not bound/)
+    assert.match(r.reason, /\/flow <ref>/)
+    assert.match(r.reason, /worktree action=bind/)
+    assert.doesNotMatch(r.reason, /git config/)
+  }
+})
+
 test('recordFlowBase retries a locked config write then succeeds', async () => {
   let failures = 2
   const exec: Exec = async () => {

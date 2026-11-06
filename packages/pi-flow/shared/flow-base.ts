@@ -133,7 +133,10 @@ export async function readFlowBase(
   if (b.code !== 0 || branch === '') {
     return {
       ok: false,
-      reason: `no recorded flow base for '${cur.branch}' (branch.${cur.branch}.flowbase unset) — worktree predates PMR-R4AP; record it with: git config branch.${cur.branch}.flowbase <base-branch>`,
+      // AIDEV-NOTE: PMR-182S — unset flowbase usually means the session is on
+      // the main checkout (flow worktree not bound), not a legacy worktree.
+      // Never suggest setting flowbase on the current branch: it masks that.
+      reason: `no recorded flow base for '${cur.branch}' — the flow worktree is not bound (cwd is '${cwd}', not the flow worktree). Resume: run /flow <ref> to re-enter the flow, then worktree action=bind with the worktree path and branch, and re-run. Do NOT set branch.${cur.branch}.flowbase by hand.`,
     }
   }
   const s = await exec('git', ['config', `branch.${cur.branch}.flowbasesha`], {
