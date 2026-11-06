@@ -59,6 +59,7 @@ import {
   getActiveFlowRef,
   getFlowWorktree,
 } from '../flow/worktree-context.ts'
+import { type Exec, getMergeBase } from '../shared/diff-base.ts'
 import {
   herdrAvailable,
   worktreeCreate,
@@ -412,7 +413,7 @@ export async function isEmptyBranchRange(
   branch: string,
   cwd: string,
 ): Promise<boolean> {
-  const mergeBase = await getMergeBase(pi, branch, cwd)
+  const mergeBase = await getMergeBase(execOf(pi), branch, cwd)
   if (mergeBase === null) return false
   try {
     const { stdout, code } = await pi.exec('git', ['rev-parse', 'HEAD'], {
@@ -425,47 +426,10 @@ export async function isEmptyBranchRange(
   }
 }
 
-/**
- * Get the merge base between HEAD and a branch
- */
-async function getMergeBase(
-  pi: ExtensionAPI,
-  branch: string,
-  cwd?: string,
-): Promise<string | null> {
-  try {
-    // First try to get the upstream tracking branch
-    const { stdout: upstream, code: upstreamCode } = await pi.exec(
-      'git',
-      ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`],
-      { cwd },
-    )
-
-    if (upstreamCode === 0 && upstream.trim()) {
-      const { stdout: mergeBase, code } = await pi.exec(
-        'git',
-        ['merge-base', 'HEAD', upstream.trim()],
-        { cwd },
-      )
-      if (code === 0 && mergeBase.trim()) {
-        return mergeBase.trim()
-      }
-    }
-
-    // Fall back to using the branch directly
-    const { stdout: mergeBase, code } = await pi.exec(
-      'git',
-      ['merge-base', 'HEAD', branch],
-      { cwd },
-    )
-    if (code === 0 && mergeBase.trim()) {
-      return mergeBase.trim()
-    }
-
-    return null
-  } catch {
-    return null
-  }
+// AIDEV-NOTE: lazy wrapper — mock pis without exec must fail inside the
+// resolver's try/catch (null), not at call-site bind time.
+function execOf(pi: ExtensionAPI): Exec {
+  return (cmd, args, options) => pi.exec(cmd, args, options)
 }
 
 /**
@@ -913,7 +877,7 @@ async function buildReviewPrompt(
       return UNCOMMITTED_PROMPT
 
     case 'baseBranch': {
-      const mergeBase = await getMergeBase(pi, target.branch, cwd)
+      const mergeBase = await getMergeBase(execOf(pi), target.branch, cwd)
       if (mergeBase) {
         return BASE_BRANCH_PROMPT_WITH_MERGE_BASE.replace(
           /{baseBranch}/g,
@@ -924,7 +888,7 @@ async function buildReviewPrompt(
     }
 
     case 'ocrDelegate': {
-      const mergeBase = await getMergeBase(pi, target.branch, cwd)
+      const mergeBase = await getMergeBase(execOf(pi), target.branch, cwd)
       const fromRef = mergeBase ?? target.branch
       return OCR_DELEGATE_PROMPT.replace(
         /{baseBranch}/g,
@@ -946,7 +910,7 @@ async function buildReviewPrompt(
 
     case 'pullRequest': {
       const mergeBase = await getMergeBase(
-        pi,
+        execOf(pi),
         target.baseBranch,
         target.worktree?.path,
       )
@@ -1060,7 +1024,7 @@ async function buildSemReviewInstructions(
 
   switch (target.type) {
     case 'baseBranch': {
-      const mergeBase = await getMergeBase(pi, target.branch)
+      const mergeBase = await getMergeBase(execOf(pi), target.branch)
       return buildSemReviewGuidance(
         { type: 'baseBranch', branch: target.branch, mergeBase },
         tools,
@@ -1068,7 +1032,7 @@ async function buildSemReviewInstructions(
     }
     case 'pullRequest': {
       const mergeBase = await getMergeBase(
-        pi,
+        execOf(pi),
         target.baseBranch,
         target.worktree?.path,
       )
@@ -1781,7 +1745,7 @@ ${result.summary}`
         ocrArgs = ['review', '--from', target.baseBranch, '--to', toRef]
       } else if (target.type === 'baseBranch') {
         const mergeBase = await getMergeBase(
-          pi,
+          execOf(pi),
           target.branch,
           reviewCwd ?? ctx.cwd,
         )
