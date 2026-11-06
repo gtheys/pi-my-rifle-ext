@@ -4,7 +4,7 @@
 // commands; spec-review/commands.ts owns the spec commands. What stays here:
 // the extension entrypoint, the enforcement interceptors, the flow loop
 // wiring, and /flow + /herdr-sync + /flow-view.
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
@@ -35,7 +35,12 @@ import {
   registerPhaseCommands,
 } from './flow/phase-command.ts'
 import { parseRefKind } from './flow/ref-kind.ts'
-import { setActiveFlowRef } from './flow/worktree-context.ts'
+import {
+  type FlowBindingSnapshot,
+  restoreFlowBinding,
+  setActiveFlowRef,
+  setBindingChangeListener,
+} from './flow/worktree-context.ts'
 import { syncHerdrPlugin } from './herdr/sync.ts'
 import {
   FlowHerdrViewer,
@@ -120,6 +125,27 @@ export default function (pi: ExtensionAPI) {
     notifyUser = (message, level) => ctx.ui.notify(message, level)
     setAvenSessionCwd(ctx.cwd)
     void ensureLabels(notifyUser)
+    // AIDEV-NOTE: PMR-PJM0 — rebuild the flow ref/worktree binding after
+    // reload/restart from the last persisted session entry.
+    let saved: FlowBindingSnapshot | null = null
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type === 'custom' && entry.customType === 'pi-flow-binding') {
+        saved = entry.data as FlowBindingSnapshot
+      }
+    }
+    if (saved?.ref) {
+      if (saved.worktree && !existsSync(saved.worktree.path)) {
+        saved = { ref: saved.ref, worktree: null }
+      }
+      restoreFlowBinding(saved)
+      notifyUser(
+        `pi-flow: restored flow binding for ${saved.ref}. The /flow loop itself is not resumed — rerun /flow ${saved.ref} to continue phases.`,
+        'info',
+      )
+    }
+    setBindingChangeListener((snapshot) => {
+      pi.appendEntry('pi-flow-binding', snapshot)
+    })
   })
 
   // AIDEV-NOTE: PMR-EZHA — enforcement boundary for lifecycle run state.

@@ -16,12 +16,41 @@ export interface FlowWorktree {
 let activeRef: string | null = null
 let worktree: FlowWorktree | null = null
 
+// AIDEV-NOTE: PMR-PJM0 — module state dies on pi reload/restart. index.ts
+// persists every change as a session entry (appendEntry) and replays the last
+// one on session_start via restoreFlowBinding.
+export interface FlowBindingSnapshot {
+  ref: string | null
+  worktree: FlowWorktree | null
+}
+let changeListener: ((snapshot: FlowBindingSnapshot) => void) | null = null
+
+export function setBindingChangeListener(
+  fn: ((snapshot: FlowBindingSnapshot) => void) | null,
+): void {
+  changeListener = fn
+}
+
+function notifyChange(): void {
+  changeListener?.({ ref: activeRef, worktree })
+}
+
+/** Restore a persisted snapshot. Does not fire the change listener. */
+export function restoreFlowBinding(snapshot: FlowBindingSnapshot): void {
+  activeRef = snapshot.ref
+  worktree = null
+  if (snapshot.ref !== null && snapshot.worktree?.ref === snapshot.ref) {
+    worktree = snapshot.worktree
+  }
+}
+
 /** Set (or clear, null) the active flow ref. Clearing the ref clears the binding. */
 export function setActiveFlowRef(ref: string | null): void {
   activeRef = ref
   if (ref === null) {
     worktree = null
   }
+  notifyChange()
 }
 
 export function getActiveFlowRef(): string | null {
@@ -40,6 +69,7 @@ export const NO_ACTIVE_FLOW_WARNING =
 export function setFlowWorktree(path: string, branch: string): boolean {
   if (activeRef === null) return false
   worktree = { ref: activeRef, path, branch }
+  notifyChange()
   return true
 }
 
@@ -50,4 +80,5 @@ export function getFlowWorktree(): FlowWorktree | null {
 /** Drop the worktree binding (e.g. the path no longer exists). Keeps the ref. */
 export function clearFlowWorktree(): void {
   worktree = null
+  notifyChange()
 }
