@@ -62,6 +62,12 @@ import {
 import { type Exec, getMergeBase } from '../shared/diff-base.ts'
 import { readFlowBase } from '../shared/flow-base.ts'
 import {
+  buildGateTarget,
+  type GateTarget,
+  reviewedRangeLine,
+  verifyGateWithExec,
+} from '../validate/gate-target.ts'
+import {
   herdrAvailable,
   worktreeCreate,
   worktreeRemove,
@@ -238,6 +244,76 @@ export async function buildFullReviewPrompt(
   }
 
   return fullPrompt
+}
+
+// AIDEV-NOTE: PMR-6EEW gate integrity — pin the /review target at spawn.
+// The /review prompts historically told the reviewer to run `git merge-base`
+// ITSELF (BASE_BRANCH_PROMPT_FALLBACK), so the range reviewed was whatever
+// the reviewer computed at review time — the last unpinned range in the
+// system (PMR-R4AP: review gate pinned itself to main while the base
+// question was open). buildReviewGatePin resolves the range in the harness
+// and returns null for unpinnable targets (uncommitted / folder / custom /
+// unresolvable base) — those keep the legacy behavior instead of failing
+// the whole review. PURE seam: exec injected, tests never touch a repo.
+export async function buildReviewGatePin(
+  exec: Exec,
+  target: ReviewTarget,
+  cwd?: string,
+): Promise<GateTarget | null> {
+  let baseRef: string | null = null
+  let headRef = 'HEAD'
+  let refLabel = ''
+  if (target.type === 'baseBranch') {
+    baseRef = await getMergeBase(exec, target.branch, cwd)
+    refLabel = `review-branch-${target.branch.replace(/[^a-zA-Z0-9-]/g, '-')}`
+  } else if (target.type === 'ocrDelegate') {
+    baseRef = await getMergeBase(exec, target.branch, cwd)
+    refLabel = `review-ocr-${target.branch.replace(/[^a-zA-Z0-9-]/g, '-')}`
+  } else if (target.type === 'pullRequest') {
+    baseRef = await getMergeBase(exec, target.baseBranch, target.worktree?.path)
+    refLabel = `review-pr-${target.prNumber}`
+  } else if (target.type === 'commit') {
+    baseRef = `${target.sha}^`
+    headRef = target.sha
+    refLabel = `review-commit-${target.sha.slice(0, 9)}`
+  } else {
+    return null
+  }
+  if (baseRef === null) return null
+
+  const base = await exec('git', ['rev-parse', baseRef], { cwd })
+  const head = await exec('git', ['rev-parse', headRef], { cwd })
+  if (base.code !== 0 || head.code !== 0) return null
+  const baseSha = base.stdout.trim()
+  const headSha = head.stdout.trim()
+  if (baseSha === '' || headSha === '') return null
+
+  const diff = await exec('git', ['diff', `${baseSha}..${headSha}`], { cwd })
+  if (diff.code !== 0) return null
+
+  const built = buildGateTarget({
+    gate: 'review',
+    ref: refLabel,
+    baseSha,
+    headSha,
+    diff: diff.stdout,
+  })
+  if (!('diffSha256' in built)) return null
+  return built
+}
+
+/** Echo-contract section appended to the reviewer prompt when pinned. */
+export function reviewEchoSection(target: GateTarget): string {
+  return `
+
+---
+
+## Pinned review target (gate integrity)
+
+The harness pinned the exact range you must review:
+   ${reviewedRangeLine(target)}
+
+End your review with that line copied EXACTLY (reviewed_range: <base>..<head>), as the final line of your output. It is compared character by character against the pin; any difference invalidates your review. Do not recompute the merge-base — review the pinned range only.`
 }
 
 // Prompts (adapted from Codex)
@@ -1463,21 +1539,52 @@ export default function reviewExtension(pi: ExtensionAPI) {
   // (Opus, read+bash, auto-exit) in a mux pane — non-blocking, main session
   // untouched, findings steer back as a review_result message. The legacy
   // in-session/branch flow below only runs without a mux or on spawn failure.
-  function deliverSubagentReviewResult(hint: string, result: SubagentResult) {
+  function deliverSubagentReviewResult(
+    hint: string,
+    result: SubagentResult,
+    // AIDEV-NOTE: PMR-6EEW — when a pin is present the findings are only
+    // surfaced as trustworthy after the echo contract + staleness check
+    // against the pinned range. A mismatch/missing-echo/stale verdict is
+    // delivered as failed: findings stay visible but flagged unverified.
+    pin?: GateTarget | null,
+    reviewCwd?: string,
+  ) {
     const failed = result.exitCode !== 0 || !!result.errorMessage
-    const content = failed
-      ? `Code review failed (${hint}): ${result.errorMessage ?? `exit code ${result.exitCode}`}`
-      : `Code review finished (${hint}). Reviewer findings:\n\n${result.summary}\n\nSession: ${result.sessionFile}`
-
-    pi.sendMessage(
-      {
-        customType: 'review_result',
-        content,
-        display: true,
-        details: { hint, failed, sessionFile: result.sessionFile },
-      },
-      { triggerTurn: true, deliverAs: 'steer' },
-    )
+    void (async () => {
+      let content: string
+      let verificationFailed = false
+      if (failed) {
+        content = `Code review failed (${hint}): ${result.errorMessage ?? `exit code ${result.exitCode}`}`
+      } else if (pin !== null && pin !== undefined && reviewCwd !== undefined) {
+        const verification = await verifyGateWithExec(
+          execOf(pi),
+          reviewCwd,
+          pin,
+          result.summary,
+        )
+        verificationFailed = !verification.ok
+        if (verification.ok) {
+          content = `Code review finished (${hint}). Reviewer findings:\n\n${result.summary}\n\nSession: ${result.sessionFile}`
+        } else {
+          content = `Code review finished (${hint}) but GATE INTEGRITY FAILED (${verification.status}) — ${verification.reason}.\n\nThe findings below were NOT verified against the pinned range; treat them as unverified and re-run /review.\n\n${result.summary}\n\nSession: ${result.sessionFile}`
+        }
+      } else {
+        content = `Code review finished (${hint}). Reviewer findings:\n\n${result.summary}\n\nSession: ${result.sessionFile}`
+      }
+      pi.sendMessage(
+        {
+          customType: 'review_result',
+          content,
+          display: true,
+          details: {
+            hint,
+            failed: failed || verificationFailed,
+            sessionFile: result.sessionFile,
+          },
+        },
+        { triggerTurn: true, deliverAs: 'steer' },
+      )
+    })()
   }
 
   // AIDEV-NOTE: worktree removal is refcounted. A PR review worktree may
@@ -1595,6 +1702,7 @@ ${result.summary}`
     hint: string,
     reviewCwd?: string,
     worktree?: { prNumber: number; info: PrWorktreeInfo },
+    pin?: GateTarget | null,
   ): Promise<'spawned' | 'aborted' | 'failed'> {
     try {
       const running = await launchSubagent(
@@ -1614,7 +1722,7 @@ ${result.summary}`
 
       watchSubagent(running, new AbortController().signal)
         .then((result) => {
-          deliverSubagentReviewResult(hint, result)
+          deliverSubagentReviewResult(hint, result, pin, reviewCwd ?? ctx.cwd)
           if (worktree) prWorktreeJobDone(ctx, worktree.prNumber)
         })
         .catch((err) => {
@@ -1698,12 +1806,24 @@ ${result.summary}`
     // fast-finishing reviewer can't tear the worktree out from under ocr.
     if (prWorktree) reservePrJobs(prWorktree.info)
 
+    // AIDEV-NOTE: PMR-6EEW — pin at spawn. The reviewer prompt gets the
+    // pinned range + echo contract; the delivery path verifies the echo and
+    // re-resolves HEAD before the findings are surfaced as trustworthy.
+    const pin = await buildReviewGatePin(
+      execOf(pi),
+      target,
+      reviewCwd ?? ctx.cwd,
+    )
+    const pinnedPrompt =
+      pin !== null ? `${fullPrompt}${reviewEchoSection(pin)}` : fullPrompt
+
     const status = await startSubagentReview(
       ctx,
-      fullPrompt,
+      pinnedPrompt,
       getUserFacingHint(target),
       reviewCwd,
       prWorktree,
+      pin,
     )
 
     // AIDEV-NOTE: on 'aborted' the reviewer slot is released here (the

@@ -9,6 +9,7 @@
 // events live in run-state.ts.
 
 import { createHash } from 'node:crypto'
+import type { Exec } from '../shared/diff-base.ts'
 
 export type GateKind = 'review' | 'deviation' | 'code-review' | 'spec-review'
 
@@ -178,6 +179,32 @@ export interface GateDecisionRecord {
   gate: GateKind
   targetId: string
   status: GateStatus | 'fail'
+}
+
+/**
+ * Exec-backed delivery check shared by every wired gate: re-resolve HEAD for
+ * the staleness recheck, then verify echo + staleness against the pin. Exec
+ * is injected (type-only import) so tests never touch a real repo.
+ */
+export async function verifyGateWithExec(
+  exec: Exec,
+  cwd: string,
+  target: GateTarget,
+  artifact: string,
+): Promise<GateVerification> {
+  const head = await exec('git', ['rev-parse', 'HEAD'], { cwd })
+  if (head.code !== 0 || head.stdout.trim() === '') {
+    return {
+      ok: false,
+      status: 'fail',
+      reason: `cannot re-resolve HEAD for staleness check in ${cwd}: ${head.stderr ?? ''}`,
+    }
+  }
+  return verifyGateResult({
+    target,
+    artifact,
+    currentHeadSha: head.stdout.trim(),
+  })
 }
 
 /**

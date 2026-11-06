@@ -39,7 +39,7 @@ import {
   type GateTarget,
   type GateVerification,
   gateTargetId,
-  verifyGateResult,
+  verifyGateWithExec,
 } from '../validate/gate-target.ts'
 import { toolResult } from './result.ts'
 
@@ -122,11 +122,9 @@ export function deviationReviewPromptFrom(
 }
 
 /**
- * AIDEV-NOTE: PMR-6EEW gate integrity — verify the verifier. Echo first
- * (character-compare against the pin, before any finding is read), then
- * staleness (HEAD re-resolved after the gate returned; a moved HEAD means
- * the verdict applies to bytes that are no longer the tip). Pure seams:
- * exec is injected so tests never touch a real repo.
+ * AIDEV-NOTE: PMR-6EEW gate integrity — verify the verifier. Delegates to
+ * the shared exec-backed check in validate/gate-target.ts. Kept as a named
+ * seam for the deviation tool tests.
  */
 export async function verifyDeviationGateResult(
   exec: Exec,
@@ -134,19 +132,7 @@ export async function verifyDeviationGateResult(
   target: GateTarget,
   artifact: string,
 ): Promise<GateVerification> {
-  const head = await exec('git', ['rev-parse', 'HEAD'], { cwd })
-  if (head.code !== 0 || head.stdout.trim() === '') {
-    return {
-      ok: false,
-      status: 'fail',
-      reason: `cannot re-resolve HEAD for staleness check in ${cwd}: ${head.stderr ?? ''}`,
-    }
-  }
-  return verifyGateResult({
-    target,
-    artifact,
-    currentHeadSha: head.stdout.trim(),
-  })
+  return verifyGateWithExec(exec, cwd, target, artifact)
 }
 
 /** Best-effort journal write — never breaks the gate (house rule). */
