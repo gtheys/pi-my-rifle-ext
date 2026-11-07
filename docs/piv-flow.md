@@ -373,7 +373,8 @@ any time, so it doubles as the backfill path when a backend was down.
 ## 8c. OTLP telemetry module (PMR-R8AG)
 
 Optional live export of tool-call and generation spans to any OTLP/HTTP
-receiver (Tempo on chicken, `:8478`). Lives in `telemetry/` inside
+receiver (Tempo on chicken, `:4478` — the tailnet-facing port; Caddy's
+container-side listener is `:8478`). Lives in `telemetry/` inside
 pi-flow — `attributes.ts` (pure env→attribute mapping), `exporter.ts`
 (minimal OTLP JSON exporter, no OTel SDK dependency), `index.ts` (event
 wiring). Config in the same `pi-flow/config.json` everything else uses:
@@ -383,7 +384,7 @@ wiring). Config in the same `pi-flow/config.json` everything else uses:
   "workRoots": [],
   "telemetry": {
     "enabled": true,
-    "otlpEndpoint": "https://chicken.tail4250d0.ts.net:8478"
+    "otlpEndpoint": "https://chicken.tail4250d0.ts.net:4478"
   }
 }
 ```
