@@ -314,6 +314,35 @@ Example runs:
 Slug rule: lowercase, strip non-alphanumeric, max 5 words, dashes
 (`packages/pi-flow/slugify.ts`).
 
+## 8a. Attribution & observability env (PMR-HFK1)
+
+Every `/flow` run stamps the **main process env** with attribution vars
+(`flow/attribution.ts`, pure — charset-validated before they enter env, same
+rule as the journal filename):
+
+| Var | Set by | Meaning |
+| --- | --- | --- |
+| `PI_FLOW_REF` | `/flow` loop at run start | the ticket ref — per-ticket cost key |
+| `PI_FLOW_PHASE` | re-stamped on every phase transition | research / plan / implement / validate / feedback |
+| `PI_FLOW_TRACEPARENT` | run start (fresh W3C root per invocation) | children join the flow's trace tree |
+| `PI_FLOW_SUBTASK` | the `subagent` spawn tool (`subtask` param) | plan-task ref for 1:1 worker spawns; omitted for scouts |
+
+Mechanics:
+
+- The subagents package forwards `PI_FLOW_REF/PHASE/TRACEPARENT` from the
+  parent env into every child's `tab create --env` block (`flow-env.ts`,
+  pure) and adds `PI_FLOW_SUBTASK` when the spawn carries a `subtask` param.
+  Values failing the charset regex are dropped fail-closed, never forwarded
+  mangled; with no active flow run nothing is stamped and plain subagent use
+  is untouched.
+- Terminal transitions (halt, plan-approval pause, done) **clear** all flow
+  keys — a child spawned after a run ends cannot misattribute to it.
+- Every spawn/resume/reattach is journaled as a `note` event in the run
+  journal (child id + subtask mapping), so cost attribution survives even if
+  env stamps are lost; reassignments attribute to whoever actually took over.
+- The `subtask` ref is also persisted on the durable assignment record
+  (`assignments.ts`), so takeovers after parent death keep the mapping.
+
 ## 9. Quick reference
 
 | Purpose | Command |
