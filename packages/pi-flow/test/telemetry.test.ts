@@ -427,3 +427,50 @@ test('config accepts a valid telemetry block and rejects a malformed one', async
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('flow env stamped AFTER session_start is picked up, and cleared afterwards', async () => {
+  const env: Record<string, string | undefined> = {}
+  const w = await wired({ endpoint: 'https://t:4478' }, env)
+  w.pi.emit('session_start', { type: 'session_start', reason: 'startup' })
+  await tick()
+
+  const runTool = (id: string) => {
+    w.pi.emit('tool_execution_start', {
+      type: 'tool_execution_start',
+      toolCallId: id,
+      toolName: 'bash',
+      args: {},
+    })
+    w.pi.emit('tool_execution_end', {
+      type: 'tool_execution_end',
+      toolCallId: id,
+      toolName: 'bash',
+      result: {},
+      isError: false,
+    })
+  }
+
+  // flow loop stamps the env after the session already started
+  env.PI_FLOW_REF = 'PMR-LATE'
+  env.PI_FLOW_PHASE = 'plan'
+  env.PI_FLOW_TRACEPARENT =
+    '00-0123456789abcdef0123456789abcdef-fedcba9876543210-01'
+  runTool('t1')
+  // terminal transition clears the stamp
+  delete env.PI_FLOW_REF
+  delete env.PI_FLOW_PHASE
+  delete env.PI_FLOW_TRACEPARENT
+  runTool('t2')
+  w.pi.emit('session_shutdown', { type: 'session_shutdown' })
+  await tick()
+
+  const spans = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0].spans
+  assert.equal(spans.length, 2)
+  const refOf = (span: {
+    attributes: Array<{ key: string; value: { stringValue: string } }>
+  }) => span.attributes.find((a) => a.key === 'flow.ref')?.value.stringValue
+  assert.equal(refOf(spans[0]), 'PMR-LATE')
+  assert.equal(spans[0].traceId, '0123456789abcdef0123456789abcdef')
+  assert.equal(refOf(spans[1]), undefined)
+  assert.notEqual(spans[1].traceId, '0123456789abcdef0123456789abcdef')
+})

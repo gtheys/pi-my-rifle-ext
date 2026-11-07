@@ -75,6 +75,8 @@ export interface TelemetryState {
   settings: TelemetrySettings | null
   traceId: string | null
   rootParentId: string | null
+  /** traceId came from PI_FLOW_TRACEPARENT (so a later clear must reset it). */
+  fromFlow: boolean
   flow: SpanAttributes
   openTools: Map<string, OpenToolSpan>
   buffer: TelemetrySpan[]
@@ -94,6 +96,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     settings: null,
     traceId: null,
     rootParentId: null,
+    fromFlow: false,
     flow: {},
     openTools: new Map(),
     buffer: [],
@@ -121,23 +124,31 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     })
   }
 
+  // AIDEV-NOTE: the flow loop stamps PI_FLOW_REF / PHASE / TRACEPARENT into
+  // process.env at run START, which is after session_start in the main
+  // session. Re-read the env on every span so late stamps (and phase
+  // changes, and clears at terminal transitions) are honoured; a one-shot
+  // read at subscribe time left main-session spans without flow.ref.
   const ensureTrace = (): void => {
-    if (state.traceId !== null) return
+    state.flow = flowAttributes(deps.env)
     const ctx = parseTraceparent(deps.env.PI_FLOW_TRACEPARENT)
     if (ctx !== null) {
       state.traceId = ctx.traceId
       state.rootParentId = ctx.parentId
+      state.fromFlow = true
       return
     }
+    if (state.traceId !== null && !state.fromFlow) return
+    // no flow traceparent (never stamped, or cleared): own random trace
     state.traceId = randomTraceId(deps.rng)
     state.rootParentId = null
+    state.fromFlow = false
   }
 
   const subscribe = (settings: TelemetrySettings): void => {
     state.enabled = true
     state.settings = settings
     ensureTrace()
-    state.flow = flowAttributes(deps.env)
     state.unsubscribers.push(
       pi.on('tool_execution_start', (event) => {
         if (!state.enabled) return
@@ -158,6 +169,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
         if (!state.enabled) return
         const open = state.openTools.get(event.toolCallId)
         if (open === undefined) return
+        ensureTrace()
         state.openTools.delete(event.toolCallId)
         let statusCode = 1
         let statusMessage: string | undefined
