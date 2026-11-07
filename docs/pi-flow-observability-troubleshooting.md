@@ -148,3 +148,27 @@ Spans are metadata-only by default. To see content, set `telemetry.captureConten
   config, so their spans carry content at the same level.
 - Code: `packages/pi-flow/telemetry/content.ts` (extraction + truncation), wiring in `telemetry/index.ts`,
   tests in `test/telemetry-content.test.ts`. User-facing docs: `packages/pi-flow/README.md` ("Capturing content in spans").
+
+## Incident: dashboard table missing the validate phase although the trace is complete
+
+Symptom: trace opened by id showed plan/implement/validate/review/deviation correctly (83 spans), but the
+"Traces by flow.ref" table listed only root/plan/implement for the same trace.
+
+Cause (Tempo, not pi-flow): ingester `trace_idle_period` defaults to 10s. Spans of one trace pushed more than 10s
+apart are cut into separate segments, and TraceQL SEARCH surfaces only ONE segment per trace (open-by-id merges
+them all, which is why the trace view was right). Controlled test with synthetic traces, 4 spans pushed N seconds
+apart: 4s -> search sees 4/4; 30s -> search sees 1/4. Flow traces run for minutes, so they always split.
+
+Fix: homelab `quadlets/tempo/tempo.yaml` -> `ingester.trace_idle_period: 3m` (deployed via copy to
+`/opt/homelab/quadlets/tempo/` + `systemctl restart tempo`). Verified: 30s-gap synthetic trace -> 4/4 once idle 3m passed.
+
+Consequences:
+- A finished (or paused) trace becomes fully searchable ~3 minutes after its last span; the table can look
+  partial during that window. Open-by-id (clicking the trace ID) is always complete.
+- A silence longer than 3m inside one trace (e.g. a long human wait with no spans from main or workers) can still
+  split it. Raise the value (memory cost is tiny at this volume) if that happens.
+- Traces recorded BEFORE the change (TP-AXWW, TP-EC0G, ...) stay partial in the table forever; the trace view is fine.
+- Test traces `SYN-*`, `PMR-DEMO` and the `*-probe` spans were posted by hand while debugging; they will show in the
+  table until Tempo's 14d retention removes them.
+- Re-run the experiment with `synth.sh`-style pushes (root + 3 phase spans, N s apart) and a TraceQL search that
+  reads `matched` / `spanCount` via `gcx api /api/datasources/proxy/uid/tempo/api/search?...`.
