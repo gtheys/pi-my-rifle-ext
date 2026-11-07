@@ -89,3 +89,10 @@ Known limits: root and worker-session spans are zero-length markers (trace durat
 spans). Never re-export a span with the same id and a later end: Tempo keeps both copies until compaction and
 which wins is undefined (verified on the homelab Tempo). A crashed worker is safe: its session span went out
 with the first flush. Traces recorded before the fixes keep `<root span not yet received>`.
+
+## Trace table: "3 rows, all phase=plan"
+
+The expanded rows under a trace are the first matching SPANS, not "plan spans". Tempo returns 3 matching
+spans per trace by default (`spss`), and with only `select(.flow.ref, .phase)` they all look alike. Panel query is now
+`{ .flow.ref =~ "$ref" } | select(name, .flow.ref, .phase, .agent.name)` with `spss: 20`, so rows show span names
+(`flow <ref>`, `tool bash`, `gen <model>`). `gcx traces query` returns no span sets, so verify in the browser.
