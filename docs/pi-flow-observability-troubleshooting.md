@@ -118,3 +118,33 @@ late-binds it to telemetry's `syncFlowEnv()`, which re-reads the env, closes the
 (also flushes the `flow <ref>` root immediately at run start). `flow_phase_complete` still closes + flushes on its own
 (more accurate end). A phase closes at most once (`exported`); the closed phase stays parent of trailing spans.
 Only remaining gap: main process hard-killed mid-phase (no shutdown event) never sends that phase span.
+
+## Seeing what the LLM said: content capture levels
+
+Spans are metadata-only by default. To see content, set `telemetry.captureContent` in
+`~/.pi/agent/pi-flow/config.json` (restart pi after changing it). Levels are cumulative:
+
+| `captureContent` | Adds | Attributes |
+| --- | --- | --- |
+| `off` (default) | nothing | — |
+| `text` | assistant text | `gen_ai.completion` (gen spans) |
+| `tools` | + tool calls the model made, tool input + output | `gen_ai.tool_calls`, `tool.input`, `tool.output` |
+| `all` | + model reasoning | `gen_ai.reasoning` |
+
+```json
+{ "telemetry": { "enabled": true, "otlpEndpoint": "https://chicken.tail4250d0.ts.net:4478",
+                 "captureContent": "tools", "maxContentChars": 2000 } }
+```
+
+- Where to look: Grafana trace view -> click a `gen …` / `tool …` span -> Span attributes. TraceQL:
+  `{ .gen_ai.completion =~ ".*word.*" }`, `{ .tool.output =~ ".*ENOENT.*" }`.
+- **Tempo truncates every attribute value at 2048 bytes, silently** (measured on the homelab Tempo 2.10: a 10000-char
+  value came back as 2048). Hence `maxContentChars` defaults to 2000. Raising it needs Tempo's `max_attribute_bytes`
+  raised too (`0` disables the check; see Grafana Tempo "Configure Tempo"/overrides docs — placement not yet applied on
+  chicken, `quadlets/tempo/tempo.yaml` is unchanged). Truncation counter: `tempo_distributor_attributes_truncated_total`.
+- **Secret/PII risk:** no redaction. Tool output and reasoning hold file contents, env dumps and tokens; Tempo keeps them 14 days
+  (`block_retention: 336h`) and anyone with Grafana access can read them. Start with `text`.
+- Only `gen` and `tool` spans carry content; root, phase and worker-session spans stay metadata-only. Workers use the same
+  config, so their spans carry content at the same level.
+- Code: `packages/pi-flow/telemetry/content.ts` (extraction + truncation), wiring in `telemetry/index.ts`,
+  tests in `test/telemetry-content.test.ts`. User-facing docs: `packages/pi-flow/README.md` ("Capturing content in spans").
