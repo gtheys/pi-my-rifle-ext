@@ -300,3 +300,9 @@ name-prefix roles `review` / `deviation check` (the assignment record had no `ag
 normalise legacy capitalised roles (`Review` → `review`, `Deviation check` → `deviation check`, `main` → `orchestrator`) with
 `label_replace` so old and new data group together. A second push group `job="pi-flow-range"` exists for refs — that is the
 separate pi-flow-range project, not this pipeline.
+
+Orchestrator cost semantics (verified 2026-11-07 on TP-1VFZ): `orchestrator` = the main session's OWN assistant-message
+usage inside the flow window only. Subagent sessions are separate jsonl files and separate roles; no subagent usage is
+embedded in the main session (checked: 27 assistant messages = $0.4197 = the orchestrator figure; workers $0.0089 + $0.0102
+are extra; ticket total $0.439 = orchestrator + workers). Work done inline in the main session (a skill, a oneshot) cannot be
+separated from the orchestrator — it IS the main session.
