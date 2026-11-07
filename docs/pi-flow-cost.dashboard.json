@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow cost dashboard (PMR-XPVE M5): cost by ref/phase/agent/subtask + token totals from Pushgateway metrics",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T08:34:05Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T08:51:15Z"
     },
     "creationTimestamp": "2026-11-07T02:57:43Z",
-    "generation": 8,
+    "generation": 9,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208851649736704"
     },
     "name": "piflow-cost",
     "namespace": "default",
-    "resourceVersion": "1794040445344019",
+    "resourceVersion": "1794041475006991",
     "uid": "4eecb14f-edff-41d0-b004-99f46d988628"
   },
   "spec": {
@@ -727,7 +727,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "label_join(label_replace(label_replace(topk(10, sum by (ref, agent, session, subtask) (pi_flow_run_cost_usd{ref=~\"$ref\"})), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"subtask\", \"–\", \"subtask\", \"^$\"), \"key\", \"|\", \"ref\", \"session\")",
+                        "expr": "label_join(label_replace(label_replace(label_replace(label_replace(label_replace(topk(10, sum by (ref, agent, session, subtask) (pi_flow_run_cost_usd{ref=~\"$ref\"})), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"role\", \"orchestrator\", \"role\", \"^main$\"), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"), \"subtask\", \"–\", \"subtask\", \"^$\"), \"key\", \"|\", \"ref\", \"session\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1072,7 +1072,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "max by (role) (label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"orchestrator\", \"role\", \"^main$\"))",
+                        "expr": "max by (role) (label_replace(label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"orchestrator\", \"role\", \"^main$\"), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1094,7 +1094,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "avg by (role) (label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"orchestrator\", \"role\", \"^main$\"))",
+                        "expr": "avg by (role) (label_replace(label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"orchestrator\", \"role\", \"^main$\"), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1116,7 +1116,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "quantile by (role) (0.5, label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"orchestrator\", \"role\", \"^main$\"))",
+                        "expr": "quantile by (role) (0.5, label_replace(label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"orchestrator\", \"role\", \"^main$\"), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",

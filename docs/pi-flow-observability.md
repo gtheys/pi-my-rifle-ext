@@ -277,3 +277,26 @@ Synthetic rows (`SYN-*`, `PMR-DEMO`, `*-probe`) clutter the table until retentio
   not recorded then).
 - Aven tickets `PMR-HFK1` (M1 attribution), `PMR-EA8X` (M2 cost rollup), `PMR-R8AG` (M4 telemetry), `PMR-XPVE` (M5),
   `PMR-DJ7B` (M6) are done; `aven list` for follow-ups.
+
+
+## Incident 2026-11-07 (evening): TP-1VFZ had no plan/implement/orchestrator cost
+
+Symptom: first run after the main-session feature showed only `validate` (workers) in the cost dashboard.
+Cause: `recordRunEvent` (`run-state.ts`) returns early when the projection is unchanged (`next === state`); the new
+`main-session` event never changes the projection, so it was **silently dropped before the journal append** — no run had ever
+recorded its main session. My first tests mocked the loop's journal callback and never went through the real writer.
+Fix (`776f84a`): `main-session` is appended journal-only; regression test goes through `recordRunEvent` with a temp dir.
+Recovery for `TP-1VFZ`: appended the `main-session` event by hand (the main session was the pi session that started 5 s before
+the run: `…/--home-geert-Code-personal-pi-flow-range--/2026-11-07T08-39-02-631Z_01a1b529-….jsonl`), recomputed with
+`computeCostRollup` and pushed (orchestrator plan $0.157 / implement $0.098 / validate $0.165; ticket total $0.439).
+Older tickets (TP-F91N … PMR-BZ4G) cannot be backfilled automatically (no record of their main session); if wanted, find the
+pi session whose start is just before the ticket's `run-start` in `~/.pi/agent/sessions/--<cwd>--/`, append a `main-session`
+journal line, and re-push.
+
+Also seen on that run: the trace was fully correct by id (79 spans, root + 3 phases + 2 reviewer sessions nested under
+validate, 0 missing parents, 0 tool errors). Worker spans carry `agent.type=reviewer` for BOTH the review and the deviation
+check (same agent definition), so trace session spans are named `<ref> - reviewer` twice while the cost metrics use the
+name-prefix roles `review` / `deviation check` (the assignment record had no `agent` for finished children). The dashboards
+normalise legacy capitalised roles (`Review` → `review`, `Deviation check` → `deviation check`, `main` → `orchestrator`) with
+`label_replace` so old and new data group together. A second push group `job="pi-flow-range"` exists for refs — that is the
+separate pi-flow-range project, not this pipeline.
