@@ -4,6 +4,7 @@
 // commands; spec-review/commands.ts owns the spec commands. What stays here:
 // the extension entrypoint, the enforcement interceptors, the flow loop
 // wiring, and /flow + /herdr-sync + /flow-view.
+import { randomBytes } from 'node:crypto'
 import { existsSync, promises as fs, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,7 +31,7 @@ import {
   setAvenSessionCwd,
   writeAvenNote,
 } from './aven/client.ts'
-import { resolveMode } from './config.ts'
+import { loadConfig, resolveMode } from './config.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { pushToGateway } from './flow/cost.ts'
 import { registerFlowCostCommand } from './flow/cost-command.ts'
@@ -68,6 +69,7 @@ import { readRunEvents, recordRunEvent, runStatePath } from './run-state.ts'
 import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
+import { registerTelemetry } from './telemetry/index.ts'
 import { registerCodeReviewTool } from './tools/code-review.ts'
 import { buildCodeReviewGatePrompt } from './tools/code-review-parse.ts'
 import { registerDeviationReviewTool } from './tools/deviation.ts'
@@ -340,6 +342,43 @@ export default function (pi: ExtensionAPI) {
         },
         token,
       )
+    },
+  })
+
+  // AIDEV-NOTE (PMR-R8AG): OTLP telemetry, disabled by default. The
+  // session_start probe resolves telemetry config (global + project merge,
+  // same loader as everything else); null = zero subscriptions, zero
+  // allocations. PI_FLOW_OTLP_TOKEN (env, never config) adds the bearer
+  // header. Export failures journal at most ONE note per process — flow
+  // runs must proceed identically with no backend at all.
+  registerTelemetry(pi, {
+    loadSettings: async (cwd) => {
+      const config = await loadConfig(cwd)
+      const telemetry = config.telemetry
+      if (telemetry === undefined || !telemetry.enabled) return null
+      const headers: Record<string, string> = { ...(telemetry.headers ?? {}) }
+      const token = process.env.PI_FLOW_OTLP_TOKEN
+      if (token !== undefined && token.length > 0) {
+        headers.authorization = `Bearer ${token}`
+      }
+      return { endpoint: telemetry.otlpEndpoint, headers }
+    },
+    env: process.env,
+    rng: { bytes: (n) => randomBytes(n) },
+    fetchImpl: async (url, init) => {
+      const response = await fetch(url, init)
+      return { status: response.status }
+    },
+    now: () => Date.now(),
+    onExportFailure: (error) => {
+      const ref = loop.activeRef()
+      if (ref === null) return
+      void journal({
+        kind: 'note',
+        at: new Date().toISOString(),
+        ref,
+        text: `telemetry export failed: ${error} (further failures silent)`,
+      })
     },
   })
 

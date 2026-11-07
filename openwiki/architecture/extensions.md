@@ -217,15 +217,19 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   (config boundary + work/personal mode), `tools/` (the gate tools: phase-complete, land, run-attempt, spec-approve,
   deviation, code-review + `code-review-parse.ts`),
   `flow/` (loop, args, attribution, label-gate, land-gate, ensure-labels, aven-resolve,
-  ref-kind, jira-ref, phase-command, phase-prompts, orchestrate),
+  ref-kind, jira-ref, phase-command, phase-prompts, orchestrate, cost + cost-command —
+  the `/flow-cost` per-ticket rollup),
   `spec-review/` (approve, aven-spec, publish, open-in-pane, picker),
   `brainstorm|plan|implement|validate|feedback/` (one subdir per command: args +
   prompt), `plan-tools/` (absorbed from pi-planning), `review/` +
   `sonarqube/` + `pr-quality/` + `shared/` (absorbed from pi-review),
-  `worktree/` (absorbed from pi-worktree), `run-state.ts`, `herdr/` (viewer,
+  `worktree/` (absorbed from pi-worktree), `run-state.ts`, `telemetry/`
+  (optional OTLP span export: attributes, exporter, event wiring — PMR-R8AG),
+  `herdr/` (viewer,
   sync).
 - **Commands:** `/brainstorm` (standalone), `/plan`, `/implement`, `/validate`, `/feedback`,
-  `/flow` (orchestrator loop), `/spec-review`, `/spec-publish`, `/review-spec`,
+  `/flow` (orchestrator loop), `/flow-cost <ref> [--push]` (per-ticket cost rollup),
+  `/spec-review`, `/spec-publish`, `/review-spec`,
   `/code-review <ref>` (human review gate), the absorbed `/review`, `/sonarqube`, `/pr-quality`, `/pr-watch`, plus the
   Herdr pair `/flow-view <ref>` and `/herdr-sync`.
 - **Tools (agent-callable gates):** `flow_phase_complete` (the ONLY way to write
