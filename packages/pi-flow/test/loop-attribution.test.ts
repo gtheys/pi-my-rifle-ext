@@ -121,3 +121,19 @@ test('attribution: superseding a run re-stamps for the new ref', async () => {
   await loop.start({ ...startInput(), ref: 'TP-2' })
   assert.equal(h.env.PI_FLOW_REF, 'TP-2')
 })
+
+test('onFlowEnvChange fires after start stamp, phase re-stamp and halt clear — with the env already updated', async () => {
+  const h = makeHarness(['planned'])
+  const seen: Array<string | undefined> = []
+  h.deps.onFlowEnvChange = () => {
+    seen.push(h.env.PI_FLOW_PHASE)
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled() // plan done -> implement re-stamp
+  h.labels = null // aven failure -> fail-closed halt -> clear
+  await loop.onSettled()
+  // start stamps twice (run stamp + first phase prompt); collapse repeats
+  const distinct = seen.filter((v, i) => i === 0 || v !== seen[i - 1])
+  assert.deepEqual(distinct, ['plan', 'implement', undefined])
+})

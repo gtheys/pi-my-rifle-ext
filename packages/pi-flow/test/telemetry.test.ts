@@ -746,3 +746,95 @@ test('flow_phase_complete closes the phase span; trailing spans still nest under
   assert.equal(bashes.length, 2)
   assert.ok(bashes.every((s) => s.parentSpanId === id))
 })
+
+test('syncFlowEnv: halt/clear closes + flushes the open phase with no further span', async () => {
+  const env: Record<string, string | undefined> = {}
+  const pi = new FakePi()
+  const bodies: string[] = []
+  const handle = registerTelemetry(fakePiCast(pi), {
+    loadSettings: async () => ({ endpoint: 'https://t:4478', headers: {} }),
+    env,
+    rng: seqRng,
+    fetchImpl: (async (_url: string, init: { body: string }) => {
+      bodies.push(init.body)
+      return { status: 200 }
+    }) as never,
+    now: () => 1_700_000_000_000,
+    onExportFailure: () => {},
+  })
+  pi.emit('session_start', { type: 'session_start', reason: 'startup' })
+  await tick()
+
+  // loop stamps the run start: root marker goes out immediately
+  env.PI_FLOW_REF = 'PMR-HALT'
+  env.PI_FLOW_PHASE = 'validate'
+  env.PI_FLOW_TRACEPARENT =
+    '00-0123456789abcdef0123456789abcdef-fedcba9876543210-01'
+  handle.syncFlowEnv()
+  await tick()
+  const names = () =>
+    bodies.flatMap((b) =>
+      (
+        JSON.parse(b).resourceSpans[0].scopeSpans[0].spans as Array<{
+          name: string
+        }>
+      ).map((s) => s.name),
+    )
+  assert.deepEqual(names(), ['flow PMR-HALT'])
+
+  // halt: loop clears the env; no tool ever called flow_phase_complete
+  delete env.PI_FLOW_REF
+  delete env.PI_FLOW_PHASE
+  delete env.PI_FLOW_TRACEPARENT
+  handle.syncFlowEnv()
+  await tick()
+  assert.deepEqual(names(), ['flow PMR-HALT', 'PMR-HALT - validate'])
+
+  // idempotent: another sync / shutdown does not re-send the phase span
+  handle.syncFlowEnv()
+  pi.emit('session_shutdown', { type: 'session_shutdown' })
+  await tick()
+  assert.equal(names().filter((n) => n === 'PMR-HALT - validate').length, 1)
+})
+
+test('syncFlowEnv: superseding run closes the old phase under the OLD root', async () => {
+  const env: Record<string, string | undefined> = {
+    PI_FLOW_REF: 'PMR-OLD',
+    PI_FLOW_PHASE: 'plan',
+    PI_FLOW_TRACEPARENT:
+      '00-0123456789abcdef0123456789abcdef-1111111111111111-01',
+  }
+  const pi = new FakePi()
+  const bodies: string[] = []
+  const handle = registerTelemetry(fakePiCast(pi), {
+    loadSettings: async () => ({ endpoint: 'https://t:4478', headers: {} }),
+    env,
+    rng: seqRng,
+    fetchImpl: (async (_url: string, init: { body: string }) => {
+      bodies.push(init.body)
+      return { status: 200 }
+    }) as never,
+    now: () => 1_700_000_000_000,
+    onExportFailure: () => {},
+  })
+  pi.emit('session_start', { type: 'session_start', reason: 'startup' })
+  await tick()
+  handle.syncFlowEnv()
+  env.PI_FLOW_REF = 'PMR-NEW'
+  env.PI_FLOW_TRACEPARENT =
+    '00-fedcba9876543210fedcba9876543210-2222222222222222-01'
+  handle.syncFlowEnv()
+  await tick()
+  const spans = bodies.flatMap(
+    (b) =>
+      JSON.parse(b).resourceSpans[0].scopeSpans[0].spans as Array<{
+        name: string
+        traceId: string
+        parentSpanId?: string
+      }>,
+  )
+  const oldPhase = spans.find((s) => s.name === 'PMR-OLD - plan')
+  assert.ok(oldPhase !== undefined)
+  assert.equal(oldPhase.traceId, '0123456789abcdef0123456789abcdef')
+  assert.equal(oldPhase.parentSpanId, '1111111111111111')
+})

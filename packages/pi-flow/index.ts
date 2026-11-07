@@ -112,7 +112,12 @@ export default function (pi: ExtensionAPI) {
     | ((message: string, level: 'info' | 'warning' | 'error') => void)
     | null = null
 
+  // late-bound: the telemetry handle only exists after registerTelemetry below
+  let syncTelemetryFlowEnv: (() => void) | null = null
   const loop = createFlowLoop({
+    onFlowEnvChange: () => {
+      if (syncTelemetryFlowEnv !== null) syncTelemetryFlowEnv()
+    },
     notify: (message, level) => {
       if (notifyUser !== null) {
         notifyUser(message, level)
@@ -351,7 +356,7 @@ export default function (pi: ExtensionAPI) {
   // allocations. PI_FLOW_OTLP_TOKEN (env, never config) adds the bearer
   // header. Export failures journal at most ONE note per process — flow
   // runs must proceed identically with no backend at all.
-  registerTelemetry(pi, {
+  const telemetry = registerTelemetry(pi, {
     loadSettings: async (cwd) => {
       const config = await loadConfig(cwd)
       const telemetry = config.telemetry
@@ -381,6 +386,7 @@ export default function (pi: ExtensionAPI) {
       })
     },
   })
+  syncTelemetryFlowEnv = telemetry.syncFlowEnv
 
   // AIDEV-NOTE: PMR-T8ZG — human entry point of the code-review gate. The
   // command resolves the ref and sends the gate prompt via sendUserMessage

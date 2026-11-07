@@ -119,6 +119,8 @@ export interface TelemetryState {
     spanId: string
     startNano: string
     attrs: SpanAttributes
+    /** root span id of ITS trace (rootParentId may already point at a newer trace when it closes). */
+    parentId: string | null
     /** already sent: kept as parent for trailing spans, never re-sent. */
     exported: boolean
   } | null
@@ -135,7 +137,20 @@ export interface TelemetryState {
  * (the probe itself is the only overhead). session_shutdown unsubscribes
  * and flushes whatever is left.
  */
-export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
+export interface TelemetryHandle {
+  /**
+   * Call after the flow loop stamps/re-stamps/clears the flow env (start,
+   * phase change, halt, pause, done, supersede). Closes + flushes a phase
+   * that just ended even though no further span ever fires, and flushes the
+   * flow root marker immediately. No-op while telemetry is off.
+   */
+  syncFlowEnv: () => void
+}
+
+export function registerTelemetry(
+  pi: ExtensionAPI,
+  deps: TelemetryDeps,
+): TelemetryHandle {
   const state: TelemetryState = {
     enabled: false,
     settings: null,
@@ -238,7 +253,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     state.buffer.push({
       traceId: open.traceId,
       spanId: open.spanId,
-      parentSpanId: state.rootParentId ?? undefined,
+      parentSpanId: open.parentId ?? undefined,
       name: open.name,
       kind: 1,
       startTimeUnixNano: open.startNano,
@@ -267,6 +282,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
       spanId: phaseSpanId(traceId, phase),
       startNano: toUnixNano(deps.now()),
       attrs: { ...state.flow, 'flow.span': 'phase' },
+      parentId: state.rootParentId,
       exported: false,
     }
   }
@@ -422,4 +438,13 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
         // config read failure = telemetry stays off, session proceeds
       })
   })
+
+  return {
+    syncFlowEnv: () => {
+      if (!state.enabled) return
+      const before = state.buffer.length
+      ensureTrace()
+      if (state.buffer.length > before) flush()
+    },
+  }
 }

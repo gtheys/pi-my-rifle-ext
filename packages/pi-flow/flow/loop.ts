@@ -55,6 +55,12 @@ export interface FlowLoopDeps {
   // re-stamped per phase, cleared on terminal transitions. Optional +
   // defaults to process.env so existing tests/consumers need no changes.
   env?: FlowEnv
+  /**
+   * Called after every flow-env stamp/re-stamp/clear (start, phase change,
+   * halt, pause, done) so observers (telemetry) can close the phase that
+   * just ended without waiting for another span.
+   */
+  onFlowEnvChange?: () => void
   // AIDEV-NOTE: PMR-VZEV — clears the landing state (authorized +
   // humanReviewPassed) on every start so stale authorization from a
   // superseded/prior flow cannot authorize a later landing.
@@ -122,6 +128,7 @@ class FlowLoopImpl implements FlowLoop {
     // superseding stamps over the old run's values. Invalid ref = abort
     // fail-closed: the journal filename would be unusable anyway.
     const stamped = stampFlowStart(this.env, input.ref, input.phase)
+    this.deps.onFlowEnvChange?.()
     if (!stamped.ok) {
       this.deps.notify(
         `/flow ${input.ref}: ${stamped.reason} — aborting.`,
@@ -188,6 +195,7 @@ class FlowLoopImpl implements FlowLoop {
           this.deps.notify(`/flow ${ref}: ${text}`, 'info')
           this.state = null
           clearFlowEnv(this.env)
+          this.deps.onFlowEnvChange?.()
           this.deps.setActiveRef?.(null)
           return
         }
@@ -251,6 +259,7 @@ class FlowLoopImpl implements FlowLoop {
     // AIDEV-NOTE: PMR-HFK1 — terminal transition: no child spawned from now
     // on may attribute to this (dead) run.
     clearFlowEnv(this.env)
+    this.deps.onFlowEnvChange?.()
     this.deps.setActiveRef?.(null)
   }
 
@@ -286,6 +295,7 @@ class FlowLoopImpl implements FlowLoop {
     // AIDEV-NOTE: PMR-HFK1 — phase transitions re-stamp the env so children
     // spawned in later phases attribute to the phase doing the work.
     stampFlowPhase(this.env, phase)
+    this.deps.onFlowEnvChange?.()
     if (phase === 'validate') this.state.validateStartedAt = now()
     this.deps.sendPrompt(result.prompt + suffix)
     this.state.awaitingOutcome = true
@@ -315,6 +325,7 @@ class FlowLoopImpl implements FlowLoop {
       this.deps.notify(`/flow ${ref}: all phases complete.`, 'info')
       this.state = null
       clearFlowEnv(this.env)
+      this.deps.onFlowEnvChange?.()
       this.deps.setActiveRef?.(null)
       return
     }
