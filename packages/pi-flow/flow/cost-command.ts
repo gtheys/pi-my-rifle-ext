@@ -15,9 +15,11 @@ import {
   collectMainSessionFiles,
   collectSpawnNotes,
   formatCostReport,
+  type PhaseDuration,
   type PushResult,
   parseSessionEntries,
   phaseDurations,
+  type WorkerRow,
 } from './cost.ts'
 
 export interface FlowCostDeps {
@@ -57,6 +59,59 @@ export function parseCostArgs(args: string): ParsedCostArgs {
   return { kind: 'ok', ref, push }
 }
 
+export type CostRollup =
+  | { kind: 'no-journal' }
+  | { kind: 'empty' }
+  | { kind: 'ok'; rows: WorkerRow[]; durations: PhaseDuration[] }
+
+/**
+ * Journal + session files -> cost rows. Shared by `/flow-cost` and the
+ * automatic push at run end, so both always agree. 'empty' = the journal has
+ * neither worker spawn notes nor a main-session record (pre-attribution run).
+ */
+export async function computeCostRollup(
+  ref: string,
+  deps: Pick<
+    FlowCostDeps,
+    'readRunEvents' | 'listAssignmentRecords' | 'readSessionFile'
+  >,
+): Promise<CostRollup> {
+  const events = await deps.readRunEvents(ref)
+  if (events === null) return { kind: 'no-journal' }
+  const notes = collectSpawnNotes(events)
+  const mainFiles = collectMainSessionFiles(events)
+  if (notes.length === 0 && mainFiles.length === 0) return { kind: 'empty' }
+  const assignments = deps.listAssignmentRecords()
+  // read every distinct session file once (coverage gaps become flags)
+  const wanted = new Set<string>()
+  for (const note of notes) {
+    if (note.sessionFile !== null) wanted.add(note.sessionFile)
+  }
+  for (const file of mainFiles) wanted.add(file)
+  const byChild = new Map<string, AssignmentRecord>()
+  for (const record of assignments) {
+    byChild.set(record.childId, record)
+  }
+  for (const note of notes) {
+    if (note.sessionFile !== null) continue
+    const record = byChild.get(note.childId)
+    if (record !== undefined && record.sessionFile.length > 0) {
+      wanted.add(record.sessionFile)
+    }
+  }
+  const sessions = new Map<string, readonly unknown[]>()
+  for (const file of wanted) {
+    const raw = deps.readSessionFile(file)
+    if (raw === null) continue
+    sessions.set(file, parseSessionEntries(raw))
+  }
+  const rows = [
+    ...buildMainRows(events, sessions),
+    ...buildWorkerRows(notes, assignments, sessions),
+  ]
+  return { kind: 'ok', rows, durations: phaseDurations(events) }
+}
+
 export function registerFlowCostCommand(
   pi: ExtensionAPI,
   deps: FlowCostDeps,
@@ -80,52 +135,22 @@ export function registerFlowCostCommand(
         )
         return
       }
-      const events = await deps.readRunEvents(parsed.ref)
-      if (events === null) {
+      const rollup = await computeCostRollup(parsed.ref, deps)
+      if (rollup.kind === 'no-journal') {
         ctx.ui.notify(
           `/flow-cost ${parsed.ref}: no run journal found — nothing to roll up.`,
           'warning',
         )
         return
       }
-      const notes = collectSpawnNotes(events)
-      const mainFiles = collectMainSessionFiles(events)
-      if (notes.length === 0 && mainFiles.length === 0) {
+      if (rollup.kind === 'empty') {
         ctx.ui.notify(
           `/flow-cost ${parsed.ref}: journal has no subagent spawn notes (pre-attribution run?) — nothing to roll up.`,
           'info',
         )
         return
       }
-      const assignments = deps.listAssignmentRecords()
-      // read every distinct session file once (coverage gaps become flags)
-      const wanted = new Set<string>()
-      for (const note of notes) {
-        if (note.sessionFile !== null) wanted.add(note.sessionFile)
-      }
-      for (const file of mainFiles) wanted.add(file)
-      const byChild = new Map<string, AssignmentRecord>()
-      for (const record of assignments) {
-        byChild.set(record.childId, record)
-      }
-      for (const note of notes) {
-        if (note.sessionFile !== null) continue
-        const record = byChild.get(note.childId)
-        if (record !== undefined && record.sessionFile.length > 0) {
-          wanted.add(record.sessionFile)
-        }
-      }
-      const sessions = new Map<string, readonly unknown[]>()
-      for (const file of wanted) {
-        const raw = deps.readSessionFile(file)
-        if (raw === null) continue
-        sessions.set(file, parseSessionEntries(raw))
-      }
-      const rows = [
-        ...buildMainRows(events, sessions),
-        ...buildWorkerRows(notes, assignments, sessions),
-      ]
-      const durations = phaseDurations(events)
+      const { rows, durations } = rollup
       ctx.ui.notify(formatCostReport(parsed.ref, rows, durations), 'info')
       if (parsed.push) {
         const result = await deps.push(

@@ -34,7 +34,11 @@ import {
 import { loadConfig, resolveMode } from './config.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { pushToGateway } from './flow/cost.ts'
-import { registerFlowCostCommand } from './flow/cost-command.ts'
+import { createCostAutoPush } from './flow/cost-autopush.ts'
+import {
+  type FlowCostDeps,
+  registerFlowCostCommand,
+} from './flow/cost-command.ts'
 import { resolveJiraEpic } from './flow/jira-ref.ts'
 import { lifecycleLabelMutation } from './flow/label-gate.ts'
 import { landingIntercept } from './flow/land-gate.ts'
@@ -115,10 +119,15 @@ export default function (pi: ExtensionAPI) {
   // main pi session file, refreshed on session_start; journaled per phase so
   // /flow-cost can attribute main-session cost (see flow/cost.ts)
   let mainSessionFile: string | null = null
+  // late-bound: automatic cost push, built after the cost deps below
+  let autoPushCost: ((ref: string) => Promise<void>) | null = null
   // late-bound: the telemetry handle only exists after registerTelemetry below
   let syncTelemetryFlowEnv: (() => void) | null = null
   const loop = createFlowLoop({
     getSessionFile: () => mainSessionFile,
+    onRunEnd: (ref) => {
+      if (autoPushCost !== null) void autoPushCost(ref)
+    },
     onFlowEnvChange: () => {
       if (syncTelemetryFlowEnv !== null) syncTelemetryFlowEnv()
     },
@@ -316,7 +325,7 @@ export default function (pi: ExtensionAPI) {
   // aggregates to the Pushgateway when PI_FLOW_PUSHGATEWAY_URL is set
   // (endpoint override + bearer secret = the two env-var exceptions the
   // config rules allow); push failures warn, never fail.
-  registerFlowCostCommand(pi, {
+  const costDeps: FlowCostDeps = {
     readRunEvents: (ref) => readRunEvents(getAgentDir(), ref),
     listAssignmentRecords: () => {
       const records: AssignmentRecord[] = []
@@ -352,6 +361,16 @@ export default function (pi: ExtensionAPI) {
         },
         token,
       )
+    },
+  }
+  registerFlowCostCommand(pi, costDeps)
+  // AIDEV-NOTE: cost metrics are pushed automatically when a run ends (done,
+  // halt, pause) — same env gate as `/flow-cost --push`; see flow/cost-autopush.ts.
+  autoPushCost = createCostAutoPush({
+    ...costDeps,
+    enabled: () => (process.env.PI_FLOW_PUSHGATEWAY_URL ?? '').length > 0,
+    notify: (message, level) => {
+      if (notifyUser !== null) notifyUser(`flow-cost ${message}`, level)
     },
   })
 

@@ -175,6 +175,8 @@ export PI_FLOW_PUSHGATEWAY_TOKEN=<token>
 
 Push failures print a warning and never fail the command; rerun `/flow-cost <ref> --push` any time to re-export or backfill.
 
+**Automatic push**: with `PI_FLOW_PUSHGATEWAY_URL` set, the same rollup is pushed for you whenever a `/flow` run ends — completed, halted, or paused for spec approval. A one-line notice confirms it (`flow-cost <ref>: cost metrics pushed to the pushgateway.`); a failure shows a warning with the retry command. With the URL unset nothing happens. Pushing is idempotent (the ref's metric group is replaced), so a resumed flow just refreshes the numbers. The rollup covers spawned workers and, for runs started after the `main-session` journal event existed, the main session split across plan / implement / validate.
+
 ### Aven ref resolution
 
 Aven resolves refs against the workspace inferred from the current

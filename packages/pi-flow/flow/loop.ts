@@ -67,6 +67,12 @@ export interface FlowLoopDeps {
    * phases (resumed flows may span several session files).
    */
   getSessionFile?: () => string | null
+  /**
+   * Called after every terminal transition (run complete, halt, pause for
+   * approval) with the ref that just ended, AFTER the flow env was cleared.
+   * Used to push cost metrics automatically.
+   */
+  onRunEnd?: (ref: string) => void
   // AIDEV-NOTE: PMR-VZEV — clears the landing state (authorized +
   // humanReviewPassed) on every start so stale authorization from a
   // superseded/prior flow cannot authorize a later landing.
@@ -203,6 +209,7 @@ class FlowLoopImpl implements FlowLoop {
           clearFlowEnv(this.env)
           this.deps.onFlowEnvChange?.()
           this.deps.setActiveRef?.(null)
+          this.deps.onRunEnd?.(ref)
           return
         }
       }
@@ -267,6 +274,7 @@ class FlowLoopImpl implements FlowLoop {
     clearFlowEnv(this.env)
     this.deps.onFlowEnvChange?.()
     this.deps.setActiveRef?.(null)
+    if (ref.length > 0) this.deps.onRunEnd?.(ref)
   }
 
   private async sendPhasePrompt(phase: Phase, suffix = ''): Promise<void> {
@@ -342,6 +350,7 @@ class FlowLoopImpl implements FlowLoop {
       clearFlowEnv(this.env)
       this.deps.onFlowEnvChange?.()
       this.deps.setActiveRef?.(null)
+      this.deps.onRunEnd?.(ref)
       return
     }
     await this.sendPhasePrompt(next.phase)
