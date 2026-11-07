@@ -66,8 +66,12 @@ variable, time range, and whether the panel filters on `status="error"`.
 - Real cause of the empty panel: it used the `traces` visualization, which renders ONE trace by id.
   A TraceQL search returns a table of traces, so the viz must be `table` (`tableType: "traces"`).
   Patched live with `gcx dashboards update`; verified by rendering the panel (8 rows incl. flow runs).
-- Rows show `<root span not yet received>` as Service: pi-flow parents spans on the flow traceparent's
-  span id but never exports that root span. Cosmetic; a per-run root span would fix it.
+- Rows showed `<root span not yet received>`: the flow loop reserves a root span id in `PI_FLOW_TRACEPARENT`
+  and every span parents on it, but nothing exported that span. Fixed in `telemetry/index.ts`: the MAIN process
+  (no `PI_SUBAGENT_NAME`) now exports `flow <ref>` once per flow trace (zero-length marker, see `shortcut:` note).
+  Traces recorded BEFORE this fix keep the placeholder forever (Tempo is append-only).
+- Panel query now `... | select(.flow.ref, .phase, .agent.name)`, so expanded rows show ref/phase/agent.
+- The row `flow PMR-DEMO` (13:03) is a synthetic verification trace I POSTed by hand, not a real run.
 - Rendering with `gcx dashboards snapshot piflow-health --since 7d --output-dir /tmp/x` works once the
   image renderer reaches Grafana without Authelia (it returned the login page before that was fixed).
   ALWAYS render the dashboard before declaring it fixed.
