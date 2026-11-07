@@ -328,7 +328,8 @@ test('telemetry enabled: tool + generation spans flush on shutdown', async () =>
   assert.equal(w.bodies.length, 1)
   const body = JSON.parse(w.bodies[0])
   const spans = body.resourceSpans[0].scopeSpans[0].spans
-  assert.equal(spans.length, 2)
+  // tool + generation + the flow root span the main process now exports
+  assert.equal(spans.length, 3)
   const toolSpan = spans.find((s: { name: string }) => s.name === 'tool bash')
   const genSpan = spans.find((s: { name: string }) => s.name === 'gen claude-4')
   assert.ok(toolSpan !== undefined)
@@ -464,7 +465,8 @@ test('flow env stamped AFTER session_start is picked up, and cleared afterwards'
   w.pi.emit('session_shutdown', { type: 'session_shutdown' })
   await tick()
 
-  const spans = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0].spans
+  const all = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0].spans
+  const spans = all.filter((s: { name: string }) => s.name === 'tool bash')
   assert.equal(spans.length, 2)
   const refOf = (span: {
     attributes: Array<{ key: string; value: { stringValue: string } }>
@@ -473,4 +475,53 @@ test('flow env stamped AFTER session_start is picked up, and cleared afterwards'
   assert.equal(spans[0].traceId, '0123456789abcdef0123456789abcdef')
   assert.equal(refOf(spans[1]), undefined)
   assert.notEqual(spans[1].traceId, '0123456789abcdef0123456789abcdef')
+})
+
+test('main process exports the flow root span once; workers do not', async () => {
+  const stamp = {
+    PI_FLOW_REF: 'PMR-ROOT',
+    PI_FLOW_PHASE: 'implement',
+    PI_FLOW_TRACEPARENT:
+      '00-0123456789abcdef0123456789abcdef-fedcba9876543210-01',
+  }
+  const run = async (env: Record<string, string | undefined>) => {
+    const w = await wired({ endpoint: 'https://t:4478' }, env)
+    w.pi.emit('session_start', { type: 'session_start', reason: 'startup' })
+    await tick()
+    for (const id of ['a', 'b']) {
+      w.pi.emit('tool_execution_start', {
+        type: 'tool_execution_start',
+        toolCallId: id,
+        toolName: 'bash',
+        args: {},
+      })
+      w.pi.emit('tool_execution_end', {
+        type: 'tool_execution_end',
+        toolCallId: id,
+        toolName: 'bash',
+        result: {},
+        isError: false,
+      })
+    }
+    w.pi.emit('session_shutdown', { type: 'session_shutdown' })
+    await tick()
+    return JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0]
+      .spans as Array<{
+      name: string
+      spanId: string
+      parentSpanId?: string
+    }>
+  }
+
+  const main = await run({ ...stamp })
+  const roots = main.filter((s) => s.name === 'flow PMR-ROOT')
+  assert.equal(roots.length, 1)
+  assert.equal(roots[0].spanId, 'fedcba9876543210')
+  assert.equal(roots[0].parentSpanId, undefined)
+  const tools = main.filter((s) => s.name === 'tool bash')
+  assert.equal(tools.length, 2)
+  assert.ok(tools.every((s) => s.parentSpanId === 'fedcba9876543210'))
+
+  const worker = await run({ ...stamp, PI_SUBAGENT_NAME: 'worker' })
+  assert.equal(worker.filter((s) => s.name.startsWith('flow')).length, 0)
 })

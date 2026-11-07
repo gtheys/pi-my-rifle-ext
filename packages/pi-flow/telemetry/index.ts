@@ -77,6 +77,8 @@ export interface TelemetryState {
   rootParentId: string | null
   /** traceId came from PI_FLOW_TRACEPARENT (so a later clear must reset it). */
   fromFlow: boolean
+  /** flow trace ids whose root span this (main) process already emitted. */
+  rootsEmitted: Set<string>
   flow: SpanAttributes
   openTools: Map<string, OpenToolSpan>
   buffer: TelemetrySpan[]
@@ -97,6 +99,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     traceId: null,
     rootParentId: null,
     fromFlow: false,
+    rootsEmitted: new Set(),
     flow: {},
     openTools: new Map(),
     buffer: [],
@@ -124,6 +127,35 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     })
   }
 
+  // AIDEV-NOTE: the flow loop reserves the root span id inside
+  // PI_FLOW_TRACEPARENT but nothing ever exported that span, so every trace
+  // showed "<root span not yet received>" in Grafana. The MAIN process
+  // (no PI_SUBAGENT_NAME — workers set it) exports the root once per flow
+  // trace, named "flow <ref>". shortcut: it is a zero-length marker emitted
+  // when the trace is first seen, not a span covering the whole run — upgrade
+  // if per-run duration on the root matters (Tempo derives trace duration
+  // from the child spans anyway).
+  const emitFlowRoot = (traceId: string, rootSpanId: string): void => {
+    if (state.rootsEmitted.has(traceId)) return
+    const worker = deps.env.PI_SUBAGENT_NAME
+    if (worker !== undefined && worker.length > 0) return
+    state.rootsEmitted.add(traceId)
+    const nowNano = toUnixNano(deps.now())
+    let name = 'flow'
+    const ref = state.flow['flow.ref']
+    if (ref !== undefined) name = `flow ${ref}`
+    state.buffer.push({
+      traceId,
+      spanId: rootSpanId,
+      name,
+      kind: 1,
+      startTimeUnixNano: nowNano,
+      endTimeUnixNano: nowNano,
+      attributes: { ...state.flow },
+      statusCode: 0,
+    })
+  }
+
   // AIDEV-NOTE: the flow loop stamps PI_FLOW_REF / PHASE / TRACEPARENT into
   // process.env at run START, which is after session_start in the main
   // session. Re-read the env on every span so late stamps (and phase
@@ -136,6 +168,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
       state.traceId = ctx.traceId
       state.rootParentId = ctx.parentId
       state.fromFlow = true
+      emitFlowRoot(ctx.traceId, ctx.parentId)
       return
     }
     if (state.traceId !== null && !state.fromFlow) return
