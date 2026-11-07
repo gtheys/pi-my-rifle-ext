@@ -52,6 +52,28 @@ const PiFlowConfigSchema = Type.Object({
               'Static extra headers for OTLP export. Secrets belong in env (PI_FLOW_OTLP_TOKEN), not config',
           }),
         ),
+        captureContent: Type.Optional(
+          Type.Union(
+            [
+              Type.Literal('off'),
+              Type.Literal('text'),
+              Type.Literal('tools'),
+              Type.Literal('all'),
+            ],
+            {
+              description:
+                'Content captured on spans (cumulative): off = metadata only (default), text = assistant text, tools = + tool calls the model made and tool input/output, all = + model reasoning. Captured content can contain secrets and lands in the trace backend',
+            },
+          ),
+        ),
+        maxContentChars: Type.Optional(
+          Type.Integer({
+            minimum: 100,
+            maximum: 100000,
+            description:
+              'Max characters per captured content attribute (default 2000). Tempo truncates attribute values beyond max_attribute_bytes (default 2048) silently — raise both together',
+          }),
+        ),
       },
       { description: 'Optional OTLP telemetry export (PMR-R8AG)' },
     ),

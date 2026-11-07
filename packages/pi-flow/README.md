@@ -90,6 +90,8 @@ handy for enabling telemetry per checkout instead of machine-wide.
 | `telemetry.enabled` | `boolean` | `false` | Master switch for OTLP telemetry. `false` or a missing `telemetry` block = the session probe subscribes to nothing, allocates nothing, makes no network calls |
 | `telemetry.otlpEndpoint` | `string` | unset (required with `telemetry`) | OTLP/HTTP base URL (e.g. `https://host:4478`); spans POST to `<endpoint>/v1/traces` |
 | `telemetry.headers` | `record<string, string>` | `{}` | Static extra headers for OTLP export. Secrets belong in env (`PI_FLOW_OTLP_TOKEN`), not config |
+| `telemetry.captureContent` | `"off" \| "text" \| "tools" \| "all"` | `"off"` | Content layers added to spans (cumulative): `off` metadata only, `text` assistant text, `tools` + tool calls and tool input/output, `all` + model reasoning. See [Capturing content](#capturing-content-in-spans) |
+| `telemetry.maxContentChars` | `integer` (100–100000) | `2000` | Max characters per captured content attribute; longer values end with `…[truncated N chars]`. Tempo drops anything past its `max_attribute_bytes` (default 2048) silently, so raise both together |
 
 ```json
 {
@@ -103,7 +105,7 @@ handy for enabling telemetry per checkout instead of machine-wide.
 
 ### Telemetry (OTLP traces)
 
-Optional and **disabled by default**. When enabled, every Pi session (the main session and each spawned worker, joined via the flow env stamps) exports metadata-only spans to any OTLP/HTTP receiver — Tempo, Alloy, the OTel collector, whatever speaks `/v1/traces`.
+Optional and **disabled by default**. When enabled, every Pi session (the main session and each spawned worker, joined via the flow env stamps) exports spans to any OTLP/HTTP receiver (metadata only unless you opt in to content capture below) — Tempo, Alloy, the OTel collector, whatever speaks `/v1/traces`.
 
 Enable it in the config file (no secrets in here):
 
@@ -126,9 +128,41 @@ export PI_FLOW_OTLP_TOKEN=<token>   # sent as "Authorization: Bearer <token>"
 
 Semantics (test-gated, see `telemetry/index.ts`):
 
-- **Metadata only**: spans carry `flow.ref` / `phase` / `agent.name` / `subtask` and GenAI convention attributes (`gen_ai.usage.input_tokens`, `gen_ai.request.model`, ...). Never prompt or completion bodies.
+- **Metadata only by default**: spans carry `flow.ref` / `phase` / `agent.name` / `subtask` and GenAI convention attributes (`gen_ai.usage.input_tokens`, `gen_ai.request.model`, ...). Prompt and completion bodies only appear when you set `telemetry.captureContent` (below).
 - **Trace joining**: spans attach to the run's W3C trace via `PI_FLOW_TRACEPARENT`, so one `/flow` run is one trace in the backend. Find it in Tempo with TraceQL `{ .flow.ref = "<REF>" }`.
 - **No-backend safety**: export is fire-and-forget with a 2.5s timeout. Failures write at most ONE journal note per process and then stay silent — no retry queue, no buffer growth, never a rejected promise into the host. Flows run identically with no receiver at all.
+
+#### Capturing content in spans
+
+By default spans never carry what the model said or what the tools did. `telemetry.captureContent` opts in, in three **cumulative** layers — each level includes everything below it:
+
+| Level | Adds | Span attributes |
+| --- | --- | --- |
+| `off` (default) | nothing — metadata only | — |
+| `text` | what the model answered | `gen_ai.completion` on `gen <model>` spans |
+| `tools` | + the tool calls the model made, + what each tool received and returned | `gen_ai.tool_calls` (JSON `[{name, arguments}]`) on gen spans; `tool.input` (JSON args) and `tool.output` (text result) on `tool <name>` spans |
+| `all` | + the model's reasoning | `gen_ai.reasoning` on gen spans (redacted thinking is skipped) |
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "otlpEndpoint": "https://tempo.example.com:4478",
+    "captureContent": "tools",
+    "maxContentChars": 2000
+  }
+}
+```
+
+Find the content in Grafana by opening a trace and clicking a span (Span attributes), or search it with TraceQL, e.g. `{ .gen_ai.completion =~ ".*migration.*" }` or `{ .tool.output =~ ".*ENOENT.*" }`.
+
+Things to know before turning it on:
+
+- **It can leak secrets.** Tool inputs/outputs and reasoning contain file contents, env dumps, tokens and personal data, and they land in the trace backend (Tempo keeps 14 days on the homelab) and everyone who can open Grafana can read them. There is **no redaction** — the level is the control. Start with `text`, and use `tools`/`all` only on a backend you trust.
+- **Per-attribute cap.** Each value is cut at `maxContentChars` (default 2000) and ends with `…[truncated N chars]`. Tempo truncates attribute values beyond its `max_attribute_bytes` (default 2048) **silently**, so a larger `maxContentChars` only helps if you raise Tempo's limit too (Tempo exposes `tempo_distributor_attributes_truncated_total` to see it happening).
+- **Per span, not per run.** Content is on the individual gen/tool spans. Phase, root and worker-session spans stay metadata-only.
+- **Applies to every process.** Workers read the same config, so a worker's gen and tool spans carry content at the same level.
+- **Restart Pi** after changing the setting; the config is read once per session.
 
 ### Cost rollup push (`/flow-cost --push`)
 

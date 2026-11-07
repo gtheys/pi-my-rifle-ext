@@ -20,6 +20,14 @@ import {
   toolSpanAttributes,
 } from './attributes.ts'
 import {
+  type ContentLevel,
+  DEFAULT_MAX_CONTENT_CHARS,
+  generationContentAttributes,
+  levelIncludes,
+  toolInputText,
+  toolOutputText,
+} from './content.ts'
+import {
   exportSpans,
   type TelemetryFetch,
   type TelemetrySpan,
@@ -29,6 +37,10 @@ import {
 export interface TelemetrySettings {
   endpoint: string
   headers: Record<string, string>
+  /** Content captured on spans; absent = 'off' (metadata only). */
+  captureContent?: ContentLevel
+  /** Per-attribute cap for captured content; absent = DEFAULT_MAX_CONTENT_CHARS. */
+  maxContentChars?: number
 }
 
 export interface TelemetryDeps {
@@ -79,6 +91,8 @@ interface OpenToolSpan {
   startUnixNano: string
   parentSpanId: string | undefined
   attributes: SpanAttributes
+  /** captured tool input (level tools+), empty otherwise */
+  input: string
 }
 
 function toUnixNano(ms: number): string {
@@ -186,6 +200,22 @@ export function registerTelemetry(
       deps.onExportFailure(outcome.error ?? 'unknown export failure')
     })
   }
+
+  const contentLevel = (): ContentLevel =>
+    state.settings?.captureContent ?? 'off'
+  const toolContentAttributes = (
+    input: string,
+    result: unknown,
+  ): SpanAttributes => {
+    const attrs: SpanAttributes = {}
+    if (!levelIncludes(contentLevel(), 'tools')) return attrs
+    if (input.length > 0) attrs['tool.input'] = input
+    const output = toolOutputText(result, contentMax())
+    if (output.length > 0) attrs['tool.output'] = output
+    return attrs
+  }
+  const contentMax = (): number =>
+    state.settings?.maxContentChars ?? DEFAULT_MAX_CONTENT_CHARS
 
   // AIDEV-NOTE: the flow loop reserves the root span id inside
   // PI_FLOW_TRACEPARENT but nothing ever exported that span, so every trace
@@ -341,6 +371,10 @@ export function registerTelemetry(
       pi.on('tool_execution_start', (event) => {
         if (!state.enabled) return
         ensureTrace()
+        let input = ''
+        if (levelIncludes(contentLevel(), 'tools')) {
+          input = toolInputText(event.args, contentMax())
+        }
         state.openTools.set(event.toolCallId, {
           spanId: randomSpanId(deps.rng),
           name: `tool ${event.toolName}`,
@@ -350,6 +384,7 @@ export function registerTelemetry(
             toolName: event.toolName,
             isError: false,
           }),
+          input,
         })
       }),
     )
@@ -372,10 +407,13 @@ export function registerTelemetry(
           kind: 1,
           startTimeUnixNano: open.startUnixNano,
           endTimeUnixNano: toUnixNano(deps.now()),
-          attributes: toolSpanAttributes(state.flow, {
-            toolName: event.toolName,
-            isError: event.isError,
-          }),
+          attributes: {
+            ...toolSpanAttributes(state.flow, {
+              toolName: event.toolName,
+              isError: event.isError,
+            }),
+            ...toolContentAttributes(open.input, event.result),
+          },
           statusCode,
           ...(statusMessage !== undefined ? { statusMessage } : {}),
         }
@@ -404,11 +442,18 @@ export function registerTelemetry(
           kind: 1,
           startTimeUnixNano: toUnixNano(endMs),
           endTimeUnixNano: toUnixNano(endMs),
-          attributes: generationSpanAttributes(state.flow, {
-            model: usage.model,
-            inputTokens: usage.input,
-            outputTokens: usage.output,
-          }),
+          attributes: {
+            ...generationSpanAttributes(state.flow, {
+              model: usage.model,
+              inputTokens: usage.input,
+              outputTokens: usage.output,
+            }),
+            ...generationContentAttributes(
+              contentLevel(),
+              contentMax(),
+              event.message,
+            ),
+          },
           statusCode: 0,
         })
         if (state.buffer.length >= FLUSH_THRESHOLD) flush()

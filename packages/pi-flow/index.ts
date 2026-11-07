@@ -366,7 +366,12 @@ export default function (pi: ExtensionAPI) {
       if (token !== undefined && token.length > 0) {
         headers.authorization = `Bearer ${token}`
       }
-      return { endpoint: telemetry.otlpEndpoint, headers }
+      return {
+        endpoint: telemetry.otlpEndpoint,
+        headers,
+        captureContent: telemetry.captureContent,
+        maxContentChars: telemetry.maxContentChars,
+      }
     },
     env: process.env,
     rng: { bytes: (n) => randomBytes(n) },

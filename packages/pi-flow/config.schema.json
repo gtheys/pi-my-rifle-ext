@@ -41,6 +41,17 @@
           "type": "object",
           "description": "Static extra headers for OTLP export. Secrets belong in env (PI_FLOW_OTLP_TOKEN), not config",
           "additionalProperties": { "type": "string" }
+        },
+        "captureContent": {
+          "type": "string",
+          "enum": ["off", "text", "tools", "all"],
+          "description": "Content captured on spans (cumulative): off = metadata only (default), text = assistant text, tools = + tool calls the model made and tool input/output, all = + model reasoning. Captured content can contain secrets and lands in the trace backend"
+        },
+        "maxContentChars": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 100000,
+          "description": "Max characters per captured content attribute (default 2000). Tempo truncates attribute values beyond max_attribute_bytes (default 2048) silently — raise both together"
         }
       },
       "required": ["enabled", "otlpEndpoint"],

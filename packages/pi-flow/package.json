@@ -33,6 +33,7 @@
     "flow/cost.ts",
     "flow/cost-command.ts",
     "telemetry/attributes.ts",
+    "telemetry/content.ts",
     "telemetry/exporter.ts",
     "telemetry/index.ts",
     "flow/ensure-labels.ts",
