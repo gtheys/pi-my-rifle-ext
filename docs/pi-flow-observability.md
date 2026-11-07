@@ -194,6 +194,16 @@ falls inside the selected time range (`and on (ref) (push_time_seconds >= time()
 + `groupingToMatrix` stacked barchart (durations are wall-clock phase-start→complete and INCLUDE waiting for the human, so a
 long validate bar is usually review/approval wait).
 
+`piflow-health` `panel-5` "Tool failures": Tempo table (`tableType: spans`) of
+`{ .tool.error = "true" && .flow.ref =~ "$ref" } | select(.flow.ref, .phase, .agent.name, .gen_ai.tool.name, .tool.output)`,
+one row per failed tool span; the **Span ID is the link** (opens the trace with that span). Columns: Start time, Ticket,
+Phase, Tool, Agent, Duration, Span ID, and Tool output (only when `captureContent` is `tools`/`all`). Failures from plain
+interactive sessions (no `flow.ref`) are deliberately not listed — drop the `.flow.ref` clause to include them (4 existed
+when this was built). Spans mark failures twice: attribute `tool.error="true"` and OTLP status = ERROR; the same
+limits as any Tempo search apply (a trace split by `trace_idle_period` can hide matching spans for ~3 min).
+The old error-rate / failures-by-tool panels (`panel-1`, `panel-2`) read the pushed `pi_flow_tool_calls_total{status="error"}`
+metric, so they are empty until `/flow-cost` has pushed a ticket that had a failure.
+
 Dashboard-editing gotcha: `gcx dashboards update` needs the CURRENT `metadata.resourceVersion`; a stale file is rejected
 (no output). Always `gcx dashboards get` immediately before editing and check for `"action":"updated"`.
 

@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow health dashboard (PMR-XPVE M5): tool error rate, failures, phase durations, Tempo trace search by flow.ref",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T08:34:29Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T08:36:45Z"
     },
     "creationTimestamp": "2026-11-07T02:57:54Z",
-    "generation": 7,
+    "generation": 9,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208897950658560"
     },
     "name": "piflow-health",
     "namespace": "default",
-    "resourceVersion": "1794040469463019",
+    "resourceVersion": "1794040605783020",
     "uid": "33585720-5e94-4275-82d5-c2bd439f777d"
   },
   "spec": {
@@ -382,6 +382,115 @@
             "version": ""
           }
         }
+      },
+      "panel-5": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "tempo"
+                      },
+                      "group": "tempo",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "limit": 50,
+                        "query": "{ .tool.error = \"true\" \u0026\u0026 .flow.ref =~ \"$ref\" } | select(.flow.ref, .phase, .agent.name, .gen_ai.tool.name, .tool.output)",
+                        "queryType": "traceql",
+                        "spss": 20,
+                        "tableType": "spans"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Trace ID": true,
+                        "Trace Name": true,
+                        "Trace Service": true
+                      },
+                      "indexByName": {
+                        "Agent": 4,
+                        "Duration": 7,
+                        "Phase": 2,
+                        "Span ID": 6,
+                        "Start time": 0,
+                        "Ticket": 1,
+                        "Tool": 3,
+                        "Tool output": 5
+                      },
+                      "renameByName": {
+                        "agent.name": "Agent",
+                        "flow.ref": "Ticket",
+                        "gen_ai.tool.name": "Tool",
+                        "phase": "Phase",
+                        "tool.output": "Tool output"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Start time"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Every failed tool call in a flow (span tool.error = true), newest first, with the ticket, phase and tool. Click the Span ID to open the trace tree with the failing span highlighted. \"Tool output\" shows the error text only when telemetry.captureContent is \"tools\" or \"all\". Failures from plain interactive sessions (no flow) are not listed. Empty = no tool call failed in the selected range.",
+          "id": 5,
+          "links": [],
+          "title": "Tool failures (click the Span ID to open the trace)",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    }
+                  },
+                  "noValue": "–"
+                },
+                "overrides": []
+              },
+              "options": {
+                "cellHeight": "sm",
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
       }
     },
     "layout": {
@@ -438,6 +547,19 @@
               "width": 12,
               "x": 12,
               "y": 9
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-5"
+              },
+              "height": 8,
+              "width": 24,
+              "x": 0,
+              "y": 18
             }
           }
         ]
