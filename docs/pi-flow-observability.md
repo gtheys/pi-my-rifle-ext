@@ -188,6 +188,10 @@ Backups: [`pi-flow-orchestrator.dashboard.json`](pi-flow-orchestrator.dashboard.
 * First insight it surfaced: deviation checks run a 29% cache hit ratio vs 75% for reviews (cost lever).
 * Old tickets (before main-session tracking) show "–" for orchestrator columns but their subagent cost and combined total.
 * Table header "Ticket total (orchestrator + subagents)" has a 300 px column width override (it was truncated).
+* **Navigation:** `piflow-health`, `piflow-orchestrator`, `piflow-subagents` and `piflow-range` each carry dashboard links to the
+  other three (header buttons; `type: link`, url `/grafana/d/<uid>`, `includeVars` + `keepTime` so the `ref` and time range
+  follow you). The superseded `piflow-cost` is not linked. Links live in `spec.links` of the v2 dashboard; the Grafana
+  sub-path (`/grafana/`) must be part of the url. When adding a dashboard, add it to every other dashboard's links too.
 
 ### 6b. (superseded by 6a) Cost dashboard (`piflow-cost`) and range dashboard (`piflow-range`)
 

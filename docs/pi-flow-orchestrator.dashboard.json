@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow orchestrator cost (main session only)",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T09:18:13Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T09:20:00Z"
     },
     "creationTimestamp": "2026-11-07T09:17:27Z",
-    "generation": 2,
+    "generation": 3,
     "labels": {
       "grafana.app/deprecatedInternalID": "2304416950628352"
     },
     "name": "piflow-orchestrator",
     "namespace": "default",
-    "resourceVersion": "1794043093320000",
+    "resourceVersion": "1794043200643015",
     "uid": "50c196cb-9e10-41d9-a6a8-80455017720d"
   },
   "spec": {
@@ -1283,7 +1283,44 @@
         ]
       }
     },
-    "links": [],
+    "links": [
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Health",
+        "tooltip": "Tool failures, traces, phase durations",
+        "type": "link",
+        "url": "/grafana/d/piflow-health"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Subagent cost",
+        "tooltip": "Workers, reviewers, scouts: cost per role and session",
+        "type": "link",
+        "url": "/grafana/d/piflow-subagents"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Range: cost vs score",
+        "tooltip": "Cost versus score across a range of tickets",
+        "type": "link",
+        "url": "/grafana/d/piflow-range"
+      }
+    ],
     "liveNow": false,
     "preload": false,
     "tags": [

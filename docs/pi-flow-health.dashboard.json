@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow health dashboard (PMR-XPVE M5): tool error rate, failures, phase durations, Tempo trace search by flow.ref",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T08:36:45Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T09:20:00Z"
     },
     "creationTimestamp": "2026-11-07T02:57:54Z",
-    "generation": 9,
+    "generation": 10,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208897950658560"
     },
     "name": "piflow-health",
     "namespace": "default",
-    "resourceVersion": "1794040605783020",
+    "resourceVersion": "1794043200535994",
     "uid": "33585720-5e94-4275-82d5-c2bd439f777d"
   },
   "spec": {
@@ -565,7 +565,44 @@
         ]
       }
     },
-    "links": [],
+    "links": [
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Orchestrator cost",
+        "tooltip": "Main session cost per ticket and phase",
+        "type": "link",
+        "url": "/grafana/d/piflow-orchestrator"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Subagent cost",
+        "tooltip": "Workers, reviewers, scouts: cost per role and session",
+        "type": "link",
+        "url": "/grafana/d/piflow-subagents"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Range: cost vs score",
+        "tooltip": "Cost versus score across a range of tickets",
+        "type": "link",
+        "url": "/grafana/d/piflow-range"
+      }
+    ],
     "liveNow": false,
     "preload": false,
     "tags": [

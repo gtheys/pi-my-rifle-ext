@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow subagent cost (separate sessions only)",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T09:18:13Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T09:20:00Z"
     },
     "creationTimestamp": "2026-11-07T09:17:27Z",
-    "generation": 2,
+    "generation": 3,
     "labels": {
       "grafana.app/deprecatedInternalID": "2304417441361920"
     },
     "name": "piflow-subagents",
     "namespace": "default",
-    "resourceVersion": "1794043093426014",
+    "resourceVersion": "1794043200747983",
     "uid": "22a436ec-f81d-4027-9351-ea1553a5977f"
   },
   "spec": {
@@ -1597,7 +1597,44 @@
         ]
       }
     },
-    "links": [],
+    "links": [
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Health",
+        "tooltip": "Tool failures, traces, phase durations",
+        "type": "link",
+        "url": "/grafana/d/piflow-health"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Orchestrator cost",
+        "tooltip": "Main session cost per ticket and phase",
+        "type": "link",
+        "url": "/grafana/d/piflow-orchestrator"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": true,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Range: cost vs score",
+        "tooltip": "Cost versus score across a range of tickets",
+        "type": "link",
+        "url": "/grafana/d/piflow-range"
+      }
+    ],
     "liveNow": false,
     "preload": false,
     "tags": [
