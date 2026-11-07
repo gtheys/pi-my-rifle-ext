@@ -49,6 +49,7 @@ Failure behavior:
 | `/sonarqube [pr]` | SonarCloud coverage gaps + quality issues for a PR, analysis-only (absorbed from pi-review). Requires `SONARQUBE_TOKEN`. |
 | `/pr-quality [pr]` | Unresolved GitHub review threads + SonarCloud issues in one triage pass (absorbed from pi-review). |
 | `/pr-watch` | Background-polls PR checks; auto-triggers `/pr-quality` when they complete (absorbed from pi-review). |
+| `/flow-cost <ref> [--push]` | Per-ticket cost rollup: replays the run journal, attributes each spawned session's token usage and tool calls to agent/subtask, prints the table. `--push` additionally exports the rollup as Prometheus metrics to a Pushgateway (env-gated, see below); failures warn and never fail the command. Reruns any time — it replays the journal, so it doubles as the backfill path. |
 | `/herdr-sync` | Links this repo as a Herdr plugin (idempotent, explicit-only). |
 | `/flow-view <ref> [placement]` | Opens/focuses a Herdr pane rendering the run-state journal for a ref. |
 | `/flow <ref>` | Extension-owned loop: injects one phase prompt at a time (same builders the phase commands use, gates intact), then advances when the phase turn settles and its completion label has landed; missing label → halt note + stop. Resume = first phase whose completion label is missing. Work mode + Jira ID: find-or-create the local epic (`jira-ref` metadata, dep-linked to the synced ticket) and run on the epic ref. |
@@ -78,12 +79,17 @@ Agent-callable tools registered by pi-flow:
 ## Configuration
 
 Global config lives at `~/.pi/agent/pi-flow/config.json` (schema:
-[`config.schema.json`](config.schema.json)).
+[`config.schema.json`](config.schema.json)). A project-local
+`<repo>/.pi/pi-flow/config.json` is merged on top (project wins per key) —
+handy for enabling telemetry per checkout instead of machine-wide.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `workRoots` | `string[]` | `[]` | Absolute path prefixes; a git toplevel under any prefix is `work` mode |
 | `avenWorkspace` | `string` | unset | Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and the search fallback) |
+| `telemetry.enabled` | `boolean` | `false` | Master switch for OTLP telemetry. `false` or a missing `telemetry` block = the session probe subscribes to nothing, allocates nothing, makes no network calls |
+| `telemetry.otlpEndpoint` | `string` | unset (required with `telemetry`) | OTLP/HTTP base URL (e.g. `https://host:8478`); spans POST to `<endpoint>/v1/traces` |
+| `telemetry.headers` | `record<string, string>` | `{}` | Static extra headers for OTLP export. Secrets belong in env (`PI_FLOW_OTLP_TOKEN`), not config |
 
 ```json
 {
@@ -94,6 +100,46 @@ Global config lives at `~/.pi/agent/pi-flow/config.json` (schema:
   "avenWorkspace": "personal"
 }
 ```
+
+### Telemetry (OTLP traces)
+
+Optional and **disabled by default**. When enabled, every Pi session (the main session and each spawned worker, joined via the flow env stamps) exports metadata-only spans to any OTLP/HTTP receiver — Tempo, Alloy, the OTel collector, whatever speaks `/v1/traces`.
+
+Enable it in the config file (no secrets in here):
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "otlpEndpoint": "https://tempo.example.com:8478"
+  }
+}
+```
+
+Set the bearer token in the shell that starts Pi, never in config:
+
+```sh
+export PI_FLOW_OTLP_TOKEN=<token>   # sent as "Authorization: Bearer <token>"
+```
+
+**Disabling again**: set `"enabled": false`, or delete the `telemetry` block entirely. Either way the session probe subscribes to nothing and allocates nothing — telemetry leaves zero footprint until the next Pi restart, which fully forgets the settings.
+
+Semantics (test-gated, see `telemetry/index.ts`):
+
+- **Metadata only**: spans carry `flow.ref` / `phase` / `agent.name` / `subtask` and GenAI convention attributes (`gen_ai.usage.input_tokens`, `gen_ai.request.model`, ...). Never prompt or completion bodies.
+- **Trace joining**: spans attach to the run's W3C trace via `PI_FLOW_TRACEPARENT`, so one `/flow` run is one trace in the backend. Find it in Tempo with TraceQL `{ .flow.ref = "<REF>" }`.
+- **No-backend safety**: export is fire-and-forget with a 2.5s timeout. Failures write at most ONE journal note per process and then stay silent — no retry queue, no buffer growth, never a rejected promise into the host. Flows run identically with no receiver at all.
+
+### Cost rollup push (`/flow-cost --push`)
+
+The offline `/flow-cost <ref>` table needs nothing but the local journal. The optional `--push` export to a Prometheus Pushgateway is env-gated:
+
+```sh
+export PI_FLOW_PUSHGATEWAY_URL=https://pushgateway.example.com:8479
+export PI_FLOW_PUSHGATEWAY_TOKEN=<token>
+```
+
+Push failures print a warning and never fail the command; rerun `/flow-cost <ref> --push` any time to re-export or backfill.
 
 ### Aven ref resolution
 
