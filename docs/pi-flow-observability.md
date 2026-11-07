@@ -171,7 +171,10 @@ therefore one row per ticket because worker names embed the ref, e.g. `Deviation
 queries over `label_replace(sum by (ref, agent, session)(pi_flow_run_cost_usd{ref=~"$ref"}), "role", "$1", "agent", "^([^:]*).*")`
 — `max by (role)`, `avg by (role)`, `quantile by (role)(0.5, …)` — joined on `role` (`joinByField`), renamed
 Highest/Average/Median (`organize`), filtered, sorted by Highest; horizontal grouped `barchart` (orange/blue/green), tooltip `multi`.
-Role = agent name before the first colon (same rule as the trace session-span names); a session = one worker or one
+Role = agent name before the first colon (same rule as the trace session-span names), and the pushed `agent="main"` rows are
+relabelled **`orchestrator`** (a second `label_replace` in the queries) — the main pi session that runs the flow, one session per
+flow run (verified with synthetic refs: highest/avg/median matched). Its bars dwarf the workers' on a shared axis (it does
+plan + implement + validate itself); a session = one worker or one
 main-session run (the per-phase main rows of one session are summed by `sum by (… session)` first). Grafana cannot draw
 per-row markers on one bar, so avg/median are sibling bars, not ticks. Checked against raw series: 9 sessions per role,
 values identical to the chart.

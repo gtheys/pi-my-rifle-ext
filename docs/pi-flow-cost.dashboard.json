@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow cost dashboard (PMR-XPVE M5): cost by ref/phase/agent/subtask + token totals from Pushgateway metrics",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T08:17:58Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T08:19:45Z"
     },
     "creationTimestamp": "2026-11-07T02:57:43Z",
-    "generation": 4,
+    "generation": 5,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208851649736704"
     },
     "name": "piflow-cost",
     "namespace": "default",
-    "resourceVersion": "1794039478596013",
+    "resourceVersion": "1794039585340999",
     "uid": "4eecb14f-edff-41d0-b004-99f46d988628"
   },
   "spec": {
@@ -410,7 +410,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "max by (role) (label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"))",
+                        "expr": "max by (role) (label_replace(label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"role\", \"orchestrator\", \"role\", \"^main$\"))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -432,7 +432,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "avg by (role) (label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"))",
+                        "expr": "avg by (role) (label_replace(label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"role\", \"orchestrator\", \"role\", \"^main$\"))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -454,7 +454,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "quantile by (role) (0.5, label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"))",
+                        "expr": "quantile by (role) (0.5, label_replace(label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"role\", \"orchestrator\", \"role\", \"^main$\"))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -520,7 +520,7 @@
               ]
             }
           },
-          "description": "Per agent ROLE (name before the colon, so \"Deviation check: TP-1\" and \"Deviation check: TP-2\" are one role). A session is one worker, or one main-session run. Highest = most expensive single session; average and median are over the same sessions. Sessions come from the pushed cost metrics (automatic at run end).",
+          "description": "Per agent ROLE (name before the colon, so \"Deviation check: TP-1\" and \"Deviation check: TP-2\" are one role). A session is one worker, or one main-session run. Highest = most expensive single session; average and median are over the same sessions. Sessions come from the pushed cost metrics (automatic at run end). The \"orchestrator\" role is the main pi session that runs the flow (its cost per flow run, split across phases and summed).",
           "id": 5,
           "links": [],
           "title": "Cost per agent role: highest, average and median session ($ref)",
