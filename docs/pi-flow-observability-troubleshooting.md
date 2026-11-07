@@ -75,3 +75,15 @@ variable, time range, and whether the panel filters on `status="error"`.
 - Rendering with `gcx dashboards snapshot piflow-health --since 7d --output-dir /tmp/x` works once the
   image renderer reaches Grafana without Authelia (it returned the login page before that was fixed).
   ALWAYS render the dashboard before declaring it fixed.
+
+## Trace shape (after 2026-11-07 fixes)
+
+```
+flow <ref>                       main process, zero-length marker, id = PI_FLOW_TRACEPARENT span id
+├─ tool bash / gen <model>       main-session spans (flow.ref, phase attrs)
+└─ <agent> · <phase>             one per worker, exported at worker shutdown
+   └─ tool … / gen …             worker spans
+```
+
+Known limits: a crashed worker never exports its session span (its children then parent on a missing id,
+flow root still names the trace); traces recorded before the fixes keep `<root span not yet received>`.
