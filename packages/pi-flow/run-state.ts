@@ -448,3 +448,37 @@ export async function readRunState(
     return null
   }
 }
+
+/**
+ * Read a run's journal events in order (PMR-EA8X). The journal is the
+ * evidence record — /flow-cost rolls up from these events. Null when the
+ * ref is invalid or no journal exists; torn tail lines are skipped.
+ */
+export async function readRunEvents(
+  agentDir: string,
+  ref: string,
+  io: {
+    readFile: (p: string) => Promise<string>
+  } = { readFile: (p) => fs.readFile(p, 'utf8') },
+): Promise<FlowRunEvent[] | null> {
+  const statePath = runStatePath(agentDir, ref)
+  if (statePath === null) return null
+  const journalPath = `${statePath.slice(0, -'.json'.length)}.journal.jsonl`
+  let raw: string
+  try {
+    raw = await io.readFile(journalPath)
+  } catch {
+    return null
+  }
+  const events: FlowRunEvent[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0) continue
+    try {
+      events.push(JSON.parse(trimmed) as FlowRunEvent)
+    } catch {
+      // torn tail line — skip
+    }
+  }
+  return events
+}

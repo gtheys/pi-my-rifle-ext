@@ -62,6 +62,9 @@ export interface FlowSpawnInfo {
   name: string
   /** Plan-task ref when the spawn maps 1:1 to one; absent for scouts. */
   subtask?: string
+  /** Child session jsonl path (PMR-EA8X): journals it so /flow-cost can
+   * resolve sessions without guessing from the assignments dir. */
+  sessionFile?: string
 }
 
 export type FlowSpawnListener = (info: FlowSpawnInfo) => void

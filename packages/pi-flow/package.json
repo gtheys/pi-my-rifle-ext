@@ -30,6 +30,8 @@
     "flow/attribution.ts",
     "flow/aven-resolve-exec.ts",
     "flow/aven-resolve.ts",
+    "flow/cost.ts",
+    "flow/cost-command.ts",
     "flow/ensure-labels.ts",
     "flow/jira-ref.ts",
     "flow/label-gate.ts",
