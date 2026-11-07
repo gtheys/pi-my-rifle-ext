@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow cost dashboard (PMR-XPVE M5): cost by ref/phase/agent/subtask + token totals from Pushgateway metrics",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T08:00:44Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T08:17:58Z"
     },
     "creationTimestamp": "2026-11-07T02:57:43Z",
-    "generation": 3,
+    "generation": 4,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208851649736704"
     },
     "name": "piflow-cost",
     "namespace": "default",
-    "resourceVersion": "1794038444946983",
+    "resourceVersion": "1794039478596013",
     "uid": "4eecb14f-edff-41d0-b004-99f46d988628"
   },
   "spec": {
@@ -410,47 +410,202 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (agent) (pi_flow_run_cost_usd{ref=~\"$ref\"})",
-                        "legendFormat": "{{agent}}"
+                        "expr": "max by (role) (label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
                       },
                       "version": "v0"
                     },
                     "refId": "A"
                   }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "avg by (role) (label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "quantile by (role) (0.5, label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
                 }
               ],
               "queryOptions": {},
-              "transformations": []
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "role",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "renameByName": {
+                        "Value #A": "Highest",
+                        "Value #B": "Average",
+                        "Value #C": "Median"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "pattern": "^(role|Highest|Average|Median)$"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Highest"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
             }
           },
+          "description": "Per agent ROLE (name before the colon, so \"Deviation check: TP-1\" and \"Deviation check: TP-2\" are one role). A session is one worker, or one main-session run. Highest = most expensive single session; average and median are over the same sessions. Sessions come from the pushed cost metrics (automatic at run end).",
           "id": 5,
           "links": [],
-          "title": "Total cost by agent ($ref)",
+          "title": "Cost per agent role: highest, average and median session ($ref)",
           "vizConfig": {
-            "group": "bargauge",
+            "group": "barchart",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
                 "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1
+                  },
+                  "decimals": 4,
                   "unit": "currencyUSD"
                 },
-                "overrides": []
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Highest"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "orange",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Average"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "blue",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Median"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "green",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  }
+                ]
               },
               "options": {
-                "displayMode": "gradient",
-                "minVizHeight": 10,
-                "minVizWidth": 0,
-                "namePlacement": "auto",
-                "orientation": "horizontal",
-                "reduceOptions": {
-                  "calcs": [
-                    "lastNotNull"
-                  ],
-                  "fields": "",
-                  "values": false
+                "barWidth": 0.8,
+                "groupWidth": 0.75,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
                 },
-                "showUnfilled": true,
-                "sizing": "auto"
+                "orientation": "horizontal",
+                "showValue": "auto",
+                "stacking": "none",
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "none"
+                },
+                "xField": "role"
               }
             },
             "version": ""

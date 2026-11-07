@@ -156,7 +156,7 @@ Three pi-flow dashboards exist in the same Grafana folder (`ag3jjknk85xc0b`): `p
 All are DB-only, not provisioned from git.
 
 `piflow-cost` panels (all Prometheus, variable `ref`): cost by ticket (timeseries), **cost per flow stacked by phase**
-(barchart, below), cost by agent/subtask, tokens by kind, total cost by agent.
+(barchart, below), cost by agent/subtask, tokens by kind, and **cost per agent role** (`panel-5`, below).
 
 Stacked-by-phase panel (`panel-2`, replaced the old "Cost by phase" time-bar which plotted `sum by (phase)` over time and
 therefore showed one bar per 15 minutes): query `sum by (ref, phase) (pi_flow_run_cost_usd{ref=~"$ref"})` as an
@@ -165,6 +165,16 @@ therefore showed one bar per 15 minutes): query `sum by (ref, phase) (pi_flow_ru
 phase via `byName` overrides (plan blue, implement green, validate orange, feedback purple). One bar = one flow ref
 (metrics are keyed by ref, so two runs of one ref add up; the trace root is per run). Verified with synthetic refs
 pushed via the Pushgateway then deleted (`DELETE <url>/metrics/job/pi-flow/ref/<ref>`).
+
+Cost-per-agent-role panel (`panel-5`, replaced the old bargauge "Total cost by agent", which had one row per agent NAME and
+therefore one row per ticket because worker names embed the ref, e.g. `Deviation check: TP-5K94`): three instant table
+queries over `label_replace(sum by (ref, agent, session)(pi_flow_run_cost_usd{ref=~"$ref"}), "role", "$1", "agent", "^([^:]*).*")`
+— `max by (role)`, `avg by (role)`, `quantile by (role)(0.5, …)` — joined on `role` (`joinByField`), renamed
+Highest/Average/Median (`organize`), filtered, sorted by Highest; horizontal grouped `barchart` (orange/blue/green), tooltip `multi`.
+Role = agent name before the first colon (same rule as the trace session-span names); a session = one worker or one
+main-session run (the per-phase main rows of one session are summed by `sum by (… session)` first). Grafana cannot draw
+per-row markers on one bar, so avg/median are sibling bars, not ticks. Checked against raw series: 9 sessions per role,
+values identical to the chart.
 
 ## 7. Tempo behaviours that bite (measured on the homelab Tempo 2.10)
 
