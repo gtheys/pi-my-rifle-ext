@@ -112,9 +112,13 @@ export default function (pi: ExtensionAPI) {
     | ((message: string, level: 'info' | 'warning' | 'error') => void)
     | null = null
 
+  // main pi session file, refreshed on session_start; journaled per phase so
+  // /flow-cost can attribute main-session cost (see flow/cost.ts)
+  let mainSessionFile: string | null = null
   // late-bound: the telemetry handle only exists after registerTelemetry below
   let syncTelemetryFlowEnv: (() => void) | null = null
   const loop = createFlowLoop({
+    getSessionFile: () => mainSessionFile,
     onFlowEnvChange: () => {
       if (syncTelemetryFlowEnv !== null) syncTelemetryFlowEnv()
     },
@@ -175,6 +179,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('session_start', (_event, ctx) => {
     notifyUser = (message, level) => ctx.ui.notify(message, level)
+    mainSessionFile = ctx.sessionManager.getSessionFile() ?? null
     setAvenSessionCwd(ctx.cwd)
     void ensureLabels(notifyUser)
     // AIDEV-NOTE: PMR-F8HB — register this workspace's aven project

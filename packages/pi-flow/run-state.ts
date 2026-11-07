@@ -80,6 +80,18 @@ export type FlowRunEvent =
       unattributed: string[]
     }
   | {
+      /**
+       * AIDEV-NOTE: main-session cost attribution — the main pi session file
+       * active when a phase started. /flow-cost splits this file's usage
+       * across phases by journal timestamps (workers are attributed via
+       * their spawn notes; the main session was never counted before).
+       */
+      kind: 'main-session'
+      at: string
+      ref: string
+      sessionFile: string
+    }
+  | {
       kind: 'note'
       at: string
       ref: string
@@ -251,6 +263,10 @@ export function applyEvent(
         ],
         updatedAt: event.at,
       }
+    }
+    case 'main-session': {
+      // evidence for /flow-cost only; the projection stays unchanged
+      return state as FlowRunState
     }
     case 'note': {
       if (state === null || state.ref !== event.ref)

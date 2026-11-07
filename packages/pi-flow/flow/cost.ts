@@ -242,6 +242,147 @@ export function buildWorkerRows(
   return rows
 }
 
+/** Distinct main-session files journaled for a run, in first-seen order. */
+export function collectMainSessionFiles(
+  events: readonly FlowRunEvent[],
+): string[] {
+  const files: string[] = []
+  for (const event of events) {
+    if (event.kind !== 'main-session') continue
+    if (!files.includes(event.sessionFile)) files.push(event.sessionFile)
+  }
+  return files
+}
+
+export interface PhaseWindow {
+  phase: FlowPhase
+  startMs: number
+  /** exclusive */
+  endMs: number
+}
+
+/**
+ * Phase time windows from the journal. A phase runs from its phase-start
+ * until the NEXT phase-start (so the model's reply right after
+ * flow_phase_complete still counts for the phase it finished); the last
+ * phase ends at its phase-complete, else at the last journal event.
+ * Repeated phase-starts for one phase (route-back) yield several windows.
+ */
+export function phaseWindows(events: readonly FlowRunEvent[]): PhaseWindow[] {
+  const starts: Array<{ phase: FlowPhase; ms: number }> = []
+  for (const event of events) {
+    if (event.kind !== 'phase-start') continue
+    const ms = Date.parse(event.at)
+    if (Number.isFinite(ms)) starts.push({ phase: event.phase, ms })
+  }
+  if (starts.length === 0) return []
+  let lastMs = starts[starts.length - 1].ms
+  const last = starts[starts.length - 1]
+  for (const event of events) {
+    const ms = Date.parse(event.at)
+    if (!Number.isFinite(ms) || ms < last.ms) continue
+    if (event.kind === 'phase-complete' && event.phase === last.phase) {
+      lastMs = ms
+      break
+    }
+    if (ms > lastMs) lastMs = ms
+  }
+  const windows: PhaseWindow[] = []
+  for (let i = 0; i < starts.length; i += 1) {
+    let endMs = lastMs
+    if (i + 1 < starts.length) endMs = starts[i + 1].ms
+    windows.push({ phase: starts[i].phase, startMs: starts[i].ms, endMs })
+  }
+  return windows
+}
+
+function entryTimeMs(entry: unknown): number | null {
+  if (entry == null || typeof entry !== 'object') return null
+  const raw = (entry as Record<string, unknown>).timestamp
+  if (typeof raw !== 'string') return null
+  const ms = Date.parse(raw)
+  if (!Number.isFinite(ms)) return null
+  return ms
+}
+
+/**
+ * Cost rows for the MAIN pi session(s): each session file's entries are split
+ * across the journal's phase windows by entry timestamp, one row per
+ * (session file, phase). Before this existed the rollup only counted spawned
+ * workers, so plan/implement (which run in the main session) had no cost at
+ * all. Rows are named "main" and carry no subtask. An unreadable session file
+ * yields ONE coverage-gap row (sessionAvailable=false), never an invented
+ * zero. Entries outside every window (chat before/after the flow) are
+ * ignored.
+ */
+export function buildMainRows(
+  events: readonly FlowRunEvent[],
+  sessions: ReadonlyMap<string, readonly unknown[]>,
+): WorkerRow[] {
+  const files = collectMainSessionFiles(events)
+  const windows = phaseWindows(events)
+  const rows: WorkerRow[] = []
+  for (const file of files) {
+    const childId = `main-${sessionFileId(file)}`
+    const entries = sessions.get(file)
+    if (entries === undefined) {
+      rows.push({
+        childId,
+        name: 'main',
+        subtask: null,
+        phase: null,
+        sessionFile: file,
+        summary: createUsageSummary(),
+        sessionAvailable: false,
+        toolCalls: [],
+      })
+      continue
+    }
+    const byPhase = new Map<FlowPhase, unknown[]>()
+    for (const entry of entries) {
+      const ms = entryTimeMs(entry)
+      if (ms === null) continue
+      const window = windows.find((w) => ms >= w.startMs && ms < w.endMs)
+      if (window === undefined) continue
+      const list = byPhase.get(window.phase) ?? []
+      list.push(entry)
+      byPhase.set(window.phase, list)
+    }
+    for (const [phase, phaseEntries] of byPhase) {
+      const summary = summarizeEntriesUsage(phaseEntries)
+      if (!summary.sawUsage) continue
+      rows.push({
+        childId,
+        name: 'main',
+        subtask: null,
+        phase,
+        sessionFile: file,
+        summary,
+        sessionAvailable: true,
+        toolCalls: countToolCalls(phaseEntries),
+      })
+    }
+  }
+  rows.sort((a, b) => {
+    if (a.phase !== b.phase) {
+      if (a.phase === null) return 1
+      if (b.phase === null) return -1
+      return a.phase.localeCompare(b.phase)
+    }
+    return a.childId.localeCompare(b.childId)
+  })
+  return rows
+}
+
+/** Short stable id for a session file (basename without extension, last uuid part). */
+function sessionFileId(file: string): string {
+  const base = file.slice(file.lastIndexOf('/') + 1).replace(/\.jsonl$/, '')
+  const underscore = base.lastIndexOf('_')
+  let id = base
+  if (underscore >= 0) id = base.slice(underscore + 1)
+  return id.slice(0, 8)
+}
+
 /** Per-phase wall-clock durations from journal events. Pure. */
 export function phaseDurations(
   events: readonly FlowRunEvent[],

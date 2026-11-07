@@ -9,8 +9,10 @@ import type { AssignmentRecord } from '@gtheys/pi-interactive-subagents'
 import { isValidRef } from '../herdr/viewer.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 import {
+  buildMainRows,
   buildPushBody,
   buildWorkerRows,
+  collectMainSessionFiles,
   collectSpawnNotes,
   formatCostReport,
   type PushResult,
@@ -87,7 +89,8 @@ export function registerFlowCostCommand(
         return
       }
       const notes = collectSpawnNotes(events)
-      if (notes.length === 0) {
+      const mainFiles = collectMainSessionFiles(events)
+      if (notes.length === 0 && mainFiles.length === 0) {
         ctx.ui.notify(
           `/flow-cost ${parsed.ref}: journal has no subagent spawn notes (pre-attribution run?) — nothing to roll up.`,
           'info',
@@ -100,6 +103,7 @@ export function registerFlowCostCommand(
       for (const note of notes) {
         if (note.sessionFile !== null) wanted.add(note.sessionFile)
       }
+      for (const file of mainFiles) wanted.add(file)
       const byChild = new Map<string, AssignmentRecord>()
       for (const record of assignments) {
         byChild.set(record.childId, record)
@@ -117,7 +121,10 @@ export function registerFlowCostCommand(
         if (raw === null) continue
         sessions.set(file, parseSessionEntries(raw))
       }
-      const rows = buildWorkerRows(notes, assignments, sessions)
+      const rows = [
+        ...buildMainRows(events, sessions),
+        ...buildWorkerRows(notes, assignments, sessions),
+      ]
       const durations = phaseDurations(events)
       ctx.ui.notify(formatCostReport(parsed.ref, rows, durations), 'info')
       if (parsed.push) {

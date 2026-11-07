@@ -61,6 +61,12 @@ export interface FlowLoopDeps {
    * just ended without waiting for another span.
    */
   onFlowEnvChange?: () => void
+  /**
+   * Current main pi session file (null/absent = unknown). Journaled at every
+   * phase start so /flow-cost can attribute the main session's cost to
+   * phases (resumed flows may span several session files).
+   */
+  getSessionFile?: () => string | null
   // AIDEV-NOTE: PMR-VZEV — clears the landing state (authorized +
   // humanReviewPassed) on every start so stale authorization from a
   // superseded/prior flow cannot authorize a later landing.
@@ -291,6 +297,15 @@ class FlowLoopImpl implements FlowLoop {
       ref: this.state.ref,
       phase,
     })
+    const sessionFile = this.deps.getSessionFile?.() ?? null
+    if (sessionFile !== null && sessionFile.length > 0) {
+      this.deps.journal({
+        kind: 'main-session',
+        at: now(),
+        ref: this.state.ref,
+        sessionFile,
+      })
+    }
     this.state.currentPhase = phase
     // AIDEV-NOTE: PMR-HFK1 — phase transitions re-stamp the env so children
     // spawned in later phases attribute to the phase doing the work.
