@@ -80,7 +80,7 @@ variable, time range, and whether the panel filters on `status="error"`.
 
 ```
 flow <ref>                       flow.span=root     main process, zero-length marker, id = PI_FLOW_TRACEPARENT span id
-├─ <ref> - plan                  flow.span=phase    main process, REAL start/end, exported + flushed when flow_phase_complete finishes (else next phase / flow clear / shutdown)
+├─ <ref> - plan                  flow.span=phase    main process, REAL start/end, exported + flushed when the phase ends: flow_phase_complete, or ANY flow-env transition (halt, pause, done, next phase, supersede)
 │  ├─ tool … / gen …             main-session spans of that phase
 │  └─ <ref> - <role>             flow.span=session  one per worker (role = agent name before the first colon)
 │     └─ tool … / gen …          worker spans
@@ -112,3 +112,9 @@ Incident: `validate` phase span missing, its calls and the review/deviation work
 Cause: a phase was only closed when the NEXT phase appeared; validate is last, so it stayed open (unsent) while
 the session lived. Fix: close + flush on `flow_phase_complete`; the closed phase stays the parent of trailing spans
 and is never re-sent. Spans only auto-flush at 16 buffered spans or shutdown, so closing without flushing is not enough.
+
+Phase closing, final design: the flow loop calls `onFlowEnvChange` after every stamp/re-stamp/clear; `index.ts`
+late-binds it to telemetry's `syncFlowEnv()`, which re-reads the env, closes the phase that just ended and flushes
+(also flushes the `flow <ref>` root immediately at run start). `flow_phase_complete` still closes + flushes on its own
+(more accurate end). A phase closes at most once (`exported`); the closed phase stays parent of trailing spans.
+Only remaining gap: main process hard-killed mid-phase (no shutdown event) never sends that phase span.
