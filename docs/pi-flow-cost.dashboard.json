@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow cost dashboard (PMR-XPVE M5): cost by ref/phase/agent/subtask + token totals from Pushgateway metrics",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T07:57:08Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T08:00:44Z"
     },
     "creationTimestamp": "2026-11-07T02:57:43Z",
-    "generation": 2,
+    "generation": 3,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208851649736704"
     },
     "name": "piflow-cost",
     "namespace": "default",
-    "resourceVersion": "1794038228908002",
+    "resourceVersion": "1794038444946983",
     "uid": "4eecb14f-edff-41d0-b004-99f46d988628"
   },
   "spec": {
@@ -157,7 +157,7 @@
               ]
             }
           },
-          "description": "One bar per flow ref; segments are phases (main session + workers). Hover a segment for that phase's cost. Needs `/flow-cost \u003cref\u003e --push` after the run.",
+          "description": "One bar per flow ref; segments are phases (main session + workers). Hover a segment for that phase's cost. Metrics are pushed automatically when a flow run ends (manual retry: /flow-cost \u003cref\u003e --push).",
           "id": 2,
           "links": [],
           "title": "Cost per flow, stacked by phase ($ref)",
