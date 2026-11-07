@@ -94,3 +94,20 @@ export function clearFlowEnv(env: FlowEnv): void {
   for (const key of FLOW_ENV_KEYS) delete env[key]
   delete env.PI_FLOW_SUBTASK
 }
+
+/**
+ * Which run journal a subagent spawn belongs to. The main process, while its
+ * loop runs, owns the full journal + projection path. A flow WORKER (scouts
+ * spawned by a plan agent, ...) has no running loop but inherited
+ * PI_FLOW_REF, so its spawns still belong to that flow — those go to the
+ * journal only (see recordRunEventJournalOnly). null = not part of any flow.
+ */
+export function spawnJournalTarget(
+  activeRef: string | null,
+  env: FlowEnv,
+): { ref: string; nested: boolean } | null {
+  if (activeRef !== null) return { ref: activeRef, nested: false }
+  const envRef = env.PI_FLOW_REF
+  if (envRef === undefined || envRef.length === 0) return null
+  return { ref: envRef, nested: true }
+}

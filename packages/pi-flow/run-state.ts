@@ -449,6 +449,25 @@ export async function recordRunEvent(
   await io.writeFile(statePath, `${JSON.stringify(next, null, 2)}\n`)
 }
 
+/**
+ * Append an event to the run JOURNAL only — no projection rewrite. For
+ * writers that are not the flow's main process (a worker journaling its own
+ * nested spawns): the projection is a read-modify-write file and two
+ * processes rewriting it can clobber each other, while a one-line O_APPEND to
+ * the journal is safe and is all /flow-cost reads. Best-effort like
+ * recordRunEvent.
+ */
+export async function recordRunEventJournalOnly(
+  agentDir: string,
+  event: FlowRunEvent,
+): Promise<void> {
+  const statePath = runStatePath(agentDir, event.ref)
+  if (statePath === null) return
+  const journalPath = `${statePath.slice(0, -'.json'.length)}.journal.jsonl`
+  await fs.mkdir(path.dirname(statePath), { recursive: true })
+  await fs.appendFile(journalPath, `${JSON.stringify(event)}\n`, 'utf8')
+}
+
 /** Read a run projection for display. Returns null when no run exists. */
 export async function readRunState(
   agentDir: string,

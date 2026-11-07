@@ -18,6 +18,7 @@ import {
   totalTokens,
 } from '@gtheys/pi-interactive-subagents'
 import type { FlowPhase, FlowRunEvent } from '../run-state.ts'
+import { agentRole, ORCHESTRATOR_ROLE } from './agent-role.ts'
 
 /** One parsed attribution note from the run journal. */
 export interface SpawnNote {
@@ -35,6 +36,8 @@ export interface SpawnNote {
 export interface WorkerRow {
   childId: string
   name: string
+  /** groupable role (agent type, else name prefix); see flow/agent-role.ts */
+  role?: string
   subtask: string | null
   phase: FlowPhase | null
   sessionFile: string | null
@@ -220,9 +223,11 @@ export function buildWorkerRows(
         sessionAvailable = true
       }
     }
+    const record = assignmentByChild.get(note.childId)
     rows.push({
       childId: note.childId,
       name: note.name,
+      role: agentRole(record?.agent, note.name),
       subtask,
       phase: note.phase,
       sessionFile: note.sessionFile,
@@ -329,6 +334,7 @@ export function buildMainRows(
       rows.push({
         childId,
         name: 'main',
+        role: ORCHESTRATOR_ROLE,
         subtask: null,
         phase: null,
         sessionFile: file,
@@ -354,6 +360,7 @@ export function buildMainRows(
       rows.push({
         childId,
         name: 'main',
+        role: ORCHESTRATOR_ROLE,
         subtask: null,
         phase,
         sessionFile: file,
@@ -547,8 +554,18 @@ export function buildPushBody(
   durations: readonly PhaseDuration[],
 ): string {
   const lines: string[] = []
+  const roleSeen = new Set<string>()
   for (const row of rows) {
     if (!row.summary.sawUsage) continue
+    // AIDEV-NOTE: role rides on its own info series (one per ref+session) so
+    // the existing metric label sets stay untouched; dashboards join it with
+    // `* on (ref, session) group_left (role) pi_flow_run_role_info`.
+    if (!roleSeen.has(row.childId)) {
+      roleSeen.add(row.childId)
+      lines.push(
+        `pi_flow_run_role_info{${labelString({ ref, session: row.childId, role: row.role ?? agentRole(null, row.name) })}} 1`,
+      )
+    }
     let phase = ''
     if (row.phase !== null) phase = row.phase
     let subtask = ''

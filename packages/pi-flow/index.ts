@@ -33,6 +33,7 @@ import {
 } from './aven/client.ts'
 import { loadConfig, resolveMode } from './config.ts'
 import { parseFlowArgs } from './flow/args.ts'
+import { spawnJournalTarget } from './flow/attribution.ts'
 import { pushToGateway } from './flow/cost.ts'
 import { createCostAutoPush } from './flow/cost-autopush.ts'
 import {
@@ -69,7 +70,12 @@ import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts
 import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import prQualityExtension from './pr-quality/index.ts'
 import reviewExtension from './review/review.ts'
-import { readRunEvents, recordRunEvent, runStatePath } from './run-state.ts'
+import {
+  readRunEvents,
+  recordRunEvent,
+  recordRunEventJournalOnly,
+  runStatePath,
+} from './run-state.ts'
 import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
@@ -103,6 +109,16 @@ async function journal(
 ): Promise<void> {
   try {
     await recordRunEvent(getAgentDir(), event)
+  } catch {
+    // best-effort by design
+  }
+}
+
+async function journalOnly(
+  event: Parameters<typeof recordRunEventJournalOnly>[1],
+): Promise<void> {
+  try {
+    await recordRunEventJournalOnly(getAgentDir(), event)
   } catch {
     // best-effort by design
   }
@@ -171,8 +187,14 @@ export default function (pi: ExtensionAPI) {
   // the work). No active run = nothing to attribute, ignore. Best-effort:
   // journal failures are already swallowed by the journal() wrapper.
   onFlowSpawn((info) => {
-    const ref = loop.activeRef()
-    if (ref === null) return
+    // AIDEV-NOTE: nested spawns — in a flow WORKER (scouts spawned by a plan
+    // agent, ...) the loop is not running, but the worker inherited
+    // PI_FLOW_REF, so its spawns still belong to that flow. Those notes go to
+    // the journal only (see recordRunEventJournalOnly); the main process keeps
+    // the full journal + projection path.
+    const target = spawnJournalTarget(loop.activeRef(), process.env)
+    if (target === null) return
+    const { ref, nested } = target
     let text = `subagent ${info.childId} ("${info.name}") ${info.kind} — attribution env stamped`
     if (info.subtask !== undefined) {
       text = `subagent ${info.childId} ("${info.name}") ${info.kind} for subtask ${info.subtask} — attribution env stamped`
@@ -183,7 +205,17 @@ export default function (pi: ExtensionAPI) {
     if (info.sessionFile !== undefined) {
       text = `${text}, session="${info.sessionFile}"`
     }
-    void journal({ kind: 'note', at: new Date().toISOString(), ref, text })
+    const event = {
+      kind: 'note' as const,
+      at: new Date().toISOString(),
+      ref,
+      text,
+    }
+    if (nested) {
+      void journalOnly(event)
+      return
+    }
+    void journal(event)
   })
 
   pi.on('session_start', (_event, ctx) => {

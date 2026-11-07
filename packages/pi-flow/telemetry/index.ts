@@ -8,6 +8,7 @@
 // completion content ever enters a span).
 import { createHash } from 'node:crypto'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { agentRole } from '../flow/agent-role.ts'
 import {
   flowAttributes,
   generationSpanAttributes,
@@ -68,18 +69,14 @@ export function phaseSpanId(traceId: string, phase: string): string {
     .slice(0, 16)
 }
 
-const ROLE_MAX = 40
-
 /**
- * Session span name: "<flow ref> - <role>". The role is the agent name up to
- * its first colon ("Review: changes against 'abc…'" -> "review",
- * "Deviation check: PMR-1" -> "deviation check"), so names stay short and
- * groupable; the full agent name and phase remain span attributes.
+ * Session span name: "<flow ref> - <role>". The role comes from the agent
+ * type when known (scout, worker, reviewer...), else from the agent name up
+ * to its first colon (see flow/agent-role.ts); full name, type and phase stay
+ * as span attributes.
  */
 export function sessionSpanName(flow: SpanAttributes): string {
-  let role = (flow['agent.name'] ?? '').split(':')[0].trim().toLowerCase()
-  if (role.length > ROLE_MAX) role = role.slice(0, ROLE_MAX).trimEnd()
-  if (role.length === 0) role = 'worker'
+  const role = agentRole(flow['agent.type'], flow['agent.name'])
   const ref = flow['flow.ref']
   if (ref === undefined) return role
   return `${ref} - ${role}`

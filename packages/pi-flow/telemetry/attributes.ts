@@ -57,6 +57,7 @@ export function flowAttributes(env: TelemetryEnv): SpanAttributes {
     ['flow.ref', 'PI_FLOW_REF'],
     ['phase', 'PI_FLOW_PHASE'],
     ['agent.name', 'PI_SUBAGENT_NAME'],
+    ['agent.type', 'PI_SUBAGENT_AGENT'],
     ['subtask', 'PI_FLOW_SUBTASK'],
     ['parent.session', 'PI_SUBAGENT_PARENT_SESSION'],
   ]
