@@ -13,17 +13,18 @@ signal paths describe a run:
 | Path | Signal | Produced by | Goes to | Used by |
 | --- | --- | --- | --- | --- |
 | **Traces** | OTLP/HTTP JSON spans | `telemetry/` (live, every pi process) | Caddy `:4478` → Tempo | trace table + trace view |
-| **Metrics** | Prometheus text, `pi_flow_*` | `/flow-cost <ref> --push` (offline rollup from run journal + session files) | Caddy `:4479` → Pushgateway → Prometheus | 3 timeseries panels |
+| **Metrics** | Prometheus text, `pi_flow_*` | cost rollup from run journal + session files: pushed **automatically when a run ends** (`flow/cost-autopush.ts`), or by hand with `/flow-cost <ref> --push` | Caddy `:4479` → Pushgateway → Prometheus | 3 timeseries panels |
 
-Traces are live and per-call. Metrics are an after-the-fact rollup you must push by hand; they exist only for refs
-you ran `/flow-cost --push` on.
+Traces are live and per-call. Metrics are an after-the-fact rollup: the loop pushes it when a run ends (done, halt, pause;
+`onRunEnd` → `createCostAutoPush`, env-gated by `PI_FLOW_PUSHGATEWAY_URL`, idempotent, ~1.5 s settle so the journal's
+async appends land first). `/flow-cost <ref> --push` remains the manual retry/backfill. Failure = a warning with that command.
 
 **Cost sources in the rollup** (`flow/cost.ts`): (a) spawned WORKER sessions (review, deviation check, implementers…),
 attributed via the spawn notes in the run journal; (b) the MAIN pi session, attributed to plan/implement/validate by
 splitting its entries across the journal's phase windows (`phaseWindows`, `buildMainRows`). (b) needs the journal's
 `main-session` event (written by the loop at every phase start, `getSessionFile` dep wired in `index.ts`) — so
 **runs started before 2026-11-07 evening have no main-session cost** (only workers, i.e. validate) and cannot be
-backfilled; rerun `/flow-cost <ref> --push` after a new run. Main rows are pushed as `agent="main"`. Unreadable
+backfilled; new runs are pushed automatically; `/flow-cost <ref> --push` re-exports. Main rows are pushed as `agent="main"`. Unreadable
 session file = one coverage-gap row, never a zero. Windows: a phase runs from its phase-start to the next phase-start;
 the last one ends at its phase-complete; entries outside every window (chat before/after the flow) are ignored.
 
