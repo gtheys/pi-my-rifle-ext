@@ -18,6 +18,15 @@ signal paths describe a run:
 Traces are live and per-call. Metrics are an after-the-fact rollup you must push by hand; they exist only for refs
 you ran `/flow-cost --push` on.
 
+**Cost sources in the rollup** (`flow/cost.ts`): (a) spawned WORKER sessions (review, deviation check, implementers…),
+attributed via the spawn notes in the run journal; (b) the MAIN pi session, attributed to plan/implement/validate by
+splitting its entries across the journal's phase windows (`phaseWindows`, `buildMainRows`). (b) needs the journal's
+`main-session` event (written by the loop at every phase start, `getSessionFile` dep wired in `index.ts`) — so
+**runs started before 2026-11-07 evening have no main-session cost** (only workers, i.e. validate) and cannot be
+backfilled; rerun `/flow-cost <ref> --push` after a new run. Main rows are pushed as `agent="main"`. Unreadable
+session file = one coverage-gap row, never a zero. Windows: a phase runs from its phase-start to the next phase-start;
+the last one ends at its phase-complete; entries outside every window (chat before/after the flow) are ignored.
+
 ## 2. Infrastructure (chicken homelab, podman quadlets)
 
 Source of truth: `~/Code/personal/homelab/quadlets/*` (git repo). Deployed copy: `/opt/homelab` (root-owned; needs
@@ -138,6 +147,24 @@ Dashboard gotchas learned:
   reachable via "All".
 - `gcx dashboards snapshot` only renders collapsed rows (cannot expand a trace row); verify expanded rows in a browser.
 
+### 6b. Cost dashboard (`piflow-cost`) and range dashboard (`piflow-range`)
+
+Three pi-flow dashboards exist in the same Grafana folder (`ag3jjknk85xc0b`): `piflow-health` (above), **`piflow-cost`**
+("pi-flow cost", backup: [`docs/pi-flow-cost.dashboard.json`](pi-flow-cost.dashboard.json)) and `piflow-range`
+("pi-flow range: cost vs score", from the M6 ticket; not documented here — `gcx dashboards get piflow-range`).
+All are DB-only, not provisioned from git.
+
+`piflow-cost` panels (all Prometheus, variable `ref`): cost by ticket (timeseries), **cost per flow stacked by phase**
+(barchart, below), cost by agent/subtask, tokens by kind, total cost by agent.
+
+Stacked-by-phase panel (`panel-2`, replaced the old "Cost by phase" time-bar which plotted `sum by (phase)` over time and
+therefore showed one bar per 15 minutes): query `sum by (ref, phase) (pi_flow_run_cost_usd{ref=~"$ref"})` as an
+**instant table**, transformation `groupingToMatrix` (rows = `ref`, columns = `phase`, value = `Value`, empty = zero),
+`barchart` with `stacking: normal`, tooltip `multi` (hover a bar → every phase's cost), unit `currencyUSD`, fixed colours per
+phase via `byName` overrides (plan blue, implement green, validate orange, feedback purple). One bar = one flow ref
+(metrics are keyed by ref, so two runs of one ref add up; the trace root is per run). Verified with synthetic refs
+pushed via the Pushgateway then deleted (`DELETE <url>/metrics/job/pi-flow/ref/<ref>`).
+
 ## 7. Tempo behaviours that bite (measured on the homelab Tempo 2.10)
 
 | Behaviour | Evidence | Mitigation |
@@ -182,5 +209,7 @@ Synthetic rows (`SYN-*`, `PMR-DEMO`, `*-probe`) clutter the table until retentio
 - Span names for workers are `<ref> - <role>` derived from the agent name; scouts get whatever name was passed to the spawn.
 - Provision the dashboard from git (homelab `provisioning/dashboards/`) so it is reviewable; today it is DB-only.
 - Redaction for content capture (none today).
+- Backfill main-session cost for runs before the `main-session` journal event (would need the main session file per run;
+  not recorded then).
 - Aven tickets `PMR-HFK1` (M1 attribution), `PMR-EA8X` (M2 cost rollup), `PMR-R8AG` (M4 telemetry), `PMR-XPVE` (M5),
   `PMR-DJ7B` (M6) are done; `aven list` for follow-ups.
