@@ -118,6 +118,25 @@ Rules that make it work (each cost an incident — do not "simplify" them away):
 Known gap: a main process hard-killed mid-phase never sends that phase span (children hang off a missing parent;
 the flow root still names the trace).
 
+### 5b. Which agents are tracked (coverage)
+
+| Agent | Traces | Cost (`/flow-cost`, auto-pushed) |
+| --- | --- | --- |
+| Orchestrator (main pi session running `/flow`) | yes: `<ref> - <phase>` spans + its tool/gen spans | yes, role `orchestrator`: session split across phases by journal timestamps (needs the `main-session` journal event, runs from 2026-11-07 evening) |
+| Oneshot work done in the orchestrator itself | yes (same spans) | yes (orchestrator cost) |
+| Subagents spawned WHILE a flow is active (plan agent, scouts, workers, reviewers, deviation checks) | yes: `<ref> - <role>` session span + their tool/gen spans (env copied by `applyFlowEnv`) | yes if journaled: the spawn note is written by the main loop |
+| Nested spawns (a worker spawning scouts) | yes (env is forwarded again) | yes: the worker journals its spawns via inherited `PI_FLOW_REF` (`spawnJournalTarget`, `recordRunEventJournalOnly`: journal only, never the projection) |
+| Agents spawned OUTSIDE a flow (before `/flow` starts, ad hoc) | NO flow attrs: flat spans, random trace, not in the dashboard | NO (no spawn note) — open design question: when does a flow "begin"? |
+
+Evidence at the time of writing: every journaled spawn so far was a `Review` or `Deviation check` (9 each); plan
+agents / scouts / implementers had not yet been exercised under `/flow`, so those paths are unit-tested but not
+yet observed on a real run.
+
+**Role** (`flow/agent-role.ts`, `agentRole`): agent type (`PI_SUBAGENT_AGENT` / `AssignmentRecord.agent`) first, else
+the name before the first colon, else `worker`; lowercased, max 40 chars. Used for trace session-span names and for
+the metric `pi_flow_run_role_info{ref,session,role} 1` (one per session, emitted by `buildPushBody`; the existing
+cost/token/tool-call label sets are unchanged). Span attribute `agent.type` carries the type.
+
 ## 6. The dashboard
 
 `https://chicken.tail4250d0.ts.net:4443/grafana/d/piflow-health/pi-flow-health` — uid `piflow-health`, a Grafana
@@ -171,8 +190,9 @@ therefore one row per ticket because worker names embed the ref, e.g. `Deviation
 queries over `label_replace(sum by (ref, agent, session)(pi_flow_run_cost_usd{ref=~"$ref"}), "role", "$1", "agent", "^([^:]*).*")`
 — `max by (role)`, `avg by (role)`, `quantile by (role)(0.5, …)` — joined on `role` (`joinByField`), renamed
 Highest/Average/Median (`organize`), filtered, sorted by Highest; horizontal grouped `barchart` (orange/blue/green), tooltip `multi`.
-Role = agent name before the first colon (same rule as the trace session-span names), and the pushed `agent="main"` rows are
-relabelled **`orchestrator`** (a second `label_replace` in the queries) — the main pi session that runs the flow, one session per
+Role = the `role` from `pi_flow_run_role_info` (agent type, else name prefix; orchestrator rows carry `orchestrator`), joined with
+`* on (ref, session) group_left (role)`; runs pushed BEFORE role tracking fall back to the old name-prefix `label_replace`
+(via `unless on (ref, session) pi_flow_run_role_info`) and old `main` rows are relabelled **`orchestrator`** — the main pi session that runs the flow, one session per
 flow run (verified with synthetic refs: highest/avg/median matched). Its bars dwarf the workers' on a shared axis (it does
 plan + implement + validate itself); a session = one worker or one
 main-session run (the per-phase main rows of one session are summed by `sum by (… session)` first). Grafana cannot draw
