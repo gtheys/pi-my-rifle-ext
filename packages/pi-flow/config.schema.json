@@ -35,7 +35,7 @@
         },
         "otlpEndpoint": {
           "type": "string",
-          "description": "OTLP/HTTP base URL (e.g. https://host:8478); spans POST to <endpoint>/v1/traces"
+          "description": "OTLP/HTTP base URL (e.g. https://host:4478); spans POST to <endpoint>/v1/traces"
         },
         "headers": {
           "type": "object",

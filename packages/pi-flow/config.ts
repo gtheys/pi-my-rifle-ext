@@ -44,7 +44,7 @@ const PiFlowConfigSchema = Type.Object({
         }),
         otlpEndpoint: Type.String({
           description:
-            'OTLP/HTTP base URL (e.g. https://host:8478); spans POST to <endpoint>/v1/traces',
+            'OTLP/HTTP base URL (e.g. https://host:4478); spans POST to <endpoint>/v1/traces',
         }),
         headers: Type.Optional(
           Type.Record(Type.String(), Type.String(), {
