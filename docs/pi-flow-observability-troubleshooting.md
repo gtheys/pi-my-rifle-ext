@@ -81,7 +81,7 @@ variable, time range, and whether the panel filters on `status="error"`.
 ```
 flow <ref>                       main process, zero-length marker, id = PI_FLOW_TRACEPARENT span id
 ├─ tool bash / gen <model>       main-session spans (flow.ref, phase attrs)
-└─ <agent> · <phase>             one per worker, zero-length marker exported when the worker first sees the trace
+└─ <ref> - <role>                one per worker (role = agent name before the first colon: review, deviation check, worker…), zero-length marker exported when the worker first sees the trace
    └─ tool … / gen …             worker spans
 ```
 
