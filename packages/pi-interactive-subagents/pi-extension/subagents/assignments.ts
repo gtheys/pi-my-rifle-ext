@@ -51,6 +51,11 @@ export interface AssignmentRecord {
   /** Worktree placement (PMR-11TD): the branch-keyed authority fields. */
   worktree?: string
   branch?: string
+  /** Plan-task ref for 1:1 worker spawns (PMR-HFK1) — durable cost
+   * attribution: PI_FLOW_SUBTASK at spawn time and the record both carry
+   * it, so reassignments/takeovers keep attributing to the right subtask
+   * even after the spawning parent is gone. Absent on scouts. */
+  subtask?: string
   status: AssignmentStatus
   /**
    * Owning parent identity. pid = the parent pi process; id = the parent

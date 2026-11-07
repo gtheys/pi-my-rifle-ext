@@ -45,6 +45,7 @@ ${BRANCH_RULES}${commonRules(input.ref)}
   subtask that is blocked by an open dependency (check each subtask's
   blocked state before starting it) — finish its blockers first.
 - EACH subtask gets its own test run + commit; mark it done only then.
+- When spawning a subagent to implement a subtask, pass the subtask's ref as the spawn's \`subtask\` parameter (subagent tool) so cost attribution follows the work (PI_FLOW_SUBTASK env stamp + journal note). Omit it for scouts and general-purpose workers.
 - EVERY commit message ends with a \`Subtask: <subtask-ref>\` trailer naming
   the subtask it implements (e.g. "Subtask: PMR-AB12"). The review gates
   derive per-subtask diff ranges from these trailers; a commit without the

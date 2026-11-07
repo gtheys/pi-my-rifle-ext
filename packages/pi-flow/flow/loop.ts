@@ -12,6 +12,12 @@
 // extension code does.
 import { MAX_ATTEMPTS } from '../implement/retry.ts'
 import type { FlowRunEvent } from '../run-state.ts'
+import {
+  clearFlowEnv,
+  type FlowEnv,
+  stampFlowPhase,
+  stampFlowStart,
+} from './attribution.ts'
 import { nextPhase, PHASE_LABEL, type Phase } from './orchestrate.ts'
 import { buildPhasePrompt, type PhasePromptInput } from './phase-prompts.ts'
 
@@ -45,6 +51,10 @@ export interface FlowLoopDeps {
   // ref on start and with null on every terminal transition (halt, pause,
   // done). Optional so existing tests/consumers need no changes.
   setActiveRef?(ref: string | null): void
+  // AIDEV-NOTE: PMR-HFK1 — attribution env target, stamped at run start,
+  // re-stamped per phase, cleared on terminal transitions. Optional +
+  // defaults to process.env so existing tests/consumers need no changes.
+  env?: FlowEnv
   // AIDEV-NOTE: PMR-VZEV — clears the landing state (authorized +
   // humanReviewPassed) on every start so stale authorization from a
   // superseded/prior flow cannot authorize a later landing.
@@ -82,10 +92,12 @@ export interface FlowLoop {
 
 class FlowLoopImpl implements FlowLoop {
   private readonly deps: FlowLoopDeps
+  private readonly env: FlowEnv
   private state: FlowLoopState | null = null
 
   constructor(deps: FlowLoopDeps) {
     this.deps = deps
+    this.env = deps.env ?? process.env
   }
 
   isActive(): boolean {
@@ -103,6 +115,21 @@ class FlowLoopImpl implements FlowLoop {
         `/flow: superseding active flow for ${this.state.ref} with ${input.ref}`,
         'info',
       )
+    }
+    // AIDEV-NOTE: PMR-HFK1 — stamp attribution env BEFORE any prompt is
+    // sent: every child spawned from here on carries PI_FLOW_* into its tab
+    // env. A fresh traceparent root per invocation (see attribution.ts) —
+    // superseding stamps over the old run's values. Invalid ref = abort
+    // fail-closed: the journal filename would be unusable anyway.
+    const stamped = stampFlowStart(this.env, input.ref, input.phase)
+    if (!stamped.ok) {
+      this.deps.notify(
+        `/flow ${input.ref}: ${stamped.reason} — aborting.`,
+        'warning',
+      )
+      this.state = null
+      this.deps.setActiveRef?.(null)
+      return
     }
     this.state = {
       ref: input.ref,
@@ -160,6 +187,7 @@ class FlowLoopImpl implements FlowLoop {
           this.deps.journal({ kind: 'note', at: now(), ref, text })
           this.deps.notify(`/flow ${ref}: ${text}`, 'info')
           this.state = null
+          clearFlowEnv(this.env)
           this.deps.setActiveRef?.(null)
           return
         }
@@ -220,6 +248,9 @@ class FlowLoopImpl implements FlowLoop {
     this.deps.journal({ kind: 'note', at: now(), ref, text })
     this.deps.notify(`/flow ${ref}: ${text}`, 'warning')
     this.state = null
+    // AIDEV-NOTE: PMR-HFK1 — terminal transition: no child spawned from now
+    // on may attribute to this (dead) run.
+    clearFlowEnv(this.env)
     this.deps.setActiveRef?.(null)
   }
 
@@ -252,6 +283,9 @@ class FlowLoopImpl implements FlowLoop {
       phase,
     })
     this.state.currentPhase = phase
+    // AIDEV-NOTE: PMR-HFK1 — phase transitions re-stamp the env so children
+    // spawned in later phases attribute to the phase doing the work.
+    stampFlowPhase(this.env, phase)
     if (phase === 'validate') this.state.validateStartedAt = now()
     this.deps.sendPrompt(result.prompt + suffix)
     this.state.awaitingOutcome = true
@@ -280,6 +314,7 @@ class FlowLoopImpl implements FlowLoop {
       })
       this.deps.notify(`/flow ${ref}: all phases complete.`, 'info')
       this.state = null
+      clearFlowEnv(this.env)
       this.deps.setActiveRef?.(null)
       return
     }

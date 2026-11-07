@@ -59,6 +59,7 @@ import {
   writeControlRecord,
 } from './control.ts'
 import { hasDelivered, markDelivered } from './delivered.ts'
+import { applyFlowEnv, emitFlowSpawn, isValidFlowValue } from './flow-env.ts'
 import { herdrAgentFocus, herdrAgentGet, herdrPreflight } from './herdr.ts'
 import { coalesceOwnerMessages, removeOwnerMessage } from './inbox.ts'
 import { sendPeerMessage } from './peers.ts'
@@ -280,6 +281,12 @@ const SubagentParams = Type.Object({
     Type.String({
       description:
         'Resume a previous Claude Code session by its ID. Loads the conversation history and continues where it left off. The session ID is returned in details of every claude tool call. Use this to retry cancelled runs or ask follow-up questions.',
+    }),
+  ),
+  subtask: Type.Optional(
+    Type.String({
+      description:
+        "Plan-task ref this worker implements 1:1 (e.g. 'PMR-AB12'), for cost attribution: stamps PI_FLOW_SUBTASK into the child env and records it on the assignment. Omit for scouts/general workers. Must match [A-Za-z0-9][A-Za-z0-9._-]{0,99}.",
     }),
   ),
 })
@@ -763,6 +770,8 @@ export interface RunningSubagent {
   startTime: number
   sessionFile: string
   activityFile?: string
+  /** Plan-task ref for 1:1 worker spawns (PMR-HFK1 cost attribution). */
+  subtask?: string
   activity?: SubagentActivityState
   activityRead?: {
     ok: boolean
@@ -1949,6 +1958,7 @@ function persistAssignment(
       cwd,
       worktree: running.worktree,
       branch: running.branch,
+      ...(running.subtask !== undefined ? { subtask: running.subtask } : {}),
       status: 'working',
       claim: { pid: process.pid, id: ownerSessionId ?? 'unknown' },
     })
@@ -2124,6 +2134,14 @@ async function launchSubagent(
   // successful spawn. Write failure must not fail the spawn (at-least-once
   // discipline, same as persistAssignment below).
   const activityFile = getSubagentActivityFile(artifactDir, id)
+  // AIDEV-NOTE (PMR-HFK1): agent-supplied subtask ref is validated at the
+  // tool boundary — fail visibly so the model corrects it, never silently
+  // drop attribution.
+  if (params.subtask !== undefined && !isValidFlowValue(params.subtask)) {
+    throw new Error(
+      `subtask "${params.subtask}" is not a valid task ref (must match [A-Za-z0-9][A-Za-z0-9._-]{0,99})`,
+    )
+  }
   if (!replayed) {
     try {
       writeAssignment({
@@ -2131,6 +2149,7 @@ async function launchSubagent(
         name: params.name,
         task: params.task,
         agent: params.agent,
+        ...(params.subtask !== undefined ? { subtask: params.subtask } : {}),
         sessionFile: subagentSessionFile,
         activityFile,
         cwd: targetCwdForSession,
@@ -2210,6 +2229,13 @@ async function launchSubagent(
   // Owner-inbox routing key for message_owner (PMR-QCVA): the parent's
   // session id names the inbox dir the child writes to.
   env.PI_SUBAGENT_PARENT_SESSION = sessionId
+  // AIDEV-NOTE (PMR-HFK1): flow attribution — forward PI_FLOW_* from the
+  // parent process env (stamped by the /flow loop) into the child env, plus
+  // PI_FLOW_SUBTASK when this spawn maps 1:1 to a plan task. Values are
+  // charset-validated inside applyFlowEnv (fail-closed, never forwarded
+  // mangled); absent when no flow run is active — plain subagent use is
+  // untouched.
+  applyFlowEnv(env, process.env, params.subtask)
 
   const subagentDonePath = join(SUBAGENTS_DIR, 'subagent-done.ts')
   let kind: 'pi' | 'claude'
@@ -2319,6 +2345,7 @@ async function launchSubagent(
     startTime,
     sessionFile: subagentSessionFile,
     activityFile,
+    ...(params.subtask !== undefined ? { subtask: params.subtask } : {}),
     ...(agentDefs?.cli === 'claude' ? { cli: 'claude' as const } : {}),
     ...(worktree ? { worktree: worktree.path, branch: worktree.branch } : {}),
     interactive: effectiveInteractive,
@@ -2374,6 +2401,15 @@ async function launchSubagent(
   running.workspaceId = tab.workspaceId
   running.starting = false
   persistAssignment(running, targetCwdForSession, sessionId ?? null)
+  // AIDEV-NOTE (PMR-HFK1): best-effort spawn notification for flow-aware
+  // callers (pi-flow journals this as an attribution note). Listener
+  // failures are swallowed inside emitFlowSpawn.
+  emitFlowSpawn({
+    kind: 'spawn',
+    childId: id,
+    name: params.name,
+    ...(params.subtask !== undefined ? { subtask: params.subtask } : {}),
+  })
   updateWidget()
   if (latestPi) startStatusRefresh(latestPi)
   return running
@@ -3473,6 +3509,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                 task: params.message ?? 'reattached running session',
                 agent: record.agent,
                 surface: paneId,
+                ...(record.subtask !== undefined
+                  ? { subtask: record.subtask }
+                  : {}),
                 paneId,
                 tabId: record.tabId,
                 workspaceId: record.workspaceId,
@@ -3491,6 +3530,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
               // listAssignments classify the record owned again, so the
               // orphaned marker + resume hint disappear from subagents_list.
               persistAssignment(running, record.cwd, sessionId ?? null)
+              // AIDEV-NOTE (PMR-HFK1): reattach = takeover of a live child;
+              // emit so flow attribution journals whoever now owns the work.
+              emitFlowSpawn({
+                kind: 'reattach',
+                childId: record.childId,
+                name: record.name,
+                ...(record.subtask !== undefined
+                  ? { subtask: record.subtask }
+                  : {}),
+              })
               startWidgetRefresh()
               startStatusRefresh(pi)
               runWatcher(pi, running)
@@ -3558,6 +3607,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         if (autoExit) {
           env.PI_SUBAGENT_AUTO_EXIT = '1'
         }
+        // AIDEV-NOTE (PMR-HFK1): resume keeps the flow attribution of the
+        // ORIGINAL spawn — the assignment record is the durable authority
+        // for the subtask mapping, so a takeover after parent death still
+        // attributes cost to the right subtask.
+        applyFlowEnv(env, process.env, reattachRecord?.subtask)
 
         // Resume reuses the original session file path — clear stale completion
         // markers from the previous run so the watcher doesn't fire instantly.
@@ -3609,6 +3663,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           startTime,
           sessionFile: params.sessionPath,
           activityFile,
+          ...(reattachRecord?.subtask !== undefined
+            ? { subtask: reattachRecord.subtask }
+            : {}),
           interactive,
           resumeEntryCount: entryCountBefore,
           statusState: createStatusState({
@@ -3618,6 +3675,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         }
         runningSubagents.set(id, running)
         persistAssignment(running, ctx.cwd, sessionId ?? null)
+        // AIDEV-NOTE (PMR-HFK1): journal-grade takeover signal — a resume
+        // is a reassignment of the recorded subtask's work to this parent.
+        emitFlowSpawn({
+          kind: 'resume',
+          childId: id,
+          name,
+          ...(reattachRecord?.subtask !== undefined
+            ? { subtask: reattachRecord.subtask }
+            : {}),
+        })
         startWidgetRefresh()
         startStatusRefresh(pi)
 
@@ -4165,6 +4232,16 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 }
 
 export { hasLiveAssignmentForParent } from './assignments.ts'
+export type { FlowSpawnInfo } from './flow-env.ts'
+// AIDEV-NOTE (PMR-HFK1): flow attribution surface consumed by pi-flow —
+// env validators for stamping the main process + the spawn listener registry.
+export {
+  FLOW_VALUE_RE,
+  isValidFlowValue,
+  isValidTraceparent,
+  onFlowSpawn,
+  TRACEPARENT_RE,
+} from './flow-env.ts'
 // AIDEV-NOTE: Public programmatic API for other extensions that want to spawn
 // subagents directly. Consumers import launchSubagent/watchSubagent instead of
 // sending a user message to the `subagent` tool.

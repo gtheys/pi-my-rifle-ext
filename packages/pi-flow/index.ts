@@ -12,7 +12,10 @@ import {
   getAgentDir,
   isToolCallEventType,
 } from '@earendil-works/pi-coding-agent'
-import { hasLiveAssignmentForParent } from '@gtheys/pi-interactive-subagents'
+import {
+  hasLiveAssignmentForParent,
+  onFlowSpawn,
+} from '@gtheys/pi-interactive-subagents'
 import {
   avenExec,
   discoverAvenPrefixes,
@@ -134,6 +137,23 @@ export default function (pi: ExtensionAPI) {
     sendPrompt: (prompt) => {
       pi.sendUserMessage(prompt)
     },
+  })
+
+  // AIDEV-NOTE: PMR-HFK1 — spawn attribution journaling. The subagents
+  // extension emits spawn/resume/reattach events; while a flow run is
+  // active we journal them as `note` events so the later flow-cost rollup
+  // can reconstruct child->subtask attribution even if env stamps are lost
+  // (reassignments/takeovers included — cost follows whoever actually did
+  // the work). No active run = nothing to attribute, ignore. Best-effort:
+  // journal failures are already swallowed by the journal() wrapper.
+  onFlowSpawn((info) => {
+    const ref = loop.activeRef()
+    if (ref === null) return
+    let text = `subagent ${info.childId} ("${info.name}") ${info.kind} — attribution env stamped`
+    if (info.subtask !== undefined) {
+      text = `subagent ${info.childId} ("${info.name}") ${info.kind} for subtask ${info.subtask} — attribution env stamped`
+    }
+    void journal({ kind: 'note', at: new Date().toISOString(), ref, text })
   })
 
   pi.on('session_start', (_event, ctx) => {
@@ -336,6 +356,17 @@ export default function (pi: ExtensionAPI) {
         }
       } else {
         ref = parsed.ref
+      }
+      // AIDEV-NOTE: PMR-HFK1 — charset guard BEFORE run-start: the journal
+      // filename and the attribution env both derive from the ref (the loop
+      // re-checks at start; this keeps the run-start event out of a journal
+      // whose projection would be unusable).
+      if (!isValidRef(ref)) {
+        ctx.ui.notify(
+          `/flow ${ref}: invalid ref (must match [A-Za-z0-9][A-Za-z0-9._-]{0,99}) — aborting.`,
+          'warning',
+        )
+        return
       }
       const labels = await readAvenLabels(ref)
       if (labels === null) {

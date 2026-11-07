@@ -216,7 +216,7 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   every aven shell-out), `config.ts` + `work-mode.ts` + `mode-profile.ts`
   (config boundary + work/personal mode), `tools/` (the gate tools: phase-complete, land, run-attempt, spec-approve,
   deviation, code-review + `code-review-parse.ts`),
-  `flow/` (loop, args, label-gate, land-gate, ensure-labels, aven-resolve,
+  `flow/` (loop, args, attribution, label-gate, land-gate, ensure-labels, aven-resolve,
   ref-kind, jira-ref, phase-command, phase-prompts, orchestrate),
   `spec-review/` (approve, aven-spec, publish, open-in-pane, picker),
   `brainstorm|plan|implement|validate|feedback/` (one subdir per command: args +

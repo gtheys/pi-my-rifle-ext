@@ -27,6 +27,7 @@
     "feedback/prompt.ts",
     "feedback/triage.ts",
     "flow/args.ts",
+    "flow/attribution.ts",
     "flow/aven-resolve-exec.ts",
     "flow/aven-resolve.ts",
     "flow/ensure-labels.ts",
