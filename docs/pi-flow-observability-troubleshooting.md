@@ -60,3 +60,14 @@ variable, time range, and whether the panel filters on `status="error"`.
 - `flow.ref` is set only when `PI_FLOW_REF` is in the env (flow-spawned workers). Plain interactive
   sessions emit spans without it, so they never match the panel. Check with `{ .flow.ref != nil }`.
 - Spans are buffered and flushed at 16 spans or on `session_shutdown` — not live.
+
+## Follow-up 2026-11-07 (2): trace panel said "No data found in response"
+
+- Real cause of the empty panel: it used the `traces` visualization, which renders ONE trace by id.
+  A TraceQL search returns a table of traces, so the viz must be `table` (`tableType: "traces"`).
+  Patched live with `gcx dashboards update`; verified by rendering the panel (8 rows incl. flow runs).
+- Rows show `<root span not yet received>` as Service: pi-flow parents spans on the flow traceparent's
+  span id but never exports that root span. Cosmetic; a per-run root span would fix it.
+- Rendering with `gcx dashboards snapshot piflow-health --since 7d --output-dir /tmp/x` works once the
+  image renderer reaches Grafana without Authelia (it returned the login page before that was fixed).
+  ALWAYS render the dashboard before declaring it fixed.
