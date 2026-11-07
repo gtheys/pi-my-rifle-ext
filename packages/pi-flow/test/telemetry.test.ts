@@ -565,3 +565,43 @@ test('worker exports one session span under the flow root; tool/gen spans nest u
   assert.equal(tool.parentSpanId, session.spanId)
   assert.equal(spans.filter((s) => s.name.startsWith('flow')).length, 0)
 })
+
+test('crashed worker (no session_shutdown) still exported its session span with the first flush', async () => {
+  const w = await wired(
+    { endpoint: 'https://t:4478' },
+    {
+      PI_FLOW_REF: 'PMR-CRASH',
+      PI_FLOW_PHASE: 'implement',
+      PI_SUBAGENT_NAME: 'worker',
+      PI_FLOW_TRACEPARENT:
+        '00-0123456789abcdef0123456789abcdef-fedcba9876543210-01',
+    },
+  )
+  w.pi.emit('session_start', { type: 'session_start', reason: 'startup' })
+  await tick()
+  // enough tool spans to hit the flush threshold; shutdown never fires
+  for (let i = 0; i < 20; i++) {
+    w.pi.emit('tool_execution_start', {
+      type: 'tool_execution_start',
+      toolCallId: `t${i}`,
+      toolName: 'bash',
+      args: {},
+    })
+    w.pi.emit('tool_execution_end', {
+      type: 'tool_execution_end',
+      toolCallId: `t${i}`,
+      toolName: 'bash',
+      result: {},
+      isError: false,
+    })
+  }
+  await tick()
+
+  assert.ok(w.bodies.length >= 1)
+  const spans = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0]
+    .spans as Array<{ name: string; spanId: string; parentSpanId?: string }>
+  const session = spans.find((s) => s.name === 'worker · implement')
+  assert.ok(session !== undefined)
+  const tool = spans.find((s) => s.name === 'tool bash')
+  assert.equal(tool?.parentSpanId, session.spanId)
+})

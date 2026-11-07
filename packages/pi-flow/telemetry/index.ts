@@ -80,7 +80,7 @@ export interface TelemetryState {
   /** flow trace ids whose root span this (main) process already emitted. */
   rootsEmitted: Set<string>
   /** worker session span (child of the flow root); null outside flow workers. */
-  session: { spanId: string; startNano: string } | null
+  session: { spanId: string } | null
   flow: SpanAttributes
   openTools: Map<string, OpenToolSpan>
   buffer: TelemetrySpan[]
@@ -165,10 +165,13 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
 
   // AIDEV-NOTE: workers get one session span ("<agent> · <phase>") between
   // the flow root and their tool/gen spans, so a trace reads as a tree:
-  // flow <ref> -> worker session -> tool/gen. shortcut: the span is exported
-  // at session_shutdown with its real start/end; a crashed worker never
-  // sends it and its children then hang off a missing parent (the flow root
-  // still names the trace) — upgrade to start-time marker + update if needed.
+  // flow <ref> -> worker session -> tool/gen. It is exported ONCE, as a
+  // zero-length marker, the first time the trace is seen — so a crashed
+  // worker's children never hang off a missing parent. shortcut: the span
+  // carries no real duration (trace duration comes from the child spans).
+  // Re-sending the same span id with a later end does NOT work: Tempo keeps
+  // both copies until compaction and which one wins is undefined (verified
+  // against the homelab Tempo 2.10), so never update a span in place.
   const parentFor = (): string | undefined => {
     if (state.session !== null) return state.session.spanId
     return state.rootParentId ?? undefined
@@ -188,10 +191,23 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
       state.fromFlow = true
       emitFlowRoot(ctx.traceId, ctx.parentId)
       if (isWorker() && state.session === null) {
-        state.session = {
-          spanId: randomSpanId(deps.rng),
-          startNano: toUnixNano(deps.now()),
-        }
+        const spanId = randomSpanId(deps.rng)
+        const nowNano = toUnixNano(deps.now())
+        state.session = { spanId }
+        const parts = [state.flow['agent.name'], state.flow.phase]
+        let name = parts.filter((p) => p !== undefined).join(' · ')
+        if (name.length === 0) name = 'worker'
+        state.buffer.push({
+          traceId: ctx.traceId,
+          spanId,
+          parentSpanId: ctx.parentId,
+          name,
+          kind: 1,
+          startTimeUnixNano: nowNano,
+          endTimeUnixNano: nowNano,
+          attributes: { ...state.flow },
+          statusCode: 0,
+        })
       }
       return
     }
@@ -279,23 +295,6 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     state.unsubscribers.push(
       pi.on('session_shutdown', () => {
         if (!state.enabled) return
-        if (state.session !== null && state.traceId !== null) {
-          const parts = [state.flow['agent.name'], state.flow.phase]
-          let name = parts.filter((p) => p !== undefined).join(' · ')
-          if (name.length === 0) name = 'worker'
-          state.buffer.push({
-            traceId: state.traceId,
-            spanId: state.session.spanId,
-            parentSpanId: state.rootParentId ?? undefined,
-            name,
-            kind: 1,
-            startTimeUnixNano: state.session.startNano,
-            endTimeUnixNano: toUnixNano(deps.now()),
-            attributes: { ...state.flow },
-            statusCode: 0,
-          })
-          state.session = null
-        }
         flush()
         for (const off of state.unsubscribers) off()
         state.unsubscribers.length = 0
