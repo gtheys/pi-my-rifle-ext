@@ -119,6 +119,8 @@ export interface TelemetryState {
     spanId: string
     startNano: string
     attrs: SpanAttributes
+    /** already sent: kept as parent for trailing spans, never re-sent. */
+    exported: boolean
   } | null
   flow: SpanAttributes
   openTools: Map<string, OpenToolSpan>
@@ -223,14 +225,16 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
   // tool/gen spans on it; workers parent their session span on the same
   // deterministic id (phaseSpanId). Clicking the phase in Grafana shows
   // every call made in that phase. The span is exported when the phase
-  // CLOSES (next phase seen, flow cleared, or shutdown) — never updated in
-  // place (Tempo keeps both copies of a re-sent span id). shortcut: a main
+  // CLOSES: flow_phase_complete finishing (the LAST phase has no successor,
+  // so without this its span stayed unsent and review/deviation sessions
+  // under it hung off a missing parent), next phase seen, flow cleared, or
+  // shutdown — never updated in place (Tempo keeps both copies of a re-sent span id). shortcut: a main
   // process killed mid-phase never exports that phase span, so its children
   // hang off a missing parent; the flow root still names the trace.
   const closePhase = (): void => {
     const open = state.phase
-    if (open === null) return
-    state.phase = null
+    if (open === null || open.exported) return
+    open.exported = true
     state.buffer.push({
       traceId: open.traceId,
       spanId: open.spanId,
@@ -251,6 +255,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     if (open !== null) {
       if (traceId === open.traceId && phase === open.attrs.phase) return
       closePhase()
+      state.phase = null
     }
     if (traceId === null || phase === undefined) return
     let name = phase
@@ -262,6 +267,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
       spanId: phaseSpanId(traceId, phase),
       startNano: toUnixNano(deps.now()),
       attrs: { ...state.flow, 'flow.span': 'phase' },
+      exported: false,
     }
   }
 
@@ -358,6 +364,12 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
           ...(statusMessage !== undefined ? { statusMessage } : {}),
         }
         state.buffer.push(span)
+        if (event.toolName === 'flow_phase_complete' && !event.isError) {
+          // flush NOW: the main session may sit idle (or end) after the last
+          // phase, and the buffer only auto-flushes at FLUSH_THRESHOLD spans
+          closePhase()
+          flush()
+        }
         if (state.buffer.length >= FLUSH_THRESHOLD) flush()
       }),
     )

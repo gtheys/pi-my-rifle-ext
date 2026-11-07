@@ -690,3 +690,59 @@ test('phase change closes the old phase span and opens the next; workers never e
   assert.equal(tools[0].parentSpanId, plan.spanId)
   assert.equal(tools[1].parentSpanId, impl.spanId)
 })
+
+test('flow_phase_complete closes the phase span; trailing spans still nest under it; no duplicate at shutdown', async () => {
+  const env: Record<string, string | undefined> = {
+    PI_FLOW_REF: 'PMR-LAST',
+    PI_FLOW_PHASE: 'validate',
+    PI_FLOW_TRACEPARENT:
+      '00-0123456789abcdef0123456789abcdef-fedcba9876543210-01',
+  }
+  const w = await wired({ endpoint: 'https://t:4478' }, env)
+  w.pi.emit('session_start', { type: 'session_start', reason: 'startup' })
+  await tick()
+  const tool = (id: string, name: string) => {
+    w.pi.emit('tool_execution_start', {
+      type: 'tool_execution_start',
+      toolCallId: id,
+      toolName: name,
+      args: {},
+    })
+    w.pi.emit('tool_execution_end', {
+      type: 'tool_execution_end',
+      toolCallId: id,
+      toolName: name,
+      result: {},
+      isError: false,
+    })
+  }
+  tool('a', 'bash')
+  tool('b', 'flow_phase_complete')
+  await tick()
+  // the phase span is already exported BEFORE shutdown (last phase, idle main session)
+  assert.equal(w.bodies.length, 1)
+  const early = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0].spans
+  assert.ok(
+    early.some((s: { name: string }) => s.name === 'PMR-LAST - validate'),
+  )
+  // trailing span in the same phase, then shutdown
+  tool('c', 'bash')
+  w.pi.emit('session_shutdown', { type: 'session_shutdown' })
+  await tick()
+
+  const spans = w.bodies.flatMap(
+    (b) =>
+      JSON.parse(b).resourceSpans[0].scopeSpans[0].spans as Array<{
+        name: string
+        spanId: string
+        parentSpanId?: string
+      }>,
+  )
+  const phases = spans.filter((s) => s.name === 'PMR-LAST - validate')
+  assert.equal(phases.length, 1)
+  const id = phaseSpanId('0123456789abcdef0123456789abcdef', 'validate')
+  assert.equal(phases[0].spanId, id)
+  const bashes = spans.filter((s) => s.name === 'tool bash')
+  assert.equal(bashes.length, 2)
+  assert.ok(bashes.every((s) => s.parentSpanId === id))
+})
