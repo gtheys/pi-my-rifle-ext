@@ -79,16 +79,22 @@ variable, time range, and whether the panel filters on `status="error"`.
 ## Trace shape (after 2026-11-07 fixes)
 
 ```
-flow <ref>                       main process, zero-length marker, id = PI_FLOW_TRACEPARENT span id
-├─ tool bash / gen <model>       main-session spans (flow.ref, phase attrs)
-└─ <ref> - <role>                one per worker (role = agent name before the first colon: review, deviation check, worker…), zero-length marker exported when the worker first sees the trace
-   └─ tool … / gen …             worker spans
+flow <ref>                       flow.span=root     main process, zero-length marker, id = PI_FLOW_TRACEPARENT span id
+├─ <ref> - plan                  flow.span=phase    main process, REAL start/end, exported when the phase closes
+│  ├─ tool … / gen …             main-session spans of that phase
+│  └─ <ref> - <role>             flow.span=session  one per worker (role = agent name before the first colon)
+│     └─ tool … / gen …          worker spans
+├─ <ref> - implement             (same shape)
+└─ <ref> - validate
 ```
 
-Known limits: root and worker-session spans are zero-length markers (trace duration comes from the child
-spans). Never re-export a span with the same id and a later end: Tempo keeps both copies until compaction and
-which wins is undefined (verified on the homelab Tempo). A crashed worker is safe: its session span went out
-with the first flush. Traces recorded before the fixes keep `<root span not yet received>`.
+- Phase span id = first 16 hex of `sha256(traceId:phase)` (`phaseSpanId`); workers recompute it from their own
+  `PI_FLOW_TRACEPARENT` + `PI_FLOW_PHASE`, so no extra env var crosses the package boundary.
+- Root and worker-session spans are zero-length markers (trace duration comes from children). Never re-export
+  a span id with a later end: Tempo keeps both copies until compaction and which wins is undefined.
+- Limits: a main process killed mid-phase never exports that phase span (children hang off a missing parent,
+  flow root still names the trace). A crashed worker is safe (its session span goes out with the first flush).
+  Traces recorded before 2026-11-07 keep `<root span not yet received>` and have no `flow.span` attribute.
 
 ## Trace table: "3 rows, all phase=plan"
 
@@ -96,3 +102,8 @@ The expanded rows under a trace are the first matching SPANS, not "plan spans". 
 spans per trace by default (`spss`), and with only `select(.flow.ref, .phase)` they all look alike. Panel query is now
 `{ .flow.ref =~ "$ref" } | select(name, .flow.ref, .phase, .agent.name)` with `spss: 20`, so rows show span names
 (`flow <ref>`, `tool bash`, `gen <model>`). `gcx traces query` returns no span sets, so verify in the browser.
+
+Panel query (final): `{ .flow.ref =~ "$ref" && (.flow.span = "phase" || .flow.span = "root") } | select(name, .phase)`
+with `spss: 20` -> expanding a trace row lists one row per phase (with its duration) instead of individual calls;
+click a phase span id to open the trace with that phase's calls nested under it. Older traces (no `flow.span`)
+no longer match this panel.
