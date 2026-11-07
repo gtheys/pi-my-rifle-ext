@@ -35,6 +35,27 @@ const PiFlowConfigSchema = Type.Object({
       minItems: 1,
     }),
   ),
+  telemetry: Type.Optional(
+    Type.Object(
+      {
+        enabled: Type.Boolean({
+          description:
+            'Master switch — telemetry subscribes to nothing when false/absent (PMR-R8AG)',
+        }),
+        otlpEndpoint: Type.String({
+          description:
+            'OTLP/HTTP base URL (e.g. https://host:8478); spans POST to <endpoint>/v1/traces',
+        }),
+        headers: Type.Optional(
+          Type.Record(Type.String(), Type.String(), {
+            description:
+              'Static extra headers for OTLP export. Secrets belong in env (PI_FLOW_OTLP_TOKEN), not config',
+          }),
+        ),
+      },
+      { description: 'Optional OTLP telemetry export (PMR-R8AG)' },
+    ),
+  ),
 })
 
 export type PiFlowConfig = Static<typeof PiFlowConfigSchema>

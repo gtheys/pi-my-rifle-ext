@@ -24,6 +24,27 @@
       "description": "Argv of the test command flow_land runs before authorizing a landing (default [\"bun\",\"run\",\"test\"]). PMR-05HX: the landing gate never trusts a claimed-green suite.",
       "items": { "type": "string" },
       "minItems": 1
+    },
+    "telemetry": {
+      "type": "object",
+      "description": "Optional OTLP telemetry export (PMR-R8AG)",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch — telemetry subscribes to nothing when false/absent (PMR-R8AG)"
+        },
+        "otlpEndpoint": {
+          "type": "string",
+          "description": "OTLP/HTTP base URL (e.g. https://host:8478); spans POST to <endpoint>/v1/traces"
+        },
+        "headers": {
+          "type": "object",
+          "description": "Static extra headers for OTLP export. Secrets belong in env (PI_FLOW_OTLP_TOKEN), not config",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "required": ["enabled", "otlpEndpoint"],
+      "additionalProperties": false
     }
   },
   "required": ["workRoots"],

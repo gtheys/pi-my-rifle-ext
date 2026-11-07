@@ -370,6 +370,38 @@ work, matching the journal's reassignment notes.
 Push failures are warnings, never fatal; `--push` works on any past run at
 any time, so it doubles as the backfill path when a backend was down.
 
+## 8c. OTLP telemetry module (PMR-R8AG)
+
+Optional live export of tool-call and generation spans to any OTLP/HTTP
+receiver (Tempo on chicken, `:8478`). Lives in `telemetry/` inside
+pi-flow — `attributes.ts` (pure env→attribute mapping), `exporter.ts`
+(minimal OTLP JSON exporter, no OTel SDK dependency), `index.ts` (event
+wiring). Config in the same `pi-flow/config.json` everything else uses:
+
+```json
+{
+  "workRoots": [],
+  "telemetry": {
+    "enabled": true,
+    "otlpEndpoint": "https://chicken.tail4250d0.ts.net:8478"
+  }
+}
+```
+
+Bearer auth comes from the `PI_FLOW_OTLP_TOKEN` env var — secrets never
+enter config files. Spans carry `flow.ref`/`phase`/`agent.name`/`subtask`
+from the M1 attribution env, join the flow's trace via
+`PI_FLOW_TRACEPARENT`, and follow OTLP GenAI semantic conventions
+(`gen_ai.usage.input_tokens`, `gen_ai.request.model`, …). Metadata only:
+no prompt or completion content ever enters a span.
+
+Hard no-backend rules (test-gated): disabled or unconfigured = the
+session probe subscribes to nothing and allocates nothing; endpoint
+unreachable = fire-and-forget export with a 2.5 s timeout, at most ONE
+journal note per process, then silent — no retry queue, no buffer
+growth, no unhandled rejections; tool calls and turns proceed
+identically whether the backend exists or not.
+
 ## 9. Quick reference
 
 | Purpose | Command |
