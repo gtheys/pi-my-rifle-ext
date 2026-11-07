@@ -525,3 +525,43 @@ test('main process exports the flow root span once; workers do not', async () =>
   const worker = await run({ ...stamp, PI_SUBAGENT_NAME: 'worker' })
   assert.equal(worker.filter((s) => s.name.startsWith('flow')).length, 0)
 })
+
+test('worker exports one session span under the flow root; tool/gen spans nest under it', async () => {
+  const w = await wired(
+    { endpoint: 'https://t:4478' },
+    {
+      PI_FLOW_REF: 'PMR-TREE',
+      PI_FLOW_PHASE: 'implement',
+      PI_SUBAGENT_NAME: 'worker',
+      PI_FLOW_TRACEPARENT:
+        '00-0123456789abcdef0123456789abcdef-fedcba9876543210-01',
+    },
+  )
+  w.pi.emit('session_start', { type: 'session_start', reason: 'startup' })
+  await tick()
+  w.pi.emit('tool_execution_start', {
+    type: 'tool_execution_start',
+    toolCallId: 't1',
+    toolName: 'bash',
+    args: {},
+  })
+  w.pi.emit('tool_execution_end', {
+    type: 'tool_execution_end',
+    toolCallId: 't1',
+    toolName: 'bash',
+    result: {},
+    isError: false,
+  })
+  w.pi.emit('session_shutdown', { type: 'session_shutdown' })
+  await tick()
+
+  const spans = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0]
+    .spans as Array<{ name: string; spanId: string; parentSpanId?: string }>
+  const session = spans.find((s) => s.name === 'worker · implement')
+  assert.ok(session !== undefined)
+  assert.equal(session.parentSpanId, 'fedcba9876543210')
+  const tool = spans.find((s) => s.name === 'tool bash')
+  assert.ok(tool !== undefined)
+  assert.equal(tool.parentSpanId, session.spanId)
+  assert.equal(spans.filter((s) => s.name.startsWith('flow')).length, 0)
+})

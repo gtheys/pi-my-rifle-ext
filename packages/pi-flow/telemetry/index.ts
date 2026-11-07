@@ -79,6 +79,8 @@ export interface TelemetryState {
   fromFlow: boolean
   /** flow trace ids whose root span this (main) process already emitted. */
   rootsEmitted: Set<string>
+  /** worker session span (child of the flow root); null outside flow workers. */
+  session: { spanId: string; startNano: string } | null
   flow: SpanAttributes
   openTools: Map<string, OpenToolSpan>
   buffer: TelemetrySpan[]
@@ -100,6 +102,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     rootParentId: null,
     fromFlow: false,
     rootsEmitted: new Set(),
+    session: null,
     flow: {},
     openTools: new Map(),
     buffer: [],
@@ -137,8 +140,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
   // from the child spans anyway).
   const emitFlowRoot = (traceId: string, rootSpanId: string): void => {
     if (state.rootsEmitted.has(traceId)) return
-    const worker = deps.env.PI_SUBAGENT_NAME
-    if (worker !== undefined && worker.length > 0) return
+    if (isWorker()) return
     state.rootsEmitted.add(traceId)
     const nowNano = toUnixNano(deps.now())
     let name = 'flow'
@@ -156,6 +158,22 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     })
   }
 
+  const isWorker = (): boolean => {
+    const name = deps.env.PI_SUBAGENT_NAME
+    return name !== undefined && name.length > 0
+  }
+
+  // AIDEV-NOTE: workers get one session span ("<agent> · <phase>") between
+  // the flow root and their tool/gen spans, so a trace reads as a tree:
+  // flow <ref> -> worker session -> tool/gen. shortcut: the span is exported
+  // at session_shutdown with its real start/end; a crashed worker never
+  // sends it and its children then hang off a missing parent (the flow root
+  // still names the trace) — upgrade to start-time marker + update if needed.
+  const parentFor = (): string | undefined => {
+    if (state.session !== null) return state.session.spanId
+    return state.rootParentId ?? undefined
+  }
+
   // AIDEV-NOTE: the flow loop stamps PI_FLOW_REF / PHASE / TRACEPARENT into
   // process.env at run START, which is after session_start in the main
   // session. Re-read the env on every span so late stamps (and phase
@@ -169,6 +187,12 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
       state.rootParentId = ctx.parentId
       state.fromFlow = true
       emitFlowRoot(ctx.traceId, ctx.parentId)
+      if (isWorker() && state.session === null) {
+        state.session = {
+          spanId: randomSpanId(deps.rng),
+          startNano: toUnixNano(deps.now()),
+        }
+      }
       return
     }
     if (state.traceId !== null && !state.fromFlow) return
@@ -211,7 +235,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
         const span: TelemetrySpan = {
           traceId: state.traceId ?? randomTraceId(deps.rng),
           spanId: open.spanId,
-          parentSpanId: state.rootParentId ?? undefined,
+          parentSpanId: parentFor(),
           name: open.name,
           kind: 1,
           startTimeUnixNano: open.startUnixNano,
@@ -237,7 +261,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
         state.buffer.push({
           traceId: state.traceId ?? randomTraceId(deps.rng),
           spanId: randomSpanId(deps.rng),
-          parentSpanId: state.rootParentId ?? undefined,
+          parentSpanId: parentFor(),
           name: `gen ${usage.model}`,
           kind: 1,
           startTimeUnixNano: toUnixNano(endMs),
@@ -255,6 +279,23 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     state.unsubscribers.push(
       pi.on('session_shutdown', () => {
         if (!state.enabled) return
+        if (state.session !== null && state.traceId !== null) {
+          const parts = [state.flow['agent.name'], state.flow.phase]
+          let name = parts.filter((p) => p !== undefined).join(' · ')
+          if (name.length === 0) name = 'worker'
+          state.buffer.push({
+            traceId: state.traceId,
+            spanId: state.session.spanId,
+            parentSpanId: state.rootParentId ?? undefined,
+            name,
+            kind: 1,
+            startTimeUnixNano: state.session.startNano,
+            endTimeUnixNano: toUnixNano(deps.now()),
+            attributes: { ...state.flow },
+            statusCode: 0,
+          })
+          state.session = null
+        }
         flush()
         for (const off of state.unsubscribers) off()
         state.unsubscribers.length = 0
