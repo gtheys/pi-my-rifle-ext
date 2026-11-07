@@ -443,6 +443,15 @@ export async function recordRunEvent(
     }
     state = projectRunState(events)
   }
+  // AIDEV-NOTE: 'main-session' is journal-only evidence for /flow-cost — it
+  // never changes the projection, so the "unchanged state = nothing to write"
+  // shortcut below would silently DROP it (that bug shipped once: no run had a
+  // main-session event, so no main-session cost was ever rolled up). Append it
+  // to the journal and leave the projection file alone.
+  if (event.kind === 'main-session') {
+    await io.appendFile(journalPath, `${JSON.stringify(event)}\n`)
+    return
+  }
   const next = applyEvent(state, event)
   if (next === state) return
   await io.appendFile(journalPath, `${JSON.stringify(event)}\n`)
