@@ -14,7 +14,7 @@ import {
   toolSpanAttributes,
 } from '../telemetry/attributes.ts'
 import { buildOtlpBody, exportSpans } from '../telemetry/exporter.ts'
-import { registerTelemetry } from '../telemetry/index.ts'
+import { registerTelemetry, sessionSpanName } from '../telemetry/index.ts'
 
 type Handler = (event: never, ctx: { cwd: string }) => unknown
 
@@ -557,7 +557,7 @@ test('worker exports one session span under the flow root; tool/gen spans nest u
 
   const spans = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0]
     .spans as Array<{ name: string; spanId: string; parentSpanId?: string }>
-  const session = spans.find((s) => s.name === 'worker · implement')
+  const session = spans.find((s) => s.name === 'PMR-TREE - worker')
   assert.ok(session !== undefined)
   assert.equal(session.parentSpanId, 'fedcba9876543210')
   const tool = spans.find((s) => s.name === 'tool bash')
@@ -600,8 +600,27 @@ test('crashed worker (no session_shutdown) still exported its session span with 
   assert.ok(w.bodies.length >= 1)
   const spans = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0]
     .spans as Array<{ name: string; spanId: string; parentSpanId?: string }>
-  const session = spans.find((s) => s.name === 'worker · implement')
+  const session = spans.find((s) => s.name === 'PMR-CRASH - worker')
   assert.ok(session !== undefined)
   const tool = spans.find((s) => s.name === 'tool bash')
   assert.equal(tool?.parentSpanId, session.spanId)
+})
+
+test('sessionSpanName: "<ref> - <role>" from the agent name before the colon', () => {
+  assert.equal(
+    sessionSpanName({
+      'flow.ref': 'PMR-1',
+      'agent.name': "Review: changes against 'f2512623e9c4'",
+    }),
+    'PMR-1 - review',
+  )
+  assert.equal(
+    sessionSpanName({
+      'flow.ref': 'PMR-1',
+      'agent.name': 'Deviation check: PMR-1',
+    }),
+    'PMR-1 - deviation check',
+  )
+  assert.equal(sessionSpanName({ 'flow.ref': 'PMR-1' }), 'PMR-1 - worker')
+  assert.equal(sessionSpanName({ 'agent.name': 'Scout' }), 'scout')
 })

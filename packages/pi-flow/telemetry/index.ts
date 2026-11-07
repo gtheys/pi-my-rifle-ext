@@ -42,6 +42,22 @@ export interface TelemetryDeps {
 }
 
 const FLUSH_THRESHOLD = 16
+const ROLE_MAX = 40
+
+/**
+ * Session span name: "<flow ref> - <role>". The role is the agent name up to
+ * its first colon ("Review: changes against 'abc…'" -> "review",
+ * "Deviation check: PMR-1" -> "deviation check"), so names stay short and
+ * groupable; the full agent name and phase remain span attributes.
+ */
+export function sessionSpanName(flow: SpanAttributes): string {
+  let role = (flow['agent.name'] ?? '').split(':')[0].trim().toLowerCase()
+  if (role.length > ROLE_MAX) role = role.slice(0, ROLE_MAX).trimEnd()
+  if (role.length === 0) role = 'worker'
+  const ref = flow['flow.ref']
+  if (ref === undefined) return role
+  return `${ref} - ${role}`
+}
 
 interface OpenToolSpan {
   spanId: string
@@ -194,9 +210,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
         const spanId = randomSpanId(deps.rng)
         const nowNano = toUnixNano(deps.now())
         state.session = { spanId }
-        const parts = [state.flow['agent.name'], state.flow.phase]
-        let name = parts.filter((p) => p !== undefined).join(' · ')
-        if (name.length === 0) name = 'worker'
+        const name = sessionSpanName(state.flow)
         state.buffer.push({
           traceId: ctx.traceId,
           spanId,
