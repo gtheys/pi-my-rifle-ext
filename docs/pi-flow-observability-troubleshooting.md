@@ -80,7 +80,7 @@ variable, time range, and whether the panel filters on `status="error"`.
 
 ```
 flow <ref>                       flow.span=root     main process, zero-length marker, id = PI_FLOW_TRACEPARENT span id
-├─ <ref> - plan                  flow.span=phase    main process, REAL start/end, exported when the phase closes
+├─ <ref> - plan                  flow.span=phase    main process, REAL start/end, exported + flushed when flow_phase_complete finishes (else next phase / flow clear / shutdown)
 │  ├─ tool … / gen …             main-session spans of that phase
 │  └─ <ref> - <role>             flow.span=session  one per worker (role = agent name before the first colon)
 │     └─ tool … / gen …          worker spans
@@ -107,3 +107,8 @@ Panel query (final): `{ .flow.ref =~ "$ref" && (.flow.span = "phase" || .flow.sp
 with `spss: 20` -> expanding a trace row lists one row per phase (with its duration) instead of individual calls;
 click a phase span id to open the trace with that phase's calls nested under it. Older traces (no `flow.span`)
 no longer match this panel.
+
+Incident: `validate` phase span missing, its calls and the review/deviation worker sessions loose at the top level.
+Cause: a phase was only closed when the NEXT phase appeared; validate is last, so it stayed open (unsent) while
+the session lived. Fix: close + flush on `flow_phase_complete`; the closed phase stays the parent of trailing spans
+and is never re-sent. Spans only auto-flush at 16 buffered spans or shutdown, so closing without flushing is not enough.
