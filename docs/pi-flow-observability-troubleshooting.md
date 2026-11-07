@@ -81,9 +81,11 @@ variable, time range, and whether the panel filters on `status="error"`.
 ```
 flow <ref>                       main process, zero-length marker, id = PI_FLOW_TRACEPARENT span id
 ├─ tool bash / gen <model>       main-session spans (flow.ref, phase attrs)
-└─ <agent> · <phase>             one per worker, exported at worker shutdown
+└─ <agent> · <phase>             one per worker, zero-length marker exported when the worker first sees the trace
    └─ tool … / gen …             worker spans
 ```
 
-Known limits: a crashed worker never exports its session span (its children then parent on a missing id,
-flow root still names the trace); traces recorded before the fixes keep `<root span not yet received>`.
+Known limits: root and worker-session spans are zero-length markers (trace duration comes from the child
+spans). Never re-export a span with the same id and a later end: Tempo keeps both copies until compaction and
+which wins is undefined (verified on the homelab Tempo). A crashed worker is safe: its session span went out
+with the first flush. Traces recorded before the fixes keep `<root span not yet received>`.
