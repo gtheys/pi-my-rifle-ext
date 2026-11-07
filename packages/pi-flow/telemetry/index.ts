@@ -6,6 +6,7 @@
 // whether export succeeds, fails, or no backend exists. Spans are
 // metadata-only (attribute mapping in attributes.ts — no prompt or
 // completion content ever enters a span).
+import { createHash } from 'node:crypto'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
   flowAttributes,
@@ -42,6 +43,19 @@ export interface TelemetryDeps {
 }
 
 const FLUSH_THRESHOLD = 16
+/**
+ * Deterministic phase span id: first 16 hex chars of sha256(traceId:phase).
+ * The main process exports the phase span; workers recompute the same id from
+ * their own PI_FLOW_TRACEPARENT + PI_FLOW_PHASE to nest under it, so no extra
+ * env var has to cross the package boundary.
+ */
+export function phaseSpanId(traceId: string, phase: string): string {
+  return createHash('sha256')
+    .update(`${traceId}:${phase}`)
+    .digest('hex')
+    .slice(0, 16)
+}
+
 const ROLE_MAX = 40
 
 /**
@@ -63,6 +77,7 @@ interface OpenToolSpan {
   spanId: string
   name: string
   startUnixNano: string
+  parentSpanId: string | undefined
   attributes: SpanAttributes
 }
 
@@ -97,6 +112,14 @@ export interface TelemetryState {
   rootsEmitted: Set<string>
   /** worker session span (child of the flow root); null outside flow workers. */
   session: { spanId: string } | null
+  /** main-process open phase span (exported when the phase closes). */
+  phase: {
+    traceId: string
+    name: string
+    spanId: string
+    startNano: string
+    attrs: SpanAttributes
+  } | null
   flow: SpanAttributes
   openTools: Map<string, OpenToolSpan>
   buffer: TelemetrySpan[]
@@ -119,6 +142,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     fromFlow: false,
     rootsEmitted: new Set(),
     session: null,
+    phase: null,
     flow: {},
     openTools: new Map(),
     buffer: [],
@@ -169,7 +193,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
       kind: 1,
       startTimeUnixNano: nowNano,
       endTimeUnixNano: nowNano,
-      attributes: { ...state.flow },
+      attributes: { ...state.flow, 'flow.span': 'root' },
       statusCode: 0,
     })
   }
@@ -190,7 +214,55 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
   // against the homelab Tempo 2.10), so never update a span in place.
   const parentFor = (): string | undefined => {
     if (state.session !== null) return state.session.spanId
+    if (state.phase !== null) return state.phase.spanId
     return state.rootParentId ?? undefined
+  }
+
+  // AIDEV-NOTE: phase spans. The main process exports one span per flow
+  // phase ("<ref> - plan"), with its real start/end, and parents its own
+  // tool/gen spans on it; workers parent their session span on the same
+  // deterministic id (phaseSpanId). Clicking the phase in Grafana shows
+  // every call made in that phase. The span is exported when the phase
+  // CLOSES (next phase seen, flow cleared, or shutdown) — never updated in
+  // place (Tempo keeps both copies of a re-sent span id). shortcut: a main
+  // process killed mid-phase never exports that phase span, so its children
+  // hang off a missing parent; the flow root still names the trace.
+  const closePhase = (): void => {
+    const open = state.phase
+    if (open === null) return
+    state.phase = null
+    state.buffer.push({
+      traceId: open.traceId,
+      spanId: open.spanId,
+      parentSpanId: state.rootParentId ?? undefined,
+      name: open.name,
+      kind: 1,
+      startTimeUnixNano: open.startNano,
+      endTimeUnixNano: toUnixNano(deps.now()),
+      attributes: open.attrs,
+      statusCode: 0,
+    })
+  }
+
+  const syncPhase = (traceId: string | null): void => {
+    if (isWorker()) return
+    const phase = state.flow.phase
+    const open = state.phase
+    if (open !== null) {
+      if (traceId === open.traceId && phase === open.attrs.phase) return
+      closePhase()
+    }
+    if (traceId === null || phase === undefined) return
+    let name = phase
+    const ref = state.flow['flow.ref']
+    if (ref !== undefined) name = `${ref} - ${phase}`
+    state.phase = {
+      traceId,
+      name,
+      spanId: phaseSpanId(traceId, phase),
+      startNano: toUnixNano(deps.now()),
+      attrs: { ...state.flow, 'flow.span': 'phase' },
+    }
   }
 
   // AIDEV-NOTE: the flow loop stamps PI_FLOW_REF / PHASE / TRACEPARENT into
@@ -206,25 +278,32 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
       state.rootParentId = ctx.parentId
       state.fromFlow = true
       emitFlowRoot(ctx.traceId, ctx.parentId)
+      syncPhase(ctx.traceId)
       if (isWorker() && state.session === null) {
         const spanId = randomSpanId(deps.rng)
         const nowNano = toUnixNano(deps.now())
         state.session = { spanId }
         const name = sessionSpanName(state.flow)
+        let sessionParent = ctx.parentId
+        const workerPhase = state.flow.phase
+        if (workerPhase !== undefined) {
+          sessionParent = phaseSpanId(ctx.traceId, workerPhase)
+        }
         state.buffer.push({
           traceId: ctx.traceId,
           spanId,
-          parentSpanId: ctx.parentId,
+          parentSpanId: sessionParent,
           name,
           kind: 1,
           startTimeUnixNano: nowNano,
           endTimeUnixNano: nowNano,
-          attributes: { ...state.flow },
+          attributes: { ...state.flow, 'flow.span': 'session' },
           statusCode: 0,
         })
       }
       return
     }
+    syncPhase(null)
     if (state.traceId !== null && !state.fromFlow) return
     // no flow traceparent (never stamped, or cleared): own random trace
     state.traceId = randomTraceId(deps.rng)
@@ -244,6 +323,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
           spanId: randomSpanId(deps.rng),
           name: `tool ${event.toolName}`,
           startUnixNano: toUnixNano(deps.now()),
+          parentSpanId: parentFor(),
           attributes: toolSpanAttributes(state.flow, {
             toolName: event.toolName,
             isError: false,
@@ -265,7 +345,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
         const span: TelemetrySpan = {
           traceId: state.traceId ?? randomTraceId(deps.rng),
           spanId: open.spanId,
-          parentSpanId: parentFor(),
+          parentSpanId: open.parentSpanId,
           name: open.name,
           kind: 1,
           startTimeUnixNano: open.startUnixNano,
@@ -309,6 +389,7 @@ export function registerTelemetry(pi: ExtensionAPI, deps: TelemetryDeps): void {
     state.unsubscribers.push(
       pi.on('session_shutdown', () => {
         if (!state.enabled) return
+        closePhase()
         flush()
         for (const off of state.unsubscribers) off()
         state.unsubscribers.length = 0

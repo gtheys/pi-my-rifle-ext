@@ -14,7 +14,11 @@ import {
   toolSpanAttributes,
 } from '../telemetry/attributes.ts'
 import { buildOtlpBody, exportSpans } from '../telemetry/exporter.ts'
-import { registerTelemetry, sessionSpanName } from '../telemetry/index.ts'
+import {
+  phaseSpanId,
+  registerTelemetry,
+  sessionSpanName,
+} from '../telemetry/index.ts'
 
 type Handler = (event: never, ctx: { cwd: string }) => unknown
 
@@ -328,15 +332,18 @@ test('telemetry enabled: tool + generation spans flush on shutdown', async () =>
   assert.equal(w.bodies.length, 1)
   const body = JSON.parse(w.bodies[0])
   const spans = body.resourceSpans[0].scopeSpans[0].spans
-  // tool + generation + the flow root span the main process now exports
-  assert.equal(spans.length, 3)
+  // tool + generation + flow root + implement phase span (main process)
+  assert.equal(spans.length, 4)
   const toolSpan = spans.find((s: { name: string }) => s.name === 'tool bash')
   const genSpan = spans.find((s: { name: string }) => s.name === 'gen claude-4')
   assert.ok(toolSpan !== undefined)
   assert.ok(genSpan !== undefined)
   // trace context from PI_FLOW_TRACEPARENT (M1 stamp)
   assert.equal(toolSpan.traceId, '0123456789abcdef0123456789abcdef')
-  assert.equal(toolSpan.parentSpanId, 'fedcba9876543210')
+  assert.equal(
+    toolSpan.parentSpanId,
+    phaseSpanId('0123456789abcdef0123456789abcdef', 'implement'),
+  )
   assert.equal(genSpan.traceId, '0123456789abcdef0123456789abcdef')
   assert.deepEqual(toolSpan.status, {
     code: 2,
@@ -520,7 +527,12 @@ test('main process exports the flow root span once; workers do not', async () =>
   assert.equal(roots[0].parentSpanId, undefined)
   const tools = main.filter((s) => s.name === 'tool bash')
   assert.equal(tools.length, 2)
-  assert.ok(tools.every((s) => s.parentSpanId === 'fedcba9876543210'))
+  const phaseId = phaseSpanId('0123456789abcdef0123456789abcdef', 'implement')
+  assert.ok(tools.every((s) => s.parentSpanId === phaseId))
+  const phase = main.find((s) => s.name === 'PMR-ROOT - implement')
+  assert.ok(phase !== undefined)
+  assert.equal(phase.spanId, phaseId)
+  assert.equal(phase.parentSpanId, 'fedcba9876543210')
 
   const worker = await run({ ...stamp, PI_SUBAGENT_NAME: 'worker' })
   assert.equal(worker.filter((s) => s.name.startsWith('flow')).length, 0)
@@ -559,7 +571,10 @@ test('worker exports one session span under the flow root; tool/gen spans nest u
     .spans as Array<{ name: string; spanId: string; parentSpanId?: string }>
   const session = spans.find((s) => s.name === 'PMR-TREE - worker')
   assert.ok(session !== undefined)
-  assert.equal(session.parentSpanId, 'fedcba9876543210')
+  assert.equal(
+    session.parentSpanId,
+    phaseSpanId('0123456789abcdef0123456789abcdef', 'implement'),
+  )
   const tool = spans.find((s) => s.name === 'tool bash')
   assert.ok(tool !== undefined)
   assert.equal(tool.parentSpanId, session.spanId)
@@ -623,4 +638,55 @@ test('sessionSpanName: "<ref> - <role>" from the agent name before the colon', (
   )
   assert.equal(sessionSpanName({ 'flow.ref': 'PMR-1' }), 'PMR-1 - worker')
   assert.equal(sessionSpanName({ 'agent.name': 'Scout' }), 'scout')
+})
+
+test('phase change closes the old phase span and opens the next; workers never export phase spans', async () => {
+  const env: Record<string, string | undefined> = {
+    PI_FLOW_REF: 'PMR-PH',
+    PI_FLOW_PHASE: 'plan',
+    PI_FLOW_TRACEPARENT:
+      '00-0123456789abcdef0123456789abcdef-fedcba9876543210-01',
+  }
+  const w = await wired({ endpoint: 'https://t:4478' }, env)
+  w.pi.emit('session_start', { type: 'session_start', reason: 'startup' })
+  await tick()
+  const tool = (id: string) => {
+    w.pi.emit('tool_execution_start', {
+      type: 'tool_execution_start',
+      toolCallId: id,
+      toolName: 'bash',
+      args: {},
+    })
+    w.pi.emit('tool_execution_end', {
+      type: 'tool_execution_end',
+      toolCallId: id,
+      toolName: 'bash',
+      result: {},
+      isError: false,
+    })
+  }
+  tool('a')
+  env.PI_FLOW_PHASE = 'implement'
+  tool('b')
+  w.pi.emit('session_shutdown', { type: 'session_shutdown' })
+  await tick()
+
+  const spans = JSON.parse(w.bodies[0]).resourceSpans[0].scopeSpans[0]
+    .spans as Array<{
+    name: string
+    spanId: string
+    parentSpanId?: string
+    attributes: Array<{ key: string; value: { stringValue: string } }>
+  }>
+  const tid = '0123456789abcdef0123456789abcdef'
+  const plan = spans.find((s) => s.name === 'PMR-PH - plan')
+  const impl = spans.find((s) => s.name === 'PMR-PH - implement')
+  assert.ok(plan !== undefined && impl !== undefined)
+  assert.equal(plan.spanId, phaseSpanId(tid, 'plan'))
+  assert.equal(impl.spanId, phaseSpanId(tid, 'implement'))
+  const kind = plan.attributes.find((a) => a.key === 'flow.span')
+  assert.equal(kind?.value.stringValue, 'phase')
+  const tools = spans.filter((s) => s.name === 'tool bash')
+  assert.equal(tools[0].parentSpanId, plan.spanId)
+  assert.equal(tools[1].parentSpanId, impl.spanId)
 })
