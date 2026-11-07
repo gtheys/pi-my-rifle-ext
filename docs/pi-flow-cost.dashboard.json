@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow cost dashboard (PMR-XPVE M5): cost by ref/phase/agent/subtask + token totals from Pushgateway metrics",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T08:26:42Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T08:34:05Z"
     },
     "creationTimestamp": "2026-11-07T02:57:43Z",
-    "generation": 6,
+    "generation": 8,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208851649736704"
     },
     "name": "piflow-cost",
     "namespace": "default",
-    "resourceVersion": "1794040002983996",
+    "resourceVersion": "1794040445344019",
     "uid": "4eecb14f-edff-41d0-b004-99f46d988628"
   },
   "spec": {
@@ -65,8 +65,437 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_cost_usd)",
-                        "legendFormat": "{{ref}}"
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", phase=\"plan\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", phase=\"implement\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", phase=\"validate\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "E"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "count by (ref) (sum by (ref, session) (pi_flow_run_cost_usd{ref=~\"$ref\"}))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "F"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "G"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "push_time_seconds{job=\"pi-flow\", ref=~\"$ref\"} * 1000",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "H"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "ref",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "renameByName": {
+                        "Value #A": "Total",
+                        "Value #B": "Plan",
+                        "Value #C": "Implement",
+                        "Value #D": "Validate",
+                        "Value #E": "Orchestrator",
+                        "Value #F": "Sessions",
+                        "Value #G": "Duration",
+                        "Value #H": "Last pushed",
+                        "ref": "Ticket"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Ticket",
+                          "Total",
+                          "Plan",
+                          "Implement",
+                          "Validate",
+                          "Orchestrator",
+                          "Sessions",
+                          "Duration",
+                          "Last pushed"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Last pushed"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "One row per ticket (pushed within the selected range), newest first. Total = all sessions. Plan / Implement / Validate = cost per phase; Orchestrator = the main session that ran the flow (the rest is workers, reviewers, scouts). \"–\" = not recorded: plan/implement/orchestrator cost only exists for runs started after main-session tracking. Duration = summed phase wall-clock (includes waiting for you).",
+          "id": 1,
+          "links": [],
+          "title": "Tickets: what each one cost and where",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    }
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Total"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      },
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "basic",
+                          "type": "gauge"
+                        }
+                      },
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "orange",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Plan"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Implement"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Validate"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Orchestrator"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Sessions"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "none"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 0
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Duration"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "s"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Last pushed"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeFromNow"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-10": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e (time() - 86400) and push_time_seconds{job=\"pi-flow\"} \u003c= time())) or vector(0)",
+                        "format": "time_series",
+                        "instant": false,
+                        "interval": "1h",
+                        "legendFormat": "spend (24h)",
+                        "range": true
                       },
                       "version": "v0"
                     },
@@ -78,31 +507,43 @@
               "transformations": []
             }
           },
-          "id": 1,
+          "description": "At each point: cost of the tickets whose metrics were pushed in the preceding 24 hours (push time = when the flow run ended). The right edge is \"the last 24h until now\"; flat zero = nothing finished that day. Rolling, so one run shows for 24h.",
+          "id": 10,
           "links": [],
-          "title": "Cost by ticket (USD)",
+          "title": "Spend in the last 24h (rolling)",
           "vizConfig": {
             "group": "timeseries",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
                 "defaults": {
+                  "color": {
+                    "fixedColor": "blue",
+                    "mode": "fixed"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "drawStyle": "line",
+                    "fillOpacity": 30,
+                    "lineInterpolation": "stepAfter",
+                    "lineWidth": 2,
+                    "showPoints": "never"
+                  },
+                  "decimals": 2,
+                  "min": 0,
                   "unit": "currencyUSD"
                 },
                 "overrides": []
               },
               "options": {
                 "legend": {
-                  "displayMode": "table",
-                  "placement": "right",
-                  "showLegend": true,
-                  "values": [
-                    "last",
-                    "max"
-                  ]
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
                 },
                 "tooltip": {
-                  "mode": "multi"
+                  "mode": "single",
+                  "sort": "none"
                 }
               }
             },
@@ -286,44 +727,187 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (agent, subtask) (pi_flow_run_cost_usd{ref=~\"$ref\"})",
-                        "legendFormat": "{{agent}} / {{subtask}}"
+                        "expr": "label_join(label_replace(label_replace(topk(10, sum by (ref, agent, session, subtask) (pi_flow_run_cost_usd{ref=~\"$ref\"})), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"subtask\", \"–\", \"subtask\", \"^$\"), \"key\", \"|\", \"ref\", \"session\")",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
                       },
                       "version": "v0"
                     },
                     "refId": "A"
                   }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (key) (label_join(pi_flow_tokens_total{ref=~\"$ref\"}, \"key\", \"|\", \"ref\", \"session\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
                 }
               ],
               "queryOptions": {},
-              "transformations": []
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "key",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "renameByName": {
+                        "Value #A": "Cost",
+                        "Value #B": "Tokens",
+                        "ref": "Ticket",
+                        "role": "Role",
+                        "subtask": "Subtask"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Ticket",
+                          "Role",
+                          "Subtask",
+                          "Cost",
+                          "Tokens"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterByValue",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "filters": [
+                        {
+                          "config": {
+                            "id": "isNull",
+                            "options": {}
+                          },
+                          "fieldName": "Cost"
+                        }
+                      ],
+                      "match": "any",
+                      "type": "exclude"
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Cost"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
             }
           },
+          "description": "The ten single sessions with the highest cost. Role = agent name before the colon (orchestrator rows = the main session, cost summed over phases). Subtask = plan task for 1:1 workers. Tokens = all kinds (input, output, cache) for that session.",
           "id": 3,
           "links": [],
-          "title": "Cost by agent / subtask ($ref)",
+          "title": "Most expensive sessions (top 10)",
           "vizConfig": {
-            "group": "timeseries",
+            "group": "table",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
                 "defaults": {
-                  "unit": "currencyUSD"
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    }
+                  },
+                  "noValue": "–"
                 },
-                "overrides": []
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Cost"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 4
+                      },
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "basic",
+                          "type": "gauge"
+                        }
+                      },
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "orange",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Tokens"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "short"
+                      }
+                    ]
+                  }
+                ]
               },
               "options": {
-                "legend": {
-                  "displayMode": "table",
-                  "placement": "right",
-                  "showLegend": true,
-                  "values": [
-                    "last"
-                  ]
-                },
-                "tooltip": {
-                  "mode": "multi"
-                }
+                "cellHeight": "sm",
+                "showHeader": true
               }
             },
             "version": ""
@@ -348,8 +932,11 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (kind) (pi_flow_tokens_total{ref=~\"$ref\"})",
-                        "legendFormat": "{{kind}}"
+                        "expr": "sum by (ref) (pi_flow_tokens_total{ref=~\"$ref\", kind=\"cacheRead\"}) / sum by (ref) (pi_flow_tokens_total{ref=~\"$ref\", kind=~\"input|cacheRead|cacheWrite\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
                       },
                       "version": "v0"
                     },
@@ -358,34 +945,109 @@
                 }
               ],
               "queryOptions": {},
-              "transformations": []
+              "transformations": [
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "renameByName": {
+                        "Value": "Cache hit ratio",
+                        "ref": "Ticket"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Ticket",
+                          "Cache hit ratio"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Cache hit ratio"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
             }
           },
+          "description": "Share of input-side tokens served from the prompt cache: cacheRead / (input + cacheRead + cacheWrite). Cache reads cost a fraction of fresh input, so a low ratio on an expensive ticket is where to look first. Covers workers (and the orchestrator for newer runs).",
           "id": 4,
           "links": [],
-          "title": "Tokens by kind ($ref)",
+          "title": "Cache hit ratio per ticket (higher = cheaper)",
           "vizConfig": {
-            "group": "timeseries",
+            "group": "barchart",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
                 "defaults": {
-                  "unit": "short"
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "custom": {
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1
+                  },
+                  "decimals": 0,
+                  "max": 1,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "red",
+                        "value": null
+                      },
+                      {
+                        "color": "orange",
+                        "value": 0.5
+                      },
+                      {
+                        "color": "green",
+                        "value": 0.8
+                      }
+                    ]
+                  },
+                  "unit": "percentunit"
                 },
                 "overrides": []
               },
               "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.8,
                 "legend": {
-                  "displayMode": "table",
-                  "placement": "right",
-                  "showLegend": true,
-                  "values": [
-                    "last"
-                  ]
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
                 },
+                "orientation": "horizontal",
+                "showValue": "always",
+                "stacking": "none",
                 "tooltip": {
-                  "mode": "multi"
-                }
+                  "mode": "single",
+                  "sort": "none"
+                },
+                "xField": "Ticket"
               }
             },
             "version": ""
@@ -611,6 +1273,330 @@
             "version": ""
           }
         }
+      },
+      "panel-6": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Sum of ticket totals for tickets pushed within the selected time range.",
+          "id": 6,
+          "links": [],
+          "title": "Total spend",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 2,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-7": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "count(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Tickets with cost pushed within the selected time range.",
+          "id": 7,
+          "links": [],
+          "title": "Tickets",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 0,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "none"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-8": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "avg(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Mean ticket total in the selected range.",
+          "id": 8,
+          "links": [],
+          "title": "Average per ticket",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 3,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-9": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "quantile(0.5, sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Median ticket total in the selected range (less skewed by one expensive ticket than the average).",
+          "id": 9,
+          "links": [],
+          "title": "Median per ticket",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 3,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
       }
     },
     "layout": {
@@ -622,12 +1608,64 @@
             "spec": {
               "element": {
                 "kind": "ElementReference",
-                "name": "panel-1"
+                "name": "panel-6"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 0,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-7"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 6,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-8"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 12,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-9"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 18,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-10"
               },
               "height": 9,
               "width": 12,
               "x": 0,
-              "y": 0
+              "y": 4
             }
           },
           {
@@ -640,7 +1678,20 @@
               "height": 9,
               "width": 12,
               "x": 12,
-              "y": 0
+              "y": 4
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-1"
+              },
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 13
             }
           },
           {
@@ -650,10 +1701,23 @@
                 "kind": "ElementReference",
                 "name": "panel-3"
               },
-              "height": 9,
+              "height": 10,
               "width": 12,
               "x": 0,
-              "y": 9
+              "y": 23
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-5"
+              },
+              "height": 10,
+              "width": 12,
+              "x": 12,
+              "y": 23
             }
           },
           {
@@ -664,22 +1728,9 @@
                 "name": "panel-4"
               },
               "height": 9,
-              "width": 12,
-              "x": 12,
-              "y": 9
-            }
-          },
-          {
-            "kind": "GridLayoutItem",
-            "spec": {
-              "element": {
-                "kind": "ElementReference",
-                "name": "panel-5"
-              },
-              "height": 8,
               "width": 24,
               "x": 0,
-              "y": 18
+              "y": 33
             }
           }
         ]

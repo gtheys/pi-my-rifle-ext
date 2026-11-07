@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow health dashboard (PMR-XPVE M5): tool error rate, failures, phase durations, Tempo trace search by flow.ref",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T06:30:02Z"
+      "grafana.app/updatedTimestamp": "2026-11-07T08:34:29Z"
     },
     "creationTimestamp": "2026-11-07T02:57:54Z",
-    "generation": 6,
+    "generation": 7,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208897950658560"
     },
     "name": "piflow-health",
     "namespace": "default",
-    "resourceVersion": "1794033002947010",
+    "resourceVersion": "1794040469463019",
     "uid": "33585720-5e94-4275-82d5-c2bd439f777d"
   },
   "spec": {
@@ -190,8 +190,11 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "max by (phase) (pi_flow_run_duration_seconds{ref=~\"$ref\"})",
-                        "legendFormat": "{{phase}}"
+                        "expr": "sum by (ref, phase) (pi_flow_run_duration_seconds{ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
                       },
                       "version": "v0"
                     },
@@ -200,35 +203,127 @@
                 }
               ],
               "queryOptions": {},
-              "transformations": []
+              "transformations": [
+                {
+                  "group": "groupingToMatrix",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "columnField": "phase",
+                      "emptyValue": "zero",
+                      "rowField": "ref",
+                      "valueField": "Value"
+                    }
+                  }
+                }
+              ]
             }
           },
+          "description": "Wall-clock time per phase (phase start to phase complete) for each ticket, stacked. Includes time spent waiting for you (approvals, code review), so long validate bars are usually human wait, not compute.",
           "id": 3,
           "links": [],
-          "title": "Run duration by phase ($ref)",
+          "title": "Run duration per ticket, stacked by phase ($ref)",
           "vizConfig": {
-            "group": "timeseries",
+            "group": "barchart",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
                 "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    }
+                  },
+                  "decimals": 1,
                   "unit": "s"
                 },
-                "overrides": []
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "plan"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "blue",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "implement"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "green",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "validate"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "orange",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "feedback"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "purple",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  }
+                ]
               },
               "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.7,
                 "legend": {
-                  "displayMode": "table",
-                  "placement": "right",
-                  "showLegend": true,
-                  "values": [
-                    "last",
-                    "max"
-                  ]
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
                 },
+                "orientation": "auto",
+                "showValue": "never",
+                "stacking": "normal",
                 "tooltip": {
-                  "mode": "multi"
-                }
+                  "mode": "multi",
+                  "sort": "none"
+                },
+                "xTickLabelRotation": 0
               }
             },
             "version": ""

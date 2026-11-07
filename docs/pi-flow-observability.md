@@ -174,8 +174,28 @@ Three pi-flow dashboards exist in the same Grafana folder (`ag3jjknk85xc0b`): `p
 ("pi-flow range: cost vs score", from the M6 ticket; not documented here — `gcx dashboards get piflow-range`).
 All are DB-only, not provisioned from git.
 
-`piflow-cost` panels (all Prometheus, variable `ref`): cost by ticket (timeseries), **cost per flow stacked by phase**
-(barchart, below), cost by agent/subtask, tokens by kind, and **cost per agent role** (`panel-5`, below).
+`piflow-cost` layout (all Prometheus, variable `ref`, redesigned 2026-11-07 — the original panels were time series of
+values that never change after the push, so every ticket was a dot at the right edge and the legends listed one row per
+agent name per ticket). Principle: **cost is a per-run total, not a time series → instant queries, tables, bars**.
+Instant queries also make deleted/stale test refs disappear. "In range" = tickets whose `push_time_seconds{job="pi-flow"}`
+falls inside the selected time range (`and on (ref) (push_time_seconds >= time() - $__range_s)`).
+
+| Row | Panel | What it answers |
+| --- | --- | --- |
+| 1 | stat tiles `panel-6..9`: Total spend, Tickets, Average per ticket, Median per ticket | how much, how many, typical ticket (median resists one expensive outlier) |
+| 2 | `panel-10` Spend in the last 24h (rolling) | trend: at each hourly step, cost of tickets pushed in the preceding 24h. Rolling because daily buckets can't show "today" (a bar is evaluated at its window end and the series don't exist before their push) |
+| 2 | `panel-2` cost per flow stacked by phase | where each ticket's money went |
+| 3 | `panel-1` Tickets table | per ticket: Total (gauge), Plan / Implement / Validate, Orchestrator, Sessions, Duration, Last pushed; joined by `ref`, sorted newest first. Plan/Implement/Orchestrator columns only exist once a ticket has main-session cost (new runs) — absent otherwise |
+| 4 | `panel-3` Most expensive sessions (top 10) | outlier sessions: Ticket, Role, Subtask, Cost, Tokens (`label_join` key to join cost+tokens; role via `label_replace`) |
+| 4 | `panel-5` cost per agent role (below) | which role is expensive in general |
+| 5 | `panel-4` Cache hit ratio per ticket | `cacheRead / (input + cacheRead + cacheWrite)`; thresholds red < 50%, orange < 80%, green ≥ 80% — low ratio on a costly ticket is the first place to look |
+
+`piflow-health` `panel-3` "Run duration per ticket, stacked by phase": instant `sum by (ref, phase)(pi_flow_run_duration_seconds)`
++ `groupingToMatrix` stacked barchart (durations are wall-clock phase-start→complete and INCLUDE waiting for the human, so a
+long validate bar is usually review/approval wait).
+
+Dashboard-editing gotcha: `gcx dashboards update` needs the CURRENT `metadata.resourceVersion`; a stale file is rejected
+(no output). Always `gcx dashboards get` immediately before editing and check for `"action":"updated"`.
 
 Stacked-by-phase panel (`panel-2`, replaced the old "Cost by phase" time-bar which plotted `sum by (phase)` over time and
 therefore showed one bar per 15 minutes): query `sum by (ref, phase) (pi_flow_run_cost_usd{ref=~"$ref"})` as an
