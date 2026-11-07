@@ -167,7 +167,29 @@ Dashboard gotchas learned:
   reachable via "All".
 - `gcx dashboards snapshot` only renders collapsed rows (cannot expand a trace row); verify expanded rows in a browser.
 
-### 6b. Cost dashboard (`piflow-cost`) and range dashboard (`piflow-range`)
+### 6a. Split cost dashboards (2026-11-07): `piflow-orchestrator` and `piflow-subagents`
+
+`piflow-cost` was split because "cost" mixed two different things: the **orchestrator** (the main pi session that runs
+`/flow`, own LLM calls only) and the **subagents** (every worker / reviewer / deviation check / scout, each a separate session).
+Old combined dashboard is kept but retitled "superseded" (backup `docs/pi-flow-cost.dashboard.json`); a ticket's combined
+total (orchestrator + subagents) is a column on BOTH new dashboards' ticket tables.
+Backups: [`pi-flow-orchestrator.dashboard.json`](pi-flow-orchestrator.dashboard.json),
+[`pi-flow-subagents.dashboard.json`](pi-flow-subagents.dashboard.json). Both are DB-only, built with the same principles as 6b
+(instant queries, `ref` variable, "in range" = `push_time_seconds` within `$__range_s`).
+
+* **Orchestrator selector:** `agent="main"` (rows pushed by `buildMainRows`; role `orchestrator`). Subagents: `agent!="main"`.
+* `piflow-orchestrator`: tiles (orchestrator spend, tickets, avg/median per ticket) · rolling 24h · per-ticket stacked by
+  phase (plan/implement/validate) · ticket table (Orchestrator gauge, Plan, Implement, Validate, Subagents, Ticket total
+  (orchestrator + subagents), Duration, Last pushed) · orchestrator cache hit ratio per ticket.
+* `piflow-subagents`: tiles (subagent spend, sessions, avg/median per session) · rolling 24h · per-ticket stacked by ROLE ·
+  per-role highest/avg/median · top-10 sessions · ticket table (Subagents gauge, Sessions, Most expensive session,
+  Orchestrator, Ticket total) · cache hit ratio per role. Role comes from `pi_flow_run_role_info` joined by (ref, session) with the legacy
+  name-prefix fallback and `Review`/`Deviation check` lower-casing (same as 6b).
+* First insight it surfaced: deviation checks run a 29% cache hit ratio vs 75% for reviews (cost lever).
+* Old tickets (before main-session tracking) show "–" for orchestrator columns but their subagent cost and combined total.
+* Table header "Ticket total (orchestrator + subagents)" has a 300 px column width override (it was truncated).
+
+### 6b. (superseded by 6a) Cost dashboard (`piflow-cost`) and range dashboard (`piflow-range`)
 
 Three pi-flow dashboards exist in the same Grafana folder (`ag3jjknk85xc0b`): `piflow-health` (above), **`piflow-cost`**
 ("pi-flow cost", backup: [`docs/pi-flow-cost.dashboard.json`](pi-flow-cost.dashboard.json)) and `piflow-range`

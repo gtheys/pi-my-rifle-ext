@@ -1,0 +1,1668 @@
+{
+  "apiVersion": "dashboard.grafana.app/v2",
+  "kind": "Dashboard",
+  "metadata": {
+    "annotations": {
+      "grafana.app/createdBy": "service-account:cfw0ld9gfssu8e",
+      "grafana.app/folder": "ag3jjknk85xc0b",
+      "grafana.app/message": "pi-flow subagent cost (separate sessions only)",
+      "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
+      "grafana.app/updatedTimestamp": "2026-11-07T09:18:13Z"
+    },
+    "creationTimestamp": "2026-11-07T09:17:27Z",
+    "generation": 2,
+    "labels": {
+      "grafana.app/deprecatedInternalID": "2304417441361920"
+    },
+    "name": "piflow-subagents",
+    "namespace": "default",
+    "resourceVersion": "1794043093426014",
+    "uid": "22a436ec-f81d-4027-9351-ea1553a5977f"
+  },
+  "spec": {
+    "annotations": [
+      {
+        "kind": "AnnotationQuery",
+        "spec": {
+          "builtIn": true,
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "legacyOptions": {
+            "type": "dashboard"
+          },
+          "name": "Annotations \u0026 Alerts",
+          "query": {
+            "datasource": {
+              "name": "-- Grafana --"
+            },
+            "group": "grafana",
+            "kind": "DataQuery",
+            "spec": {},
+            "version": "v0"
+          }
+        }
+      }
+    ],
+    "cursorSync": "Crosshair",
+    "description": "Cost of the SUBAGENTS: every worker, reviewer, deviation check and scout session of a flow (each its own session, never including the orchestrator). The orchestrator has its own dashboard.",
+    "editable": true,
+    "elements": {
+      "panel-1": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Cost of all subagent sessions of tickets pushed within the selected time range (separate sessions; the orchestrator is not included).",
+          "id": 1,
+          "links": [],
+          "title": "Subagent spend",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 2,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-10": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_tokens_total{ref=~\"$ref\", agent!=\"main\", kind=\"cacheRead\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_tokens_total{ref=~\"$ref\", agent!=\"main\", kind=\"cacheRead\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\")) / sum by (role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_tokens_total{ref=~\"$ref\", agent!=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_tokens_total{ref=~\"$ref\", agent!=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "renameByName": {
+                        "Value": "Cache hit ratio",
+                        "role": "Name"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Name",
+                          "Cache hit ratio"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Cache hit ratio"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "cacheRead / (input + cacheRead + cacheWrite) of subagent sessions, per role. Reviewers re-read a lot of the same diff, so a low ratio here means avoidable input cost.",
+          "id": 10,
+          "links": [],
+          "title": "Cache hit ratio per subagent role (higher = cheaper)",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "custom": {
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1
+                  },
+                  "decimals": 0,
+                  "max": 1,
+                  "min": 0,
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "red",
+                        "value": null
+                      },
+                      {
+                        "color": "orange",
+                        "value": 0.5
+                      },
+                      {
+                        "color": "green",
+                        "value": 0.8
+                      }
+                    ]
+                  },
+                  "unit": "percentunit"
+                },
+                "overrides": []
+              },
+              "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.8,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
+                },
+                "orientation": "horizontal",
+                "showValue": "always",
+                "stacking": "none",
+                "tooltip": {
+                  "mode": "single",
+                  "sort": "none"
+                },
+                "xField": "Name"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-2": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "count(sum by (ref, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Number of subagent sessions (workers, reviewers, deviation checks, scouts) in the selected range.",
+          "id": 2,
+          "links": [],
+          "title": "Subagent sessions",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 0,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "none"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-3": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "avg(sum by (ref, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Mean cost of one subagent session.",
+          "id": 3,
+          "links": [],
+          "title": "Average per session",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 4,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-4": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "quantile(0.5, sum by (ref, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Median cost of one subagent session.",
+          "id": 4,
+          "links": [],
+          "title": "Median per session",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 4,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-5": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e (time() - 86400) and push_time_seconds{job=\"pi-flow\"} \u003c= time())) or vector(0)",
+                        "format": "time_series",
+                        "instant": false,
+                        "interval": "1h",
+                        "legendFormat": "spend (24h)",
+                        "range": true
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "At each point: subagent cost of tickets pushed in the preceding 24 hours (push time = when the run ended).",
+          "id": 5,
+          "links": [],
+          "title": "Subagent spend in the last 24h (rolling)",
+          "vizConfig": {
+            "group": "timeseries",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "fixedColor": "blue",
+                    "mode": "fixed"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "drawStyle": "line",
+                    "fillOpacity": 30,
+                    "lineInterpolation": "stepAfter",
+                    "lineWidth": 2,
+                    "showPoints": "never"
+                  },
+                  "decimals": 2,
+                  "min": 0,
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
+                },
+                "tooltip": {
+                  "mode": "single",
+                  "sort": "none"
+                }
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-6": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref, role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\")) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "groupingToMatrix",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "columnField": "role",
+                      "emptyValue": "zero",
+                      "rowField": "ref",
+                      "valueField": "Value"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Where a ticket's subagent money went: review, deviation check, scouts, workers... Hover a segment for that role's cost.",
+          "id": 6,
+          "links": [],
+          "title": "Subagent cost per ticket, stacked by role",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    }
+                  },
+                  "decimals": 3,
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.7,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "normal",
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "none"
+                },
+                "xTickLabelRotation": 0
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-7": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "max by (role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "avg by (role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "quantile by (role) (0.5, label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) * on (ref, session) group_left (role) pi_flow_run_role_info) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) unless on (ref, session) pi_flow_run_role_info, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "role",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "renameByName": {
+                        "Value #A": "Highest",
+                        "Value #B": "Average",
+                        "Value #C": "Median"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "pattern": "^(role|Highest|Average|Median)$"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Highest"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Per ROLE: the agent type (scout, worker, reviewer, ...) when known, else the name before the colon. A session is one subagent session. Highest = most expensive single session; average and median are over the same sessions. The orchestrator is on its own dashboard.",
+          "id": 7,
+          "links": [],
+          "title": "Cost per subagent role: highest, average and median session",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1
+                  },
+                  "decimals": 4,
+                  "unit": "currencyUSD"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Highest"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "orange",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Average"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "blue",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Median"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "green",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "barWidth": 0.8,
+                "groupWidth": 0.75,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "orientation": "horizontal",
+                "showValue": "auto",
+                "stacking": "none",
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "none"
+                },
+                "xField": "role"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-8": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "label_join(label_replace(label_replace(label_replace(label_replace(topk(10, sum by (ref, agent, session, subtask) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"})), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"), \"subtask\", \"–\", \"subtask\", \"^$\"), \"key\", \"|\", \"ref\", \"session\")",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (key) (label_join(pi_flow_tokens_total{ref=~\"$ref\", agent!=\"main\"}, \"key\", \"|\", \"ref\", \"session\"))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "key",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "renameByName": {
+                        "Value #A": "Cost",
+                        "Value #B": "Tokens",
+                        "ref": "Ticket",
+                        "role": "Role",
+                        "subtask": "Subtask"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Ticket",
+                          "Role",
+                          "Subtask",
+                          "Cost",
+                          "Tokens"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterByValue",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "filters": [
+                        {
+                          "config": {
+                            "id": "isNull",
+                            "options": {}
+                          },
+                          "fieldName": "Cost"
+                        }
+                      ],
+                      "match": "any",
+                      "type": "exclude"
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Cost"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "The ten single subagent sessions with the highest cost. Role = agent name before the colon (or agent type). Subtask = plan task for 1:1 workers. Tokens = all kinds for that session.",
+          "id": 8,
+          "links": [],
+          "title": "Most expensive subagent sessions (top 10)",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    }
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Cost"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 4
+                      },
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "basic",
+                          "type": "gauge"
+                        }
+                      },
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "orange",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Tokens"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "short"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-9": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "count by (ref) (sum by (ref, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "max by (ref) (sum by (ref, session) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"}))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "E"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "push_time_seconds{job=\"pi-flow\", ref=~\"$ref\"} * 1000",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "F"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "ref",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "renameByName": {
+                        "Value #A": "Subagents",
+                        "Value #B": "Sessions",
+                        "Value #C": "Most expensive session",
+                        "Value #D": "Orchestrator",
+                        "Value #E": "Ticket total (orchestrator + subagents)",
+                        "Value #F": "Last pushed",
+                        "ref": "Ticket"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Ticket",
+                          "Subagents",
+                          "Sessions",
+                          "Most expensive session",
+                          "Orchestrator",
+                          "Ticket total (orchestrator + subagents)",
+                          "Last pushed"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Last pushed"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Subagents = all subagent sessions of the ticket (separate sessions). Orchestrator = the main session's own cost. Ticket total = orchestrator + subagents. \"–\" = not recorded.",
+          "id": 9,
+          "links": [],
+          "title": "Tickets: subagent cost",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    }
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Subagents"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      },
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "basic",
+                          "type": "gauge"
+                        }
+                      },
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "orange",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Sessions"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "none"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 0
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Most expensive session"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 4
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Orchestrator"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket total (orchestrator + subagents)"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 300
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Last pushed"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeFromNow"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      }
+    },
+    "layout": {
+      "kind": "GridLayout",
+      "spec": {
+        "items": [
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-1"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 0,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-2"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 6,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-3"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 12,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-4"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 18,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-5"
+              },
+              "height": 9,
+              "width": 12,
+              "x": 0,
+              "y": 4
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-6"
+              },
+              "height": 9,
+              "width": 12,
+              "x": 12,
+              "y": 4
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-7"
+              },
+              "height": 10,
+              "width": 12,
+              "x": 0,
+              "y": 13
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-8"
+              },
+              "height": 10,
+              "width": 12,
+              "x": 12,
+              "y": 13
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-9"
+              },
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 23
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-10"
+              },
+              "height": 9,
+              "width": 24,
+              "x": 0,
+              "y": 33
+            }
+          }
+        ]
+      }
+    },
+    "links": [],
+    "liveNow": false,
+    "preload": false,
+    "tags": [
+      "pi-flow",
+      "observability",
+      "cost"
+    ],
+    "timeSettings": {
+      "autoRefresh": "5m",
+      "autoRefreshIntervals": [
+        "5s",
+        "10s",
+        "30s",
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "1d"
+      ],
+      "fiscalYearStartMonth": 0,
+      "from": "now-7d",
+      "hideTimepicker": false,
+      "timezone": "Asia/Bangkok",
+      "to": "now"
+    },
+    "title": "pi-flow subagents",
+    "variables": [
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "allValue": ".*",
+          "allowCustomValue": true,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "definition": "label_values(pi_flow_run_cost_usd, ref)",
+          "hide": "dontHide",
+          "includeAll": true,
+          "label": "ref",
+          "multi": true,
+          "name": "ref",
+          "options": [],
+          "query": {
+            "datasource": {
+              "name": "PBFA97CFB590B2093"
+            },
+            "group": "prometheus",
+            "kind": "DataQuery",
+            "spec": {
+              "qryType": 1,
+              "query": "label_values(pi_flow_run_cost_usd, ref)",
+              "refId": "PrometheusVariableQueryEditor-VariableQuery"
+            },
+            "version": "v0"
+          },
+          "refresh": "onTimeRangeChanged",
+          "regex": "",
+          "skipUrlSync": false,
+          "sort": "alphabeticalAsc"
+        }
+      }
+    ]
+  },
+  "status": {}
+}
