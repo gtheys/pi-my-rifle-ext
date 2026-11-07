@@ -4,7 +4,7 @@
 // commands; spec-review/commands.ts owns the spec commands. What stays here:
 // the extension entrypoint, the enforcement interceptors, the flow loop
 // wiring, and /flow + /herdr-sync + /flow-view.
-import { existsSync, promises as fs } from 'node:fs'
+import { existsSync, promises as fs, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
@@ -12,8 +12,10 @@ import {
   getAgentDir,
   isToolCallEventType,
 } from '@earendil-works/pi-coding-agent'
+import type { AssignmentRecord } from '@gtheys/pi-interactive-subagents'
 import {
   hasLiveAssignmentForParent,
+  listAssignments,
   onFlowSpawn,
 } from '@gtheys/pi-interactive-subagents'
 import {
@@ -30,6 +32,8 @@ import {
 } from './aven/client.ts'
 import { resolveMode } from './config.ts'
 import { parseFlowArgs } from './flow/args.ts'
+import { pushToGateway } from './flow/cost.ts'
+import { registerFlowCostCommand } from './flow/cost-command.ts'
 import { resolveJiraEpic } from './flow/jira-ref.ts'
 import { lifecycleLabelMutation } from './flow/label-gate.ts'
 import { landingIntercept } from './flow/land-gate.ts'
@@ -60,7 +64,7 @@ import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts
 import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import prQualityExtension from './pr-quality/index.ts'
 import reviewExtension from './review/review.ts'
-import { recordRunEvent, runStatePath } from './run-state.ts'
+import { readRunEvents, recordRunEvent, runStatePath } from './run-state.ts'
 import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
@@ -152,6 +156,12 @@ export default function (pi: ExtensionAPI) {
     let text = `subagent ${info.childId} ("${info.name}") ${info.kind} — attribution env stamped`
     if (info.subtask !== undefined) {
       text = `subagent ${info.childId} ("${info.name}") ${info.kind} for subtask ${info.subtask} — attribution env stamped`
+    }
+    // AIDEV-NOTE (PMR-EA8X): append the session path so /flow-cost can
+    // resolve child sessions from the journal alone (older notes without
+    // it fall back to the durable assignment records).
+    if (info.sessionFile !== undefined) {
+      text = `${text}, session="${info.sessionFile}"`
     }
     void journal({ kind: 'note', at: new Date().toISOString(), ref, text })
   })
@@ -288,6 +298,50 @@ export default function (pi: ExtensionAPI) {
 
   registerPhaseCommands(pi)
   registerSpecCommands(pi)
+
+  // AIDEV-NOTE (PMR-EA8X): /flow-cost — offline per-ticket cost rollup from
+  // the run journal + session files (the authority). --push forwards
+  // aggregates to the Pushgateway when PI_FLOW_PUSHGATEWAY_URL is set
+  // (endpoint override + bearer secret = the two env-var exceptions the
+  // config rules allow); push failures warn, never fail.
+  registerFlowCostCommand(pi, {
+    readRunEvents: (ref) => readRunEvents(getAgentDir(), ref),
+    listAssignmentRecords: () => {
+      const records: AssignmentRecord[] = []
+      for (const view of listAssignments()) {
+        if (view.state === 'unknown') continue
+        records.push(view.record)
+      }
+      return records
+    },
+    readSessionFile: (file) => {
+      try {
+        return readFileSync(file, 'utf8')
+      } catch {
+        return null
+      }
+    },
+    push: (ref, body) => {
+      const url = process.env.PI_FLOW_PUSHGATEWAY_URL
+      if (url === undefined || url.length === 0) {
+        return Promise.resolve({
+          ok: false,
+          error: 'PI_FLOW_PUSHGATEWAY_URL is not set',
+        })
+      }
+      const token = process.env.PI_FLOW_PUSHGATEWAY_TOKEN
+      return pushToGateway(
+        url,
+        ref,
+        body,
+        async (u, init) => {
+          const response = await fetch(u, init)
+          return { status: response.status, statusText: response.statusText }
+        },
+        token,
+      )
+    },
+  })
 
   // AIDEV-NOTE: PMR-T8ZG — human entry point of the code-review gate. The
   // command resolves the ref and sends the gate prompt via sendUserMessage

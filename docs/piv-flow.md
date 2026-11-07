@@ -343,12 +343,40 @@ Mechanics:
 - The `subtask` ref is also persisted on the durable assignment record
   (`assignments.ts`), so takeovers after parent death keep the mapping.
 
+## 8b. Per-ticket cost rollup — `/flow-cost <ref>` (PMR-EA8X)
+
+`/flow-cost <ref>` answers "what did this ticket cost" from local files
+only — no backend required. It replays the run journal, collects the
+spawn notes (child id, subtask, session path, active phase), resolves each
+child session jsonl (note first, durable assignment record as fallback),
+and rolls up token/cost totals with the same pure usage functions the
+subagents extension uses (`usage.ts` — session files stay the authority).
+
+Coverage discipline: a session that cannot be read, or that carries no
+usage blocks, shows a **coverage flag** (`NO SESSION` / `NO USAGE DATA`) —
+never an invented zero. Totals count only sessions that actually reported
+usage. Attribution follows the last note holder: a takeover
+(resume/reattach) re-attributes a session's cost to whoever now owns the
+work, matching the journal's reassignment notes.
+
+`--push` additionally POSTs the aggregates to a Prometheus Pushgateway
+(`PI_FLOW_PUSHGATEWAY_URL`, bearer `PI_FLOW_PUSHGATEWAY_TOKEN` when set):
+
+- `pi_flow_tool_calls_total{ref,phase,agent,tool,status}`
+- `pi_flow_run_cost_usd{ref,phase,agent,subtask}`
+- `pi_flow_run_duration_seconds{ref,phase}`
+- `pi_flow_tokens_total{ref,phase,agent,kind}`
+
+Push failures are warnings, never fatal; `--push` works on any past run at
+any time, so it doubles as the backfill path when a backend was down.
+
 ## 9. Quick reference
 
 | Purpose | Command |
 | --- | --- |
 | Topic → understanding + ticket (standalone) | `/brainstorm <topic>` · `/brainstorm --debug <symptom>` |
 | Full run, resume-aware | `/flow <ref>` |
+| Per-ticket cost rollup | `/flow-cost <ref>` [--push] — offline ground truth from journal + session files; `--push` forwards aggregates to a Pushgateway (`PI_FLOW_PUSHGATEWAY_URL`/`_TOKEN`, optional) |
 | Single phases | `/plan <ref>` · `/implement <ref>` · `/validate <ref>` · `/feedback <ref>` |
 | Current run state | `aven show <ref> --full` — lifecycle labels are the phase ledger |
 | Live run viewer (Herdr) | `/flow-view <ref> [right\|below\|left\|above\|tab]` — renders the run-state journal |

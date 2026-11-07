@@ -2409,6 +2409,7 @@ async function launchSubagent(
     childId: id,
     name: params.name,
     ...(params.subtask !== undefined ? { subtask: params.subtask } : {}),
+    sessionFile: subagentSessionFile,
   })
   updateWidget()
   if (latestPi) startStatusRefresh(latestPi)
@@ -3539,6 +3540,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                 ...(record.subtask !== undefined
                   ? { subtask: record.subtask }
                   : {}),
+                ...(params.sessionPath !== undefined
+                  ? { sessionFile: params.sessionPath }
+                  : {}),
               })
               startWidgetRefresh()
               startStatusRefresh(pi)
@@ -3683,6 +3687,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           name,
           ...(reattachRecord?.subtask !== undefined
             ? { subtask: reattachRecord.subtask }
+            : {}),
+          ...(params.sessionPath !== undefined
+            ? { sessionFile: params.sessionPath }
             : {}),
         })
         startWidgetRefresh()
@@ -4231,7 +4238,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
   })
 }
 
-export { hasLiveAssignmentForParent } from './assignments.ts'
+export type { AssignmentRecord } from './assignments.ts'
+// AIDEV-NOTE (PMR-EA8X): flow-cost rollup surface consumed by pi-flow —
+// session-file usage accounting (session jsonl stays the authority) and the
+// durable assignment records (sessionFile + subtask attribution).
+export { hasLiveAssignmentForParent, listAssignments } from './assignments.ts'
 export type { FlowSpawnInfo } from './flow-env.ts'
 // AIDEV-NOTE (PMR-HFK1): flow attribution surface consumed by pi-flow —
 // env validators for stamping the main process + the spawn listener registry.
@@ -4242,6 +4253,13 @@ export {
   onFlowSpawn,
   TRACEPARENT_RE,
 } from './flow-env.ts'
+export type { UsageSummary, UsageTotals } from './usage.ts'
+export {
+  createUsageSummary,
+  readSessionUsage,
+  summarizeEntriesUsage,
+  totalTokens,
+} from './usage.ts'
 // AIDEV-NOTE: Public programmatic API for other extensions that want to spawn
 // subagents directly. Consumers import launchSubagent/watchSubagent instead of
 // sending a user message to the `subagent` tool.
