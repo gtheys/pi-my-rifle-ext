@@ -382,15 +382,15 @@ test('buildPushBody emits labeled metrics and skips usage-less rows', () => {
   ])
   assert.match(
     body,
-    /pi_flow_run_cost_usd\{ref="PMR-TEST",phase="implement",agent="worker \\"quoted\\"",subtask="PMR-A1"\} 0\.5/,
+    /pi_flow_run_cost_usd\{ref="PMR-TEST",phase="implement",agent="worker \\"quoted\\"",subtask="PMR-A1",session="c1"\} 0\.5/,
   )
   assert.match(
     body,
-    /pi_flow_tokens_total\{ref="PMR-TEST",phase="implement",agent="worker \\"quoted\\"",kind="input"\} 100/,
+    /pi_flow_tokens_total\{ref="PMR-TEST",phase="implement",agent="worker \\"quoted\\"",kind="input",session="c1"\} 100/,
   )
   assert.match(
     body,
-    /pi_flow_tool_calls_total\{ref="PMR-TEST",phase="implement",agent="worker \\"quoted\\"",tool="bash",status="error"\} 1/,
+    /pi_flow_tool_calls_total\{ref="PMR-TEST",phase="implement",agent="worker \\"quoted\\"",tool="bash",status="error",session="c1"\} 1/,
   )
   assert.match(
     body,
@@ -398,6 +398,47 @@ test('buildPushBody emits labeled metrics and skips usage-less rows', () => {
   )
   // dark row contributed nothing
   assert.ok(!body.includes('agent="dark"'))
+})
+
+test('buildPushBody keeps label sets unique for identically-named workers', () => {
+  // Two workers with the same display name, phase and no subtask — the
+  // Pushgateway rejects a push containing duplicate metric label sets, so
+  // the session (childId) label must disambiguate them.
+  const rows = buildWorkerRows(
+    [
+      {
+        childId: 'c1',
+        name: 'Deviation check: PMR-TEST',
+        kind: 'spawn' as const,
+        subtask: null,
+        sessionFile: '/s1.jsonl',
+        at: '',
+        phase: 'validate' as const,
+      },
+      {
+        childId: 'c2',
+        name: 'Deviation check: PMR-TEST',
+        kind: 'spawn' as const,
+        subtask: null,
+        sessionFile: '/s2.jsonl',
+        at: '',
+        phase: 'validate' as const,
+      },
+    ],
+    [],
+    new Map<string, readonly unknown[]>([
+      ['/s1.jsonl', [assistantEntry(0.5, 100)]],
+      ['/s2.jsonl', [assistantEntry(0.25, 50)]],
+    ]),
+  )
+  const body = buildPushBody('PMR-TEST', rows, [])
+  assert.match(body, /session="c1"\} 0\.5/)
+  assert.match(body, /session="c2"\} 0\.25/)
+  const costLines = body
+    .split('\n')
+    .filter((line) => line.startsWith('pi_flow_run_cost_usd'))
+  assert.equal(costLines.length, 2)
+  assert.notEqual(costLines[0], costLines[1])
 })
 
 test('pushToGateway posts to the grouped path with bearer auth', async () => {

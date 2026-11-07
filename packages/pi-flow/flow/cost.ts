@@ -413,19 +413,19 @@ export function buildPushBody(
     let subtask = ''
     if (row.subtask !== null) subtask = row.subtask
     lines.push(
-      `pi_flow_run_cost_usd{${labelString({ ref, phase, agent: row.name, subtask })}} ${row.summary.totals.cost}`,
+      `pi_flow_run_cost_usd{${labelString({ ref, phase, agent: row.name, subtask, session: row.childId })}} ${row.summary.totals.cost}`,
     )
     lines.push(
-      `pi_flow_tokens_total{${labelString({ ref, phase, agent: row.name, kind: 'input' })}} ${row.summary.totals.input}`,
+      `pi_flow_tokens_total{${labelString({ ref, phase, agent: row.name, kind: 'input', session: row.childId })}} ${row.summary.totals.input}`,
     )
     lines.push(
-      `pi_flow_tokens_total{${labelString({ ref, phase, agent: row.name, kind: 'output' })}} ${row.summary.totals.output}`,
+      `pi_flow_tokens_total{${labelString({ ref, phase, agent: row.name, kind: 'output', session: row.childId })}} ${row.summary.totals.output}`,
     )
     lines.push(
-      `pi_flow_tokens_total{${labelString({ ref, phase, agent: row.name, kind: 'cacheRead' })}} ${row.summary.totals.cacheRead}`,
+      `pi_flow_tokens_total{${labelString({ ref, phase, agent: row.name, kind: 'cacheRead', session: row.childId })}} ${row.summary.totals.cacheRead}`,
     )
     lines.push(
-      `pi_flow_tokens_total{${labelString({ ref, phase, agent: row.name, kind: 'cacheWrite' })}} ${row.summary.totals.cacheWrite}`,
+      `pi_flow_tokens_total{${labelString({ ref, phase, agent: row.name, kind: 'cacheWrite', session: row.childId })}} ${row.summary.totals.cacheWrite}`,
     )
     for (const call of row.toolCalls) {
       lines.push(
@@ -435,6 +435,7 @@ export function buildPushBody(
           agent: row.name,
           tool: call.tool,
           status: call.status,
+          session: row.childId,
         })}} ${call.count}`,
       )
     }

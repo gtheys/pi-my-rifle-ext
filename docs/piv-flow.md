@@ -362,10 +362,14 @@ work, matching the journal's reassignment notes.
 `--push` additionally POSTs the aggregates to a Prometheus Pushgateway
 (`PI_FLOW_PUSHGATEWAY_URL`, bearer `PI_FLOW_PUSHGATEWAY_TOKEN` when set):
 
-- `pi_flow_tool_calls_total{ref,phase,agent,tool,status}`
-- `pi_flow_run_cost_usd{ref,phase,agent,subtask}`
+- `pi_flow_tool_calls_total{ref,phase,agent,tool,status,session}`
+- `pi_flow_run_cost_usd{ref,phase,agent,subtask,session}`
 - `pi_flow_run_duration_seconds{ref,phase}`
-- `pi_flow_tokens_total{ref,phase,agent,kind}`
+- `pi_flow_tokens_total{ref,phase,agent,kind,session}`
+
+`session` is the worker's child id: two workers with the same display
+name, phase and subtask still produce distinct label sets (the
+Pushgateway rejects a push containing duplicates).
 
 Push failures are warnings, never fatal; `--push` works on any past run at
 any time, so it doubles as the backfill path when a backend was down.
