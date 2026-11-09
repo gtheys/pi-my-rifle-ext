@@ -196,13 +196,14 @@ export interface AdhocDeps {
   /** True while a /flow run is active: tracking is skipped. */
   flowActive: () => boolean
   /**
-   * Trace hooks (telemetry). begin: a main-session run opened, so spans made
-   * from now on nest under it. end: the run closed — export its span ONCE
-   * (never update in place; Tempo keeps both copies of a re-sent span id).
-   * A worker run only ever gets end (its work happened in another process).
+   * Trace hooks (telemetry). begin: export the zero-length root marker now;
+   * nest=true (main-session run) also nests spans made from now on under it,
+   * nest=false (worker run: its work happens in another process) does not.
+   * end: export the "<kind> run" span ONCE with the real duration, cost and
+   * tokens (never update in place; Tempo keeps both copies of a re-sent id).
    */
   trace?: {
-    begin: (run: AdhocRun) => void
+    begin: (run: AdhocRun, nest: boolean) => void
     end: (run: AdhocRun, attributes: Record<string, string>) => void
   }
 }
@@ -277,13 +278,15 @@ export function createAdhocTracker(deps: AdhocDeps): AdhocTracker {
       void closeMain()
       mainRun = newRun(kind, target, true)
       mainSingleTurn = singleTurn
-      deps.trace?.begin(mainRun)
+      deps.trace?.begin(mainRun, true)
       void pushRun(mainRun)
       return mainRun
     },
     beginWorker(kind, target) {
       if (deps.flowActive()) return null
-      return newRun(kind, target, false)
+      const run = newRun(kind, target, false)
+      deps.trace?.begin(run, false)
+      return run
     },
     addWorker(run, worker) {
       if (run === null || worker.sessionFile.length === 0) return

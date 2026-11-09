@@ -156,7 +156,7 @@ describe('adhoc tracker trace hooks', () => {
       push: async () => {},
       flowActive: () => false,
       trace: {
-        begin: (run) => events.push(`begin ${run.kind}`),
+        begin: (run, nest) => events.push(`begin ${run.kind} ${nest}`),
         end: (run, attrs) =>
           events.push(`end ${run.kind} ${attrs['adhoc.run'] === run.id}`),
       },
@@ -169,7 +169,7 @@ describe('adhoc tracker trace hooks', () => {
     tracker.beginMain('pr-quality', 'PR 1', true)
     await tracker.settled()
     await tracker.settled()
-    expect(events).toEqual(['begin pr-quality', 'end pr-quality true'])
+    expect(events).toEqual(['begin pr-quality true', 'end pr-quality true'])
   })
 
   test('conversation run ends once, when the next run replaces it', async () => {
@@ -178,16 +178,16 @@ describe('adhoc tracker trace hooks', () => {
     await tracker.settled()
     tracker.beginMain('pr-quality', 'PR 2', true)
     expect(events).toEqual([
-      'begin brainstorm',
+      'begin brainstorm true',
       'end brainstorm true',
-      'begin pr-quality',
+      'begin pr-quality true',
     ])
   })
 
-  test('worker run: end only', async () => {
+  test('worker run: marker without nesting, then end', async () => {
     const { tracker, events } = traced()
     const run = tracker.beginWorker('review', 'PR 3')
     await tracker.finish(run)
-    expect(events).toEqual(['end review true'])
+    expect(events).toEqual(['begin review false', 'end review true'])
   })
 })

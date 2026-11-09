@@ -144,6 +144,11 @@ export interface TelemetryState {
     startNano: string
     attrs: SpanAttributes
   } | null
+  /** root markers of open ad-hoc runs (by run id), kept until the run span closes them. */
+  adhocRoots: Map<
+    string,
+    { traceId: string; spanId: string; startNano: string }
+  >
   flow: SpanAttributes
   openTools: Map<string, OpenToolSpan>
   buffer: TelemetrySpan[]
@@ -172,7 +177,7 @@ export interface TelemetryHandle {
    * process to its per-session trace. A run with no matching begin (the
    * /review worker, which ran in another process) exports a standalone span.
    */
-  adhocBegin: (run: AdhocTraceInfo) => void
+  adhocBegin: (run: AdhocTraceInfo, nest: boolean) => void
   adhocEnd: (run: AdhocTraceInfo, attributes: SpanAttributes) => void
 }
 
@@ -198,6 +203,7 @@ export function registerTelemetry(
     session: null,
     phase: null,
     adhoc: null,
+    adhocRoots: new Map(),
     flow: {},
     openTools: new Map(),
     buffer: [],
@@ -528,46 +534,85 @@ export function registerTelemetry(
   const adhocName = (run: AdhocTraceInfo): string => `${run.kind} ${run.target}`
 
   return {
-    adhocBegin: (run) => {
+    adhocBegin: (run, nest) => {
       if (!state.enabled) return
       ensureTrace()
       if (state.fromFlow) return
-      state.adhoc = {
+      // AIDEV-NOTE: the root span is a zero-length MARKER exported right away
+      // (same pattern as the flow root), so children made during the run
+      // never hang off a missing parent even if pi dies mid-run. The real
+      // duration/cost/tokens go on a separate "<kind> run" child span at
+      // close. Neither span is ever re-sent (Tempo keeps both copies).
+      const root = {
         traceId: randomTraceId(deps.rng),
         spanId: randomSpanId(deps.rng),
         startNano: toUnixNano(run.startMs),
-        attrs: {
-          'adhoc.run': run.id,
-          'adhoc.kind': run.kind,
-          'adhoc.target': run.target,
-        },
       }
-      state.traceId = state.adhoc.traceId
-      state.rootParentId = state.adhoc.spanId
+      state.adhocRoots.set(run.id, root)
+      const attrs = {
+        'adhoc.run': run.id,
+        'adhoc.kind': run.kind,
+        'adhoc.target': run.target,
+      }
+      state.buffer.push({
+        traceId: root.traceId,
+        spanId: root.spanId,
+        name: adhocName(run),
+        kind: 1,
+        startTimeUnixNano: root.startNano,
+        endTimeUnixNano: root.startNano,
+        attributes: { ...attrs, 'flow.span': 'adhoc' },
+        statusCode: 0,
+      })
+      flush()
+      if (!nest) return
+      state.adhoc = { ...root, attrs }
+      state.traceId = root.traceId
+      state.rootParentId = root.spanId
     },
     adhocEnd: (run, attributes) => {
       if (!state.enabled) return
+      let root = state.adhocRoots.get(run.id)
+      state.adhocRoots.delete(run.id)
+      if (root === undefined) {
+        // begin never ran (telemetry enabled mid-run): emit the marker now
+        root = {
+          traceId: randomTraceId(deps.rng),
+          spanId: randomSpanId(deps.rng),
+          startNano: toUnixNano(run.startMs),
+        }
+        state.buffer.push({
+          traceId: root.traceId,
+          spanId: root.spanId,
+          name: adhocName(run),
+          kind: 1,
+          startTimeUnixNano: root.startNano,
+          endTimeUnixNano: root.startNano,
+          attributes: {
+            'adhoc.run': run.id,
+            'adhoc.kind': run.kind,
+            'adhoc.target': run.target,
+            'flow.span': 'adhoc',
+          },
+          statusCode: 0,
+        })
+      }
       const open = state.adhoc
-      let traceId = randomTraceId(deps.rng)
-      let spanId = randomSpanId(deps.rng)
-      let startNano = toUnixNano(run.startMs)
       if (open !== null && open.attrs['adhoc.run'] === run.id) {
-        traceId = open.traceId
-        spanId = open.spanId
-        startNano = open.startNano
         // back to a fresh per-session trace for whatever comes next
         state.adhoc = null
         state.traceId = null
         state.rootParentId = null
       }
       state.buffer.push({
-        traceId,
-        spanId,
-        name: adhocName(run),
+        traceId: root.traceId,
+        spanId: randomSpanId(deps.rng),
+        parentSpanId: root.spanId,
+        name: `${run.kind} run`,
         kind: 1,
-        startTimeUnixNano: startNano,
+        startTimeUnixNano: root.startNano,
         endTimeUnixNano: toUnixNano(run.endMs),
-        attributes: { ...attributes, 'flow.span': 'adhoc' },
+        attributes: { ...attributes, 'flow.span': 'adhoc-run' },
         statusCode: 0,
       })
       flush()

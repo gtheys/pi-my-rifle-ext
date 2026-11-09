@@ -66,9 +66,14 @@ const RUN = {
   endMs: 1_700_000_060_000,
 }
 
-test('main-session run: tool spans nest under the run span, exported once at end', async () => {
+test('main-session run: root marker at begin, tool spans nest under it, one run span at end', async () => {
   const { pi, handle, spans } = await setup()
-  handle.adhocBegin(RUN)
+  handle.adhocBegin(RUN, true)
+  await tick()
+  // marker is exported immediately (before anything closes)
+  const root = spans.find((s) => s.name === 'brainstorm topic')
+  assert.ok(root !== undefined)
+  assert.equal(attr(root, 'flow.span'), 'adhoc')
   pi.emit('tool_execution_start', {
     type: 'tool_execution_start',
     toolCallId: 't1',
@@ -84,15 +89,25 @@ test('main-session run: tool spans nest under the run span, exported once at end
   })
   handle.adhocEnd(RUN, { 'adhoc.cost_usd': '0.5', 'adhoc.run': RUN.id })
   await tick()
-  const root = spans.find((s) => s.name === 'brainstorm topic')
+  pi.emit('session_shutdown', { type: 'session_shutdown' })
+  await tick()
   const tool = spans.find((s) => s.name === 'tool bash')
-  assert.ok(root !== undefined && tool !== undefined)
+  const run = spans.find((s) => s.name === 'brainstorm run')
+  assert.ok(tool !== undefined && run !== undefined)
   assert.equal(tool.traceId, root.traceId)
   assert.equal(tool.parentSpanId, root.spanId)
-  assert.equal(attr(root, 'flow.span'), 'adhoc')
-  assert.equal(attr(root, 'adhoc.cost_usd'), '0.5')
+  assert.equal(run.traceId, root.traceId)
+  assert.equal(run.parentSpanId, root.spanId)
+  assert.equal(attr(run, 'flow.span'), 'adhoc-run')
+  assert.equal(attr(run, 'adhoc.cost_usd'), '0.5')
   assert.equal(attr(tool, 'adhoc.run'), RUN.id)
-  // after the run, new spans leave the ad-hoc trace
+  assert.equal(spans.filter((s) => s.name === 'brainstorm topic').length, 1)
+})
+
+test('after the run, spans leave the ad-hoc trace', async () => {
+  const { pi, handle, spans } = await setup()
+  handle.adhocBegin(RUN, true)
+  handle.adhocEnd(RUN, {})
   pi.emit('tool_execution_start', {
     type: 'tool_execution_start',
     toolCallId: 't2',
@@ -108,23 +123,62 @@ test('main-session run: tool spans nest under the run span, exported once at end
   })
   pi.emit('session_shutdown', { type: 'session_shutdown' })
   await tick()
+  const root = spans.find((s) => s.name === 'brainstorm topic')
   const later = spans.find((s) => s.name === 'tool read')
-  assert.ok(later !== undefined)
+  assert.ok(root !== undefined && later !== undefined)
   assert.notEqual(later.traceId, root.traceId)
-  assert.equal(spans.filter((s) => s.name === 'brainstorm topic').length, 1)
 })
 
-test('worker run (no begin): standalone span with real duration', async () => {
-  const { handle, spans } = await setup()
-  handle.adhocEnd(
-    { ...RUN, kind: 'review', target: 'PR 7' },
-    { 'adhoc.kind': 'review' },
-  )
+test('crash mid-run: marker and children are already exported, no run span', async () => {
+  const { pi, handle, spans } = await setup()
+  handle.adhocBegin(RUN, true)
+  pi.emit('tool_execution_start', {
+    type: 'tool_execution_start',
+    toolCallId: 't1',
+    toolName: 'bash',
+    args: {},
+  })
+  pi.emit('tool_execution_end', {
+    type: 'tool_execution_end',
+    toolCallId: 't1',
+    toolName: 'bash',
+    result: 'ok',
+    isError: false,
+  })
+  // only the shutdown flush (no adhocEnd) — what is left of a dying session
+  pi.emit('session_shutdown', { type: 'session_shutdown' })
   await tick()
-  const span = spans.find((s) => s.name === 'review PR 7')
+  const root = spans.find((s) => s.name === 'brainstorm topic')
+  const tool = spans.find((s) => s.name === 'tool bash')
+  assert.ok(root !== undefined && tool !== undefined)
+  assert.equal(tool.parentSpanId, root.spanId)
+  assert.equal(
+    spans.find((s) => s.name === 'brainstorm run'),
+    undefined,
+  )
+})
+
+test('worker run: marker at begin (no nesting), run span at end', async () => {
+  const { handle, spans } = await setup()
+  const run = { ...RUN, kind: 'review', target: 'PR 7' }
+  handle.adhocBegin(run, false)
+  await tick()
+  const root = spans.find((s) => s.name === 'review PR 7')
+  assert.ok(root !== undefined)
+  handle.adhocEnd(run, { 'adhoc.kind': 'review' })
+  await tick()
+  const span = spans.find((s) => s.name === 'review run')
   assert.ok(span !== undefined)
-  assert.equal(span.parentSpanId, undefined)
-  assert.equal(attr(span, 'flow.span'), 'adhoc')
+  assert.equal(span.parentSpanId, root.spanId)
+  assert.equal(attr(span, 'flow.span'), 'adhoc-run')
+})
+
+test('end without begin (telemetry enabled mid-run): marker + run span together', async () => {
+  const { handle, spans } = await setup()
+  handle.adhocEnd(RUN, {})
+  await tick()
+  assert.ok(spans.find((s) => s.name === 'brainstorm topic') !== undefined)
+  assert.ok(spans.find((s) => s.name === 'brainstorm run') !== undefined)
 })
 
 test('token metrics and span attributes aggregate session usage', () => {

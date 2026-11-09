@@ -430,7 +430,7 @@ export default function (pi: ExtensionAPI) {
       readSession: costDeps.readSessionFile,
       flowActive: () => (process.env.PI_FLOW_REF ?? '').length > 0,
       trace: {
-        begin: (run) => telemetryHandle?.adhocBegin(run),
+        begin: (run, nest) => telemetryHandle?.adhocBegin(run, nest),
         end: (run, attributes) => telemetryHandle?.adhocEnd(run, attributes),
       },
       push: async (runId, body) => {
