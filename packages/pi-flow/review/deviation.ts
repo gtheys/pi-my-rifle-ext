@@ -44,6 +44,21 @@ export interface DeviationReviewInput {
 // AIDEV-NOTE: Diffs above this size go to a file instead of the prompt.
 export const DEVIATION_INLINE_DIFF_MAX = 30_000
 
+// AIDEV-NOTE: file-mode read proof — the reviewer must echo the diff's line
+// count; the tool compares it against the real count and rejects mismatches.
+export const DIFF_LINES_PREFIX = 'diff_lines_read:'
+
+export function countDiffLines(diff: string): number {
+  return diff.split('\n').length
+}
+
+/** LAST `diff_lines_read: <N>` line in the artifact, or null. */
+export function extractDiffLinesRead(artifact: string): number | null {
+  const matches = [...artifact.matchAll(/^diff_lines_read:\s*(\d+)\s*$/gm)]
+  const last = matches.at(-1)
+  return last === undefined ? null : Number(last[1])
+}
+
 /** Fence text with a backtick run longer than any run inside it. */
 export function fenceBlock(text: string, lang = ''): string {
   const longest = Math.max(2, ...(text.match(/`+/g) ?? []).map((m) => m.length))
@@ -102,7 +117,8 @@ The resolved spec is too thin to compare against (${trimmedSpec.length} chars, m
   let diffSection: string
   if (input.diffPath !== undefined) {
     diffSection = `The diff is large, so it is in a file: ${input.diffPath}
-Read ALL of it with the read tool (use offset/limit to page; it is ${input.diff.split('\n').length} lines). Do NOT use git diff: the file is the exact pinned diff. Judging without reading every line of the file invalidates your review.`
+Read ALL of it with the read tool (use offset/limit to page). Do NOT use git diff: the file is the exact pinned diff. Judging without reading every line of the file invalidates your review.
+Proof of reading: in your verdict section, directly under the reviewed_range line, add the line \`${DIFF_LINES_PREFIX} <N>\` where N is the file's total line count, which you find by reading it to the end. A missing or wrong N invalidates your review.`
   } else {
     diffSection = fenceBlock(input.diff, 'diff')
   }
