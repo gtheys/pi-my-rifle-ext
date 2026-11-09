@@ -362,3 +362,33 @@ every series incl. `push_time_seconds`). To re-push by hand use the AVEN ref: `/
   (and configurable for traces). Bar charts and the trace-tree table have no per-row link.
 * Verified with a synthetic work ticket `DP-9999` (metrics + traces) in All / Work / Personal; deleted afterwards (traces age out with the
   14 d retention; the ref dropdown may list it for up to 7 days).
+
+## Ad-hoc commands: /brainstorm, /pr-quality, /review (2026-11-09)
+
+These run OUTSIDE the /flow loop, so they have no run journal. `packages/pi-flow/adhoc/tracker.ts` keeps an in-memory window per run
+and pushes `pi_flow_adhoc_*` metrics to the Pushgateway group `job=pi-flow-adhoc, run=<id>` (id = `<kind>-<target-slug>-<yyyymmddThhmm>`)
+on every update (idempotent replace). Metric names are deliberately different from `pi_flow_run_*` so the flow dashboards never pick them up.
+Same env gate as the cost push (`PI_FLOW_PUSHGATEWAY_URL`/`_TOKEN`); unset = silent no-op.
+
+| metric | labels | meaning |
+|---|---|---|
+| `pi_flow_adhoc_start_seconds` | run, kind, target | epoch start |
+| `pi_flow_adhoc_duration_seconds` | run, kind, target | wall clock start → last update |
+| `pi_flow_adhoc_cost_usd` | run, kind, target, role, session | one series per session (role `main` or `review`) |
+
+Hooks: `/brainstorm` (`flow/phase-command.ts`, begins before the prompt is sent), `/pr-quality` (`pr-quality/index.ts`, target `PR <n>`),
+`/review` subagent path (`review/review.ts` `startSubagentReview`: begin at spawn, finish when the watcher resolves, cost = the reviewer's session file).
+`index.ts` configures the tracker, calls `settled()` on `agent_settled`, closes the open run on `session_shutdown` and before a `/flow` starts.
+
+Cost/time model and known limits:
+* **Main-session commands** (brainstorm, pr-quality): cost = main-session usage between the command and the LAST `agent_settled` of the open run.
+  `/pr-quality` closes after its first settle (one triage turn). `/brainstorm` is a conversation and stays open until another ad-hoc command, a flow run or
+  session shutdown, so unrelated chat after a brainstorm is counted into it.
+* **/review**: only the reviewer subagent's session is costed (main session turn that receives the steer message is not). The `ocr` scout and the in-session
+  fallback (no mux) are not tracked. Cost appears when the review finishes (no live update); duration/cost are a single push at the end.
+* Skipped entirely while a flow is active (`PI_FLOW_REF` set) — the flow journal already counts those. The agent-callable `pr_quality` tool is not tracked.
+* No token/cache metrics and no traces for ad-hoc runs (cost + time only).
+
+Dashboard `piflow-adhoc` ("pi-flow ad-hoc commands", backup `docs/pi-flow-adhoc.dashboard.json`): `command` variable, stats (spend, runs, avg cost, avg duration),
+bar charts per command (total cost, average duration) and a runs table (Started, Command, Target, Cost, Duration). Linked from the other three dashboards.
+Verified with three synthetic runs (one per command), then deleted from the Pushgateway; hover/click not verifiable by render.

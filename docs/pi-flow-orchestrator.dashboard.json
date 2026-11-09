@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow orchestrator cost (main session only)",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-09T04:25:45Z"
+      "grafana.app/updatedTimestamp": "2026-11-09T06:33:46Z"
     },
     "creationTimestamp": "2026-11-07T09:17:27Z",
-    "generation": 7,
+    "generation": 8,
     "labels": {
       "grafana.app/deprecatedInternalID": "2304416950628352"
     },
     "name": "piflow-orchestrator",
     "namespace": "default",
-    "resourceVersion": "1794198345366016",
+    "resourceVersion": "1794206026970015",
     "uid": "50c196cb-9e10-41d9-a6a8-80455017720d"
   },
   "spec": {
@@ -1386,6 +1386,18 @@
         "tooltip": "Cost versus score across a range of tickets",
         "type": "link",
         "url": "/grafana/d/piflow-range"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": true,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Ad-hoc commands",
+        "tooltip": "/brainstorm, /pr-quality, /review time and cost",
+        "type": "link",
+        "url": "/grafana/d/piflow-adhoc"
       }
     ],
     "liveNow": false,
