@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow health dashboard (PMR-XPVE M5): tool error rate, failures, phase durations, Tempo trace search by flow.ref",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T09:20:00Z"
+      "grafana.app/updatedTimestamp": "2026-11-09T04:25:45Z"
     },
     "creationTimestamp": "2026-11-07T02:57:54Z",
-    "generation": 10,
+    "generation": 14,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208897950658560"
     },
     "name": "piflow-health",
     "namespace": "default",
-    "resourceVersion": "1794043200535994",
+    "resourceVersion": "1794198345579010",
     "uid": "33585720-5e94-4275-82d5-c2bd439f777d"
   },
   "spec": {
@@ -65,7 +65,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (tool, phase) (pi_flow_tool_calls_total{status=\"error\", ref=~\"$ref\"})\n/ sum by (tool, phase) (pi_flow_tool_calls_total{ref=~\"$ref\"})",
+                        "expr": "sum by (tool, phase) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", status=\"error\", ref=~\"$ref\"})\n/ sum by (tool, phase) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
                         "legendFormat": "{{tool}} [{{phase}}]"
                       },
                       "version": "v0"
@@ -127,7 +127,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (tool, status) (pi_flow_tool_calls_total{ref=~\"$ref\", status=\"error\"})",
+                        "expr": "sum by (tool, status) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\", status=\"error\"})",
                         "legendFormat": "{{tool}}"
                       },
                       "version": "v0"
@@ -190,7 +190,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref, phase) (pi_flow_run_duration_seconds{ref=~\"$ref\"})",
+                        "expr": "sum by (ref, phase) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -349,7 +349,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "limit": 50,
-                        "query": "{ .flow.ref =~ \"$ref\" \u0026\u0026 (.flow.span = \"phase\" || .flow.span = \"root\") } | select(name, .phase)",
+                        "query": "{ .flow.ref =~ \"$ref\" \u0026\u0026 .flow.mode =~ \"${mode:raw}\" \u0026\u0026 (.flow.span = \"phase\" || .flow.span = \"root\") } | select(name, .phase)",
                         "queryType": "traceql",
                         "spss": 20,
                         "tableType": "traces"
@@ -402,7 +402,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "limit": 50,
-                        "query": "{ .tool.error = \"true\" \u0026\u0026 .flow.ref =~ \"$ref\" } | select(.flow.ref, .phase, .agent.name, .gen_ai.tool.name, .tool.output)",
+                        "query": "{ .tool.error = \"true\" \u0026\u0026 .flow.ref =~ \"$ref\" \u0026\u0026 .flow.mode =~ \"${mode:raw}\" } | select(.flow.ref, .flow.url, .phase, .agent.name, .gen_ai.tool.name, .tool.output)",
                         "queryType": "traceql",
                         "spss": 20,
                         "tableType": "spans"
@@ -423,21 +423,19 @@
                       "excludeByName": {
                         "Trace ID": true,
                         "Trace Name": true,
-                        "Trace Service": true
+                        "Trace Service": true,
+                        "flow.mode": true,
+                        "flow.url": false,
+                        "tool.error": true
                       },
                       "indexByName": {
-                        "Agent": 4,
-                        "Duration": 7,
-                        "Phase": 2,
-                        "Span ID": 6,
-                        "Start time": 0,
-                        "Ticket": 1,
-                        "Tool": 3,
-                        "Tool output": 5
+                        "Jira": 1,
+                        "Ticket": 0
                       },
                       "renameByName": {
                         "agent.name": "Agent",
                         "flow.ref": "Ticket",
+                        "flow.url": "Jira",
                         "gen_ai.tool.name": "Tool",
                         "phase": "Phase",
                         "tool.output": "Tool output"
@@ -463,7 +461,7 @@
               ]
             }
           },
-          "description": "Every failed tool call in a flow (span tool.error = true), newest first, with the ticket, phase and tool. Click the Span ID to open the trace tree with the failing span highlighted. \"Tool output\" shows the error text only when telemetry.captureContent is \"tools\" or \"all\". Failures from plain interactive sessions (no flow) are not listed. Empty = no tool call failed in the selected range.",
+          "description": "Every failed tool call in a flow (span tool.error = true), newest first, with the ticket, phase and tool. Click the Span ID to open the trace tree with the failing span highlighted. \"Tool output\" shows the error text only when telemetry.captureContent is \"tools\" or \"all\". Failures from plain interactive sessions (no flow) are not listed. Empty = no tool call failed in the selected range. Work-mode tickets (Jira keys) link to Jira.",
           "id": 5,
           "links": [],
           "title": "Tool failures (click the Span ID to open the trace)",
@@ -481,7 +479,61 @@
                   },
                   "noValue": "–"
                 },
-                "overrides": []
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Jira"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "targetBlank": true,
+                            "title": "Open in Jira",
+                            "url": "${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "pattern": ".+",
+                              "result": {
+                                "index": 0,
+                                "text": "Open in Jira ↗"
+                              }
+                            },
+                            "type": "regex"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 150
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byRegexp",
+                      "options": "^mode( \\d+)?$"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.hideFrom",
+                        "value": {
+                          "legend": false,
+                          "tooltip": false,
+                          "viz": true
+                        }
+                      }
+                    ]
+                  }
+                ]
               },
               "options": {
                 "cellHeight": "sm",
@@ -632,6 +684,42 @@
     "title": "pi-flow health",
     "variables": [
       {
+        "kind": "CustomVariable",
+        "spec": {
+          "allValue": ".*",
+          "allowCustomValue": false,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "description": "personal = aven refs; work = Jira keys (links to Jira)",
+          "hide": "dontHide",
+          "includeAll": true,
+          "label": "mode",
+          "multi": false,
+          "name": "mode",
+          "options": [
+            {
+              "selected": true,
+              "text": "All",
+              "value": "$__all"
+            },
+            {
+              "selected": false,
+              "text": "Personal",
+              "value": "^$|personal"
+            },
+            {
+              "selected": false,
+              "text": "Work",
+              "value": "work"
+            }
+          ],
+          "query": "Personal : ^$|personal, Work : work",
+          "skipUrlSync": false
+        }
+      },
+      {
         "kind": "QueryVariable",
         "spec": {
           "allValue": ".*",
@@ -640,7 +728,7 @@
             "text": "All",
             "value": "$__all"
           },
-          "definition": "label_values(pi_flow_run_cost_usd, ref)",
+          "definition": "label_values(pi_flow_run_cost_usd{mode=~\"${mode:raw}\"}, ref)",
           "hide": "dontHide",
           "includeAll": true,
           "label": "ref",
@@ -655,7 +743,7 @@
             "kind": "DataQuery",
             "spec": {
               "qryType": 1,
-              "query": "label_values(pi_flow_run_cost_usd, ref)",
+              "query": "label_values(pi_flow_run_cost_usd{mode=~\"${mode:raw}\"}, ref)",
               "refId": "PrometheusVariableQueryEditor-VariableQuery"
             },
             "version": "v0"

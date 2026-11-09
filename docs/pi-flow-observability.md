@@ -332,3 +332,33 @@ usage inside the flow window only. Subagent sessions are separate jsonl files an
 embedded in the main session (checked: 27 assistant messages = $0.4197 = the orchestrator figure; workers $0.0089 + $0.0102
 are extra; ticket total $0.439 = orchestrator + workers). Work done inline in the main session (a skill, a oneshot) cannot be
 separated from the orchestrator — it IS the main session.
+
+## Work mode vs personal mode (2026-11-07)
+
+**Tracking ref.** A run is tracked by `trackRef`: personal = the aven ref; work = the Jira key (typed Jira id, else the epic's
+`jira-ref` metadata via `readJiraRef`, else the aven ref) — `trackingRef()` in `flow/ref-kind.ts`. `PI_FLOW_REF` stays the AVEN
+ref (journal filename, aven ops); `PI_FLOW_TRACK_REF` and `PI_FLOW_MODE` are stamped next to it (`flow/attribution.ts`,
+`StampExtras`), cleared with the rest, and forwarded to workers by `applyFlowEnv`. The `run-start` journal event carries
+`trackRef`; `/flow-cost` and the auto push read it from the LAST run-start (old journals: aven ref, personal).
+
+**Telemetry.** `flow.ref` = tracking ref (so phase/session span names and every dashboard automatically show the Jira key),
+`flow.aven_ref` when different, `flow.mode`, and `flow.url` = `telemetry.jiraBaseUrl` + Jira key (work mode only; the config
+option lives in `~/.pi/agent/pi-flow/config.json`, currently `https://salaryhero.atlassian.net/browse/`).
+
+**Metrics.** `ref` label = tracking ref. Pushgateway groups: personal `…/ref/<ref>` (unchanged, no `mode` label — adding one would
+have created a second group per existing ticket and double-counted), work `…/ref/<JIRA>/mode/work` (grouping label `mode="work"` on
+every series incl. `push_time_seconds`). To re-push by hand use the AVEN ref: `/flow-cost <aven-ref> --push` (the journal is keyed by it).
+
+**Dashboards** (`piflow-orchestrator`, `piflow-subagents`, `piflow-health`):
+* `mode` custom variable first (Personal=`^$|personal`, Work=`work`, All=`.*`); `ref` options depend on it.
+* EVERY `pi_flow_*` / `push_time_seconds` selector has `mode=~"${mode:raw}"`; traces `.flow.mode =~ "${mode:raw}"`.
+  **Use `${mode:raw}`, not `$mode`**: Grafana regex-escapes variable values inside `=~` matchers (the Personal value matches
+  "no mode label OR personal"; escaped it matched nothing and Personal showed empty). Old personal series have no mode label, which `^$`
+  matches; old personal SPANS have no `flow.mode` and therefore do not appear under Personal/All in trace tables.
+* Jira links: an extra **Jira** column ("Open in Jira ↗", `links` url `${__value.raw}`, regex value mapping) fed by a `url` label built
+  in PromQL: `label_replace(label_replace(<vector by (ref, …, mode)>, "url", "https://salaryhero.atlassian.net/browse/$1", "ref", "(.*)"), "url", "", "mode", "^$|personal")`
+  — non-empty only for work series, so personal rows show "–" and never get a link. (A link on the Ticket column itself made EVERY row a link, empty
+  url included.) Tool-failures table uses the span attribute `flow.url` instead. The Jira base URL is hard-coded in the dashboard queries
+  (and configurable for traces). Bar charts and the trace-tree table have no per-row link.
+* Verified with a synthetic work ticket `DP-9999` (metrics + traces) in All / Work / Personal; deleted afterwards (traces age out with the
+  14 d retention; the ref dropdown may list it for up to 7 days).

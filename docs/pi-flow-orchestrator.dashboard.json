@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow orchestrator cost (main session only)",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-07T09:20:00Z"
+      "grafana.app/updatedTimestamp": "2026-11-09T04:25:45Z"
     },
     "creationTimestamp": "2026-11-07T09:17:27Z",
-    "generation": 3,
+    "generation": 7,
     "labels": {
       "grafana.app/deprecatedInternalID": "2304416950628352"
     },
     "name": "piflow-orchestrator",
     "namespace": "default",
-    "resourceVersion": "1794043200643015",
+    "resourceVersion": "1794198345366016",
     "uid": "50c196cb-9e10-41d9-a6a8-80455017720d"
   },
   "spec": {
@@ -66,7 +66,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -147,7 +147,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "count(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "expr": "count(sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -228,7 +228,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "avg(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "expr": "avg(sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -309,7 +309,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "quantile(0.5, sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s)))",
+                        "expr": "quantile(0.5, sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -390,7 +390,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e (time() - 86400) and push_time_seconds{job=\"pi-flow\"} \u003c= time())) or vector(0)",
+                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e (time() - 86400) and push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003c= time())) or vector(0)",
                         "format": "time_series",
                         "instant": false,
                         "interval": "1h",
@@ -469,7 +469,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref, phase) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s))",
+                        "expr": "sum by (ref, phase) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -627,7 +627,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s))",
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -649,7 +649,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\", phase=\"plan\"})",
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", phase=\"plan\"})",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -671,7 +671,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\", phase=\"implement\"})",
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", phase=\"implement\"})",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -693,7 +693,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent=\"main\", phase=\"validate\"})",
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", phase=\"validate\"})",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -715,7 +715,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\", agent!=\"main\"})",
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"})",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -737,7 +737,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_cost_usd{ref=~\"$ref\"})",
+                        "expr": "label_replace(label_replace(sum by (ref, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -759,7 +759,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{ref=~\"$ref\"})",
+                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -781,7 +781,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "push_time_seconds{job=\"pi-flow\", ref=~\"$ref\"} * 1000",
+                        "expr": "push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\", ref=~\"$ref\"} * 1000",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -810,6 +810,18 @@
                   "kind": "Transformation",
                   "spec": {
                     "options": {
+                      "indexByName": {
+                        "Duration": 8,
+                        "Implement": 4,
+                        "Jira": 1,
+                        "Last pushed": 9,
+                        "Orchestrator": 2,
+                        "Plan": 3,
+                        "Subagents": 6,
+                        "Ticket": 0,
+                        "Ticket total (orchestrator + subagents)": 7,
+                        "Validate": 5
+                      },
                       "renameByName": {
                         "Value #A": "Orchestrator",
                         "Value #B": "Plan",
@@ -819,7 +831,8 @@
                         "Value #F": "Ticket total (orchestrator + subagents)",
                         "Value #G": "Duration",
                         "Value #H": "Last pushed",
-                        "ref": "Ticket"
+                        "ref": "Ticket",
+                        "url": "Jira"
                       }
                     }
                   }
@@ -832,6 +845,7 @@
                       "include": {
                         "names": [
                           "Ticket",
+                          "Jira",
                           "Orchestrator",
                           "Plan",
                           "Implement",
@@ -1019,6 +1033,59 @@
                         "value": "dateTimeFromNow"
                       }
                     ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Jira"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "targetBlank": true,
+                            "title": "Open in Jira",
+                            "url": "${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "pattern": ".+",
+                              "result": {
+                                "index": 0,
+                                "text": "Open in Jira ↗"
+                              }
+                            },
+                            "type": "regex"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 150
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byRegexp",
+                      "options": "^mode( \\d+)?$"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.hideFrom",
+                        "value": {
+                          "legend": false,
+                          "tooltip": false,
+                          "viz": true
+                        }
+                      }
+                    ]
                   }
                 ]
               },
@@ -1049,7 +1116,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_tokens_total{ref=~\"$ref\", agent=\"main\", kind=\"cacheRead\"}) / sum by (ref) (pi_flow_tokens_total{ref=~\"$ref\", agent=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) and on (ref) (push_time_seconds{job=\"pi-flow\"} \u003e= (time() - $__range_s))",
+                        "expr": "sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=\"cacheRead\"}) / sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1351,6 +1418,42 @@
     "title": "pi-flow orchestrator",
     "variables": [
       {
+        "kind": "CustomVariable",
+        "spec": {
+          "allValue": ".*",
+          "allowCustomValue": false,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "description": "personal = aven refs; work = Jira keys (links to Jira)",
+          "hide": "dontHide",
+          "includeAll": true,
+          "label": "mode",
+          "multi": false,
+          "name": "mode",
+          "options": [
+            {
+              "selected": true,
+              "text": "All",
+              "value": "$__all"
+            },
+            {
+              "selected": false,
+              "text": "Personal",
+              "value": "^$|personal"
+            },
+            {
+              "selected": false,
+              "text": "Work",
+              "value": "work"
+            }
+          ],
+          "query": "Personal : ^$|personal, Work : work",
+          "skipUrlSync": false
+        }
+      },
+      {
         "kind": "QueryVariable",
         "spec": {
           "allValue": ".*",
@@ -1359,7 +1462,7 @@
             "text": "All",
             "value": "$__all"
           },
-          "definition": "label_values(pi_flow_run_cost_usd, ref)",
+          "definition": "label_values(pi_flow_run_cost_usd{mode=~\"${mode:raw}\"}, ref)",
           "hide": "dontHide",
           "includeAll": true,
           "label": "ref",
@@ -1374,7 +1477,7 @@
             "kind": "DataQuery",
             "spec": {
               "qryType": 1,
-              "query": "label_values(pi_flow_run_cost_usd, ref)",
+              "query": "label_values(pi_flow_run_cost_usd{mode=~\"${mode:raw}\"}, ref)",
               "refId": "PrometheusVariableQueryEditor-VariableQuery"
             },
             "version": "v0"

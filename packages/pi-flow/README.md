@@ -91,6 +91,7 @@ handy for enabling telemetry per checkout instead of machine-wide.
 | `telemetry.otlpEndpoint` | `string` | unset (required with `telemetry`) | OTLP/HTTP base URL (e.g. `https://host:4478`); spans POST to `<endpoint>/v1/traces` |
 | `telemetry.headers` | `record<string, string>` | `{}` | Static extra headers for OTLP export. Secrets belong in env (`PI_FLOW_OTLP_TOKEN`), not config |
 | `telemetry.captureContent` | `"off" \| "text" \| "tools" \| "all"` | `"off"` | Content layers added to spans (cumulative): `off` metadata only, `text` assistant text, `tools` + tool calls and tool input/output, `all` + model reasoning. See [Capturing content](#capturing-content-in-spans) |
+| `telemetry.jiraBaseUrl` | `string` | unset | Base URL for Jira issue links, e.g. `https://example.atlassian.net/browse/`. Work-mode spans then carry `flow.url` = base + Jira key, so dashboards can link tickets to Jira. Unset = no links |
 | `telemetry.maxContentChars` | `integer` (100–100000) | `2000` | Max characters per captured content attribute; longer values end with `…[truncated N chars]`. Tempo drops anything past its `max_attribute_bytes` (default 2048) silently, so raise both together |
 
 ```json
@@ -131,6 +132,14 @@ Semantics (test-gated, see `telemetry/index.ts`):
 - **Metadata only by default**: spans carry `flow.ref` / `phase` / `agent.name` / `subtask` and GenAI convention attributes (`gen_ai.usage.input_tokens`, `gen_ai.request.model`, ...). Prompt and completion bodies only appear when you set `telemetry.captureContent` (below).
 - **Trace joining**: spans attach to the run's W3C trace via `PI_FLOW_TRACEPARENT`, so one `/flow` run is one trace in the backend. Find it in Tempo with TraceQL `{ .flow.ref = "<REF>" }`.
 - **No-backend safety**: export is fire-and-forget with a 2.5s timeout. Failures write at most ONE journal note per process and then stay silent — no retry queue, no buffer growth, never a rejected promise into the host. Flows run identically with no receiver at all.
+
+#### Work mode vs personal mode
+
+Every run is tracked by a **tracking ref**: in **personal mode** the aven ref (as before); in **work mode** the **Jira key** — taken from the Jira ID you typed (`/flow DP-236`), else from the local epic's `jira-ref` metadata when you pass the aven epic, else the aven ref. The aven ref still drives the run journal and every aven operation; only telemetry and metrics are keyed by the tracking ref.
+
+- Spans carry `flow.ref` (tracking ref), `flow.aven_ref` (when different), `flow.mode` (`work` | `personal`) and, with `telemetry.jiraBaseUrl` set, `flow.url` (work mode only).
+- Cost metrics use the tracking ref as their `ref` label. Work-mode pushes go to a `mode="work"` Pushgateway group; personal pushes keep their original group (no mode label), so existing history is untouched.
+- The Grafana dashboards have a **mode** switch (Personal / Work / All) and show an "Open in Jira ↗" link for work tickets.
 
 #### Capturing content in spans
 
