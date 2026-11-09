@@ -32,6 +32,23 @@ export interface DeviationReviewInput {
    * the harness compares it against the pin character by character.
    */
   pinnedRange?: { baseSha: string; headSha: string }
+  /**
+   * AIDEV-NOTE: When set, the diff is NOT inlined: the tool wrote it to this
+   * file and the reviewer reads it with the read tool. Inlined multi-100KB
+   * diffs overflowed pi's Markdown renderer (stack overflow) on the user
+   * message, and rtk may condense `git diff` output — a file is exact.
+   */
+  diffPath?: string
+}
+
+// AIDEV-NOTE: Diffs above this size go to a file instead of the prompt.
+export const DEVIATION_INLINE_DIFF_MAX = 30_000
+
+/** Fence text with a backtick run longer than any run inside it. */
+export function fenceBlock(text: string, lang = ''): string {
+  const longest = Math.max(2, ...(text.match(/`+/g) ?? []).map((m) => m.length))
+  const f = '`'.repeat(longest + 1)
+  return `${f}${lang}\n${text}\n${f}`
 }
 
 const DEVIATION_EMITTER_INSTRUCTIONS = `End the review with a machine-readable deviation verdict section:
@@ -53,7 +70,7 @@ export function buildDeviationReviewPrompt(
   if (trimmedSpec.length >= DEVIATION_MIN_SPEC_LENGTH) {
     specSection = `## Resolved spec (authoritative — the diff is judged against ONLY this text)
 
-${trimmedSpec}`
+${fenceBlock(trimmedSpec, 'markdown')}`
   } else {
     specSection = `## Resolved spec
 
@@ -64,13 +81,13 @@ The resolved spec is too thin to compare against (${trimmedSpec.length} chars, m
   const notes = input.avenNotes.trim()
   let commitsSection: string
   if (commits.length > 0) {
-    commitsSection = commits
+    commitsSection = fenceBlock(commits)
   } else {
     commitsSection = '(none recorded)'
   }
   let notesSection: string
   if (notes.length > 0) {
-    notesSection = notes
+    notesSection = fenceBlock(notes, 'markdown')
   } else {
     notesSection = '(none recorded)'
   }
@@ -80,6 +97,14 @@ The resolved spec is too thin to compare against (${trimmedSpec.length} chars, m
     pinnedLine = `   reviewed_range: ${input.pinnedRange.baseSha}..${input.pinnedRange.headSha}`
   } else {
     pinnedLine = '(no pin supplied — plain legacy mode)'
+  }
+
+  let diffSection: string
+  if (input.diffPath !== undefined) {
+    diffSection = `The diff is large, so it is in a file: ${input.diffPath}
+Read ALL of it with the read tool (use offset/limit to page; it is ${input.diff.split('\n').length} lines). Do NOT use git diff: the file is the exact pinned diff. Judging without reading every line of the file invalidates your review.`
+  } else {
+    diffSection = fenceBlock(input.diff, 'diff')
   }
 
   return `You are a fresh-context spec-deviation reviewer. You have no knowledge of the work beyond the inputs below.
@@ -101,7 +126,7 @@ ${pinnedLine}
 
 ## Git diff vs base
 
-${input.diff}
+${diffSection}
 
 ## Why-inputs (mined context — commit messages, aven notes: interview note, worktree note, oneshot outcome, escalation notes)
 

@@ -7,6 +7,10 @@
 // artifact is an isError tool result — the agent re-runs, never treats it as
 // 0 deviations. Pure seams (prompt composition + result mapping) are exported
 // for tests; execute only wires them to the subagent path.
+
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -18,6 +22,7 @@ import { Type } from 'typebox'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
 import {
   buildDeviationReviewPrompt,
+  DEVIATION_INLINE_DIFF_MAX,
   type DeviationReviewInput,
   startDeviationReview,
 } from '../review/deviation.ts'
@@ -108,6 +113,7 @@ export function deviationReviewPromptFrom(
   params: DeviationReviewToolParams,
   resolved: Pick<ResolvedRange, 'diff' | 'commitMessages'>,
   target: GateTarget | null = null,
+  diffPath?: string,
 ): string {
   const input: DeviationReviewInput = {
     mode: params.mode,
@@ -119,6 +125,7 @@ export function deviationReviewPromptFrom(
   if (target !== null) {
     input.pinnedRange = { baseSha: target.baseSha, headSha: target.headSha }
   }
+  if (diffPath !== undefined) input.diffPath = diffPath
   return buildDeviationReviewPrompt(input)
 }
 
@@ -280,7 +287,24 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
           // best-effort — the gate itself is unaffected
         }
       }
-      const prompt = deviationReviewPromptFrom(params, resolved.value, target)
+      // AIDEV-NOTE: large diffs go to a temp file, not the prompt (see
+      // DeviationReviewInput.diffPath). Falls back to inline on write failure.
+      let diffPath: string | undefined
+      if (resolved.value.diff.length > DEVIATION_INLINE_DIFF_MAX) {
+        try {
+          const dir = await mkdtemp(join(tmpdir(), 'deviation-diff-'))
+          diffPath = join(dir, 'pinned.diff')
+          await writeFile(diffPath, resolved.value.diff)
+        } catch {
+          diffPath = undefined
+        }
+      }
+      const prompt = deviationReviewPromptFrom(
+        params,
+        resolved.value,
+        target,
+        diffPath,
+      )
       const rangeLine = describeRange(resolved.value.flowRange)
       let result: SubagentResult
       try {
