@@ -54,6 +54,11 @@ import {
   watchSubagent,
 } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
+import {
+  adhocAddWorker,
+  adhocBeginWorker,
+  adhocFinish,
+} from '../adhoc/tracker.ts'
 import { resolveMode } from '../config.ts'
 import {
   clearFlowWorktree,
@@ -1788,12 +1793,19 @@ ${result.summary}`
         'info',
       )
 
+      const adhocRun = adhocBeginWorker('review', hint)
       watchSubagent(running, new AbortController().signal)
         .then((result) => {
+          adhocAddWorker(adhocRun, {
+            sessionFile: result.sessionFile ?? '',
+            role: 'review',
+          })
+          void adhocFinish(adhocRun)
           deliverSubagentReviewResult(hint, result, pin, reviewCwd ?? ctx.cwd)
           if (worktree) prWorktreeJobDone(ctx, worktree.prNumber)
         })
         .catch((err) => {
+          void adhocFinish(adhocRun)
           const message = err instanceof Error ? err.message : String(err)
           deliverSubagentReviewResult(hint, {
             name: `Review: ${hint}`,

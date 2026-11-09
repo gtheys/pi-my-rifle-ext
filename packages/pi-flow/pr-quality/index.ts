@@ -24,6 +24,7 @@ import type {
   ExtensionToolContext,
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+import { adhocBeginMain } from '../adhoc/tracker.ts'
 import {
   analyzeCoverage,
   analyzeIssues,
@@ -834,6 +835,7 @@ export default function prQuality(pi: ExtensionAPI) {
       }
 
       ctx.ui.setStatus('pr-quality', undefined)
+      adhocBeginMain('pr-quality', `PR ${result.prNumber}`, true)
       pi.sendUserMessage(result.prompt)
     },
   })

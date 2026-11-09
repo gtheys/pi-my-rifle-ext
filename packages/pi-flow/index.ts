@@ -20,6 +20,12 @@ import {
   onFlowSpawn,
 } from '@gtheys/pi-interactive-subagents'
 import {
+  adhocCloseMain,
+  adhocSettled,
+  configureAdhoc,
+  createAdhocTracker,
+} from './adhoc/tracker.ts'
+import {
   avenExec,
   discoverAvenPrefixes,
   ensureLabels,
@@ -412,6 +418,37 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
+  // AIDEV-NOTE: ad-hoc (/brainstorm, /pr-quality, /review) time + cost; see
+  // adhoc/tracker.ts. Same env gate as the cost push: no URL = push fails
+  // silently inside the tracker.
+  configureAdhoc(
+    createAdhocTracker({
+      now: () => Date.now(),
+      getSessionFile: () => mainSessionFile,
+      readSession: costDeps.readSessionFile,
+      flowActive: () => (process.env.PI_FLOW_REF ?? '').length > 0,
+      push: async (runId, body) => {
+        const url = process.env.PI_FLOW_PUSHGATEWAY_URL
+        if (url === undefined || url.length === 0) return
+        const headers: Record<string, string> = { 'content-type': 'text/plain' }
+        const token = process.env.PI_FLOW_PUSHGATEWAY_TOKEN
+        if (token !== undefined && token.length > 0) {
+          headers.authorization = `Bearer ${token}`
+        }
+        await fetch(
+          `${url.replace(/\/+$/, '')}/metrics/job/pi-flow-adhoc/run/${encodeURIComponent(runId)}`,
+          { method: 'POST', headers, body },
+        )
+      },
+    }),
+  )
+  pi.on('agent_settled', () => {
+    void adhocSettled()
+  })
+  pi.on('session_shutdown', () => {
+    void adhocCloseMain()
+  })
+
   // AIDEV-NOTE (PMR-R8AG): OTLP telemetry, disabled by default. The
   // session_start probe resolves telemetry config (global + project merge,
   // same loader as everything else); null = zero subscriptions, zero
@@ -575,6 +612,7 @@ export default function (pi: ExtensionAPI) {
         mode,
         trackRef,
       })
+      await adhocCloseMain()
       await loop.start({
         ref,
         trackRef,

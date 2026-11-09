@@ -5,10 +5,12 @@
 // phases; per-command variance is declared via the hooks below. The /flow
 // loop command does NOT use the factory (it resolves/creates the epic and
 // journals) but shares commandPhaseInput.
+
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from '@earendil-works/pi-coding-agent'
+import { adhocBeginMain } from '../adhoc/tracker.ts'
 import {
   avenExec,
   epicHasOpenChildren,
@@ -160,6 +162,8 @@ function registerPhaseCommand<Parsed extends { kind: string }>(
           ? {}
           : await options.extraInput({ parsed: run, mode, ref, ctx })
       const result = await buildPhasePrompt(options.name, { ...base, ...extra })
+      if (options.name === 'brainstorm')
+        adhocBeginMain('brainstorm', ref, false)
       sendOrNotify(pi, ctx, options.name, ref, result)
     },
   })
