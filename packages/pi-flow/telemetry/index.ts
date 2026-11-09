@@ -40,6 +40,8 @@ export interface TelemetrySettings {
   headers: Record<string, string>
   /** Content captured on spans; absent = 'off' (metadata only). */
   captureContent?: ContentLevel
+  /** Jira issue base URL (…/browse/); work-mode spans get flow.url = base + ref. */
+  jiraBaseUrl?: string
   /** Per-attribute cap for captured content; absent = DEFAULT_MAX_CONTENT_CHARS. */
   maxContentChars?: number
 }
@@ -321,6 +323,16 @@ export function registerTelemetry(
   // read at subscribe time left main-session spans without flow.ref.
   const ensureTrace = (): void => {
     state.flow = flowAttributes(deps.env)
+    const base = state.settings?.jiraBaseUrl
+    const trackRef = state.flow['flow.ref']
+    if (
+      base !== undefined &&
+      base.length > 0 &&
+      state.flow['flow.mode'] === 'work' &&
+      trackRef !== undefined
+    ) {
+      state.flow['flow.url'] = `${base}${trackRef}`
+    }
     const ctx = parseTraceparent(deps.env.PI_FLOW_TRACEPARENT)
     if (ctx !== null) {
       state.traceId = ctx.traceId

@@ -66,6 +66,12 @@ const PiFlowConfigSchema = Type.Object({
             },
           ),
         ),
+        jiraBaseUrl: Type.Optional(
+          Type.String({
+            description:
+              'Base URL for Jira issue links, e.g. https://example.atlassian.net/browse/ — work-mode spans then carry flow.url = <base><jira key> so dashboards can link tickets. Absent = no links',
+          }),
+        ),
         maxContentChars: Type.Optional(
           Type.Integer({
             minimum: 100,

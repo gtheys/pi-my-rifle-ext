@@ -47,6 +47,10 @@
           "enum": ["off", "text", "tools", "all"],
           "description": "Content captured on spans (cumulative): off = metadata only (default), text = assistant text, tools = + tool calls the model made and tool input/output, all = + model reasoning. Captured content can contain secrets and lands in the trace backend"
         },
+        "jiraBaseUrl": {
+          "type": "string",
+          "description": "Base URL for Jira issue links, e.g. https://example.atlassian.net/browse/ — work-mode spans then carry flow.url = <base><jira key> so dashboards can link tickets. Absent = no links"
+        },
         "maxContentChars": {
           "type": "integer",
           "minimum": 100,

@@ -60,11 +60,23 @@ export function flowAttributes(env: TelemetryEnv): SpanAttributes {
     ['agent.type', 'PI_SUBAGENT_AGENT'],
     ['subtask', 'PI_FLOW_SUBTASK'],
     ['parent.session', 'PI_SUBAGENT_PARENT_SESSION'],
+    ['flow.mode', 'PI_FLOW_MODE'],
   ]
   for (const [attrKey, envKey] of mapping) {
     const value = env[envKey]
     if (value !== undefined && value.length > 0) {
       attrs[attrKey] = value
+    }
+  }
+  // AIDEV-NOTE: work/personal separation. `flow.ref` is the ref the run is
+  // TRACKED by: the Jira key in work mode (PI_FLOW_TRACK_REF), else the aven
+  // ref. The aven ref stays available as `flow.aven_ref` when it differs.
+  const track = env.PI_FLOW_TRACK_REF
+  const aven = env.PI_FLOW_REF
+  if (track !== undefined && track.length > 0) {
+    attrs['flow.ref'] = track
+    if (aven !== undefined && aven.length > 0 && aven !== track) {
+      attrs['flow.aven_ref'] = aven
     }
   }
   return attrs

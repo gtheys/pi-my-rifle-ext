@@ -30,7 +30,11 @@ export interface FlowCostDeps {
   /** Raw session jsonl body, or null when unreadable (coverage gap). */
   readSessionFile: (file: string) => string | null
   /** Push exposition body to the gateway; ok=false is a warning, not fatal. */
-  push: (ref: string, body: string) => Promise<PushResult>
+  push: (
+    ref: string,
+    body: string,
+    mode?: 'work' | 'personal',
+  ) => Promise<PushResult>
 }
 
 type ParsedCostArgs =
@@ -62,7 +66,14 @@ export function parseCostArgs(args: string): ParsedCostArgs {
 export type CostRollup =
   | { kind: 'no-journal' }
   | { kind: 'empty' }
-  | { kind: 'ok'; rows: WorkerRow[]; durations: PhaseDuration[] }
+  | {
+      kind: 'ok'
+      rows: WorkerRow[]
+      durations: PhaseDuration[]
+      /** ref the run is tracked by (Jira key in work mode); the metric `ref` label */
+      trackRef: string
+      mode: 'work' | 'personal'
+    }
 
 /**
  * Journal + session files -> cost rows. Shared by `/flow-cost` and the
@@ -109,7 +120,28 @@ export async function computeCostRollup(
     ...buildMainRows(events, sessions),
     ...buildWorkerRows(notes, assignments, sessions),
   ]
-  return { kind: 'ok', rows, durations: phaseDurations(events) }
+  // AIDEV-NOTE: work/personal separation — the pushed `ref` label (and the
+  // Pushgateway group) is the run's TRACKING ref (Jira key in work mode),
+  // from the last run-start event; runs journaled before this existed fall
+  // back to the aven ref and personal mode.
+  let trackRef = ref
+  let mode: 'work' | 'personal' = 'personal'
+  for (const event of events) {
+    if (event.kind !== 'run-start') continue
+    mode = event.mode
+    if (event.trackRef !== undefined && event.trackRef.length > 0) {
+      trackRef = event.trackRef
+    } else {
+      trackRef = ref
+    }
+  }
+  return {
+    kind: 'ok',
+    rows,
+    durations: phaseDurations(events),
+    trackRef,
+    mode,
+  }
 }
 
 export function registerFlowCostCommand(
@@ -150,12 +182,13 @@ export function registerFlowCostCommand(
         )
         return
       }
-      const { rows, durations } = rollup
+      const { rows, durations, trackRef, mode } = rollup
       ctx.ui.notify(formatCostReport(parsed.ref, rows, durations), 'info')
       if (parsed.push) {
         const result = await deps.push(
-          parsed.ref,
-          buildPushBody(parsed.ref, rows, durations),
+          trackRef,
+          buildPushBody(trackRef, rows, durations),
+          mode,
         )
         if (result.ok) {
           ctx.ui.notify(

@@ -36,6 +36,8 @@ export type FlowRunEvent =
       at: string
       ref: string
       mode: 'work' | 'personal'
+      /** Ref the run is tracked by (Jira key in work mode); absent = `ref`. */
+      trackRef?: string
     }
   | {
       kind: 'phase-start'

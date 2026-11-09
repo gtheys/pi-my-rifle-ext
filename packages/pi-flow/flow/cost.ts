@@ -623,12 +623,24 @@ export type PushFetch = (
  * (when configured) rides the Authorization header. Failures return
  * {ok:false} — /flow-cost treats them as warnings, never fatal.
  */
+/**
+ * Extra Pushgateway grouping segment. AIDEV-NOTE: only WORK mode adds a
+ * `mode` grouping label — personal pushes keep their historical group
+ * (`…/ref/<ref>`, no mode label) so existing series are replaced in place, not
+ * duplicated. Dashboards treat a missing mode label as personal.
+ */
+function groupSuffix(mode: 'work' | 'personal' | undefined): string {
+  if (mode === 'work') return '/mode/work'
+  return ''
+}
+
 export async function pushToGateway(
   url: string,
   ref: string,
   body: string,
   fetchImpl: PushFetch,
   token?: string,
+  mode?: 'work' | 'personal',
 ): Promise<PushResult> {
   const base = url.replace(/\/+$/, '')
   const headers: Record<string, string> = {
@@ -639,7 +651,7 @@ export async function pushToGateway(
   }
   try {
     const response = await fetchImpl(
-      `${base}/metrics/job/pi-flow/ref/${encodeURIComponent(ref)}`,
+      `${base}/metrics/job/pi-flow/ref/${encodeURIComponent(ref)}${groupSuffix(mode)}`,
       { method: 'POST', headers, body },
     )
     if (response.status < 200 || response.status >= 300) {

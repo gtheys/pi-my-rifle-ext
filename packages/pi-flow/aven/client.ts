@@ -281,6 +281,26 @@ export async function readPlanState(ref: string): Promise<string | null> {
   }
 }
 
+/**
+ * `jira-ref` metadata of a local aven epic (the Jira key it mirrors), or null
+ * when absent/unreadable. Used so work-mode runs started from the aven epic
+ * ref are still tracked by their Jira key. Best-effort: never throws.
+ */
+export async function readJiraRef(ref: string): Promise<string | null> {
+  try {
+    const args = await avenArgsWithWorkspace(['show', ref, '--full'], ref)
+    const { stdout, stderr } = await execFileAsync('aven', args, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    if (avenErrorText('', stderr) !== null) return null
+    const value = parseMetadataBlock(stdout, 'jira-ref')
+    if (value === null || value.length === 0) return null
+    return value
+  } catch {
+    return null
+  }
+}
+
 // AIDEV-NOTE: PMR-69V8 — pure parser for the flow loop's blockers signal.
 // `aven show --full` prints notes as `note id=… created=<iso>` followed by a
 // `body<<EOF … EOF` block. A note counts as a review-blockers note when its

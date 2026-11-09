@@ -33,8 +33,9 @@ export function createCostAutoPush(
       const rollup = await computeCostRollup(ref, deps)
       if (rollup.kind !== 'ok') return
       const result = await deps.push(
-        ref,
-        buildPushBody(ref, rollup.rows, rollup.durations),
+        rollup.trackRef,
+        buildPushBody(rollup.trackRef, rollup.rows, rollup.durations),
+        rollup.mode,
       )
       if (result.ok) {
         deps.notify(`${ref}: cost metrics pushed to the pushgateway.`, 'info')

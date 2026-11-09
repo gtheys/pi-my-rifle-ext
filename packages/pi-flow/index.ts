@@ -27,6 +27,7 @@ import {
   lastAvenResolutionFailure,
   readAvenLabels,
   readFreshBlockers,
+  readJiraRef,
   readPlanState,
   setAvenSessionCwd,
   writeAvenNote,
@@ -49,7 +50,11 @@ import {
   commandPhaseInput,
   registerPhaseCommands,
 } from './flow/phase-command.ts'
-import { parseRefKind, registerAvenPrefixes } from './flow/ref-kind.ts'
+import {
+  parseRefKind,
+  registerAvenPrefixes,
+  trackingRef,
+} from './flow/ref-kind.ts'
 import {
   type FlowBindingSnapshot,
   parseFlowBindingSnapshot,
@@ -374,7 +379,7 @@ export default function (pi: ExtensionAPI) {
         return null
       }
     },
-    push: (ref, body) => {
+    push: (ref, body, mode) => {
       const url = process.env.PI_FLOW_PUSHGATEWAY_URL
       if (url === undefined || url.length === 0) {
         return Promise.resolve({
@@ -392,6 +397,7 @@ export default function (pi: ExtensionAPI) {
           return { status: response.status, statusText: response.statusText }
         },
         token,
+        mode,
       )
     },
   }
@@ -426,6 +432,7 @@ export default function (pi: ExtensionAPI) {
         endpoint: telemetry.otlpEndpoint,
         headers,
         captureContent: telemetry.captureContent,
+        jiraBaseUrl: telemetry.jiraBaseUrl,
         maxContentChars: telemetry.maxContentChars,
       }
     },
@@ -547,14 +554,30 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
+      // AIDEV-NOTE: work/personal separation — the run is TRACKED by its Jira
+      // key in work mode (typed Jira ID, else the epic's jira-ref metadata),
+      // by the aven ref in personal mode. `ref` (aven) still drives the
+      // journal and every aven operation.
+      let epicJiraRef: string | null = null
+      if (mode === 'work' && parsed.kind !== 'jira') {
+        epicJiraRef = await readJiraRef(ref)
+      }
+      const trackRef = trackingRef({
+        mode,
+        avenRef: ref,
+        jiraId: parsed.kind === 'jira' ? parsed.jiraId : undefined,
+        epicJiraRef,
+      })
       await journal({
         kind: 'run-start',
         at: new Date().toISOString(),
         ref,
         mode,
+        trackRef,
       })
       await loop.start({
         ref,
+        trackRef,
         phase: next.phase,
         promptInput: await commandPhaseInput(pi, {
           mode,

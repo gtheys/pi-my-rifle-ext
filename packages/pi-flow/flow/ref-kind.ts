@@ -58,3 +58,23 @@ export function parseRefKind(raw: string): RefKind {
   }
   return { kind: 'aven', ref: raw }
 }
+
+/**
+ * The ref a flow run is TRACKED by in telemetry, metrics and dashboards.
+ * Personal mode: the aven ref. Work mode: the Jira key — taken from the Jira
+ * ID the user typed (`/flow DP-236`), else from the epic's `jira-ref` metadata
+ * (when the user passed the local aven epic), else the aven ref. The aven ref
+ * itself is unchanged everywhere else (journal filename, aven operations).
+ */
+export function trackingRef(input: {
+  mode: 'work' | 'personal'
+  avenRef: string
+  jiraId?: string
+  epicJiraRef?: string | null
+}): string {
+  if (input.mode !== 'work') return input.avenRef
+  if (input.jiraId !== undefined && input.jiraId.length > 0) return input.jiraId
+  const epic = input.epicJiraRef
+  if (epic !== undefined && epic !== null && epic.length > 0) return epic
+  return input.avenRef
+}

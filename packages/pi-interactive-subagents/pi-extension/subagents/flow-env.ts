@@ -49,6 +49,13 @@ export function applyFlowEnv(
   if (isValidTraceparent(traceparent)) {
     env.PI_FLOW_TRACEPARENT = traceparent as string
   }
+  // AIDEV-NOTE: work/personal separation — the tracking ref (Jira key in work
+  // mode) and the mode ride along so worker telemetry shows the same ticket
+  // identity as the orchestrator. Both fail closed like the vars above.
+  const trackRef = parentEnv.PI_FLOW_TRACK_REF
+  if (isValidFlowValue(trackRef)) env.PI_FLOW_TRACK_REF = trackRef as string
+  const mode = parentEnv.PI_FLOW_MODE
+  if (mode === 'work' || mode === 'personal') env.PI_FLOW_MODE = mode
   if (subtask !== undefined && isValidFlowValue(subtask)) {
     env.PI_FLOW_SUBTASK = subtask
   }

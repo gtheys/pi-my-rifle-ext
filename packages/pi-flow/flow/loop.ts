@@ -81,6 +81,8 @@ export interface FlowLoopDeps {
 
 export interface FlowStartInput {
   ref: string
+  /** Ref the run is tracked by (Jira key in work mode); defaults to `ref`. */
+  trackRef?: string
   phase: Phase
   /** Per-run inputs for buildPhasePrompt (mode, gitRoot, workRoots, ...). */
   promptInput: Omit<PhasePromptInput, 'labels'>
@@ -139,7 +141,13 @@ class FlowLoopImpl implements FlowLoop {
     // env. A fresh traceparent root per invocation (see attribution.ts) —
     // superseding stamps over the old run's values. Invalid ref = abort
     // fail-closed: the journal filename would be unusable anyway.
-    const stamped = stampFlowStart(this.env, input.ref, input.phase)
+    const stamped = stampFlowStart(
+      this.env,
+      input.ref,
+      input.phase,
+      undefined,
+      { trackRef: input.trackRef, mode: input.promptInput.mode },
+    )
     this.deps.onFlowEnvChange?.()
     if (!stamped.ok) {
       this.deps.notify(

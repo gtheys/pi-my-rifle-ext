@@ -20,6 +20,13 @@ export const FLOW_ENV_KEYS = [
   'PI_FLOW_REF',
   'PI_FLOW_PHASE',
   'PI_FLOW_TRACEPARENT',
+  // AIDEV-NOTE: work/personal separation. PI_FLOW_REF stays the AVEN ref (the
+  // journal + aven operations key on it); PI_FLOW_TRACK_REF is the ref humans
+  // TRACK the run by (the Jira key in work mode, the aven ref in personal
+  // mode) and is what telemetry/metrics/dashboards show. PI_FLOW_MODE is
+  // 'work' | 'personal'.
+  'PI_FLOW_TRACK_REF',
+  'PI_FLOW_MODE',
 ] as const
 
 export type FlowEnv = Record<string, string | undefined>
@@ -55,11 +62,18 @@ export type StampResult = { ok: true } | { ok: false; reason: string }
  * An invalid ref fails closed with a reason (the caller aborts the run —
  * the journal filename would be unusable anyway).
  */
+export interface StampExtras {
+  /** Tracking ref (Jira key in work mode); falls back to `ref` when absent/invalid. */
+  trackRef?: string
+  mode?: 'work' | 'personal'
+}
+
 export function stampFlowStart(
   env: FlowEnv,
   ref: string,
   phase: string,
   rng?: () => Uint8Array,
+  extras?: StampExtras,
 ): StampResult {
   if (!FLOW_VALUE_RE.test(ref)) {
     return {
@@ -72,6 +86,15 @@ export function stampFlowStart(
   }
   env.PI_FLOW_REF = ref
   env.PI_FLOW_PHASE = phase
+  // a stale tracking ref/mode from a superseded run must never survive
+  delete env.PI_FLOW_TRACK_REF
+  delete env.PI_FLOW_MODE
+  if (extras?.trackRef !== undefined && FLOW_VALUE_RE.test(extras.trackRef)) {
+    env.PI_FLOW_TRACK_REF = extras.trackRef
+  }
+  if (extras?.mode === 'work' || extras?.mode === 'personal') {
+    env.PI_FLOW_MODE = extras.mode
+  }
   let generated = newTraceparent(rng)
   if (!TRACEPARENT_RE.test(generated)) {
     // AIDEV-NOTE: defensive — an injected rng returning short byte arrays
