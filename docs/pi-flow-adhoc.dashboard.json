@@ -5,16 +5,18 @@
     "annotations": {
       "grafana.app/createdBy": "service-account:cfw0ld9gfssu8e",
       "grafana.app/folder": "ag3jjknk85xc0b",
-      "grafana.app/message": "pi-flow ad-hoc commands"
+      "grafana.app/message": "pi-flow ad-hoc commands",
+      "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
+      "grafana.app/updatedTimestamp": "2026-11-09T06:58:26Z"
     },
     "creationTimestamp": "2026-11-09T06:32:45Z",
-    "generation": 1,
+    "generation": 2,
     "labels": {
       "grafana.app/deprecatedInternalID": "2987744603254784"
     },
     "name": "piflow-adhoc",
     "namespace": "default",
-    "resourceVersion": "1794205965762984",
+    "resourceVersion": "1794207506256982",
     "uid": "6aa04b6d-9b86-4313-b518-ad4917ca70e7"
   },
   "spec": {
@@ -43,7 +45,7 @@
       }
     ],
     "cursorSync": "Crosshair",
-    "description": "Time and cost of the standalone commands that run outside a /flow loop. Metrics: pi_flow_adhoc_* (Pushgateway job pi-flow-adhoc).",
+    "description": "Time, cost and tokens of the standalone commands that run outside a /flow loop. Metrics: pi_flow_adhoc_* (Pushgateway job pi-flow-adhoc); traces: flow.span=\"adhoc\".",
     "editable": true,
     "elements": {
       "panel-1": {
@@ -766,6 +768,72 @@
                     },
                     "refId": "C"
                   }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (run) (pi_flow_adhoc_tokens_total{kind=~\"$kind\", type=\"input\"} and on (run) (push_time_seconds{job=\"pi-flow-adhoc\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (run) (pi_flow_adhoc_tokens_total{kind=~\"$kind\", type=\"output\"} and on (run) (push_time_seconds{job=\"pi-flow-adhoc\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "E"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (run) (pi_flow_adhoc_tokens_total{kind=~\"$kind\", type=\"cacheRead\"} and on (run) (push_time_seconds{job=\"pi-flow-adhoc\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "F"
+                  }
                 }
               ],
               "queryOptions": {},
@@ -786,9 +854,12 @@
                   "spec": {
                     "options": {
                       "indexByName": {
+                        "Cache read": 7,
                         "Command": 1,
                         "Cost": 3,
                         "Duration": 4,
+                        "Input": 5,
+                        "Output": 6,
                         "Started": 0,
                         "Target": 2
                       },
@@ -796,6 +867,9 @@
                         "Value #A": "Started",
                         "Value #B": "Cost",
                         "Value #C": "Duration",
+                        "Value #D": "Input",
+                        "Value #E": "Output",
+                        "Value #F": "Cache read",
                         "kind": "Command",
                         "target": "Target"
                       }
@@ -813,7 +887,10 @@
                           "Command",
                           "Target",
                           "Cost",
-                          "Duration"
+                          "Duration",
+                          "Input",
+                          "Output",
+                          "Cache read"
                         ]
                       }
                     }
@@ -837,7 +914,7 @@
               ]
             }
           },
-          "description": "Every ad-hoc run: when it started, which command, the target (PR number, brainstorm topic, review hint), cost and duration.",
+          "description": "Every ad-hoc run: start, command, target (PR number, brainstorm topic, review hint), cost, duration and token counts (summed over the run).",
           "id": 7,
           "links": [],
           "title": "Runs",
@@ -899,11 +976,265 @@
                         "value": 0
                       }
                     ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Input"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "short"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Output"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "short"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Cache read"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "short"
+                      }
+                    ]
                   }
                 ]
               },
               "options": {
                 "cellHeight": "sm",
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-8": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum by (kind) (pi_flow_adhoc_tokens_total{kind=~\"$kind\", type=\"cacheRead\"} and on (run) (push_time_seconds{job=\"pi-flow-adhoc\"} \u003e= (time() - $__range_s))) / sum by (kind) (pi_flow_adhoc_tokens_total{kind=~\"$kind\", type=~\"input|cacheRead|cacheWrite\"} and on (run) (push_time_seconds{job=\"pi-flow-adhoc\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true
+                      },
+                      "renameByName": {
+                        "Value": "Cache hit ratio"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "cacheRead / (input + cacheRead + cacheWrite) tokens per command type. Higher = cheaper.",
+          "id": 8,
+          "links": [],
+          "title": "Cache hit ratio per command",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "fixedColor": "blue",
+                    "mode": "fixed"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  "decimals": 0,
+                  "max": 1,
+                  "min": 0,
+                  "unit": "percentunit"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "plan"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "blue",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "implement"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "green",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "validate"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "orange",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "feedback"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "purple",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.7,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
+                },
+                "orientation": "auto",
+                "showValue": "always",
+                "stacking": "none",
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "none"
+                },
+                "xField": "kind",
+                "xTickLabelRotation": 0
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-9": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "tempo"
+                      },
+                      "group": "tempo",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "limit": 50,
+                        "query": "{ .flow.span = \"adhoc\" \u0026\u0026 .adhoc.kind =~ \"${kind:raw}\" } | select(name, .adhoc.target, .adhoc.cost_usd, .adhoc.tokens.input, .adhoc.tokens.output)",
+                        "queryType": "traceql",
+                        "spss": 20,
+                        "tableType": "traces"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Root span carries cost, tokens, duration. brainstorm / pr-quality runs also contain the tool and generation spans made during the run; review runs are a single span (the reviewer ran in another process; its session file is in adhoc.session_file). Tempo search lags ~10 min.",
+          "id": 9,
+          "links": [],
+          "title": "Traces (Tempo): one trace per ad-hoc run",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+              },
+              "options": {
                 "showHeader": true
               }
             },
@@ -999,12 +1330,38 @@
             "spec": {
               "element": {
                 "kind": "ElementReference",
+                "name": "panel-8"
+              },
+              "height": 9,
+              "width": 8,
+              "x": 0,
+              "y": 13
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-9"
+              },
+              "height": 9,
+              "width": 16,
+              "x": 8,
+              "y": 13
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
                 "name": "panel-7"
               },
               "height": 10,
               "width": 24,
               "x": 0,
-              "y": 13
+              "y": 22
             }
           }
         ]

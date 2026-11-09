@@ -375,6 +375,7 @@ Same env gate as the cost push (`PI_FLOW_PUSHGATEWAY_URL`/`_TOKEN`); unset = sil
 | `pi_flow_adhoc_start_seconds` | run, kind, target | epoch start |
 | `pi_flow_adhoc_duration_seconds` | run, kind, target | wall clock start → last update |
 | `pi_flow_adhoc_cost_usd` | run, kind, target, role, session | one series per session (role `main` or `review`) |
+| `pi_flow_adhoc_tokens_total` | run, kind, target, role, session, type | `type` = input / output / cacheRead / cacheWrite |
 
 Hooks: `/brainstorm` (`flow/phase-command.ts`, begins before the prompt is sent), `/pr-quality` (`pr-quality/index.ts`, target `PR <n>`),
 `/review` subagent path (`review/review.ts` `startSubagentReview`: begin at spawn, finish when the watcher resolves, cost = the reviewer's session file).
@@ -387,8 +388,13 @@ Cost/time model and known limits:
 * **/review**: only the reviewer subagent's session is costed (main session turn that receives the steer message is not). The `ocr` scout and the in-session
   fallback (no mux) are not tracked. Cost appears when the review finishes (no live update); duration/cost are a single push at the end.
 * Skipped entirely while a flow is active (`PI_FLOW_REF` set) — the flow journal already counts those. The agent-callable `pr_quality` tool is not tracked.
-* No token/cache metrics and no traces for ad-hoc runs (cost + time only).
+* **Traces** (`TelemetryHandle.adhocBegin/adhocEnd`, `telemetry/index.ts`): a main-session run (brainstorm, pr-quality) gets its OWN trace — `adhocBegin` reserves a root span id,
+  every tool/gen span made during the run nests under it and carries `adhoc.run/kind/target`; `adhocEnd` exports the root span `<kind> <target>` ONCE (real start/end,
+  `flow.span="adhoc"`, `adhoc.cost_usd`, `adhoc.tokens.*`, `adhoc.duration_s`) and returns the process to its per-session trace. Never updated in place (Tempo keeps both copies).
+  A /review run is a single standalone span (no children: the reviewer is a separate process with its own trace; its session file is in `adhoc.session_file`).
+  Limits: the span only exists at close, so a brainstorm killed without `session_shutdown` leaves orphan children; a brainstorm trace is exported when it ends, not live.
+  Telemetry must be enabled (`telemetry.enabled`) for traces; metrics only need the Pushgateway env.
 
 Dashboard `piflow-adhoc` ("pi-flow ad-hoc commands", backup `docs/pi-flow-adhoc.dashboard.json`): `command` variable, stats (spend, runs, avg cost, avg duration),
-bar charts per command (total cost, average duration) and a runs table (Started, Command, Target, Cost, Duration). Linked from the other three dashboards.
-Verified with three synthetic runs (one per command), then deleted from the Pushgateway; hover/click not verifiable by render.
+bar charts per command (total cost, average duration), cache hit ratio per command, a Tempo traces table (`{ .flow.span = "adhoc" }`, uses `${kind:raw}`) and a runs table (Started, Command, Target, Cost, Duration, Input, Output, Cache read). Linked from the other three dashboards.
+Verified with synthetic runs (metrics + a root/child trace pair, found by Tempo search after ~10 min), metrics deleted afterwards; the synthetic trace `brainstorm syn topic` stays until the 14 d retention. Hover/click not verifiable by render.
