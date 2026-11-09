@@ -399,5 +399,5 @@ Cost/time model and known limits:
   Telemetry must be enabled (`telemetry.enabled`) for traces; metrics only need the Pushgateway env.
 
 Dashboard `piflow-adhoc` ("pi-flow ad-hoc commands", backup `docs/pi-flow-adhoc.dashboard.json`): `command` variable, stats (spend, runs, avg cost, avg duration),
-bar charts per command (total cost, average duration), cache hit ratio per command, a Tempo traces table (`{ .flow.span = "adhoc" }`, uses `${kind:raw}`) and a runs table (Started, Command, Target, Cost, Duration, Input, Output, Cache read). Linked from the other three dashboards.
+bar charts per command (total cost, average duration), cache hit ratio per command, a Tempo traces table (`{ (.flow.span = "adhoc" || .flow.span = "adhoc-run") && .adhoc.kind =~ "${kind:raw}" }`: root marker + run span) and a runs table (Started, Command, Target, Cost, Duration, Input, Output, Cache read). Linked from the other three dashboards.
 Verified with synthetic runs (metrics + a root/child trace pair, found by Tempo search after ~10 min), metrics deleted afterwards; the synthetic trace `brainstorm syn topic` stays until the 14 d retention. Hover/click not verifiable by render.
