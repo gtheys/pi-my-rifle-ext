@@ -388,11 +388,14 @@ Cost/time model and known limits:
 * **/review**: only the reviewer subagent's session is costed (main session turn that receives the steer message is not). The `ocr` scout and the in-session
   fallback (no mux) are not tracked. Cost appears when the review finishes (no live update); duration/cost are a single push at the end.
 * Skipped entirely while a flow is active (`PI_FLOW_REF` set) — the flow journal already counts those. The agent-callable `pr_quality` tool is not tracked.
-* **Traces** (`TelemetryHandle.adhocBegin/adhocEnd`, `telemetry/index.ts`): a main-session run (brainstorm, pr-quality) gets its OWN trace — `adhocBegin` reserves a root span id,
-  every tool/gen span made during the run nests under it and carries `adhoc.run/kind/target`; `adhocEnd` exports the root span `<kind> <target>` ONCE (real start/end,
-  `flow.span="adhoc"`, `adhoc.cost_usd`, `adhoc.tokens.*`, `adhoc.duration_s`) and returns the process to its per-session trace. Never updated in place (Tempo keeps both copies).
-  A /review run is a single standalone span (no children: the reviewer is a separate process with its own trace; its session file is in `adhoc.session_file`).
-  Limits: the span only exists at close, so a brainstorm killed without `session_shutdown` leaves orphan children; a brainstorm trace is exported when it ends, not live.
+* **Traces** (`TelemetryHandle.adhocBegin(run, nest)` / `adhocEnd`, `telemetry/index.ts`): same two-span pattern as the flow root + phase.
+  `adhocBegin` exports a zero-length ROOT MARKER `<kind> <target>` (`flow.span="adhoc"`) immediately, so nothing can hang off a missing parent. For main-session runs
+  (brainstorm, pr-quality; `nest=true`) every tool/gen span made during the run nests under the marker and carries `adhoc.run/kind/target`. `adhocEnd` exports ONE child
+  `<kind> run` (`flow.span="adhoc-run"`) with the real start/end plus `adhoc.cost_usd`, `adhoc.tokens.*`, `adhoc.duration_s`, then returns the process to its per-session trace.
+  Spans are never re-sent (Tempo keeps both copies). A /review run (`nest=false`) has marker + run span but no children: the reviewer is a separate process with its own
+  trace (session file in `adhoc.session_file`). If telemetry was enabled mid-run, `adhocEnd` emits marker + run span together.
+  Crash behaviour: a run whose pi died keeps its marker and every child span exported so far (children flush on a size threshold and on shutdown); only the `run`
+  summary span (duration/cost/tokens) is missing — the metrics, pushed at begin and every agent_settled, still hold the cost. Trace duration then comes from the children.
   Telemetry must be enabled (`telemetry.enabled`) for traces; metrics only need the Pushgateway env.
 
 Dashboard `piflow-adhoc` ("pi-flow ad-hoc commands", backup `docs/pi-flow-adhoc.dashboard.json`): `command` variable, stats (spend, runs, avg cost, avg duration),

@@ -7,16 +7,16 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/message": "pi-flow ad-hoc commands",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-09T06:58:26Z"
+      "grafana.app/updatedTimestamp": "2026-11-09T07:48:26Z"
     },
     "creationTimestamp": "2026-11-09T06:32:45Z",
-    "generation": 2,
+    "generation": 3,
     "labels": {
       "grafana.app/deprecatedInternalID": "2987744603254784"
     },
     "name": "piflow-adhoc",
     "namespace": "default",
-    "resourceVersion": "1794207506256982",
+    "resourceVersion": "1794210506947003",
     "uid": "6aa04b6d-9b86-4313-b518-ad4917ca70e7"
   },
   "spec": {
@@ -1207,7 +1207,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "limit": 50,
-                        "query": "{ .flow.span = \"adhoc\" \u0026\u0026 .adhoc.kind =~ \"${kind:raw}\" } | select(name, .adhoc.target, .adhoc.cost_usd, .adhoc.tokens.input, .adhoc.tokens.output)",
+                        "query": "{ (.flow.span = \"adhoc\" || .flow.span = \"adhoc-run\") \u0026\u0026 .adhoc.kind =~ \"${kind:raw}\" } | select(name, .adhoc.target, .adhoc.cost_usd, .adhoc.tokens.input, .adhoc.tokens.output)",
                         "queryType": "traceql",
                         "spss": 20,
                         "tableType": "traces"
@@ -1222,7 +1222,7 @@
               "transformations": []
             }
           },
-          "description": "Root span carries cost, tokens, duration. brainstorm / pr-quality runs also contain the tool and generation spans made during the run; review runs are a single span (the reviewer ran in another process; its session file is in adhoc.session_file). Tempo search lags ~10 min.",
+          "description": "One trace per ad-hoc run. The root span is a zero-length marker written when the run starts; the \"\u003ccommand\u003e run\" child (written at close) carries duration, cost and tokens. brainstorm / pr-quality traces also contain the tool and generation spans of the run; review runs have no children (the reviewer ran in another process; see adhoc.session_file). A run whose pi session died has the marker and children but no \"run\" span. Tempo search lags ~10 min.",
           "id": 9,
           "links": [],
           "title": "Traces (Tempo): one trace per ad-hoc run",
