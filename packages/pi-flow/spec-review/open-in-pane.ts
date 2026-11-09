@@ -49,34 +49,75 @@ export async function openFileInPane(
 
   // AIDEV-NOTE: herdr CLI called directly — deliberate: no cross-package
   // dependency on pi-interactive-subagents for 4 exec calls (plan 2026-09-07-open-spec-file-with-glow).
-  try {
-    const split = await pi.exec(
-      'herdr',
-      [
-        'pane',
-        'split',
-        '--direction',
-        'right',
-        '--no-focus',
-        '--cwd',
-        dirname(absFile),
-        '--current',
-      ],
-      {},
-    )
-    const parsed: unknown = JSON.parse(split.stdout)
-    const result = parsed as {
-      result?: { pane?: { pane_id?: unknown } }
-    }
-    const paneId = result.result?.pane?.pane_id
-    if (typeof paneId !== 'string') {
-      throw new Error('herdr pane split: missing pane_id in response')
-    }
+  // AIDEV-NOTE: subagent panes live in ephemeral tabs that
+  // pi-interactive-subagents closes (pane + tab) when the subagent exits, so
+  // a review pane split from the calling pane dies with that tab. When the
+  // subagent spawn env (PI_SUBAGENT_ID) is present, open a dedicated durable
+  // tab instead — it outlives the subagent cleanup. Workspace id comes from
+  // the inherited herdr env; without it fall back to the legacy split path.
+  const workspaceId = process.env.HERDR_WORKSPACE_ID
+  const inSubagent =
+    process.env.PI_SUBAGENT_ID !== undefined && workspaceId !== undefined
 
-    try {
-      await pi.exec('herdr', ['pane', 'rename', paneId, 'spec-review'], {})
-    } catch {
-      // cosmetic, non-fatal
+  try {
+    let paneId: string
+    if (inSubagent) {
+      const created = await pi.exec(
+        'herdr',
+        [
+          'tab',
+          'create',
+          '--workspace',
+          workspaceId,
+          '--cwd',
+          dirname(absFile),
+          '--label',
+          'spec-review',
+          '--no-focus',
+        ],
+        {},
+      )
+      const parsed: unknown = JSON.parse(created.stdout)
+      const result = parsed as {
+        result?: { root_pane?: { pane_id?: unknown } }
+      }
+      const rootPaneId = result.result?.root_pane?.pane_id
+      if (typeof rootPaneId !== 'string') {
+        throw new Error(
+          'herdr tab create: missing root_pane.pane_id in response',
+        )
+      }
+      paneId = rootPaneId
+    } else {
+      const split = await pi.exec(
+        'herdr',
+        [
+          'pane',
+          'split',
+          '--direction',
+          'right',
+          '--no-focus',
+          '--cwd',
+          dirname(absFile),
+          '--current',
+        ],
+        {},
+      )
+      const parsed: unknown = JSON.parse(split.stdout)
+      const result = parsed as {
+        result?: { pane?: { pane_id?: unknown } }
+      }
+      const splitPaneId = result.result?.pane?.pane_id
+      if (typeof splitPaneId !== 'string') {
+        throw new Error('herdr pane split: missing pane_id in response')
+      }
+      paneId = splitPaneId
+
+      try {
+        await pi.exec('herdr', ['pane', 'rename', paneId, 'spec-review'], {})
+      } catch {
+        // cosmetic, non-fatal
+      }
     }
 
     await pi.exec(
@@ -104,13 +145,13 @@ export async function openFileInPane(
 }
 
 // AIDEV-NOTE: PMR-XCA9 — tool registration moved from pi-planning's
-// plan-tools/open-in-pane.ts; the openFileInPane helper above is unchanged.
+// plan-tools/open-in-pane.ts; registerOpenInPane is a thin wrapper.
 export function registerOpenInPane(pi: ExtensionAPI) {
   pi.registerTool({
     name: 'open_in_pane',
     label: 'Open File in Pane',
     description:
-      'Open a file with nvim (or another command) in a new herdr pane for review. Non-fatal: returns the path and a manual-open note if herdr is unavailable.',
+      'Open a file with nvim in a herdr review pane (from a subagent: a durable spec-review tab that survives subagent cleanup). Non-fatal: returns the path and a manual-open note if herdr is unavailable.',
     promptSnippet: 'Open a spec/plan file with nvim in a herdr review pane',
     parameters: Type.Object({
       file: Type.String({ description: 'Absolute path to the file to open' }),
