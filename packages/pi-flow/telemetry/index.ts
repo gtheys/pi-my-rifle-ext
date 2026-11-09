@@ -137,6 +137,13 @@ export interface TelemetryState {
     /** already sent: kept as parent for trailing spans, never re-sent. */
     exported: boolean
   } | null
+  /** open ad-hoc (/brainstorm, /pr-quality) run: its own trace + reserved root span id. */
+  adhoc: {
+    traceId: string
+    spanId: string
+    startNano: string
+    attrs: SpanAttributes
+  } | null
   flow: SpanAttributes
   openTools: Map<string, OpenToolSpan>
   buffer: TelemetrySpan[]
@@ -158,6 +165,23 @@ export interface TelemetryHandle {
    * flow root marker immediately. No-op while telemetry is off.
    */
   syncFlowEnv: () => void
+  /**
+   * Ad-hoc command runs (adhoc/tracker.ts). begin: spans made from now on
+   * join a fresh trace under a reserved root span. end: exports that root
+   * span ONCE (real start/end + the cost/token attributes) and returns the
+   * process to its per-session trace. A run with no matching begin (the
+   * /review worker, which ran in another process) exports a standalone span.
+   */
+  adhocBegin: (run: AdhocTraceInfo) => void
+  adhocEnd: (run: AdhocTraceInfo, attributes: SpanAttributes) => void
+}
+
+export interface AdhocTraceInfo {
+  id: string
+  kind: string
+  target: string
+  startMs: number
+  endMs: number
 }
 
 export function registerTelemetry(
@@ -173,6 +197,7 @@ export function registerTelemetry(
     rootsEmitted: new Set(),
     session: null,
     phase: null,
+    adhoc: null,
     flow: {},
     openTools: new Map(),
     buffer: [],
@@ -365,6 +390,13 @@ export function registerTelemetry(
       return
     }
     syncPhase(null)
+    if (state.adhoc !== null) {
+      Object.assign(state.flow, state.adhoc.attrs)
+      state.traceId = state.adhoc.traceId
+      state.rootParentId = state.adhoc.spanId
+      state.fromFlow = false
+      return
+    }
     if (state.traceId !== null && !state.fromFlow) return
     // no flow traceparent (never stamped, or cleared): own random trace
     state.traceId = randomTraceId(deps.rng)
@@ -493,7 +525,53 @@ export function registerTelemetry(
       })
   })
 
+  const adhocName = (run: AdhocTraceInfo): string => `${run.kind} ${run.target}`
+
   return {
+    adhocBegin: (run) => {
+      if (!state.enabled) return
+      ensureTrace()
+      if (state.fromFlow) return
+      state.adhoc = {
+        traceId: randomTraceId(deps.rng),
+        spanId: randomSpanId(deps.rng),
+        startNano: toUnixNano(run.startMs),
+        attrs: {
+          'adhoc.run': run.id,
+          'adhoc.kind': run.kind,
+          'adhoc.target': run.target,
+        },
+      }
+      state.traceId = state.adhoc.traceId
+      state.rootParentId = state.adhoc.spanId
+    },
+    adhocEnd: (run, attributes) => {
+      if (!state.enabled) return
+      const open = state.adhoc
+      let traceId = randomTraceId(deps.rng)
+      let spanId = randomSpanId(deps.rng)
+      let startNano = toUnixNano(run.startMs)
+      if (open !== null && open.attrs['adhoc.run'] === run.id) {
+        traceId = open.traceId
+        spanId = open.spanId
+        startNano = open.startNano
+        // back to a fresh per-session trace for whatever comes next
+        state.adhoc = null
+        state.traceId = null
+        state.rootParentId = null
+      }
+      state.buffer.push({
+        traceId,
+        spanId,
+        name: adhocName(run),
+        kind: 1,
+        startTimeUnixNano: startNano,
+        endTimeUnixNano: toUnixNano(run.endMs),
+        attributes: { ...attributes, 'flow.span': 'adhoc' },
+        statusCode: 0,
+      })
+      flush()
+    },
     syncFlowEnv: () => {
       if (!state.enabled) return
       const before = state.buffer.length

@@ -150,6 +150,8 @@ export default function (pi: ExtensionAPI) {
   let autoPushCost: ((ref: string) => Promise<void>) | null = null
   // late-bound: the telemetry handle only exists after registerTelemetry below
   let syncTelemetryFlowEnv: (() => void) | null = null
+  // late-bound: same handle, used by the ad-hoc tracker for its run traces
+  let telemetryHandle: ReturnType<typeof registerTelemetry> | null = null
   const loop = createFlowLoop({
     getSessionFile: () => mainSessionFile,
     onRunEnd: (ref) => {
@@ -427,6 +429,10 @@ export default function (pi: ExtensionAPI) {
       getSessionFile: () => mainSessionFile,
       readSession: costDeps.readSessionFile,
       flowActive: () => (process.env.PI_FLOW_REF ?? '').length > 0,
+      trace: {
+        begin: (run) => telemetryHandle?.adhocBegin(run),
+        end: (run, attributes) => telemetryHandle?.adhocEnd(run, attributes),
+      },
       push: async (runId, body) => {
         const url = process.env.PI_FLOW_PUSHGATEWAY_URL
         if (url === undefined || url.length === 0) return
@@ -492,6 +498,7 @@ export default function (pi: ExtensionAPI) {
     },
   })
   syncTelemetryFlowEnv = telemetry.syncFlowEnv
+  telemetryHandle = telemetry
 
   // AIDEV-NOTE: PMR-T8ZG — human entry point of the code-review gate. The
   // command resolves the ref and sends the gate prompt via sendUserMessage

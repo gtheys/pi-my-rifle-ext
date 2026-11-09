@@ -145,3 +145,49 @@ describe('adhoc tracker', () => {
     expect(body).not.toContain('pi_flow_adhoc_cost_usd')
   })
 })
+
+describe('adhoc tracker trace hooks', () => {
+  function traced() {
+    const events: string[] = []
+    const tracker = createAdhocTracker({
+      now: () => Date.parse('2026-11-09T10:00:00Z'),
+      getSessionFile: () => null,
+      readSession: () => null,
+      push: async () => {},
+      flowActive: () => false,
+      trace: {
+        begin: (run) => events.push(`begin ${run.kind}`),
+        end: (run, attrs) =>
+          events.push(`end ${run.kind} ${attrs['adhoc.run'] === run.id}`),
+      },
+    })
+    return { tracker, events }
+  }
+
+  test('single-turn run: begin, then one end on first settle', async () => {
+    const { tracker, events } = traced()
+    tracker.beginMain('pr-quality', 'PR 1', true)
+    await tracker.settled()
+    await tracker.settled()
+    expect(events).toEqual(['begin pr-quality', 'end pr-quality true'])
+  })
+
+  test('conversation run ends once, when the next run replaces it', async () => {
+    const { tracker, events } = traced()
+    tracker.beginMain('brainstorm', 't', false)
+    await tracker.settled()
+    tracker.beginMain('pr-quality', 'PR 2', true)
+    expect(events).toEqual([
+      'begin brainstorm',
+      'end brainstorm true',
+      'begin pr-quality',
+    ])
+  })
+
+  test('worker run: end only', async () => {
+    const { tracker, events } = traced()
+    const run = tracker.beginWorker('review', 'PR 3')
+    await tracker.finish(run)
+    expect(events).toEqual(['end review true'])
+  })
+})

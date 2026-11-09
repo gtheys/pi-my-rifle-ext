@@ -76,6 +76,87 @@ export function adhocRunId(
   return `${kind}-${slug}-${stamp}`
 }
 
+export interface AdhocSessionRow {
+  role: string
+  session: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  cost: number
+}
+
+/** Usage rows for one run. Unreadable sessions / no usage add no row. */
+export function summarizeAdhoc(
+  run: AdhocRun,
+  readSession: (file: string) => string | null,
+): AdhocSessionRow[] {
+  const rows: AdhocSessionRow[] = []
+  const add = (role: string, session: string, entries: readonly unknown[]) => {
+    const summary = summarizeEntriesUsage(entries)
+    if (!summary.sawUsage) return
+    const t = summary.totals
+    rows.push({
+      role,
+      session,
+      input: t.input,
+      output: t.output,
+      cacheRead: t.cacheRead,
+      cacheWrite: t.cacheWrite,
+      cost: t.cost,
+    })
+  }
+  if (run.mainSessionFile !== null) {
+    const raw = readSession(run.mainSessionFile)
+    if (raw !== null) {
+      const inWindow = parseSessionEntries(raw).filter((entry) => {
+        const ms = entryMs(entry)
+        return ms !== null && ms >= run.startMs && ms <= run.endMs
+      })
+      add('main', 'main', inWindow)
+    }
+  }
+  run.workers.forEach((worker, index) => {
+    const raw = readSession(worker.sessionFile)
+    if (raw === null) return
+    add(worker.role, `${worker.role}-${index + 1}`, parseSessionEntries(raw))
+  })
+  return rows
+}
+
+/** Span attributes for the run's trace span (strings only, like every span). */
+export function adhocSpanAttributes(
+  run: AdhocRun,
+  rows: readonly AdhocSessionRow[],
+): Record<string, string> {
+  let cost = 0
+  let input = 0
+  let output = 0
+  let cacheRead = 0
+  let cacheWrite = 0
+  for (const row of rows) {
+    cost += row.cost
+    input += row.input
+    output += row.output
+    cacheRead += row.cacheRead
+    cacheWrite += row.cacheWrite
+  }
+  const attrs: Record<string, string> = {
+    'adhoc.run': run.id,
+    'adhoc.kind': run.kind,
+    'adhoc.target': run.target,
+    'adhoc.duration_s': String(Math.max(0, (run.endMs - run.startMs) / 1000)),
+    'adhoc.cost_usd': String(cost),
+    'adhoc.tokens.input': String(input),
+    'adhoc.tokens.output': String(output),
+    'adhoc.tokens.cache_read': String(cacheRead),
+    'adhoc.tokens.cache_write': String(cacheWrite),
+  }
+  const reviewer = run.workers[0]
+  if (reviewer !== undefined) attrs['adhoc.session_file'] = reviewer.sessionFile
+  return attrs
+}
+
 /** Prometheus exposition for one run. Pure; unreadable sessions add nothing. */
 export function buildAdhocBody(
   run: AdhocRun,
@@ -88,28 +169,21 @@ export function buildAdhocBody(
   )
   const seconds = Math.max(0, (run.endMs - run.startMs) / 1000)
   lines.push(`pi_flow_adhoc_duration_seconds{${labels(base)}} ${seconds}`)
-  const cost = (role: string, session: string, entries: readonly unknown[]) => {
-    const summary = summarizeEntriesUsage(entries)
-    if (!summary.sawUsage) return
-    lines.push(
-      `pi_flow_adhoc_cost_usd{${labels({ ...base, role, session })}} ${summary.totals.cost}`,
-    )
-  }
-  if (run.mainSessionFile !== null) {
-    const raw = readSession(run.mainSessionFile)
-    if (raw !== null) {
-      const inWindow = parseSessionEntries(raw).filter((entry) => {
-        const ms = entryMs(entry)
-        return ms !== null && ms >= run.startMs && ms <= run.endMs
-      })
-      cost('main', 'main', inWindow)
+  for (const row of summarizeAdhoc(run, readSession)) {
+    const rowLabels = { ...base, role: row.role, session: row.session }
+    lines.push(`pi_flow_adhoc_cost_usd{${labels(rowLabels)}} ${row.cost}`)
+    const kinds: Array<[string, number]> = [
+      ['input', row.input],
+      ['output', row.output],
+      ['cacheRead', row.cacheRead],
+      ['cacheWrite', row.cacheWrite],
+    ]
+    for (const [type, value] of kinds) {
+      lines.push(
+        `pi_flow_adhoc_tokens_total{${labels({ ...rowLabels, type })}} ${value}`,
+      )
     }
   }
-  run.workers.forEach((worker, index) => {
-    const raw = readSession(worker.sessionFile)
-    if (raw === null) return
-    cost(worker.role, `${worker.role}-${index + 1}`, parseSessionEntries(raw))
-  })
   return `${lines.join('\n')}\n`
 }
 
@@ -121,6 +195,16 @@ export interface AdhocDeps {
   push: (runId: string, body: string) => Promise<unknown>
   /** True while a /flow run is active: tracking is skipped. */
   flowActive: () => boolean
+  /**
+   * Trace hooks (telemetry). begin: a main-session run opened, so spans made
+   * from now on nest under it. end: the run closed — export its span ONCE
+   * (never update in place; Tempo keeps both copies of a re-sent span id).
+   * A worker run only ever gets end (its work happened in another process).
+   */
+  trace?: {
+    begin: (run: AdhocRun) => void
+    end: (run: AdhocRun, attributes: Record<string, string>) => void
+  }
 }
 
 export interface AdhocTracker {
@@ -141,6 +225,18 @@ export interface AdhocTracker {
 export function createAdhocTracker(deps: AdhocDeps): AdhocTracker {
   let mainRun: AdhocRun | null = null
   let mainSingleTurn = false
+
+  function endTrace(run: AdhocRun): void {
+    if (deps.trace === undefined) return
+    try {
+      deps.trace.end(
+        run,
+        adhocSpanAttributes(run, summarizeAdhoc(run, deps.readSession)),
+      )
+    } catch {
+      // best-effort by design
+    }
+  }
 
   async function pushRun(run: AdhocRun): Promise<void> {
     try {
@@ -170,6 +266,7 @@ export function createAdhocTracker(deps: AdhocDeps): AdhocTracker {
     mainRun = null
     if (run !== null) {
       run.endMs = deps.now()
+      endTrace(run)
       await pushRun(run)
     }
   }
@@ -180,6 +277,7 @@ export function createAdhocTracker(deps: AdhocDeps): AdhocTracker {
       void closeMain()
       mainRun = newRun(kind, target, true)
       mainSingleTurn = singleTurn
+      deps.trace?.begin(mainRun)
       void pushRun(mainRun)
       return mainRun
     },
@@ -194,13 +292,17 @@ export function createAdhocTracker(deps: AdhocDeps): AdhocTracker {
     async finish(run) {
       if (run === null) return
       run.endMs = deps.now()
+      endTrace(run)
       await pushRun(run)
     },
     async settled() {
       if (mainRun === null) return
       mainRun.endMs = deps.now()
       await pushRun(mainRun)
-      if (mainSingleTurn) mainRun = null
+      if (mainSingleTurn) {
+        endTrace(mainRun)
+        mainRun = null
+      }
     },
     closeMain,
   }
