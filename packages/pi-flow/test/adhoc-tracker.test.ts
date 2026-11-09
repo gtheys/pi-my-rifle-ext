@@ -1,9 +1,25 @@
-import { describe, expect, test } from 'bun:test'
+import assert from 'node:assert/strict'
+import { describe, test } from 'node:test'
 import {
   adhocRunId,
   buildAdhocBody,
   createAdhocTracker,
 } from '../adhoc/tracker.ts'
+
+// Minimal expect() over node:assert so the suite runs under `node --test` (pre-push hook).
+function expect(actual: unknown) {
+  return {
+    toBe: (e: unknown) => assert.strictEqual(actual, e),
+    toEqual: (e: unknown) => assert.deepStrictEqual(actual, e),
+    toBeNull: () => assert.strictEqual(actual, null),
+    toHaveLength: (n: number) =>
+      assert.strictEqual((actual as unknown[]).length, n),
+    toContain: (e: string) => assert.ok((actual as string).includes(e)),
+    not: {
+      toContain: (e: string) => assert.ok(!(actual as string).includes(e)),
+    },
+  }
+}
 
 function session(entries: Array<{ at: string; cost: number }>): string {
   return entries
