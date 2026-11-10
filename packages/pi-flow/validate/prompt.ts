@@ -19,7 +19,7 @@ import { REVIEW_CONTRACT_PROMPT } from './review-gate.ts'
 // contract (blockers_count) and every later gate are unchanged, so
 // review-passed still only comes from a fresh 0 against the current tree.
 function buildDeltaReviewStep(ref: string): string {
-  return `7a. Fix round? Check the aven notes on ${ref} for a prior review-blockers
+  return `7a. Fix round? Check the aven notes on ${ref} (read via "aven context ${ref} --full") for a prior review-blockers
    note carrying "reviewed-at: <sha>" (use the MOST RECENT one). If none, the step 7 full review stands.
    If one exists, run the review as a DELTA instead: call the review tool with custom
    instructions containing (i) the recorded blockers and (ii) the output of
@@ -233,8 +233,8 @@ Deviation gate — run ONLY after the review gate returned blockers_count: 0,
 ${gateBefore}. Steps, in order:
 
 D1. Resolve the spec source. ${specSource}
-D2. Mine the why-inputs: recent aven notes on ${ref} via the
-   existing aven client (interview note, worktree note, oneshot outcome,
+D2. Mine the why-inputs: recent aven notes on ${ref} via
+   "aven context ${ref} --full" (interview note, worktree note, oneshot outcome,
    escalation notes). Commit messages are resolved by the tool itself.
 D3. Run the deviation reviewer: call the deviation_review tool with
    mode="${mode}", the resolved spec text (D1) and the mined aven notes (D2).

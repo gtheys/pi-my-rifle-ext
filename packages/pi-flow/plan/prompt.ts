@@ -38,7 +38,9 @@ ${APPROVAL_SUFFIX}`
   return `${header}
 Personal aven flow. Steps:
 
-1. Fetch ticket ${input.ref} and any aven notes on it (extra info).
+1. Fetch ticket ${input.ref} and any aven notes on it (extra info) with
+   "aven show ${input.ref}" and "aven context ${input.ref} --full" (there is no
+   "aven notes" subcommand; "aven note" only appends).
 2. Run the size check (classifySize heuristic):
    - single-file / one-module change with one test surface → 'oneshot'
    - anything touching the data model, cross-package, or with multi-step

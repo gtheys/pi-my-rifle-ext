@@ -392,7 +392,7 @@ Review gate — run ONLY after validation has fully passed:
    0 when clean) plus one "- blocker: <description>" line per blocker:
    blockers_count: 0
    - blocker: <description> (omit this line entirely when N is 0)
-7a. Fix round? Check the aven notes on DP-71 for a prior review-blockers
+7a. Fix round? Check the aven notes on DP-71 (read via "aven context DP-71 --full") for a prior review-blockers
    note carrying "reviewed-at: <sha>" (use the MOST RECENT one). If none, the step 7 full review stands.
    If one exists, run the review as a DELTA instead: call the review tool with custom
    instructions containing (i) the recorded blockers and (ii) the output of
@@ -424,8 +424,8 @@ in review-gate step 9. Steps, in order:
 D1. Resolve the spec source. Resolve the spec file path via the resolve_spec_path tool
    (repo from the git remote, slug from the Jira summary) and read that spec
    file. Also fetch the Jira ticket text via acli.
-D2. Mine the why-inputs: recent aven notes on DP-71 via the
-   existing aven client (interview note, worktree note, oneshot outcome,
+D2. Mine the why-inputs: recent aven notes on DP-71 via
+   "aven context DP-71 --full" (interview note, worktree note, oneshot outcome,
    escalation notes). Commit messages are resolved by the tool itself.
 D3. Run the deviation reviewer: call the deviation_review tool with
    mode="work", the resolved spec text (D1) and the mined aven notes (D2).
