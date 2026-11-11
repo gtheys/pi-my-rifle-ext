@@ -1148,16 +1148,39 @@ function buildTranscriptStub(
   return `${frontmatter}\n\n${header}\n\n${transcript}\n`
 }
 
-async function findPendingSummaries(dir: string): Promise<{
+// AIDEV-NOTE: a .vtt whose note was already summarized and archived by
+// /teams-transcript-push has no sibling .md in dir (push moved it to
+// pushed/) while the .vtt itself stays forever as the sync dedup store —
+// without the pushed/vault checks below, this scan re-bootstraps a stub from
+// the .vtt and the meeting gets summarized a *second* time (confirmed live:
+// zombie stub with speaker-derived attendees while the vault copy held the
+// real summary with the full calendar attendee list). vaultDir (when
+// configured) covers notes that landed in the vault by any other path too.
+// A vault copy is treated as done regardless of summary state — push never
+// overwrites an existing vault note, so that file is the canonical one.
+export async function findPendingSummaries(
+  dir: string,
+  vaultDir?: string,
+): Promise<{
   dir: string
   pending: string[]
   alreadyDone: number
+  pushed: number
 }> {
   const vttDir = vttSubdir(dir)
   const entries = await fs.readdir(vttDir).catch(() => [] as string[])
   const vttFiles = entries.filter((f) => f.endsWith('.vtt'))
   const pending: string[] = []
   let alreadyDone = 0
+  let pushed = 0
+  const fileExists = async (file: string): Promise<boolean> => {
+    try {
+      await fs.access(file)
+      return true
+    } catch {
+      return false
+    }
+  }
   for (const vttFile of vttFiles) {
     const base = vttFile.slice(0, -4)
     const vttPath = path.join(vttDir, vttFile)
@@ -1174,6 +1197,14 @@ async function findPendingSummaries(dir: string): Promise<{
     // before this feature existed) — bootstrap the stub now, deterministically,
     // so the agent's job is always the same: fill in an existing stub.
     if (mdContent === null) {
+      if (await fileExists(path.join(dir, 'pushed', `${base}.md`))) {
+        pushed++
+        continue
+      }
+      if (vaultDir && (await fileExists(path.join(vaultDir, `${base}.md`)))) {
+        pushed++
+        continue
+      }
       const vttContent = await fs.readFile(vttPath, 'utf8')
       const cues = parseVttCues(vttContent)
       const stub = buildTranscriptStub(
@@ -1197,7 +1228,7 @@ async function findPendingSummaries(dir: string): Promise<{
       pending.push(mdPath)
     }
   }
-  return { dir, pending, alreadyDone }
+  return { dir, pending, alreadyDone, pushed }
 }
 
 // AIDEV-NOTE: exact section order/style the agent must follow when filling
@@ -1246,6 +1277,27 @@ const SUMMARY_FORMAT_GUIDANCE =
   'date ("by Friday", "end of next week") to an absolute YYYY-MM-DD using the note\'s own ' +
   '**Date** as the reference point; omit the due-date parenthetical entirely if none was stated, ' +
   'never invent one.'
+
+// AIDEV-NOTE: summarize used to leave the filled-in note in the staging
+// outDir with /teams-transcript-push as a separate manual step — meanwhile
+// project cross-linking added wikilinks to *vault* project notes pointing
+// at a meeting file that wasn't in the vault yet, and clicking such a link
+// made Obsidian create an empty placeholder note in its default new-note
+// folder. When vaultMeetings is configured the agent now files each
+// summarized note into the vault itself (same copy+archive semantics as
+// /teams-transcript-push) *before* any project cross-linking, so every
+// back-link resolves to a real file.
+function buildVaultFilingGuidance(vaultDir: string, outDir: string): string {
+  return (
+    'Filing into the vault: after inserting the summary sections into a note, file it into the ' +
+    `vault before any project cross-linking — copy the staging note to ${vaultDir}/ (same ` +
+    'filename). If a file with that name already exists there with a `## Summary` section, keep ' +
+    'the vault version and do not overwrite it. Then move the staging note to ' +
+    `${outDir}/pushed/ (create it if missing). This mirrors /teams-transcript-push. Only add ` +
+    'back-links to vault project notes after the meeting note exists in the vault — a wikilink ' +
+    'to a missing file makes Obsidian create an empty placeholder note when clicked.'
+  )
+}
 
 // AIDEV-NOTE: adapted from a different tool's weekly-synthesis skill spec —
 // kept the shape (themes/decision-arcs/action-audit/forward-brief/closing),
@@ -1470,11 +1522,18 @@ export default function (pi: ExtensionAPI) {
       if (params.action === 'pendingSummaries') {
         if (!params.dir)
           throw new Error('dir is required for action=pendingSummaries')
-        const result = await findPendingSummaries(params.dir)
+        const vaultDir = await resolveConfiguredVaultMeetings(ctx.cwd)
+        const result = await findPendingSummaries(params.dir, vaultDir)
         const projectsDir = await resolveProjectsDir(ctx.cwd)
+        // AIDEV-NOTE: vault filing sits between the summary format and the
+        // project cross-linking on purpose — the note must exist in the vault
+        // before any back-links to it are added (see buildVaultFilingGuidance).
+        const vaultGuidance = vaultDir
+          ? `\n\n${buildVaultFilingGuidance(vaultDir, params.dir)}`
+          : ''
         const formatGuidance = projectsDir
-          ? `${SUMMARY_FORMAT_GUIDANCE}\n\n${buildProjectCrosslinkGuidance(projectsDir)}`
-          : SUMMARY_FORMAT_GUIDANCE
+          ? `${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}\n\n${buildProjectCrosslinkGuidance(projectsDir)}`
+          : `${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}`
         return {
           content: [
             {
@@ -1725,11 +1784,12 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const [argDir] = args.trim().split(/\s+/).filter(Boolean)
       const dir = await resolveTranscriptsDir(ctx.cwd, argDir)
-      const result = await findPendingSummaries(dir)
+      const vaultDir = await resolveConfiguredVaultMeetings(ctx.cwd)
+      const result = await findPendingSummaries(dir, vaultDir)
 
       if (result.pending.length === 0) {
         ctx.ui.notify(
-          `No pending transcripts in ${dir} — all ${result.alreadyDone} transcript(s) already have a filled-in summary.`,
+          `No pending transcripts in ${dir} — ${result.alreadyDone} already summarized, ${result.pushed} already pushed to the vault.`,
           'info',
         )
         return
@@ -1743,12 +1803,17 @@ export default function (pi: ExtensionAPI) {
       const projectGuidance = projectsDir
         ? `\n\n${buildProjectCrosslinkGuidance(projectsDir)}`
         : ''
+      const vaultGuidance = vaultDir
+        ? `\n\n${buildVaultFilingGuidance(vaultDir, dir)}`
+        : ''
       // AIDEV-NOTE: no LLM-calling API is exposed to command handlers either —
       // hand the pending file list + format spec to the running agent via
       // sendUserMessage, and let it read/summarize/write each one with its
       // own tools (mirrors the pendingSummaries tool action's approach).
+      // Vault-filing guidance comes before project cross-linking so the note
+      // lands in the vault before any back-links to it exist.
       pi.sendUserMessage(
-        `Summarize these Teams transcripts. ${SUMMARY_FORMAT_GUIDANCE}${projectGuidance}\n\nFiles:\n${result.pending.map((p) => `- ${p}`).join('\n')}`,
+        `Summarize these Teams transcripts. ${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}${projectGuidance}\n\nFiles:\n${result.pending.map((p) => `- ${p}`).join('\n')}`,
       )
     },
   })

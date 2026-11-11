@@ -145,6 +145,10 @@ Scans `dir` (default: same as sync's `outDir`) for transcripts whose `.md` stub 
 
 If a `.vtt` in `outDir/vtt/` has no `.md` at all in `outDir` (dropped in manually, or synced before this existed), a stub is bootstrapped first from the file itself: attendees from the distinct `<v Name>` speakers in the VTT, date from the filename's `YYYY-MM-DD` prefix or file mtime, title de-slugified from the filename. Drop manually-added `.vtt` files into `outDir/vtt/`, same as synced ones.
 
+A `.vtt` whose note was already summarized and pushed is **not** re-bootstrapped — `pendingSummaries`/this command check `outDir/pushed/` and (when `vaultMeetings` is configured) the vault itself for an existing note before creating a stub. Without this, every post-push re-run would resurrect a stub from the `.vtt` (which stays behind as the sync dedup store) and re-summarize an already-summarized meeting.
+
+When `vaultMeetings` is configured, the summarization prompt also instructs the agent to file each finished note into the vault itself — copy to `vaultMeetings/`, then move the staging note to `outDir/pushed/`, mirroring `/teams-transcript-push` — *before* any project cross-linking, so wikilinks added to vault project notes always resolve to a real file (clicking a dangling wikilink in Obsidian creates an empty placeholder note).
+
 ```
 /teams-transcript-summarize
 /teams-transcript-summarize ./notes/transcripts
@@ -172,7 +176,7 @@ Zero recordings for that week is reported directly (no LLM call, no file written
 
 `/teams-transcript-push [dir]`
 
-Copies synced meeting notes (`.md` from the staging `outDir`) into an Obsidian vault Meetings folder via a plain filesystem copy — Obsidian picks the files up live, no server, token, or CLI involved. Requires `vaultMeetings` in config. Idempotent: a note whose file already exists in the vault is skipped, and every processed staging file is moved to `outDir/pushed/` so re-runs are no-ops. Raw `.vtt` stays behind in `outDir/vtt/` (sync's dedup store — the `.md` stub already embeds the full transcript, so copying the vtt into the vault would only duplicate content). A configured `vaultMeetings` path that doesn't exist fails loud instead of silently creating a junk directory.
+Copies synced meeting notes (`.md` from the staging `outDir`) into an Obsidian vault Meetings folder via a plain filesystem copy — Obsidian picks the files up live, no server, token, or CLI involved. Requires `vaultMeetings` in config. Idempotent: a note whose file already exists in the vault is skipped, and every processed staging file is moved to `outDir/pushed/` so re-runs are no-ops. When `vaultMeetings` is configured, `/teams-transcript-summarize` already files each note into the vault as it summarizes — this command remains for pushing notes that were synced but never summarized (or summarization ran without vault filing). Raw `.vtt` stays behind in `outDir/vtt/` (sync's dedup store — the `.md` stub already embeds the full transcript, so copying the vtt into the vault would only duplicate content). A configured `vaultMeetings` path that doesn't exist fails loud instead of silently creating a junk directory.
 
 ```
 /teams-transcript-sync week
