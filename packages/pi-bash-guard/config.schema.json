@@ -1,0 +1,29 @@
+{
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "Master switch. Default true — the guard is on whenever the extension is loaded."
+    },
+    "deciderUrl": {
+      "type": "string",
+      "description": "Base URL of a running strands-decider server (`strands-decider serve <model> --port <port>`). Default 'http://127.0.0.1:8000'."
+    },
+    "threshold": {
+      "type": "number",
+      "minimum": 0.5,
+      "maximum": 0.99,
+      "description": "Minimum calibrated confidence for a decider \"safe\" verdict to auto-allow a command. Default 0.85. Below it (or on any \"destructive\" verdict) the command waits for human confirmation."
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 60000,
+      "description": "Decider request timeout in milliseconds. Default 3000. On timeout the command waits for human confirmation (fail closed)."
+    },
+    "rememberApproval": {
+      "type": "boolean",
+      "description": "When true (default), a human-approved command is not re-confirmed for the rest of the session (exact string match)."
+    }
+  }
+}

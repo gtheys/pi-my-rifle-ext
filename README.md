@@ -47,7 +47,8 @@ pi-my-rifle-ext/
 │   ├── pi-aven-context/     # aven workspace state session-start context
 │   ├── pi-flow/             # PIV flow orchestrator (phases, gate tools, run-state journal, Herdr viewer, review/sonarqube/pr-quality)
 │   ├── pi-sudo/             # sudo_run tool (confirm dialog + masked password)
-│   └── pi-herdr-title/      # renames the herdr pane to `Pi - <cwd>` on session start
+│   ├── pi-herdr-title/      # renames the herdr pane to `Pi - <cwd>` on session start
+│   └── pi-bash-guard/       # bash tool approval gate (strands-decider safe/destructive + confirm dialog)
 ├── skills/            # Skills (each in a subdirectory with SKILL.md)
 │   ├── engineering/
 │   └── tools/
@@ -148,6 +149,7 @@ Before publishing, run `bun run audit:pack` (`scripts/package-audit.mjs`): it ch
 | [`pi-flow`](packages/pi-flow/) | PIV flow orchestrator — `/brainstorm /plan /implement /validate /feedback /flow` plus `/spec-review` / `/spec-publish` / `/review-spec`, gate tools (`flow_phase_complete`, `flow_land`, `flow_run_attempt`, `spec_approve`) that own lifecycle labels/landing/retry budget/spec approval, planning helpers (`resolve_spec_path`, `resolve_feature_path`, `open_in_pane`, `jira_create_branch` — absorbed from the retired pi-planning package), review tooling (`/review` + `review` tool, `/sonarqube` + `sonarqube` tool, `/pr-quality` + `pr_quality` tool, `/pr-watch` — absorbed from the retired pi-review package), `worktree` tool (create/list/remove Herdr worktree workspaces — absorbed from the retired pi-worktree package), work-mode detection (`workRoots` config), durable run-state journal (`~/.pi/agent/pi-flow/runs/`), attribution env stamping (`PI_FLOW_REF/PHASE/TRACEPARENT/SUBTASK` — per-ticket/per-phase/per-subtask cost attribution, PMR-HFK1), per-ticket cost rollup (`/flow-cost <ref> [--push]` — journal + session files as offline ground truth, optional Pushgateway export, PMR-EA8X), optional OTLP telemetry (`telemetry/` — tool/generation spans to any OTLP/HTTP receiver, disabled by default, metadata-only, PMR-R8AG), and Herdr integration (`/herdr-sync`, `/flow-view`) — see [docs/herdr-flow-integration.md](docs/herdr-flow-integration.md) | Workflow |
 | [`pi-sudo`](packages/pi-sudo/) | `sudo_run` tool — root command execution behind an Allow/Deny confirmation + masked password prompt (password piped to `sudo -S`, never persisted) | System |
 | [`pi-herdr-title`](packages/pi-herdr-title/) | Renames the current herdr pane to `Pi - <cwd>` on session start; no-op outside herdr | UI Enhancement |
+| [`pi-bash-guard`](packages/pi-bash-guard/) | Approval gate on the agent's `bash` tool — deterministic allow/hard-deny tiers around a local [strands-decider](https://github.com/strands-labs/strands-decider) server classifying each command `safe`/`destructive` with calibrated confidence; `safe` above threshold auto-runs, everything else gets a human Allow/Deny dialog (`/bash-guard` status); fail-closed, decisions journaled | System |
 
 ### Companion Packages (installed separately)
 

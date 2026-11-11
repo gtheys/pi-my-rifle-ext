@@ -209,6 +209,31 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   silently skips; idempotent across resume/fork/reload via an existing-entry
   check on the session branch.
 
+## pi-bash-guard
+
+- **Files:** `packages/pi-bash-guard/` — `index.ts` (extension entrypoint +
+  decision core), `classify.ts` (pure tiers), `decider.ts` (strands-decider
+  HTTP client), `config.ts` (TypeBox config), tests under `test/`.
+- **Registers:** `tool_call` interceptor on the `bash` tool + `/bash-guard`
+  status command.
+- **What:** Human approval gate for destructive agent bash commands, built on
+  a local [strands-decider](https://github.com/strands-labs/strands-decider)
+  server (`POST /v1/systemone`, choice question `safe`/`destructive` with
+  calibrated confidence). Decision order: session approval cache → hard-deny
+  tier (mkfs, fork bomb, `curl | sh`, `rm -rf /`, raw device writes,
+  shutdown — blocked outright, no approval path) → allowlist tier (single
+  read-only command with no shell metacharacters — `ls`, `rg`, `git diff`,
+  `bun test`, …) → decider verdict (`safe` ≥ threshold auto-allows) → human
+  Allow/Deny via `ctx.ui.confirm` showing command, verdict and confidence.
+  Fail-closed: decider unreachable/unparseable or no dialog UI → block. Every
+  tier-3/4 decision journaled as a `bash-guard` session entry. Config:
+  `getAgentDir()/pi-bash-guard/config.json` (enabled/deciderUrl/threshold/
+  timeoutMs/rememberApproval; project `.pi/` override wins). Guardrail, not a
+  privilege boundary — aliases and `sh -c '…'` are not decoded (same stance as
+  the pi-flow landing gate). The async `tool_call` handler is awaited by Pi
+  before execution, so the decider round-trip and the blocking dialog both
+  gate the real run.
+
 ## pi-flow (PIV flow)
 
 - **Files:** `packages/pi-flow/index.ts` (wiring only — registrations +

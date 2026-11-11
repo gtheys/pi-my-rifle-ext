@@ -49,6 +49,14 @@
         "@earendil-works/pi-coding-agent": "*",
       },
     },
+    "packages/pi-bash-guard": {
+      "name": "@gtheys/pi-bash-guard",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@earendil-works/pi-coding-agent": "*",
+        "typebox": "*",
+      },
+    },
     "packages/pi-bootstrap": {
       "name": "@gtheys/pi-bootstrap",
       "version": "0.1.1",
@@ -294,6 +302,8 @@
     "@gtheys/pi-ask-user-question": ["@gtheys/pi-ask-user-question@workspace:packages/pi-ask-user-question"],
 
     "@gtheys/pi-aven-context": ["@gtheys/pi-aven-context@workspace:packages/pi-aven-context"],
+
+    "@gtheys/pi-bash-guard": ["@gtheys/pi-bash-guard@workspace:packages/pi-bash-guard"],
 
     "@gtheys/pi-bootstrap": ["@gtheys/pi-bootstrap@workspace:packages/pi-bootstrap"],
 

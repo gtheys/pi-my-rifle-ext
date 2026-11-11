@@ -1,0 +1,38 @@
+{
+  "name": "@gtheys/pi-bash-guard",
+  "version": "0.1.0",
+  "description": "Pi extension — human approval gate for destructive bash tool calls: deterministic allow/deny tiers around a strands-decider safe/destructive classification with calibrated confidence",
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gtheys/pi-my-rifle-ext.git",
+    "directory": "packages/pi-bash-guard"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "classify.ts",
+    "decider.ts",
+    "config.ts",
+    "config.schema.json",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

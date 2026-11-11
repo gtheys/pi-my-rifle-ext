@@ -35,7 +35,8 @@
       "./packages/pi-aven-context/index.ts",
       "./packages/pi-flow/index.ts",
       "./packages/pi-sudo/index.ts",
-      "./packages/pi-herdr-title/index.ts"
+      "./packages/pi-herdr-title/index.ts",
+      "./packages/pi-bash-guard/index.ts"
     ],
     "skills": [
       "./skills"
