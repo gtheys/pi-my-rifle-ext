@@ -14,11 +14,13 @@ import type {
   AgentToolResult,
   ExtensionAPI,
 } from '@earendil-works/pi-coding-agent'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { readAvenLabels } from '../aven/client.ts'
 import { loadConfig } from '../config.ts'
 import { landDecision } from '../flow/land-gate.ts'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
+import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
 import { toolResult } from './result.ts'
 
 const execFileAsync = promisify(execFile)
@@ -165,6 +167,20 @@ export function landingSuiteCwd(): string {
   return getFlowWorktree()?.path ?? process.cwd()
 }
 
+// AIDEV-NOTE: PMR-4S6V — HEAD-pin anchor for receipt adoption (PMR-05HX:
+// never land work the gate has not seen a green suite over — unresolvable
+// HEAD -> no adoption, full suite re-run). Returns null on any error.
+async function defaultResolveHead(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      cwd: landingSuiteCwd(),
+    })
+    return stdout.trim()
+  } catch {
+    return null
+  }
+}
+
 export function registerLandTool(
   pi: ExtensionAPI,
   state: LandingState,
@@ -173,6 +189,11 @@ export function registerLandTool(
   activeRef: () => string | null,
   // AIDEV-NOTE: PMR-05HX — injected so tests never run a real suite.
   runSuite: SuiteRunner,
+  receipts: ReceiptJournal = createReceiptJournal(getAgentDir()),
+  // AIDEV-NOTE: PMR-4S6V — receipts adopt only when the worktree HEAD is
+  // unchanged since the committed transition (PMR-05HX: never land work
+  // the gate has not seen a green suite over). Null = unresolvable -> no adoption.
+  resolveHead: () => Promise<string | null> = defaultResolveHead,
 ): void {
   pi.registerTool({
     name: 'flow_land',
@@ -242,6 +263,32 @@ export function registerLandTool(
           { isError: true },
         )
       }
+      // AIDEV-NOTE: PMR-4S6V — best-effort receipt adoption: on a hit for
+      // (ref, flow_land, route) with unchanged HEAD, return the stored ok
+      // WITHOUT re-running the suite. Gate order is unchanged — a receipt
+      // only ever skips the suite, never the ref/human/labels gates above.
+      const head = await resolveHead()
+      if (head !== null) {
+        const stored = await receipts.find({
+          ref: params.ref,
+          command: 'flow_land',
+          target: params.route,
+          headSha: head,
+        })
+        if (stored !== null) {
+          if (params.route === 'pr') {
+            state.authorized = params.ref
+            return toolResult(
+              `flow_land: landing for ${params.ref} authorized via pr — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run`,
+              { ok: true, reason: '' },
+            )
+          }
+          return toolResult(
+            `flow_land: landing for ${params.ref} gated ok via merge-main — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run. Merge the branch into main LOCALLY in the main checkout with git -C <main repo> merge --ff-only <branch> (find the main repo path via \`git worktree list\`, first entry). Do not push.`,
+            { ok: true, reason: '' },
+          )
+        }
+      }
       // AIDEV-NOTE: PMR-05HX — guardrail, not a prompt: the gate runs the
       // suite itself before authorizing anything, so a claimed-green suite
       // (pi:01a1b102 ord 36) can no longer land red work. Runs in the flow
@@ -254,6 +301,18 @@ export function registerLandTool(
           { ok: false, reason: 'test suite failed' },
           { isError: true },
         )
+      }
+      // AIDEV-NOTE: PMR-4S6V — best-effort receipt record after a green
+      // suite (both routes); a journal failure never blocks authorization.
+      try {
+        await receipts.record({
+          ref: params.ref,
+          command: 'flow_land',
+          target: params.route,
+          headSha: head ?? undefined,
+        })
+      } catch {
+        // best-effort — journal failures never block a gate transition
       }
       // AIDEV-NOTE: PMR-HYZA — only work mode's PR route releases the
       // interceptor's git push / gh pr create block. merge-main keeps

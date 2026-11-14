@@ -210,3 +210,282 @@ test('suiteSummary bounds the refusal output', async () => {
   assert.ok(long.length <= 2001)
   assert.ok(long.startsWith('…'))
 })
+
+// ---------------------------------------------------------------------------
+// Receipt adoption tests (PMR-4S6V): flow_land records a receipt after a
+// green suite and ADOPTS it on a duplicate call with unchanged HEAD — the
+// suite is NOT re-run. Gate order is unchanged: ref-match -> merge-main
+// human gate -> labels/landDecision -> receipt lookup -> suite.
+// Every test builds a FRESH createLandingState() — the shared module-level
+// landingState above is a known cross-test bleed risk, so these tests stay
+// order-independent.
+// ---------------------------------------------------------------------------
+import type { ReceiptJournal, ReceiptQuery } from '../run-state.ts'
+
+type LandExecuteFull = (
+  toolCallId: string,
+  params: { ref: string; route: 'pr' | 'merge-main'; artifact?: string },
+) => Promise<{
+  content: { type: string; text: string }[]
+  isError?: boolean
+}>
+
+// In-memory ReceiptJournal fake: array-backed find/record keyed on
+// (ref, command, target, headSha). find only hits when the stored headSha
+// matches the query's exactly. recordThrowing makes record reject (ISC-8
+// best-effort probe).
+function memReceipts(options?: { recordThrowing?: boolean }): ReceiptJournal & {
+  entries: ReceiptQuery[]
+} {
+  const entries: ReceiptQuery[] = []
+  return {
+    entries,
+    async find(query: ReceiptQuery) {
+      for (const entry of entries) {
+        if (
+          entry.ref === query.ref &&
+          entry.command === query.command &&
+          entry.target === query.target &&
+          entry.headSha === query.headSha
+        ) {
+          return {
+            command: query.command,
+            target: query.target,
+            status: 'ok' as const,
+            at: new Date().toISOString(),
+          }
+        }
+      }
+      return null
+    },
+    async record(query: ReceiptQuery) {
+      if (options?.recordThrowing === true) {
+        throw new Error('journal write failed')
+      }
+      entries.push(query)
+    },
+  }
+}
+
+interface LandHarness {
+  execute: LandExecuteFull
+  suiteRuns: () => number
+  receipts: ReceiptJournal & { entries: ReceiptQuery[] }
+}
+
+function landHarness(options?: {
+  runSuite?: SuiteRunner
+  receipts?: ReceiptJournal & { entries: ReceiptQuery[] }
+  resolveHead?: () => Promise<string | null>
+  landing?: ReturnType<typeof createLandingState>
+}): LandHarness {
+  let suiteRunCount = 0
+  const countingSuite: SuiteRunner =
+    options?.runSuite ??
+    (async () => {
+      suiteRunCount += 1
+      return { ok: true, summary: 'ok' }
+    })
+  const receipts = options?.receipts ?? memReceipts()
+  const landing = options?.landing ?? createLandingState()
+  let execute: LandExecuteFull | undefined
+  const mockPi = {
+    registerTool: (tool: { execute: LandExecuteFull }) => {
+      execute = tool.execute
+    },
+  }
+  registerLandTool(
+    mockPi as unknown as Parameters<typeof registerLandTool>[0],
+    landing,
+    () => null,
+    countingSuite,
+    receipts,
+    options?.resolveHead ?? (async () => 'aaa111'),
+  )
+  if (!execute) throw new Error('flow_land tool not registered')
+  return { execute, suiteRuns: () => suiteRunCount, receipts }
+}
+
+test('receipt adoption: first green call records, duplicate adopts without re-running the suite (pr)', async () => {
+  const harness = landHarness()
+  await withFakeAven(async () => {
+    const first = await harness.execute('r1', { ref: 'PMR-ABC1', route: 'pr' })
+    assert.equal(first.isError, undefined)
+    assert.equal(harness.suiteRuns(), 1)
+    assert.equal(harness.receipts.entries.length, 1)
+    assert.deepEqual(harness.receipts.entries[0], {
+      ref: 'PMR-ABC1',
+      command: 'flow_land',
+      target: 'pr',
+      headSha: 'aaa111',
+    })
+    const second = await harness.execute('r2', {
+      ref: 'PMR-ABC1',
+      route: 'pr',
+    })
+    assert.equal(second.isError, undefined)
+    assert.equal(harness.suiteRuns(), 1, 'suite NOT re-run on duplicate')
+    assert.match(second.content[0].text, /adopted/)
+    assert.match(second.content[0].text, /authorized via pr/)
+  })
+})
+
+test('receipt adoption: route=pr duplicate re-authorizes the ref (ISC-3)', async () => {
+  const landing = createLandingState()
+  const harness = landHarness({ landing })
+  await withFakeAven(async () => {
+    await harness.execute('r3', { ref: 'PMR-ABC1', route: 'pr' })
+    // Simulate a blip that cleared authorization between the two calls.
+    landing.authorized = null
+    const second = await harness.execute('r4', {
+      ref: 'PMR-ABC1',
+      route: 'pr',
+    })
+    assert.equal(second.isError, undefined)
+    assert.equal(harness.suiteRuns(), 1)
+    assert.equal(landing.authorized, 'PMR-ABC1')
+  })
+})
+
+test('receipt adoption: HEAD moved since the receipt — suite re-runs, no adoption (ISC-6)', async () => {
+  let head = 'aaa111'
+  const harness = landHarness({
+    resolveHead: async () => head,
+  })
+  await withFakeAven(async () => {
+    await harness.execute('r5', { ref: 'PMR-ABC1', route: 'pr' })
+    head = 'bbb222'
+    const second = await harness.execute('r6', {
+      ref: 'PMR-ABC1',
+      route: 'pr',
+    })
+    assert.equal(second.isError, undefined)
+    assert.equal(harness.suiteRuns(), 2, 'suite re-runs over a moved HEAD')
+    assert.doesNotMatch(second.content[0].text, /adopted/)
+  })
+})
+
+test('receipt adoption: unresolvable HEAD — no adoption, suite re-runs (ISC-6)', async () => {
+  let head: string | null = 'aaa111'
+  const harness = landHarness({
+    resolveHead: async () => head,
+  })
+  await withFakeAven(async () => {
+    await harness.execute('r7', { ref: 'PMR-ABC1', route: 'pr' })
+    head = null
+    const second = await harness.execute('r8', {
+      ref: 'PMR-ABC1',
+      route: 'pr',
+    })
+    assert.equal(second.isError, undefined)
+    assert.equal(harness.suiteRuns(), 2)
+  })
+})
+
+test('receipt adoption: merge-main without the human marker is refused despite a stored receipt (ISC-7)', async () => {
+  const receipts = memReceipts()
+  receipts.entries.push({
+    ref: 'PMR-ABC1',
+    command: 'flow_land',
+    target: 'merge-main',
+    headSha: 'aaa111',
+  })
+  const harness = landHarness({ receipts })
+  await withFakeAven(async () => {
+    const result = await harness.execute('r9', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /human code-review gate/)
+    assert.equal(harness.suiteRuns(), 0)
+  })
+})
+
+test('receipt adoption: merge-main with the marker adopts without re-running the suite', async () => {
+  const landing = createLandingState()
+  landing.humanReviewPassed = 'PMR-ABC1'
+  const harness = landHarness({ landing })
+  await withFakeAven(async () => {
+    const first = await harness.execute('r10', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(first.isError, undefined)
+    assert.equal(harness.suiteRuns(), 1)
+    const second = await harness.execute('r11', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(second.isError, undefined)
+    assert.equal(harness.suiteRuns(), 1, 'suite NOT re-run on duplicate')
+    assert.match(second.content[0].text, /adopted/)
+    assert.match(second.content[0].text, /merge --ff-only/)
+    assert.equal(landing.authorized, null, 'merge-main never authorizes')
+  })
+})
+
+test('receipt adoption: labels failing landDecision are refused before the lookup (ISC-7)', async () => {
+  const receipts = memReceipts()
+  receipts.entries.push({
+    ref: 'PMR-ABC1',
+    command: 'flow_land',
+    target: 'pr',
+    headSha: 'aaa111',
+  })
+  const harness = landHarness({ receipts })
+  await withFakeAven(async () => {
+    // Point the fake aven at labels WITHOUT review-passed: the writeable
+    // label fixture lives in the shim; use a second bin dir whose aven
+    // returns no labels.
+    const noLabelBin = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-nolabel-'))
+    const avenPath = path.join(noLabelBin, 'aven')
+    writeFileSync(
+      avenPath,
+      `#!/bin/sh\necho '{"ref":"PMR-ABC1","labels":[]}'\n`,
+    )
+    chmodSync(avenPath, 0o755)
+    const previousPath = process.env.PATH ?? ''
+    process.env.PATH = `${noLabelBin}:${previousPath}`
+    try {
+      const result = await harness.execute('r12', {
+        ref: 'PMR-ABC1',
+        route: 'pr',
+      })
+      assert.equal(result.isError, true)
+      assert.match(result.content[0].text, /review-passed/)
+      assert.equal(harness.suiteRuns(), 0)
+    } finally {
+      process.env.PATH = previousPath
+    }
+  })
+})
+
+test('receipt adoption: a throwing record never blocks authorization (ISC-8)', async () => {
+  const receipts = memReceipts({ recordThrowing: true })
+  const harness = landHarness({ receipts })
+  await withFakeAven(async () => {
+    const result = await harness.execute('r13', {
+      ref: 'PMR-ABC1',
+      route: 'pr',
+    })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /authorized via pr/)
+  })
+})
+
+test('receipt adoption: receipts and resolveHead are optional (defaults wired)', () => {
+  let registered = false
+  const mockPi = {
+    registerTool: () => {
+      registered = true
+    },
+  }
+  registerLandTool(
+    mockPi as unknown as Parameters<typeof registerLandTool>[0],
+    createLandingState(),
+    () => null,
+    greenSuite,
+  )
+  assert.equal(registered, true)
+})
