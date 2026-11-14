@@ -239,3 +239,96 @@ test('createDebouncedRender: calls after the quiet period fire again', async () 
   await wait(60)
   assert.equal(renders, 2)
 })
+
+// ── journal append triggers a re-render (integration, PMR-V3SM) ──
+// AIDEV-NOTE: end-to-end regression for the watcher path — spawn the real pane
+// script as a child process, append one note event to the journal, and poll
+// stdout for the note text. fs.watch only attaches when the journal EXISTS at
+// pane start, so the journal file is created before spawning; the watchFile
+// interval fallback also satisfying the assertion is acceptable (fs.watch is
+// the latency win, the render is the contract). The pane derives the journal
+// path via journalFileFor (sibling *.journal.jsonl) until subtask 1.5 lands,
+// so PI_FLOW_JOURNAL_FILE is deliberately NOT passed (the pane ignores it).
+import { spawn } from 'node:child_process'
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const PANE_SCRIPT = join(
+  import.meta.dirname,
+  '../../../plugins/herdr/flow-viewer.mjs',
+)
+
+test('journal append triggers a pane re-render containing the appended note', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'flow-viewer-it-'))
+  const child = { kill: () => {} }
+  try {
+    const runFile = join(dir, 'PMR-V3SM.json')
+    const journalFile = join(dir, 'PMR-V3SM.journal.jsonl')
+    const startedAt = '2026-11-14T10:00:00Z'
+    const state = {
+      ref: 'PMR-V3SM',
+      completedPhases: ['research'],
+      currentPhase: 'implement',
+      mode: 'exec',
+      startedAt,
+      notes: [],
+      updatedAt: startedAt,
+    }
+    writeFileSync(runFile, JSON.stringify(state))
+    // Journal must exist before spawn so fs.watch attaches.
+    writeFileSync(
+      journalFile,
+      `${JSON.stringify({ kind: 'note', at: startedAt, ref: 'PMR-V3SM', text: 'initial note' })}\n`,
+    )
+
+    const pane = spawn(process.execPath, [PANE_SCRIPT], {
+      env: {
+        ...process.env,
+        PI_FLOW_REF: 'PMR-V3SM',
+        PI_FLOW_RUN_FILE: runFile,
+        HERDR_PANE_ID: 'test-pane-flow-viewer-it',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    child.kill = () => {
+      if (pane.exitCode === null && pane.signalCode === null) {
+        pane.kill('SIGKILL')
+      }
+    }
+
+    let stdout = ''
+    pane.stdout.setEncoding('utf8')
+    pane.stdout.on('data', (chunk) => {
+      stdout += chunk
+    })
+
+    // Initial render should contain the phase list header.
+    await waitFor(
+      () => stdout.includes('RPIV flow · PMR-V3SM'),
+      'initial render',
+    )
+
+    // One append, unique marker.
+    const marker = `journal-push-marker-${Math.random().toString(36).slice(2)}`
+    appendFileSync(
+      journalFile,
+      `${JSON.stringify({ kind: 'note', at: new Date().toISOString(), ref: 'PMR-V3SM', text: marker })}\n`,
+    )
+    await waitFor(() => stdout.includes(marker), 're-render with appended note')
+  } finally {
+    child.kill()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+async function waitFor(predicate, what) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`timed out waiting for ${what}`)
+}
