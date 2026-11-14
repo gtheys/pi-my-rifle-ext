@@ -7,6 +7,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { journalPathFor, runStatePath } from '../run-state.ts'
+import { parseInstalledPlugin } from './sync.ts'
 
 export const HERDR_PLUGIN_ID = 'gtheys.pi-my-rifle-ext'
 export const HERDR_PLUGIN_ENTRYPOINT = 'flow'
@@ -69,6 +70,31 @@ export function buildViewerOpenEnv(ref: string, runFile: string): string[] {
 /** Strict ref charset — the same rule as runFileName, enforced at the boundary. */
 export function isValidRef(ref: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(ref)
+}
+
+// AIDEV-NOTE: Pure version-status decision for the /flow-view gate
+// (PMR-9Q2S 2.2). Disabled wins over drift — a disabled plugin cannot render
+// the pane even when versions match, so the message must say "disabled".
+export type PluginVersionStatus =
+  | { status: 'ok' }
+  | { status: 'not-installed' }
+  | { status: 'disabled'; installed: string }
+  | { status: 'drift'; installed: string; expected: string }
+
+export function pluginVersionStatus(
+  installed: { version: string; enabled: boolean } | undefined,
+  expected: string,
+): PluginVersionStatus {
+  if (installed === undefined) {
+    return { status: 'not-installed' }
+  }
+  if (!installed.enabled) {
+    return { status: 'disabled', installed: installed.version }
+  }
+  if (installed.version !== expected) {
+    return { status: 'drift', installed: installed.version, expected }
+  }
+  return { status: 'ok' }
 }
 
 export class FlowHerdrViewer {
@@ -198,6 +224,23 @@ export class FlowHerdrViewer {
     return snapshotPanes(snapshot).find(
       (pane) => pane.label === viewerPaneLabel(ref),
     )
+  }
+
+  async installedPlugin(): Promise<ReturnType<typeof parseInstalledPlugin>> {
+    // AIDEV-NOTE: Fail-soft like inspectHerdr's ENOENT path in sync.ts —
+    // any herdr failure is treated as not-installed by the /flow-view gate.
+    try {
+      const stdout = await this.run('herdr', [
+        'plugin',
+        'list',
+        '--plugin',
+        HERDR_PLUGIN_ID,
+        '--json',
+      ])
+      return parseInstalledPlugin(stdout)
+    } catch {
+      return undefined
+    }
   }
 
   private async currentPane(): Promise<HerdrPane> {

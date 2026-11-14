@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import type { ExecResult } from '@earendil-works/pi-coding-agent'
 import {
   buildViewerOpenEnv,
+  FlowHerdrViewer,
   isValidRef,
   parseCurrentPane,
   parseOpenedPane,
   parseViewerPlacement,
+  pluginVersionStatus,
   snapshotPanes,
   VIEWER_PLACEMENTS,
   viewerPaneLabel,
@@ -116,4 +119,105 @@ test('snapshotPanes: finds viewer panes by label, tolerates junk entries', () =>
 
 test('snapshotPanes: no panes key throws', () => {
   assert.throws(() => snapshotPanes({ result: { snapshot: {} } }))
+})
+
+// --- pluginVersionStatus (PMR-9Q2S 2.2) ---
+
+test('pluginVersionStatus: undefined installed -> not-installed', () => {
+  assert.deepEqual(pluginVersionStatus(undefined, '0.9.1'), {
+    status: 'not-installed',
+  })
+})
+
+test('pluginVersionStatus: matching version + enabled -> ok', () => {
+  assert.deepEqual(
+    pluginVersionStatus({ version: '0.9.1', enabled: true }, '0.9.1'),
+    {
+      status: 'ok',
+    },
+  )
+})
+
+test('pluginVersionStatus: disabled with matching version -> disabled', () => {
+  assert.deepEqual(
+    pluginVersionStatus({ version: '0.9.1', enabled: false }, '0.9.1'),
+    {
+      status: 'disabled',
+      installed: '0.9.1',
+    },
+  )
+})
+
+test('pluginVersionStatus: different version while enabled -> drift with both versions', () => {
+  assert.deepEqual(
+    pluginVersionStatus({ version: '0.7.0', enabled: true }, '0.9.1'),
+    { status: 'drift', installed: '0.7.0', expected: '0.9.1' },
+  )
+})
+
+test('pluginVersionStatus: disabled + different version -> disabled wins', () => {
+  assert.deepEqual(
+    pluginVersionStatus({ version: '0.7.0', enabled: false }, '0.9.1'),
+    {
+      status: 'disabled',
+      installed: '0.7.0',
+    },
+  )
+})
+
+// --- installedPlugin via fake exec ---
+
+function fakeViewer(
+  stdout: string,
+  code = 0,
+): {
+  viewer: FlowHerdrViewer
+  calls: Array<{ command: string; args: string[] }>
+} {
+  const calls: Array<{ command: string; args: string[] }> = []
+  const exec = (command: string, args: string[]): Promise<ExecResult> => {
+    calls.push({ command, args })
+    return Promise.resolve({
+      code,
+      stdout,
+      stderr: '',
+      killed: false,
+      truncated: false,
+    })
+  }
+  return { viewer: new FlowHerdrViewer(exec), calls }
+}
+
+const pluginListJson = (version: string, enabled: boolean): string =>
+  JSON.stringify({
+    result: {
+      plugins: [
+        {
+          plugin_id: 'gtheys.pi-my-rifle-ext',
+          plugin_root: '/repo',
+          version,
+          enabled,
+        },
+      ],
+    },
+  })
+
+test('installedPlugin: parses the plugin record from herdr plugin list', async () => {
+  const { viewer, calls } = fakeViewer(pluginListJson('0.9.1', true))
+  const plugin = await viewer.installedPlugin()
+  assert.ok(plugin)
+  assert.equal(plugin.version, '0.9.1')
+  assert.equal(plugin.enabled, true)
+  assert.deepEqual(calls[0].args, [
+    'plugin',
+    'list',
+    '--plugin',
+    'gtheys.pi-my-rifle-ext',
+    '--json',
+  ])
+})
+
+test('installedPlugin: herdr failure -> undefined (treated as not-installed)', async () => {
+  const { viewer } = fakeViewer('', 1)
+  assert.equal(await viewer.installedPlugin(), undefined)
 })

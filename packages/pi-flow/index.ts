@@ -67,11 +67,16 @@ import {
   setActiveFlowRef,
   setBindingChangeListener,
 } from './flow/worktree-context.ts'
-import { resolveRepoRoot, syncHerdrPlugin } from './herdr/sync.ts'
+import {
+  preflightRepo,
+  resolveRepoRoot,
+  syncHerdrPlugin,
+} from './herdr/sync.ts'
 import {
   FlowHerdrViewer,
   isValidRef,
   parseViewerPlacement,
+  pluginVersionStatus,
 } from './herdr/viewer.ts'
 import { MODE_PROFILE } from './mode-profile.ts'
 import { registerJiraCreateBranch } from './plan-tools/jira-branch-tool.ts'
@@ -704,6 +709,43 @@ export default function (pi: ExtensionAPI) {
       const capability = await viewer.probe()
       if (!capability.available) {
         ctx.ui.notify(`/flow-view: ${capability.reason}`, 'warning')
+        return
+      }
+      // AIDEV-NOTE: Installed-plugin version gate (PMR-9Q2S 2.2). This is a
+      // diagnostic refusal, not a repair — the fix is /herdr-sync, never an
+      // inline relink. Preflight failure also refuses instead of crashing.
+      let expected: string
+      try {
+        expected = (await preflightRepo(resolveRepoRoot())).version
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(
+          `/flow-view: repo preflight failed: ${msg} — run /herdr-sync`,
+          'warning',
+        )
+        return
+      }
+      const installed = await viewer.installedPlugin()
+      const versionStatus = pluginVersionStatus(installed, expected)
+      if (versionStatus.status === 'not-installed') {
+        ctx.ui.notify(
+          '/flow-view: herdr plugin not installed — run /herdr-sync to relink the plugin.',
+          'warning',
+        )
+        return
+      }
+      if (versionStatus.status === 'disabled') {
+        ctx.ui.notify(
+          '/flow-view: herdr plugin is disabled — run /herdr-sync to relink the plugin.',
+          'warning',
+        )
+        return
+      }
+      if (versionStatus.status === 'drift') {
+        ctx.ui.notify(
+          `/flow-view: herdr plugin version ${versionStatus.installed} != expected ${versionStatus.expected} — run /herdr-sync to relink the plugin.`,
+          'warning',
+        )
         return
       }
       const runFile = runStatePath(getAgentDir(), ref)
