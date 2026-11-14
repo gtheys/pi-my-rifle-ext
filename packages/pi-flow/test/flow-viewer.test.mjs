@@ -204,3 +204,38 @@ test('journalFileFor: derives sibling journal path or empty for non-json', () =>
   )
   assert.equal(journalFileFor('/tmp/run-state'), '')
 })
+
+// ── createDebouncedRender ──
+// AIDEV-NOTE: the watcher wiring routes fs.watch events AND watchFile polls
+// through one trailing-edge debounce; these tests pin the coalescing behavior
+// with a tiny delay so no real 150ms sleeps are needed.
+import { createDebouncedRender } from '../../../plugins/herdr/flow-viewer.mjs'
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('createDebouncedRender: N rapid calls coalesce to exactly 1 render', async () => {
+  let renders = 0
+  const debounced = createDebouncedRender(() => {
+    renders += 1
+  }, 20)
+  debounced()
+  debounced()
+  debounced()
+  debounced()
+  assert.equal(renders, 0)
+  await wait(60)
+  assert.equal(renders, 1)
+})
+
+test('createDebouncedRender: calls after the quiet period fire again', async () => {
+  let renders = 0
+  const debounced = createDebouncedRender(() => {
+    renders += 1
+  }, 20)
+  debounced()
+  await wait(60)
+  assert.equal(renders, 1)
+  debounced()
+  await wait(60)
+  assert.equal(renders, 2)
+})

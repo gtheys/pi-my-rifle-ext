@@ -6,12 +6,13 @@
 // own pane. Failures stay on screen and name the failure in the pane label;
 // a dead pane is never a blank pane.
 import { spawnSync } from 'node:child_process'
-import { readFileSync, watchFile } from 'node:fs'
+import { readFileSync, watch, watchFile } from 'node:fs'
 import { EOL } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const FAILURE_LABEL_LIMIT = 60
 const WATCH_INTERVAL_MS = 1_000
+const DEBOUNCE_MS = 150
 const ACTIVITY_EVENT_LIMIT = 8
 const ACTIVITY_TEXT_LIMIT = 60
 
@@ -70,9 +71,47 @@ function main() {
   renamePane(paneId, `flow · ${ref}`)
 
   renderOnce(ref, runFile)
+  // AIDEV-NOTE: fs.watch is safe here because it lives in the pane process,
+  // not Pi's extension process — see pi-interactive-subagents subagent-done.ts
+  // ("fs.watch was removed after it wedged child startup ... Do not re-add
+  // without a startup regression test") and pr-quality/index.ts ("fs.watch
+  // reliability issues"). The watchFile interval polls below are a PERMANENT
+  // fallback, never remove them; fs.watch only buys sub-second latency.
+  const render = createDebouncedRender(() => renderOnce(ref, runFile), DEBOUNCE_MS)
   watchFile(runFile, { interval: WATCH_INTERVAL_MS }, () => {
-    renderOnce(ref, runFile)
+    render()
   })
+  const journalFile = journalFileFor(runFile)
+  if (journalFile !== '') {
+    watchFile(journalFile, { interval: WATCH_INTERVAL_MS }, () => {
+      render()
+    })
+    try {
+      watch(journalFile, () => {
+        render()
+      })
+    } catch {
+      // The journal may not exist yet or fs.watch may be unsupported here;
+      // degrade silently to interval-only polling. Never crash the pane.
+    }
+  }
+}
+
+// AIDEV-NOTE: trailing-edge debounce shared by all watcher callbacks (fs.watch
+// event + both watchFile polls) so a burst of journal appends coalesces into a
+// single render. Exported pure factory so tests can pass a tiny delayMs.
+export function createDebouncedRender(renderFn, delayMs) {
+  let timer = null
+  return () => {
+    if (timer !== null) {
+      clearTimeout(timer)
+    }
+    timer = setTimeout(() => {
+      timer = null
+      renderFn()
+    }, delayMs)
+    timer.unref?.()
+  }
 }
 
 function renderOnce(ref, runFile) {
