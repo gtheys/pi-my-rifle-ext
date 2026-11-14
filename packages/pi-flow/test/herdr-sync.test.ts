@@ -22,11 +22,13 @@ async function makeFixtureRepo(
   overrides: {
     manifest?: string
     packageVersion?: string
+    manifestMinVersion?: string
     omitViewer?: boolean
   } = {},
 ): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pmr-herdr-'))
   const packageVersion = overrides.packageVersion ?? '0.1.0'
+  const manifestMinVersion = overrides.manifestMinVersion ?? '0.9.1'
   await fs.writeFile(
     path.join(root, 'package.json'),
     JSON.stringify({ name: 'pi-my-rifle-ext', version: packageVersion }),
@@ -37,7 +39,7 @@ async function makeFixtureRepo(
       'id = "gtheys.pi-my-rifle-ext"',
       'name = "pi-my-rifle-ext"',
       `version = "${packageVersion}"`,
-      'min_herdr_version = "0.7.0"',
+      `min_herdr_version = "${manifestMinVersion}"`,
       'platforms = ["linux", "macos"]',
       '',
       '[[panes]]',
@@ -100,6 +102,31 @@ test('preflightRepo: wrong plugin id throws', async () => {
 test('preflightRepo: missing viewer throws', async () => {
   const root = await makeFixtureRepo({ omitViewer: true })
   await assert.rejects(() => preflightRepo(root), /missing from the repo root/)
+  await fs.rm(root, { recursive: true, force: true })
+})
+
+test('preflightRepo: min_herdr_version mismatch throws', async () => {
+  const root = await makeFixtureRepo({ manifestMinVersion: '0.7.0' })
+  await assert.rejects(
+    () => preflightRepo(root),
+    /min_herdr_version "0.7.0" != expected "0.9.1"/,
+  )
+  await fs.rm(root, { recursive: true, force: true })
+})
+
+test('preflightRepo: missing min_herdr_version throws', async () => {
+  const root = await makeFixtureRepo({
+    manifest: [
+      'id = "gtheys.pi-my-rifle-ext"',
+      'version = "0.1.0"',
+      'platforms = ["linux"]',
+      'command = ["node", "plugins/herdr/flow-viewer.mjs"]',
+    ].join('\n'),
+  })
+  await assert.rejects(
+    () => preflightRepo(root),
+    /min_herdr_version "\(missing\)" != expected "0.9.1"/,
+  )
   await fs.rm(root, { recursive: true, force: true })
 })
 

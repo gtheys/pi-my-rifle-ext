@@ -34,7 +34,7 @@ And one root-level manifest that makes the repository itself a Herdr plugin:
 id = "gtheys.pi-my-rifle-ext"
 name = "pi-my-rifle-ext"
 version = "0.1.0"           # must equal package.json version — /herdr-sync enforces this
-min_herdr_version = "0.7.0"
+min_herdr_version = "0.9.1"
 platforms = ["linux", "macos"]
 
 [[panes]]
@@ -161,7 +161,9 @@ output parsing (1MB JSON cap), mirroring pi-workflows' adapter discipline.
 
 - **Preflight** validates `herdr-plugin.toml` against `package.json`:
   plugin id, version equality (both must bump together), platform support,
-  command shape, and that the launcher file exists. Any mismatch → clear
+  command shape, that `min_herdr_version` matches `EXPECTED_MIN_HERDR_VERSION`
+  (kept in lockstep with `HERDR_MIN_VERSION` in pi-interactive-subagents), and
+  that the launcher file exists. Any mismatch → clear
   error, nothing touched.
 - Then the state machine against `herdr plugin list --json`:
   - herdr not installed (`ENOENT`) → `unavailable`, graceful skip.

@@ -16,6 +16,11 @@ const VIEWER_PATH = 'plugins/herdr/flow-viewer.mjs'
 const RESULT_SCHEMA = 'gtheys.pi-my-rifle-ext.herdr-sync.v1'
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
 
+// AIDEV-NOTE: Keep in sync with HERDR_MIN_VERSION in
+// packages/pi-interactive-subagents/pi-extension/subagents/herdr.ts — no
+// cross-package runtime dependency by AGENTS.md convention; bump both together.
+export const EXPECTED_MIN_HERDR_VERSION = '0.9.1'
+
 // AIDEV-NOTE: Single source for the /herdr-sync handler's repo root since
 // PMR-SWBX — keep this derivation authoritative over any inline copies.
 // sync.ts lives one level deeper (herdr/) than index.ts, so this climbs one
@@ -101,6 +106,12 @@ export async function preflightRepo(
   if (!command.includes('"node"') || !command.includes(`"${VIEWER_PATH}"`)) {
     throw new Error(
       `${MANIFEST_NAME} command must be ["node", "${VIEWER_PATH}"].`,
+    )
+  }
+  const minHerdrVersion = tomlString(manifest, 'min_herdr_version')
+  if (minHerdrVersion !== EXPECTED_MIN_HERDR_VERSION) {
+    throw new Error(
+      `${MANIFEST_NAME} min_herdr_version "${minHerdrVersion ?? '(missing)'}" != expected "${EXPECTED_MIN_HERDR_VERSION}" (HERDR_MIN_VERSION gate in pi-interactive-subagents) — bump both together.`,
     )
   }
   let viewerStat: import('node:fs').Stats
