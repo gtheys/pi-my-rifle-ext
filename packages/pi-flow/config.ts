@@ -106,6 +106,29 @@ const PiFlowConfigSchema = Type.Object({
 
 export type PiFlowConfig = Static<typeof PiFlowConfigSchema>
 
+// AIDEV-NOTE: PMR-JP37 (3.3) — persists viewerPlacement to the GLOBAL config
+// (<agentDir>/pi-flow/config.json). Best-effort by contract: the /flow-view
+// handler warns and still opens the pane if this throws. A present-but-
+// malformed existing file throws via the same Value.Check contract as
+// readConfigFile so a bad config is never clobbered; a valid file that merely
+// lacks viewerPlacement is merged in-place, preserving all other keys
+// (including unknown ones — the merged object is NOT re-validated).
+export async function saveViewerPlacement(
+  agentDir: string,
+  placement: 'right' | 'below' | 'left' | 'above' | 'tab',
+): Promise<string> {
+  const file = path.join(agentDir, 'pi-flow', 'config.json')
+  const existing = await readConfigFile(file)
+  const merged: Record<string, unknown> = { ...existing }
+  // workRoots is required by PiFlowConfigSchema — a fresh config must carry the
+  // empty default so the file is valid on the next read.
+  if (merged.workRoots === undefined) merged.workRoots = []
+  merged.viewerPlacement = placement
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, `${JSON.stringify(merged, null, 2)}\n`, 'utf8')
+  return file
+}
+
 export async function readConfigFile(
   file: string,
 ): Promise<Partial<PiFlowConfig>> {

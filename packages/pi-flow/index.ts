@@ -36,7 +36,7 @@ import {
   setAvenSessionCwd,
   writeAvenNote,
 } from './aven/client.ts'
-import { loadConfig, resolveMode } from './config.ts'
+import { loadConfig, resolveMode, saveViewerPlacement } from './config.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { spawnJournalTarget } from './flow/attribution.ts'
 import { pushToGateway } from './flow/cost.ts'
@@ -115,7 +115,12 @@ export {
   setAvenSessionCwd,
   specApprove,
 } from './aven/client.ts'
-export { loadConfig, readConfigFile, resolveMode } from './config.ts'
+export {
+  loadConfig,
+  readConfigFile,
+  resolveMode,
+  saveViewerPlacement,
+} from './config.ts'
 
 // AIDEV-NOTE: Best-effort journal write — run-state recording must never
 // break a flow phase; aven labels remain the gate source of truth.
@@ -697,7 +702,10 @@ export default function (pi: ExtensionAPI) {
       // (validated below) > configured viewerPlacement > interactive prompt
       // (only when ctx.hasUI; no UI -> 'right' silently). loadConfig throws
       // on malformed config — same failure mode as the rest of pi-flow.
-      // AIDEV-TODO: PMR-JP37 (3.3) persists the chosen placement here.
+      // AIDEV-NOTE: PMR-JP37 (3.3) — a freshly picked placement is persisted
+      // best-effort to the global config so the next /flow-view without an
+      // arg skips the prompt. Persistence failure warns but never blocks the
+      // open; arg/config paths below never rewrite config.
       let parsedArg: ReturnType<typeof parseViewerPlacement>
       if (placementArg === undefined) {
         parsedArg = undefined
@@ -740,6 +748,16 @@ export default function (pi: ExtensionAPI) {
             placement = 'right'
           } else {
             placement = picked
+            try {
+              const savedPath = await saveViewerPlacement(getAgentDir(), picked)
+              ctx.ui.notify(`Saved viewer placement to ${savedPath}.`, 'info')
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error)
+              ctx.ui.notify(
+                `/flow-view: could not save viewer placement: ${msg}`,
+                'warning',
+              )
+            }
           }
         }
       } else {
