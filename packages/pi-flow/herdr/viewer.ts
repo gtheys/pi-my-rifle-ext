@@ -47,6 +47,26 @@ export function parseViewerPlacement(
   return VIEWER_PLACEMENTS.find((placement) => placement === value)
 }
 
+// AIDEV-NOTE: Pure placement-resolution chain (PMR-9Q2S 3.2). Takes an
+// ALREADY-PARSED arg — the /flow-view handler keeps its own raw-string
+// validation/warning path. Order: explicit arg > configured value > prompt.
+export type PlacementDecision =
+  | { kind: 'placement'; placement: ViewerPlacement }
+  | { kind: 'prompt' }
+
+export function decidePlacement(
+  arg: ViewerPlacement | undefined,
+  configured: ViewerPlacement | undefined,
+): PlacementDecision {
+  if (arg !== undefined) {
+    return { kind: 'placement', placement: arg }
+  }
+  if (configured !== undefined) {
+    return { kind: 'placement', placement: configured }
+  }
+  return { kind: 'prompt' }
+}
+
 export function viewerPaneLabel(ref: string): string {
   return `${VIEWER_LABEL_PREFIX}${ref}`
 }

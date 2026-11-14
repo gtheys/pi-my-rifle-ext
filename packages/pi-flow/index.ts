@@ -73,6 +73,7 @@ import {
   syncHerdrPlugin,
 } from './herdr/sync.ts'
 import {
+  decidePlacement,
   FlowHerdrViewer,
   isValidRef,
   parseViewerPlacement,
@@ -692,18 +693,57 @@ export default function (pi: ExtensionAPI) {
         )
         return
       }
-      let placement: ReturnType<typeof parseViewerPlacement>
+      // AIDEV-NOTE: Placement resolution chain (PMR-9Q2S 3.2): explicit arg
+      // (validated below) > configured viewerPlacement > interactive prompt
+      // (only when ctx.hasUI; no UI -> 'right' silently). loadConfig throws
+      // on malformed config — same failure mode as the rest of pi-flow.
+      // AIDEV-TODO: PMR-JP37 (3.3) persists the chosen placement here.
+      let parsedArg: ReturnType<typeof parseViewerPlacement>
       if (placementArg === undefined) {
-        placement = 'right'
+        parsedArg = undefined
       } else {
-        placement = parseViewerPlacement(placementArg)
+        parsedArg = parseViewerPlacement(placementArg)
       }
-      if (placement === undefined) {
+      if (placementArg !== undefined && parsedArg === undefined) {
         ctx.ui.notify(
           `Unknown placement "${placementArg}". Use right|below|left|above|tab.`,
           'warning',
         )
         return
+      }
+      let configured: ReturnType<typeof parseViewerPlacement>
+      try {
+        const config = await loadConfig(ctx.cwd)
+        configured = config.viewerPlacement
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(`/flow-view: failed to load config: ${msg}`, 'warning')
+        return
+      }
+      const decision = decidePlacement(parsedArg, configured)
+      let placement: NonNullable<ReturnType<typeof parseViewerPlacement>>
+      if (decision.kind === 'placement') {
+        placement = decision.placement
+      } else if (ctx.hasUI) {
+        const choice = await ctx.ui.select('Viewer placement:', [
+          'right',
+          'below',
+          'left',
+          'above',
+          'tab',
+        ])
+        if (choice === undefined) {
+          placement = 'right'
+        } else {
+          const picked = parseViewerPlacement(choice)
+          if (picked === undefined) {
+            placement = 'right'
+          } else {
+            placement = picked
+          }
+        }
+      } else {
+        placement = 'right'
       }
       const viewer = new FlowHerdrViewer(pi.exec)
       const capability = await viewer.probe()

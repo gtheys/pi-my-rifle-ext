@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import type { ExecResult } from '@earendil-works/pi-coding-agent'
 import {
   buildViewerOpenEnv,
+  decidePlacement,
   FlowHerdrViewer,
   isValidRef,
   parseCurrentPane,
@@ -220,4 +221,37 @@ test('installedPlugin: parses the plugin record from herdr plugin list', async (
 test('installedPlugin: herdr failure -> undefined (treated as not-installed)', async () => {
   const { viewer } = fakeViewer('', 1)
   assert.equal(await viewer.installedPlugin(), undefined)
+})
+
+// --- placement decision (PMR-9Q2S 3.2) ---
+
+test('decidePlacement: explicit arg wins over config', () => {
+  assert.deepEqual(decidePlacement('left', 'right'), {
+    kind: 'placement',
+    placement: 'left',
+  })
+  assert.deepEqual(decidePlacement('tab', 'below'), {
+    kind: 'placement',
+    placement: 'tab',
+  })
+})
+
+test('decidePlacement: configured value used when no arg', () => {
+  assert.deepEqual(decidePlacement(undefined, 'above'), {
+    kind: 'placement',
+    placement: 'above',
+  })
+})
+
+test('decidePlacement: prompt when neither arg nor config', () => {
+  assert.deepEqual(decidePlacement(undefined, undefined), { kind: 'prompt' })
+})
+
+test('decidePlacement: arg undefined + config set for every placement', () => {
+  for (const placement of VIEWER_PLACEMENTS) {
+    assert.deepEqual(decidePlacement(undefined, placement), {
+      kind: 'placement',
+      placement,
+    })
+  }
 })
