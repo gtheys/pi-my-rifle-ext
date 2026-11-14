@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
+  buildViewerOpenEnv,
   isValidRef,
   parseCurrentPane,
   parseOpenedPane,
@@ -32,6 +33,20 @@ test('isValidRef: ticket-like refs pass, traversal fails', () => {
 
 test('viewerPaneLabel: prefix + ref', () => {
   assert.equal(viewerPaneLabel('PMR-1'), 'flow · PMR-1')
+})
+
+// --- viewer open env ---
+
+test('buildViewerOpenEnv: passes PI_FLOW_REF, PI_FLOW_RUN_FILE and PI_FLOW_JOURNAL_FILE', () => {
+  const env = buildViewerOpenEnv('PMR-TEST', '/tmp/runs/PMR-TEST.json')
+  assert.deepEqual(env, [
+    '--env',
+    'PI_FLOW_REF=PMR-TEST',
+    '--env',
+    'PI_FLOW_RUN_FILE=/tmp/runs/PMR-TEST.json',
+    '--env',
+    'PI_FLOW_JOURNAL_FILE=/tmp/runs/PMR-TEST.journal.jsonl',
+  ])
 })
 
 // --- herdr JSON parsers (fail closed on junk) ---

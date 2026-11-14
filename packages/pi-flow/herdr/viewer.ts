@@ -6,7 +6,7 @@
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
-import { runStatePath } from '../run-state.ts'
+import { journalPathFor, runStatePath } from '../run-state.ts'
 
 export const HERDR_PLUGIN_ID = 'gtheys.pi-my-rifle-ext'
 export const HERDR_PLUGIN_ENTRYPOINT = 'flow'
@@ -48,6 +48,22 @@ export function parseViewerPlacement(
 
 export function viewerPaneLabel(ref: string): string {
   return `${VIEWER_LABEL_PREFIX}${ref}`
+}
+
+/**
+ * Pure env-arg builder for the herdr plugin pane open (PMR-WF74). Passes
+ * PI_FLOW_REF, PI_FLOW_RUN_FILE and PI_FLOW_JOURNAL_FILE so the pane prefers
+ * the journal path from env and only falls back to deriving it from runFile.
+ */
+export function buildViewerOpenEnv(ref: string, runFile: string): string[] {
+  return [
+    '--env',
+    `PI_FLOW_REF=${ref}`,
+    '--env',
+    `PI_FLOW_RUN_FILE=${runFile}`,
+    '--env',
+    `PI_FLOW_JOURNAL_FILE=${journalPathFor(runFile)}`,
+  ]
 }
 
 /** Strict ref charset — the same rule as runFileName, enforced at the boundary. */
@@ -115,10 +131,7 @@ export class FlowHerdrViewer {
       HERDR_PLUGIN_ID,
       '--entrypoint',
       HERDR_PLUGIN_ENTRYPOINT,
-      '--env',
-      `PI_FLOW_REF=${ref}`,
-      '--env',
-      `PI_FLOW_RUN_FILE=${runFile}`,
+      ...buildViewerOpenEnv(ref, runFile),
       '--focus',
     ]
     if (placement === 'tab') {

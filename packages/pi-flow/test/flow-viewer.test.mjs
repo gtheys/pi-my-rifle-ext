@@ -246,9 +246,10 @@ test('createDebouncedRender: calls after the quiet period fire again', async () 
 // stdout for the note text. fs.watch only attaches when the journal EXISTS at
 // pane start, so the journal file is created before spawning; the watchFile
 // interval fallback also satisfying the assertion is acceptable (fs.watch is
-// the latency win, the render is the contract). The pane derives the journal
-// path via journalFileFor (sibling *.journal.jsonl) until subtask 1.5 lands,
-// so PI_FLOW_JOURNAL_FILE is deliberately NOT passed (the pane ignores it).
+// the latency win, the render is the contract). This doubles as the no-env
+// fallback case since subtask 1.5 landed: PI_FLOW_JOURNAL_FILE is deliberately
+// NOT passed, so the pane must derive the journal path via journalFileFor and
+// still render activity.
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

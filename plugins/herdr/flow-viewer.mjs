@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // AIDEV-NOTE: Herdr flow-viewer pane launcher (pattern ported from
-// pi-workflows plugins/herdr/viewer.mjs). The pane receives PI_FLOW_REF and
-// PI_FLOW_RUN_FILE from the Pi session (herdr/viewer.ts) — it resolves
-// NOTHING itself, starts no server, and never shells out except to label its
-// own pane. Failures stay on screen and name the failure in the pane label;
-// a dead pane is never a blank pane.
+// pi-workflows plugins/herdr/viewer.mjs). The pane receives PI_FLOW_REF,
+// PI_FLOW_RUN_FILE and PI_FLOW_JOURNAL_FILE from the Pi session
+// (herdr/viewer.ts buildViewerOpenEnv) — it resolves NOTHING itself beyond a
+// fallback derivation of the journal path from PI_FLOW_RUN_FILE (for panes
+// opened by an older session that does not pass PI_FLOW_JOURNAL_FILE), starts
+// no server, and never shells out except to label its own pane. Failures stay
+// on screen and name the failure in the pane label; a dead pane is never a
+// blank pane.
 import { spawnSync } from 'node:child_process'
 import { readFileSync, watch, watchFile } from 'node:fs'
 import { EOL } from 'node:os'
@@ -70,18 +73,22 @@ function main() {
   // scans for in `herdr api snapshot`, so it must exist even if rendering dies.
   renamePane(paneId, `flow · ${ref}`)
 
-  renderOnce(ref, runFile)
+  // AIDEV-NOTE: PMR-WF74 env plumbing — prefer PI_FLOW_JOURNAL_FILE, fall
+  // back to deriving from the run-state file so panes opened by an older
+  // viewer.ts (no env var) keep working. journalFileFor stays pure; the env
+  // preference lives here only.
+  const journalFile = process.env.PI_FLOW_JOURNAL_FILE || journalFileFor(runFile)
+  renderOnce(ref, runFile, journalFile)
   // AIDEV-NOTE: fs.watch is safe here because it lives in the pane process,
   // not Pi's extension process — see pi-interactive-subagents subagent-done.ts
   // ("fs.watch was removed after it wedged child startup ... Do not re-add
   // without a startup regression test") and pr-quality/index.ts ("fs.watch
   // reliability issues"). The watchFile interval polls below are a PERMANENT
   // fallback, never remove them; fs.watch only buys sub-second latency.
-  const render = createDebouncedRender(() => renderOnce(ref, runFile), DEBOUNCE_MS)
+  const render = createDebouncedRender(() => renderOnce(ref, runFile, journalFile), DEBOUNCE_MS)
   watchFile(runFile, { interval: WATCH_INTERVAL_MS }, () => {
     render()
   })
-  const journalFile = journalFileFor(runFile)
   if (journalFile !== '') {
     watchFile(journalFile, { interval: WATCH_INTERVAL_MS }, () => {
       render()
@@ -114,7 +121,7 @@ export function createDebouncedRender(renderFn, delayMs) {
   }
 }
 
-function renderOnce(ref, runFile) {
+function renderOnce(ref, runFile, journalFile) {
   let raw
   try {
     raw = readFileSync(runFile, 'utf8')
@@ -140,8 +147,8 @@ function renderOnce(ref, runFile) {
     return
   }
   // AIDEV-NOTE: journal is optional — a missing/unreadable journal renders the
-  // projection-only view with no error and no activity section.
-  const journalFile = journalFileFor(runFile)
+  // projection-only view with no error and no activity section. Path comes
+  // from main() (env-preferred, see the PMR-WF74 note there).
   let activity = ''
   if (journalFile !== '') {
     let journalRaw
@@ -160,8 +167,8 @@ function renderOnce(ref, runFile) {
 }
 
 // AIDEV-NOTE: journal path derived from the run-state file (sibling
-// *.journal.jsonl). Subtask 1.5 replaces this with env plumbing — keep the
-// swap to this one helper.
+// *.journal.jsonl). Stays exported + pure (tests depend on it); the
+// PI_FLOW_JOURNAL_FILE env preference lives in main() since subtask 1.5.
 export function journalFileFor(runFile) {
   if (runFile.endsWith('.json')) {
     return `${runFile.slice(0, -'.json'.length)}.journal.jsonl`

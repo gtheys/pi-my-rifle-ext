@@ -158,6 +158,11 @@ export function runStatePath(agentDir: string, ref: string): string | null {
   return path.join(runsDir(agentDir), name)
 }
 
+/** Sibling journal path for a run-state file (PMR-WF74 env plumbing source of truth). */
+export function journalPathFor(statePath: string): string {
+  return `${statePath.slice(0, -'.json'.length)}.journal.jsonl`
+}
+
 /** Project the current run state from an ordered event list. Pure. */
 export function projectRunState(
   events: readonly FlowRunEvent[],
@@ -415,7 +420,7 @@ export async function recordRunEvent(
 ): Promise<void> {
   const statePath = runStatePath(agentDir, event.ref)
   if (statePath === null) return
-  const journalPath = `${statePath.slice(0, -'.json'.length)}.journal.jsonl`
+  const journalPath = journalPathFor(statePath)
   const dir = path.dirname(statePath)
   await io.mkdir(dir, true)
   let state: FlowRunState | null = null
@@ -474,7 +479,7 @@ export async function recordRunEventJournalOnly(
 ): Promise<void> {
   const statePath = runStatePath(agentDir, event.ref)
   if (statePath === null) return
-  const journalPath = `${statePath.slice(0, -'.json'.length)}.journal.jsonl`
+  const journalPath = journalPathFor(statePath)
   await fs.mkdir(path.dirname(statePath), { recursive: true })
   await fs.appendFile(journalPath, `${JSON.stringify(event)}\n`, 'utf8')
 }
@@ -509,7 +514,7 @@ export async function readRunEvents(
 ): Promise<FlowRunEvent[] | null> {
   const statePath = runStatePath(agentDir, ref)
   if (statePath === null) return null
-  const journalPath = `${statePath.slice(0, -'.json'.length)}.journal.jsonl`
+  const journalPath = journalPathFor(statePath)
   let raw: string
   try {
     raw = await io.readFile(journalPath)
