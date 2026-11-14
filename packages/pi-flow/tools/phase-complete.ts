@@ -114,7 +114,7 @@ export function registerPhaseCompleteTool(
           { isError: true },
         )
       }
-      // PMR-4S6V: journal the receipt only after the label write succeeded;
+      // AIDEV-NOTE: PMR-4S6V — journal the receipt only after the label write succeeded;
       // best-effort, never fails the ok result.
       await recordPhaseReceipt(receipts, params.ref, params.phase)
       return toolResult(
