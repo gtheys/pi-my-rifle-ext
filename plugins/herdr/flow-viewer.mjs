@@ -12,6 +12,19 @@ import { fileURLToPath } from 'node:url'
 
 const FAILURE_LABEL_LIMIT = 60
 const WATCH_INTERVAL_MS = 1_000
+const ACTIVITY_EVENT_LIMIT = 8
+const ACTIVITY_TEXT_LIMIT = 60
+
+const JOURNAL_KINDS = new Set([
+  'run-start',
+  'phase-start',
+  'phase-complete',
+  'gate-target',
+  'gate-decision',
+  'subtask-ranges',
+  'main-session',
+  'note',
+])
 
 // A closed pane (or a piped test) closes stdout; exit quietly instead of an
 // unhandled EPIPE from the watcher.
@@ -87,7 +100,120 @@ function renderOnce(ref, runFile) {
     )
     return
   }
-  renderText(`flow · ${ref}`, renderState(state, ref))
+  // AIDEV-NOTE: journal is optional — a missing/unreadable journal renders the
+  // projection-only view with no error and no activity section.
+  const journalFile = journalFileFor(runFile)
+  let activity = ''
+  if (journalFile !== '') {
+    let journalRaw
+    try {
+      journalRaw = readFileSync(journalFile, 'utf8')
+    } catch {
+      journalRaw = ''
+    }
+    activity = renderActivity(parseJournal(journalRaw))
+  }
+  let body = renderState(state, ref)
+  if (activity !== '') {
+    body = `${body}${EOL}${EOL}${activity}`
+  }
+  renderText(`flow · ${ref}`, body)
+}
+
+// AIDEV-NOTE: journal path derived from the run-state file (sibling
+// *.journal.jsonl). Subtask 1.5 replaces this with env plumbing — keep the
+// swap to this one helper.
+export function journalFileFor(runFile) {
+  if (runFile.endsWith('.json')) {
+    return `${runFile.slice(0, -'.json'.length)}.journal.jsonl`
+  }
+  return ''
+}
+
+
+// AIDEV-NOTE: pure parser for the flow journal JSONL (FlowRunEvent lines,
+// packages/pi-flow/run-state.ts). Torn/invalid lines and unknown kinds are
+// skipped for forward-compat, mirroring how the projection ignores unknown
+// events. Base run state still comes ONLY from the projection file.
+export function parseJournal(raw) {
+  const events = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed === '') {
+      continue
+    }
+    let event
+    try {
+      event = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    if (event === null || typeof event !== 'object') {
+      continue
+    }
+    if (!JOURNAL_KINDS.has(event.kind)) {
+      continue
+    }
+    events.push(event)
+  }
+  return events
+}
+
+
+function activityClock(at) {
+  if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) {
+    return '??:??'
+  }
+  const d = new Date(at)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
+}
+
+function activityLine(event) {
+  const clock = activityClock(event.at)
+  const time = `[${clock}]`
+  if (event.kind === 'note') {
+    const text = typeof event.text === 'string' ? event.text : ''
+    return `${time} note ${text.slice(0, ACTIVITY_TEXT_LIMIT)}`
+  }
+  if (event.kind === 'phase-start') {
+    return `${time} phase-start ${event.phase ?? '?'}`
+  }
+  if (event.kind === 'phase-complete') {
+    return `${time} phase-complete ${event.phase ?? '?'} (${event.label ?? ''})`
+  }
+  if (event.kind === 'gate-target') {
+    return `${time} gate-target ${event.gate ?? '?'} ${event.targetId ?? ''}`
+  }
+  if (event.kind === 'gate-decision') {
+    return `${time} gate-decision ${event.gate ?? '?'} ${event.status ?? '?'}`
+  }
+  if (event.kind === 'subtask-ranges') {
+    return `${time} subtask-ranges ${event.gate ?? '?'}`
+  }
+  if (event.kind === 'main-session') {
+    return `${time} main-session`
+  }
+  if (event.kind === 'run-start') {
+    return `${time} run-start`
+  }
+  return `${time} ${event.kind}`
+}
+
+// AIDEV-NOTE: bounded activity section — at most the last 8 events, oldest
+// first, one line each, note text clipped to 60 chars. Returns '' when there
+// is nothing to show (journal-less runs render projection-only).
+export function renderActivity(events) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return ''
+  }
+  const recent = events.slice(-ACTIVITY_EVENT_LIMIT)
+  const lines = ['activity:']
+  for (const event of recent) {
+    lines.push(`  ${activityLine(event)}`)
+  }
+  return lines.join(EOL)
 }
 
 export function renderState(state, fallbackRef = '') {
@@ -135,7 +261,7 @@ export function renderText(title, body) {
         ? `${GREEN}${line.slice(0, 3)}${RESET}${line.slice(3)}`
         : line.includes('<- running')
           ? `${YELLOW}${line}${RESET}`
-          : line.startsWith('  -') || line.startsWith('updated:')
+          : line.startsWith('  -') || line.startsWith('  [') || line.startsWith('updated:')
             ? `${DIM}${line}${RESET}`
             : line,
     )
