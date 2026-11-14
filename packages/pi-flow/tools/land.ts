@@ -7,6 +7,8 @@
 // re-derived: mode detection stays the phase prompts' concern.
 
 import { execFile } from 'node:child_process'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import { promisify } from 'node:util'
 import type {
   AgentToolResult,
@@ -55,6 +57,48 @@ export type SuiteRunner = (cwd: string) => Promise<SuiteRun>
 
 export const DEFAULT_LAND_TEST_COMMAND = ['bun', 'run', 'test'] as const
 
+// AIDEV-NOTE: PMR-H5ST — repo-aware land test detection. Consulted ONLY when
+// neither global nor project config sets landTestCommand. First match wins in
+// this fixed order (bun-style signals, then cargo, then npm, then pnpm) so a
+// hybrid repo resolves deterministically. Adding a row here must come with a
+// detection-matrix test in test/land-detect.test.ts.
+const LAND_TEST_SIGNALS: ReadonlyArray<{
+  files: readonly string[]
+  command: readonly string[]
+}> = [
+  { files: ['bun.lock', 'bunfig.toml'], command: ['bun', 'run', 'test'] },
+  { files: ['Cargo.toml'], command: ['cargo', 'test'] },
+  { files: ['package-lock.json'], command: ['npm', 'test'] },
+  { files: ['pnpm-lock.yaml'], command: ['pnpm', 'test'] },
+]
+
+export interface DetectedLandTest {
+  command: readonly string[]
+  /** The signal file that matched, e.g. 'bun.lock' — surfaced in summaries. */
+  signal: string
+}
+
+/**
+ * Repo-signal detection for the land test (PMR-H5ST): lockfile/manifest
+ * presence under repoRoot picks the suite command. Returns null when no
+ * signal matches (caller falls back to DEFAULT_LAND_TEST_COMMAND).
+ */
+export async function detectLandTestCommand(
+  repoRoot: string,
+): Promise<DetectedLandTest | null> {
+  for (const entry of LAND_TEST_SIGNALS) {
+    for (const file of entry.files) {
+      try {
+        await fs.access(path.join(repoRoot, file))
+        return { command: [...entry.command], signal: file }
+      } catch {
+        // Signal file absent — keep scanning in the fixed order.
+      }
+    }
+  }
+  return null
+}
+
 /** Pure: bounded tail of the suite output for the refusal message. */
 export function suiteSummary(output: string): string {
   const trimmed = output.trimEnd()
@@ -63,12 +107,30 @@ export function suiteSummary(output: string): string {
 }
 
 /**
- * Default runner: `landTestCommand` from pi-flow config (argv array),
- * else `bun run test`. Fail-closed: a spawn error or timeout is a red run.
+ * Suite command resolution (PMR-H5ST), in order: explicit `landTestCommand`
+ * from pi-flow config (global or project — loadConfig merges, project wins
+ * per key), then repo-signal detection, then `bun run test`. Fail-closed: a
+ * spawn error or timeout is a red run. The summary names the command and its
+ * source so landing refusals are explainable.
  */
 export async function defaultSuiteRunner(cwd: string): Promise<SuiteRun> {
   const config = await loadConfig(cwd)
-  const command = config.landTestCommand ?? [...DEFAULT_LAND_TEST_COMMAND]
+  let command: readonly string[]
+  let source: string
+  if (config.landTestCommand !== undefined) {
+    command = config.landTestCommand
+    source = 'landTestCommand config'
+  } else {
+    const detected = await detectLandTestCommand(cwd)
+    if (detected !== null) {
+      command = detected.command
+      source = `repo detection via ${detected.signal}`
+    } else {
+      command = [...DEFAULT_LAND_TEST_COMMAND]
+      source = 'default'
+    }
+  }
+  const header = `land test command: ${command.join(' ')} (${source})`
   const [cmd, ...args] = command
   if (cmd === undefined) {
     return { ok: false, summary: 'empty landTestCommand in config' }
@@ -79,7 +141,10 @@ export async function defaultSuiteRunner(cwd: string): Promise<SuiteRun> {
       timeout: LAND_SUITE_TIMEOUT_MS,
       maxBuffer: 16 * 1024 * 1024,
     })
-    return { ok: true, summary: suiteSummary(`${stdout}\n${stderr}`) }
+    return {
+      ok: true,
+      summary: `${header}\n${suiteSummary(`${stdout}\n${stderr}`)}`,
+    }
   } catch (error: unknown) {
     const err = error as {
       stdout?: string
@@ -88,9 +153,9 @@ export async function defaultSuiteRunner(cwd: string): Promise<SuiteRun> {
     }
     return {
       ok: false,
-      summary: suiteSummary(
+      summary: `${header}\n${suiteSummary(
         `${err.stdout ?? ''}\n${err.stderr ?? ''}\n${err.message ?? 'suite runner failed'}`,
-      ),
+      )}`,
     }
   }
 }

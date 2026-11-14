@@ -81,12 +81,15 @@ Agent-callable tools registered by pi-flow:
 Global config lives at `~/.pi/agent/pi-flow/config.json` (schema:
 [`config.schema.json`](config.schema.json)). A project-local
 `<repo>/.pi/pi-flow/config.json` is merged on top (project wins per key) —
-handy for enabling telemetry per checkout instead of machine-wide.
+handy for enabling telemetry per checkout, or for pinning a per-repo
+`landTestCommand` (e.g. `"landTestCommand": ["cargo", "test"]` in a rust
+checkout) instead of machine-wide.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `workRoots` | `string[]` | `[]` | Absolute path prefixes; a git toplevel under any prefix is `work` mode |
 | `avenWorkspace` | `string` | unset | Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and the search fallback) |
+| `landTestCommand` | `string[]` | detected, else `["bun","run","test"]` | Argv of the test command `flow_land` runs itself before authorizing a landing — the gate never trusts a claimed-green suite. When unset, the command is detected from repo signals in a fixed order: `bun.lock`/`bunfig.toml` → `bun run test`, `Cargo.toml` → `cargo test`, `package-lock.json` → `npm test`, `pnpm-lock.yaml` → `pnpm test`. The summary of every run names the command and its source (config / detection / default) |
 | `telemetry.enabled` | `boolean` | `false` | Master switch for OTLP telemetry. `false` or a missing `telemetry` block = the session probe subscribes to nothing, allocates nothing, makes no network calls |
 | `telemetry.otlpEndpoint` | `string` | unset (required with `telemetry`) | OTLP/HTTP base URL (e.g. `https://host:4478`); spans POST to `<endpoint>/v1/traces` |
 | `telemetry.headers` | `record<string, string>` | `{}` | Static extra headers for OTLP export. Secrets belong in env (`PI_FLOW_OTLP_TOKEN`), not config |
@@ -100,7 +103,8 @@ handy for enabling telemetry per checkout instead of machine-wide.
   "workRoots": [
     "/home/geert/Code/salaryhero"
   ],
-  "avenWorkspace": "personal"
+  "avenWorkspace": "personal",
+  "landTestCommand": ["bun", "run", "test"]
 }
 ```
 
