@@ -540,6 +540,13 @@ test('createReceiptJournal: find returns null when readFile rejects', async () =
     readFile: async () => {
       throw new Error('boom')
     },
+    appendFile: async () => {
+      throw new Error('boom')
+    },
+    writeFile: async () => {
+      throw new Error('boom')
+    },
+    mkdir: async () => {},
   }
   const receipts = createReceiptJournal('/agent', boomIo)
   assert.equal(
