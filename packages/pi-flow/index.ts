@@ -6,8 +6,6 @@
 // wiring, and /flow + /herdr-sync + /flow-view.
 import { randomBytes } from 'node:crypto'
 import { existsSync, promises as fs, readFileSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
   getAgentDir,
@@ -69,7 +67,7 @@ import {
   setActiveFlowRef,
   setBindingChangeListener,
 } from './flow/worktree-context.ts'
-import { syncHerdrPlugin } from './herdr/sync.ts'
+import { resolveRepoRoot, syncHerdrPlugin } from './herdr/sync.ts'
 import {
   FlowHerdrViewer,
   isValidRef,
@@ -641,11 +639,7 @@ export default function (pi: ExtensionAPI) {
     // package version; herdr absent = graceful skip. Port of pi-workflows'
     // `pi-workflows herdr sync` discipline.
     handler: async (_args, ctx) => {
-      const repoRoot = path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        '..',
-        '..',
-      )
+      const repoRoot = resolveRepoRoot()
       let result: Awaited<ReturnType<typeof syncHerdrPlugin>>
       try {
         result = await syncHerdrPlugin(repoRoot)

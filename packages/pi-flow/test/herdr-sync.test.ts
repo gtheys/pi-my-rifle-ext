@@ -246,3 +246,83 @@ test('tomlString: key with regex metacharacters matches literally', () => {
   assert.equal(tomlString('axb = "y"', 'a.b'), undefined)
   assert.equal(tomlString('a+b = "z"', 'a+b'), 'z')
 })
+
+// --- parseInstalledPlugin / resolveRepoRoot ---
+
+import { parseInstalledPlugin, resolveRepoRoot } from '../herdr/sync.ts'
+
+function pluginListStdout(records: object[]): string {
+  return JSON.stringify({ result: { plugins: records } })
+}
+
+test('parseInstalledPlugin: valid envelope returns root/version/enabled', () => {
+  const installed = parseInstalledPlugin(
+    pluginListStdout([
+      {
+        plugin_id: 'some.other.plugin',
+        plugin_root: '/tmp/other',
+        version: '9.9.9',
+        enabled: false,
+      },
+      {
+        plugin_id: 'gtheys.pi-my-rifle-ext',
+        plugin_root: '/home/geert/code/repo',
+        version: '1.2.3',
+        enabled: true,
+      },
+    ]),
+  )
+  assert.deepEqual(installed, {
+    root: '/home/geert/code/repo',
+    version: '1.2.3',
+    enabled: true,
+  })
+})
+
+test('parseInstalledPlugin: missing plugin returns undefined', () => {
+  const installed = parseInstalledPlugin(
+    pluginListStdout([
+      {
+        plugin_id: 'some.other.plugin',
+        plugin_root: '/tmp/other',
+        version: '9.9.9',
+        enabled: true,
+      },
+    ]),
+  )
+  assert.equal(installed, undefined)
+})
+
+test('parseInstalledPlugin: invalid JSON throws', () => {
+  assert.throws(() => parseInstalledPlugin('not json'), {
+    message: 'Herdr returned invalid plugin JSON.',
+  })
+})
+
+test('parseInstalledPlugin: incomplete record throws', () => {
+  assert.throws(
+    () =>
+      parseInstalledPlugin(
+        pluginListStdout([
+          {
+            plugin_id: 'gtheys.pi-my-rifle-ext',
+            plugin_root: '/home/geert/code/repo',
+            enabled: true,
+          },
+        ]),
+      ),
+    {
+      message:
+        'Herdr returned an incomplete record for gtheys.pi-my-rifle-ext.',
+    },
+  )
+})
+
+test('resolveRepoRoot: returns the repo root (parent of packages/pi-flow)', async () => {
+  const root = resolveRepoRoot()
+  assert.equal(path.isAbsolute(root), true)
+  assert.equal(root.includes(path.join('packages', 'pi-flow')), false)
+  await assert.doesNotReject(
+    fs.access(path.join(root, 'packages', 'pi-flow', 'package.json')),
+  )
+})

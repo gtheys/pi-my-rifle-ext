@@ -6,6 +6,7 @@
 import { type SpawnSyncReturns, spawnSync } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { escapeRegExp } from '../spec-review/escape-regexp.ts'
 
 export const HERDR_PLUGIN_ID = 'gtheys.pi-my-rifle-ext'
@@ -14,6 +15,19 @@ const MANIFEST_NAME = 'herdr-plugin.toml'
 const VIEWER_PATH = 'plugins/herdr/flow-viewer.mjs'
 const RESULT_SCHEMA = 'gtheys.pi-my-rifle-ext.herdr-sync.v1'
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
+
+// AIDEV-NOTE: Single source for the /herdr-sync handler's repo root since
+// PMR-SWBX — keep this derivation authoritative over any inline copies.
+// sync.ts lives one level deeper (herdr/) than index.ts, so this climbs one
+// more '..' to reach the same repo root.
+export function resolveRepoRoot(): string {
+  return path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+  )
+}
 
 export type HerdrSyncStatus =
   | 'linked'
@@ -101,7 +115,9 @@ export async function preflightRepo(
   return { root, version }
 }
 
-function parseInstalledPlugin(stdout: string): InstalledPlugin | undefined {
+export function parseInstalledPlugin(
+  stdout: string,
+): InstalledPlugin | undefined {
   let value: unknown
   try {
     value = JSON.parse(stdout)
