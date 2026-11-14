@@ -7,10 +7,12 @@ import type {
   AgentToolResult,
   ExtensionAPI,
 } from '@earendil-works/pi-coding-agent'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { readAvenLabels, writeAvenLabel } from '../aven/client.ts'
 import { checkPhaseCompletion } from '../flow/label-gate.ts'
 import { PHASE_LABEL, type Phase } from '../flow/orchestrate.ts'
+import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
 import { toolResult } from './result.ts'
 
 export interface PhaseCompleteDetails {
@@ -21,7 +23,30 @@ export interface PhaseCompleteDetails {
   label: string
 }
 
-export function registerPhaseCompleteTool(pi: ExtensionAPI): void {
+// AIDEV-NOTE: PMR-4S6V — best-effort receipt write shared by the fresh and
+// already-complete paths; a journal failure never fails the tool result.
+async function recordPhaseReceipt(
+  receipts: ReceiptJournal,
+  ref: string,
+  phase: Phase,
+): Promise<void> {
+  await receipts
+    .record({ ref, command: 'flow_phase_complete', target: phase })
+    .catch(() => {
+      // best-effort — journal failures never fail the tool result
+    })
+}
+
+// AIDEV-NOTE: PMR-4S6V — receipts defaults to the real run-journal-backed
+// journal so index.ts stays untouched. record is best-effort: a journal
+// failure must never turn a successful gate transition into a tool error
+// (ISC-8). Receipts are journaled on BOTH the fresh-write success path and
+// the already-complete fast path (ISC-5 divergence window), never on the
+// refusal/failure paths.
+export function registerPhaseCompleteTool(
+  pi: ExtensionAPI,
+  receipts: ReceiptJournal = createReceiptJournal(getAgentDir()),
+): void {
   pi.registerTool({
     name: 'flow_phase_complete',
     label: 'flow phase complete',
@@ -75,6 +100,7 @@ export function registerPhaseCompleteTool(pi: ExtensionAPI): void {
       }
       const label = PHASE_LABEL[params.phase]
       if (labels.includes(label)) {
+        await recordPhaseReceipt(receipts, params.ref, params.phase)
         return toolResult(
           `flow_phase_complete: "${label}" already recorded on ${params.ref} — phase ${params.phase} was already complete`,
           { ok: true, refused: false, already: true, reason: '', label },
@@ -88,6 +114,9 @@ export function registerPhaseCompleteTool(pi: ExtensionAPI): void {
           { isError: true },
         )
       }
+      // PMR-4S6V: journal the receipt only after the label write succeeded;
+      // best-effort, never fails the ok result.
+      await recordPhaseReceipt(receipts, params.ref, params.phase)
       return toolResult(
         `flow_phase_complete: "${label}" landed on ${params.ref} — phase ${params.phase} recorded, the label is verified by this result`,
         { ok: true, refused: false, already: false, reason: '', label },
