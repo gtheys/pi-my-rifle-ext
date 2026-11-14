@@ -279,7 +279,7 @@ export function registerLandTool(
           if (params.route === 'pr') {
             state.authorized = params.ref
             return toolResult(
-              `flow_land: landing for ${params.ref} authorized via pr — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run`,
+              `flow_land: landing for ${params.ref} authorized via pr — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run — run the git push / gh pr create step now`,
               { ok: true, reason: '' },
             )
           }
