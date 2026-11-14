@@ -30,6 +30,27 @@ export type GateDecisionStatus =
   | 'target-mismatch'
   | 'stale'
 
+// AIDEV-NOTE: PMR-4S6V — command receipts: one per COMMITTED gate
+// transition; duplicates adopt the stored receipt instead of repeating the
+// transition. BEST-EFFORT by design: missing/corrupt/torn receipts degrade
+// to label checks + suite re-run; aven labels stay the gate of record.
+// The flow_run_attempt budget stays non-durable (PMR-2HFC); the durable
+// attempt ledger is deferred to PMR-XTQQ.
+export type ReceiptCommand = 'flow_land' | 'flow_phase_complete'
+
+const RECEIPT_COMMANDS: readonly ReceiptCommand[] = [
+  'flow_land',
+  'flow_phase_complete',
+]
+
+export interface CommandReceiptRecord {
+  command: ReceiptCommand
+  target: string
+  headSha?: string
+  status: 'ok'
+  at: string
+}
+
 export type FlowRunEvent =
   | {
       kind: 'run-start'
@@ -69,6 +90,22 @@ export type FlowRunEvent =
       gate: GateJournalKind
       targetId: string
       status: GateDecisionStatus
+    }
+  | {
+      /**
+       * AIDEV-NOTE: PMR-4S6V — command receipt: one per COMMITTED gate
+       * transition. The attempt budget stays non-durable (PMR-2HFC); the
+       * durable attempt ledger is deferred to PMR-XTQQ.
+       */
+      kind: 'command-receipt'
+      at: string
+      ref: string
+      command: ReceiptCommand
+      /** Phase name for flow_phase_complete; route ('pr' | 'merge-main') for flow_land. */
+      target: string
+      /** Worktree HEAD when the transition committed; flow_land adopts only on an exact match. */
+      headSha?: string
+      status: 'ok'
     }
   | {
       /** AIDEV-NOTE: PMR-6EEW per-subtask ranges — subtask → commits map */
@@ -130,6 +167,9 @@ export type FlowRunState = {
   gateTargets?: GateTargetRecord[]
   gateDecisions?: GateDecisionRecord[]
   subtaskRanges?: SubtaskRangesRecord[]
+  // AIDEV-NOTE: PMR-4S6V — optional so pre-receipt projections (and old
+  // journals rebuilt without command-receipt events) stay valid.
+  receipts?: CommandReceiptRecord[]
 }
 
 export interface SubtaskRangesRecord {
@@ -271,6 +311,34 @@ export function applyEvent(
         updatedAt: event.at,
       }
     }
+    case 'command-receipt': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      const receipts = state.receipts ?? []
+      // AIDEV-NOTE: PMR-4S6V — idempotent by (command, target); re-recording
+      // the same receipt returns the same state so recordRunEvent skips the
+      // second journal append.
+      if (
+        receipts.some(
+          (r) => r.command === event.command && r.target === event.target,
+        )
+      )
+        return state
+      return {
+        ...state,
+        receipts: [
+          ...receipts,
+          {
+            command: event.command,
+            target: event.target,
+            headSha: event.headSha,
+            status: event.status,
+            at: event.at,
+          },
+        ],
+        updatedAt: event.at,
+      }
+    }
     case 'main-session': {
       // evidence for /flow-cost only; the projection stays unchanged
       return state as FlowRunState
@@ -384,6 +452,24 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
         typeof (r as Record<string, unknown>).at === 'string',
     )
     if (!rangesOk) return false
+  }
+  // AIDEV-NOTE: PMR-4S6V — receipts validated only when present (old journals).
+  if (v.receipts !== undefined) {
+    if (!Array.isArray(v.receipts)) return false
+    const receiptsOk = v.receipts.every(
+      (r) =>
+        typeof r === 'object' &&
+        r !== null &&
+        RECEIPT_COMMANDS.includes(
+          (r as Record<string, unknown>).command as ReceiptCommand,
+        ) &&
+        typeof (r as Record<string, unknown>).target === 'string' &&
+        (r as Record<string, unknown>).status === 'ok' &&
+        typeof (r as Record<string, unknown>).at === 'string' &&
+        ((r as Record<string, unknown>).headSha === undefined ||
+          typeof (r as Record<string, unknown>).headSha === 'string'),
+    )
+    if (!receiptsOk) return false
   }
   return true
 }
@@ -532,4 +618,82 @@ export async function readRunEvents(
     }
   }
   return events
+}
+
+export interface ReceiptQuery {
+  ref: string
+  command: ReceiptCommand
+  target: string
+  /** When set, adopt only if the receipt's headSha matches exactly. */
+  headSha?: string
+}
+
+/**
+ * AIDEV-NOTE: PMR-4S6V — best-effort boundary: find returns null and record
+ * swallows errors, so journal failures never block a gate transition.
+ */
+export interface ReceiptJournal {
+  find(query: ReceiptQuery): Promise<CommandReceiptRecord | null>
+  record(query: ReceiptQuery): Promise<void>
+}
+
+/**
+ * AIDEV-NOTE: PMR-4S6V — best-effort receipt access over the run journal.
+ * `find` reads via readRunEvents and returns null on missing/corrupt
+ * journals; `record` goes through recordRunEvent (projection mutation, not
+ * the journal-only route) and swallows io errors.
+ */
+export function createReceiptJournal(
+  agentDir: string,
+  io?: {
+    readFile: (p: string) => Promise<string>
+    appendFile: (p: string, data: string) => Promise<void>
+    writeFile: (p: string, data: string) => Promise<void>
+    mkdir: (dir: string, recursive: true) => Promise<void>
+  },
+): ReceiptJournal {
+  const record = async (query: ReceiptQuery): Promise<void> => {
+    const event: FlowRunEvent = {
+      kind: 'command-receipt',
+      at: new Date().toISOString(),
+      ref: query.ref,
+      command: query.command,
+      target: query.target,
+      status: 'ok',
+    }
+    if (query.headSha !== undefined) event.headSha = query.headSha
+    try {
+      await recordRunEvent(agentDir, event, io)
+    } catch {
+      // best-effort — journal failures never block a gate transition
+    }
+  }
+  const find = async (
+    query: ReceiptQuery,
+  ): Promise<CommandReceiptRecord | null> => {
+    try {
+      const events = await readRunEvents(agentDir, query.ref, io)
+      if (events === null) return null
+      for (const event of events) {
+        if (event.kind !== 'command-receipt') continue
+        if (event.ref !== query.ref) continue
+        if (event.command !== query.command) continue
+        if (event.target !== query.target) continue
+        if (query.headSha !== undefined && event.headSha !== query.headSha)
+          continue
+        const receipt: CommandReceiptRecord = {
+          command: event.command,
+          target: event.target,
+          status: event.status,
+          at: event.at,
+        }
+        if (event.headSha !== undefined) receipt.headSha = event.headSha
+        return receipt
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+  return { find, record }
 }

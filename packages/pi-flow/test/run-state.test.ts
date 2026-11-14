@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   applyEvent,
+  createReceiptJournal,
   type FlowRunEvent,
   isFlowRunState,
   projectRunState,
@@ -329,5 +330,220 @@ test('isFlowRunState: states without gate arrays stay valid (pre-M7 journals)', 
         { targetId: 7, gate: 'deviation', status: 'pass', at: 't1' },
       ],
     }),
+  )
+})
+
+// --- command-receipt event kind (PMR-4S6V) ---
+
+const receiptRun = {
+  kind: 'run-start',
+  at: 't0',
+  ref: 'PMR-1',
+  mode: 'work',
+} as const
+
+function receiptEvent(at: string, target: string, headSha?: string) {
+  const event: {
+    kind: 'command-receipt'
+    at: string
+    ref: string
+    command: 'flow_land'
+    target: string
+    status: 'ok'
+    headSha?: string
+  } = {
+    kind: 'command-receipt',
+    at,
+    ref: 'PMR-1',
+    command: 'flow_land',
+    target,
+    status: 'ok',
+  }
+  if (headSha !== undefined) event.headSha = headSha
+  return event
+}
+
+test('applyEvent: command-receipt appends to receipts', () => {
+  let state = applyEvent(null, receiptRun)
+  assert.equal(state.receipts, undefined)
+  state = applyEvent(state, receiptEvent('t1', 'pr', 'sha1'))
+  assert.equal(state.receipts?.length, 1)
+  assert.deepEqual(state.receipts?.[0], {
+    command: 'flow_land',
+    target: 'pr',
+    headSha: 'sha1',
+    status: 'ok',
+    at: 't1',
+  })
+})
+
+test('applyEvent: command-receipt is idempotent by (command, target)', () => {
+  let state = applyEvent(null, receiptRun)
+  state = applyEvent(state, receiptEvent('t1', 'pr'))
+  const same = applyEvent(state, receiptEvent('t2', 'pr'))
+  assert.equal(same, state)
+  const differentTarget = applyEvent(state, receiptEvent('t3', 'merge-main'))
+  assert.equal(differentTarget.receipts?.length, 2)
+})
+
+test('recordRunEvent: duplicate receipt appends no second journal line', async () => {
+  const files: MemFiles = new Map()
+  await recordRunEvent('/agent', receiptRun, fakeIo(files))
+  await recordRunEvent('/agent', receiptEvent('t1', 'pr'), fakeIo(files))
+  await recordRunEvent('/agent', receiptEvent('t2', 'pr'), fakeIo(files))
+  const journal = files.get('/agent/pi-flow/runs/PMR-1.journal.jsonl')
+  assert.ok(journal)
+  assert.equal(journal.split('\n').filter(Boolean).length, 2)
+})
+
+test('projectRunState: replays command-receipt journal into receipts', () => {
+  const state = projectRunState([receiptRun, receiptEvent('t1', 'pr')])
+  assert.equal(state?.receipts?.length, 1)
+})
+
+test('isFlowRunState: absent receipts stays valid, malformed receipts rejected', () => {
+  const legacy = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+    mode: 'work',
+    startedAt: 't0',
+    updatedAt: 't0',
+    completedPhases: [],
+    currentPhase: null,
+    notes: [],
+  }
+  assert.ok(isFlowRunState(legacy))
+  const good = [{ command: 'flow_land', target: 'pr', status: 'ok', at: 't1' }]
+  assert.ok(isFlowRunState({ ...legacy, receipts: good }))
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      receipts: [{ ...good[0], command: 'flow_nope' }],
+    }),
+  )
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      receipts: [{ ...good[0], status: 'fail' }],
+    }),
+  )
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      receipts: [{ ...good[0], headSha: 42 }],
+    }),
+  )
+})
+
+// --- ReceiptJournal access layer (PMR-4S6V) ---
+
+test('createReceiptJournal: record appends journal line and mutates projection', async () => {
+  const files: MemFiles = new Map()
+  const receipts = createReceiptJournal('/agent', fakeIo(files))
+  await recordRunEvent('/agent', receiptRun, fakeIo(files))
+  await receipts.record({ ref: 'PMR-1', command: 'flow_land', target: 'pr' })
+  const journal = files.get('/agent/pi-flow/runs/PMR-1.journal.jsonl')
+  assert.ok(journal)
+  assert.ok(journal.includes('command-receipt'))
+  const projection = JSON.parse(
+    files.get('/agent/pi-flow/runs/PMR-1.json') ?? '{}',
+  )
+  assert.equal(projection.receipts?.length, 1)
+})
+
+test('createReceiptJournal: find returns stored receipt, null on missing journal', async () => {
+  const files: MemFiles = new Map()
+  const receipts = createReceiptJournal('/agent', fakeIo(files))
+  assert.equal(
+    await receipts.find({ ref: 'PMR-1', command: 'flow_land', target: 'pr' }),
+    null,
+  )
+  await recordRunEvent('/agent', receiptRun, fakeIo(files))
+  await recordRunEvent(
+    '/agent',
+    receiptEvent('t1', 'pr', 'sha1'),
+    fakeIo(files),
+  )
+  const found = await receipts.find({
+    ref: 'PMR-1',
+    command: 'flow_land',
+    target: 'pr',
+  })
+  assert.equal(found?.headSha, 'sha1')
+  assert.equal(
+    await receipts.find({
+      ref: 'PMR-1',
+      command: 'flow_land',
+      target: 'merge-main',
+    }),
+    null,
+  )
+})
+
+test('createReceiptJournal: find with headSha requires exact match', async () => {
+  const files: MemFiles = new Map()
+  await recordRunEvent('/agent', receiptRun, fakeIo(files))
+  await recordRunEvent(
+    '/agent',
+    receiptEvent('t1', 'pr', 'sha1'),
+    fakeIo(files),
+  )
+  const receipts = createReceiptJournal('/agent', fakeIo(files))
+  assert.ok(
+    await receipts.find({
+      ref: 'PMR-1',
+      command: 'flow_land',
+      target: 'pr',
+      headSha: 'sha1',
+    }),
+  )
+  assert.equal(
+    await receipts.find({
+      ref: 'PMR-1',
+      command: 'flow_land',
+      target: 'pr',
+      headSha: 'other',
+    }),
+    null,
+  )
+})
+
+test('createReceiptJournal: find returns null on corrupt journal', async () => {
+  const files: MemFiles = new Map()
+  files.set('/agent/pi-flow/runs/PMR-1.journal.jsonl', '{not json\n')
+  const receipts = createReceiptJournal('/agent', fakeIo(files))
+  assert.equal(
+    await receipts.find({ ref: 'PMR-1', command: 'flow_land', target: 'pr' }),
+    null,
+  )
+})
+
+test('createReceiptJournal: record swallows io failure', async () => {
+  const boomIo = {
+    readFile: async () => {
+      throw new Error('boom')
+    },
+    appendFile: async () => {
+      throw new Error('boom')
+    },
+    writeFile: async () => {
+      throw new Error('boom')
+    },
+    mkdir: async () => {},
+  }
+  const receipts = createReceiptJournal('/agent', boomIo)
+  await receipts.record({ ref: 'PMR-1', command: 'flow_land', target: 'pr' })
+})
+
+test('createReceiptJournal: find returns null when readFile rejects', async () => {
+  const boomIo = {
+    readFile: async () => {
+      throw new Error('boom')
+    },
+  }
+  const receipts = createReceiptJournal('/agent', boomIo)
+  assert.equal(
+    await receipts.find({ ref: 'PMR-1', command: 'flow_land', target: 'pr' }),
+    null,
   )
 })
