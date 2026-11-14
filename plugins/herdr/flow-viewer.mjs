@@ -8,6 +8,7 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync, watchFile } from 'node:fs'
 import { EOL } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 const FAILURE_LABEL_LIMIT = 60
 const WATCH_INTERVAL_MS = 1_000
@@ -17,39 +18,51 @@ const WATCH_INTERVAL_MS = 1_000
 process.on('error', () => process.exit(0))
 process.stdout?.on?.('error', () => process.exit(0))
 
-// ── ANSI escapes (declared before first use — renderOnce runs at top level) ──
+// ── ANSI escapes (pure render helpers below use these; tests import them) ──
 const RESET = '\x1b[0m'
 const DIM = '\x1b[2m'
 const BOLD = '\x1b[1m'
 const GREEN = '\x1b[32m'
 const YELLOW = '\x1b[33m'
 
-const ref = process.env.PI_FLOW_REF ?? ''
-const runFile = process.env.PI_FLOW_RUN_FILE ?? ''
-const paneId = process.env.HERDR_PANE_ID ?? ''
-
-if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(ref)) {
-  failWithoutPane('PI_FLOW_REF is missing or invalid.')
+// ── main-module guard ──
+// AIDEV-NOTE: only the pane process (spawned directly by herdr) runs the
+// execution prelude below; importing this module from tests must execute
+// nothing. Pure helpers (renderState, renderText) are exported for unit tests.
+// The `flow · <ref>` renamePane call stays BEFORE the first render inside the
+// guard — that label is the dedupe key scanned in `herdr api snapshot`.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main()
 }
 
-if (!/^\//.test(runFile)) {
-  failWithoutPane('PI_FLOW_RUN_FILE is missing or not an absolute path.')
+function main() {
+  const ref = process.env.PI_FLOW_REF ?? ''
+  const runFile = process.env.PI_FLOW_RUN_FILE ?? ''
+  const paneId = process.env.HERDR_PANE_ID ?? ''
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(ref)) {
+    failWithoutPane('PI_FLOW_REF is missing or invalid.')
+  }
+
+  if (!/^\//.test(runFile)) {
+    failWithoutPane('PI_FLOW_RUN_FILE is missing or not an absolute path.')
+  }
+
+  if (!/^[A-Za-z0-9:_-]{1,128}$/.test(paneId)) {
+    failWithoutPane('HERDR_PANE_ID is missing or invalid.')
+  }
+
+  // Label the pane BEFORE rendering: the label is the dedupe key the Pi session
+  // scans for in `herdr api snapshot`, so it must exist even if rendering dies.
+  renamePane(paneId, `flow · ${ref}`)
+
+  renderOnce(ref, runFile)
+  watchFile(runFile, { interval: WATCH_INTERVAL_MS }, () => {
+    renderOnce(ref, runFile)
+  })
 }
 
-if (!/^[A-Za-z0-9:_-]{1,128}$/.test(paneId)) {
-  failWithoutPane('HERDR_PANE_ID is missing or invalid.')
-}
-
-// Label the pane BEFORE rendering: the label is the dedupe key the Pi session
-// scans for in `herdr api snapshot`, so it must exist even if rendering dies.
-renamePane(paneId, `flow · ${ref}`)
-
-renderOnce()
-watchFile(runFile, { interval: WATCH_INTERVAL_MS }, () => {
-  renderOnce()
-})
-
-function renderOnce() {
+function renderOnce(ref, runFile) {
   let raw
   try {
     raw = readFileSync(runFile, 'utf8')
@@ -74,10 +87,10 @@ function renderOnce() {
     )
     return
   }
-  renderText(`flow · ${ref}`, renderState(state))
+  renderText(`flow · ${ref}`, renderState(state, ref))
 }
 
-function renderState(state) {
+export function renderState(state, fallbackRef = '') {
   const phases = ['research', 'plan', 'implement', 'validate', 'feedback']
   const labels = {
     research: 'researched',
@@ -88,7 +101,7 @@ function renderState(state) {
   }
   const completed = Array.isArray(state.completedPhases) ? state.completedPhases : []
   const lines = []
-  lines.push(`RPIV flow · ${state.ref ?? ref}`)
+  lines.push(`RPIV flow · ${state.ref ?? fallbackRef}`)
   lines.push(`mode: ${state.mode ?? '?'}   started: ${state.startedAt ?? '?'}`)
   lines.push('')
   for (const phase of phases) {
@@ -114,7 +127,7 @@ function renderState(state) {
 
 // ── terminal rendering (minimal ANSI, no deps) ──
 
-function renderText(title, body) {
+export function renderText(title, body) {
   const colored = body
     .split(EOL)
     .map((line) =>
