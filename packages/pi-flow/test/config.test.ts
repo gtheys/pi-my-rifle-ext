@@ -24,6 +24,23 @@ test('readConfigFile: wrong shape (workRoots not array) → clear throw', async 
   )
 })
 
+test('readConfigFile: viewerPlacement accepted and read back (PMR-YD1P)', async () => {
+  const cfg = await readConfigFile(
+    new URL('./fixtures/viewer-placement.jsonfix', import.meta.url).pathname,
+  )
+  assert.equal(cfg.viewerPlacement, 'below')
+})
+
+test('readConfigFile: invalid viewerPlacement → clear throw mentioning the property', async () => {
+  await assert.rejects(
+    readConfigFile(
+      new URL('./fixtures/viewer-placement-bad.jsonfix', import.meta.url)
+        .pathname,
+    ),
+    /viewerPlacement/,
+  )
+})
+
 test('readConfigFile: valid config parses', async () => {
   const cfg = await readConfigFile(
     new URL('./fixtures/valid.jsonfix', import.meta.url).pathname,

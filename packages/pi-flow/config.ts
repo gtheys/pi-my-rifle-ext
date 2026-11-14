@@ -1,3 +1,6 @@
+// AIDEV-NOTE: viewerPlacement mirrors VIEWER_PLACEMENTS / ViewerPlacement in
+// herdr/viewer.ts — duplicate literal union by design (config stays standalone);
+// keep the two in sync (PMR-YD1P).
 // AIDEV-NOTE: pi-flow config boundary (PMR-T22H) — TypeBox schema is the
 // source of truth for config shape; config.schema.json (checked in) mirrors
 // it. Malformed config throws a clear error — never silent defaults
@@ -27,6 +30,21 @@ const PiFlowConfigSchema = Type.Object({
       description:
         'Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and search fallback)',
     }),
+  ),
+  viewerPlacement: Type.Optional(
+    Type.Union(
+      [
+        Type.Literal('right'),
+        Type.Literal('below'),
+        Type.Literal('left'),
+        Type.Literal('above'),
+        Type.Literal('tab'),
+      ],
+      {
+        description:
+          'Default Herdr pane placement for /flow-view when no placement argument is given',
+      },
+    ),
   ),
   landTestCommand: Type.Optional(
     Type.Array(Type.String(), {
@@ -108,7 +126,13 @@ export async function readConfigFile(
   }
   if (!Value.Check(PiFlowConfigSchema, parsed)) {
     const errors = Value.Errors(PiFlowConfigSchema, parsed)
-      .map((e) => e.message)
+      // AIDEV-NOTE: include the property path so enum/shape errors name the
+      // offending key (e.g. viewerPlacement) instead of bare "equal to constant".
+      .map((e) => {
+        let text = e.message
+        if (e.instancePath !== '/') text = `${e.instancePath}: ${text}`
+        return text
+      })
       .join('; ')
     throw new Error(`pi-flow config ${file} is invalid: ${errors}`)
   }
