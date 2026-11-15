@@ -87,6 +87,8 @@ import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import prQualityExtension from './pr-quality/index.ts'
 import reviewExtension from './review/review.ts'
 import { readRunEvents, runStatePath } from './run-state.ts'
+import { type ResumeConsumerDeps, resumeParkedRun } from './server/consumer.ts'
+import { pendingDirPath } from './server/daemon.ts'
 import { ensureDaemon } from './server/lifecycle.ts'
 import {
   createDaemonAliveProbe,
@@ -136,6 +138,35 @@ export default function (pi: ExtensionAPI) {
   // always reports absent (full-writer path permanently) and ensureDaemon
   // never spawns.
   let runServerEnabled = true
+  // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — in-process per-ref latch for the
+  // pending-record consumer. Added on a successful consumption attempt
+  // (before the /flow injection), cleared when the /flow start path runs so
+  // a real rerun re-arms the consumer. agent_settled fires often; the latch
+  // plus the rename-first ENOENT contract makes repeated settles no-ops.
+  const resumeLatch = new Set<string>()
+  // AIDEV-NOTE: the ref of the restored session binding (PMR-PJM0), when
+  // one exists — the only ref the agent_settled consumer checks. session_start
+  // fires before any settle, so this is always populated before use.
+  let boundRef: string | null = null
+
+  // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — shared consumer deps. Pure-ish:
+  // sender + io live behind these closures so tests never need a live pi.
+  function resumeConsumerDeps(ref: string): ResumeConsumerDeps {
+    return {
+      ref,
+      agentDir: getAgentDir(),
+      pendingDir: pendingDirPath(getAgentDir()),
+      enabled: () => runServerEnabled,
+      loopActive: () => loop.isActive(),
+      latch: resumeLatch,
+      notify: (message, level) => {
+        if (notifyUser !== null) notifyUser(message, level)
+      },
+      send: (message) => {
+        pi.sendUserMessage(message, { expandPromptTemplates: true })
+      },
+    }
+  }
   const writer: EventWriter = createEventWriter(
     getAgentDir(),
     createDaemonAliveProbe(getAgentDir(), () => runServerEnabled),
@@ -273,15 +304,24 @@ export default function (pi: ExtensionAPI) {
         if (parsed !== null) saved = parsed
       }
     }
-    if (saved?.ref) {
-      if (saved.worktree && !existsSync(saved.worktree.path)) {
-        saved = { ref: saved.ref, worktree: null }
+    const savedRef = saved?.ref
+    if (saved !== null && savedRef != null) {
+      const restored = saved
+      if (restored.worktree && !existsSync(restored.worktree.path)) {
+        saved = { ref: savedRef, worktree: null }
       }
-      restoreFlowBinding(saved)
+      restoreFlowBinding(restored)
+      // AIDEV-NOTE: PMR-PJM0 + PMR-XTQQ subtask 3.3 — the /flow loop itself
+      // is not resumed on reload, BUT when a parked run record exists for
+      // this ref (durable run server parked it mid-loop), the consumer below
+      // re-presents `/flow <ref>` automatically. Manual rerun stays the
+      // fallback for the no-record / dropped-record path.
       notifyUser(
-        `pi-flow: restored flow binding for ${saved.ref}. The /flow loop itself is not resumed — rerun /flow ${saved.ref} to continue phases.`,
+        `pi-flow: restored flow binding for ${savedRef}. The /flow loop itself is not resumed — if a parked run record exists it is re-presented automatically; otherwise rerun /flow ${savedRef} to continue phases.`,
         'info',
       )
+      boundRef = savedRef
+      void resumeParkedRun(resumeConsumerDeps(savedRef))
     }
     setBindingChangeListener((snapshot) => {
       pi.appendEntry('pi-flow-binding', snapshot)
@@ -385,6 +425,15 @@ export default function (pi: ExtensionAPI) {
   // or halts — advancement is code, not model.
   pi.on('agent_settled', () => {
     void loop.onSettled()
+    // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — belt-and-braces consumer path. A
+    // parked record for the restored binding is consumed + re-presented here
+    // when session_start's check found nothing (e.g. the daemon parked the
+    // run moments later). No-ops unless a binding exists; the consumer
+    // itself guards loop-active / disabled / latch / nothing-pending.
+    const resumeRef = boundRef
+    if (resumeRef !== null) {
+      void resumeParkedRun(resumeConsumerDeps(resumeRef))
+    }
   })
 
   registerPhaseCommands(pi)
@@ -713,6 +762,9 @@ export default function (pi: ExtensionAPI) {
         startInput.resume = seed.resume
       }
       await loop.start(startInput)
+      // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — a real rerun re-arms the pending
+      // consumer for this ref.
+      resumeLatch.delete(ref)
     },
   })
 
