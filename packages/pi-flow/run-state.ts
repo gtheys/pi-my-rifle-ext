@@ -34,8 +34,9 @@ export type GateDecisionStatus =
 // transition; duplicates adopt the stored receipt instead of repeating the
 // transition. BEST-EFFORT by design: missing/corrupt/torn receipts degrade
 // to label checks + suite re-run; aven labels stay the gate of record.
-// The flow_run_attempt budget stays non-durable (PMR-2HFC); the durable
-// attempt ledger is deferred to PMR-XTQQ.
+// The flow_run_attempt budget stays non-durable (PMR-2HFC); the loop-level
+// blockerRetries budget IS durable since phase 2 (loop-state snapshots +
+// resume seeding); the durable attempt ledger lands in phase 4 (PMR-XTQQ).
 export type ReceiptCommand = 'flow_land' | 'flow_phase_complete'
 
 const RECEIPT_COMMANDS: readonly ReceiptCommand[] = [
@@ -94,8 +95,10 @@ export type FlowRunEvent =
   | {
       /**
        * AIDEV-NOTE: PMR-4S6V — command receipt: one per COMMITTED gate
-       * transition. The attempt budget stays non-durable (PMR-2HFC); the
-       * durable attempt ledger is deferred to PMR-XTQQ.
+       * transition. The flow_run_attempt budget stays non-durable
+       * (PMR-2HFC); the loop-level blockerRetries budget IS durable since
+       * phase 2 (loop-state snapshots + resume seeding); the durable
+       * attempt ledger lands in phase 4 (PMR-XTQQ).
        */
       kind: 'command-receipt'
       at: string

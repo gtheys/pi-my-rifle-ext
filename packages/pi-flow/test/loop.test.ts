@@ -71,8 +71,24 @@ test('start: sends one phase prompt and awaits outcome', async () => {
   assert.equal(loop.isActive(), true)
   assert.deepEqual(
     h.events.map((e) => e.kind),
-    ['phase-start'],
+    ['loop-state', 'phase-start', 'loop-state'],
   )
+})
+
+test('start: journals a loop-state snapshot (running, awaitingOutcome=false)', async () => {
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  const first = h.events[0]
+  assert.equal(first.kind, 'loop-state')
+  if (first.kind !== 'loop-state') return
+  assert.deepEqual(first.loop, {
+    phase: 'plan',
+    awaitingOutcome: false,
+    blockerRetries: 0,
+    validateStartedAt: first.loop.validateStartedAt,
+    status: 'running',
+  })
 })
 
 test('settled with label landed: advances to the next phase prompt', async () => {
@@ -84,7 +100,14 @@ test('settled with label landed: advances to the next phase prompt', async () =>
   assert.match(h.sent[1], /Implement phase/)
   assert.deepEqual(
     h.events.map((e) => e.kind),
-    ['phase-start', 'phase-complete', 'phase-start'],
+    [
+      'loop-state',
+      'phase-start',
+      'loop-state',
+      'phase-complete',
+      'phase-start',
+      'loop-state',
+    ],
   )
 })
 
@@ -101,7 +124,13 @@ test('settled without label: halt note, journal note, no advance', async () => {
     },
   ])
   assert.equal(loop.isActive(), false)
-  const noteEvent = h.events.at(-1)
+  assert.equal(h.events.at(-1)?.kind, 'loop-state')
+  const halted = h.events.at(-1)
+  if (halted?.kind === 'loop-state') {
+    assert.equal(halted.loop.status, 'halted')
+    assert.equal(halted.loop.awaitingOutcome, false)
+  }
+  const noteEvent = h.events.at(-2)
   assert.equal(noteEvent?.kind, 'note')
 })
 
@@ -159,7 +188,79 @@ test('plan settles without "planned" while plan-state=review: awaiting-approval 
   const last = h.notifications.at(-1)
   assert.equal(last?.level, 'info')
   assert.match(last?.message ?? '', /awaiting spec approval/)
-  assert.equal(h.events.at(-1)?.kind, 'note')
+  assert.equal(h.events.at(-1)?.kind, 'loop-state')
+  const paused = h.events.at(-1)
+  if (paused?.kind === 'loop-state') {
+    // phase-3's pending protocol parks ONLY on awaitingOutcome=true +
+    // running — the approval pause must journal awaitingOutcome=false.
+    assert.equal(paused.loop.status, 'paused')
+    assert.equal(paused.loop.awaitingOutcome, false)
+  }
+})
+
+test('done: journals a terminal loop-state snapshot', async () => {
+  const h = makeHarness(['planned', 'active', 'review-passed', 'done'])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({
+    ...startInput(),
+    phase: 'feedback',
+    promptInput: { ...PROMPT_INPUT, mode: 'work' },
+  })
+  await loop.onSettled()
+  const last = h.events.at(-1)
+  assert.equal(last?.kind, 'loop-state')
+  if (last?.kind === 'loop-state') assert.equal(last.loop.status, 'done')
+})
+
+test('resume seed honored: budget and validateStartedAt restored exactly', async () => {
+  const h = makeHarness(['planned', 'active'])
+  const cutoff = '2026-11-14T10:00:00.000Z'
+  let seenSince: string | null = null
+  h.deps.hasFreshBlockers = async (_ref, sinceIso) => {
+    seenSince = sinceIso
+    return false
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start({
+    ...startInput(),
+    phase: 'validate',
+    resume: { blockerRetries: 2, validateStartedAt: cutoff },
+  })
+  await loop.onSettled()
+  assert.equal(seenSince, cutoff)
+})
+
+test('retry increments survive a simulated restart via the journal', async () => {
+  const h = makeHarness(['planned', 'active'])
+  h.deps.hasFreshBlockers = async () => true
+  const loop = createFlowLoop(h.deps)
+  // restart with a seeded budget of 2 — one more blocker retry is allowed
+  await loop.start({
+    ...startInput(),
+    phase: 'validate',
+    resume: {
+      blockerRetries: 2,
+      validateStartedAt: new Date().toISOString(),
+    },
+  })
+  await loop.onSettled() // retry 3rd attempt blocked -> budget exhausted halt
+  const last = h.events.at(-1)
+  assert.equal(last?.kind, 'loop-state')
+  if (last?.kind === 'loop-state') assert.equal(last.loop.status, 'halted')
+  assert.match(h.notes[0].text, /budget exhausted/)
+})
+
+test('retry snapshot journals the incremented budget', async () => {
+  const h = makeHarness(['planned', 'active'])
+  h.deps.hasFreshBlockers = async () => true
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled() // retry 1 -> implement re-sent
+  const retrySnapshots = h.events.filter(
+    (e) => e.kind === 'loop-state' && e.loop.blockerRetries === 1,
+  )
+  assert.equal(retrySnapshots.length >= 1, true)
+  assert.equal(loop.isActive(), true)
 })
 
 test('plan settles without label and plan-state not in review: failure halt as before', async () => {
@@ -202,7 +303,19 @@ test('resume after approval: /flow re-enters plan, refreshed prompt run lands th
   assert.match(h.sent.at(-1) ?? '', /Implement phase/)
   assert.deepEqual(
     h.events.map((e) => e.kind),
-    ['phase-start', 'note', 'phase-start', 'phase-complete', 'phase-start'],
+    [
+      'loop-state',
+      'phase-start',
+      'loop-state',
+      'note',
+      'loop-state',
+      'loop-state',
+      'phase-start',
+      'loop-state',
+      'phase-complete',
+      'phase-start',
+      'loop-state',
+    ],
   )
 })
 

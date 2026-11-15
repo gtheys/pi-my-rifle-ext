@@ -10,8 +10,12 @@
 // not a phase outcome — the loop stays armed and re-checks on the next
 // settle (hasInFlightSubagent guard). The model never sequences phases —
 // extension code does.
+// AIDEV-NOTE: PMR-XTQQ — the loop is journaled: every transition emits a
+// loop-state snapshot (flow/resume.ts reads them back), and /flow re-entry
+// seeds `resume` from the journal so a restart restores the blocker-retry
+// budget and the validate blockers-note cutoff exactly.
 import { MAX_ATTEMPTS } from '../implement/retry.ts'
-import type { FlowRunEvent } from '../run-state.ts'
+import type { FlowRunEvent, LoopRunStatus } from '../run-state.ts'
 import {
   clearFlowEnv,
   type FlowEnv,
@@ -86,6 +90,13 @@ export interface FlowStartInput {
   phase: Phase
   /** Per-run inputs for buildPhasePrompt (mode, gitRoot, workRoots, ...). */
   promptInput: Omit<PhasePromptInput, 'labels'>
+  /**
+   * AIDEV-NOTE: PMR-XTQQ phase 2 — resume seed from the journal tail
+   * (flow/resume.ts). Restores blockerRetries and validateStartedAt exactly;
+   * absent → today's zero-defaults (back-compat). Phase position is never
+   * seeded — aven labels re-derive it.
+   */
+  resume?: { blockerRetries: number; validateStartedAt: string }
 }
 
 interface FlowLoopState {
@@ -114,6 +125,9 @@ class FlowLoopImpl implements FlowLoop {
   private readonly deps: FlowLoopDeps
   private readonly env: FlowEnv
   private state: FlowLoopState | null = null
+  // one-shot: the first sendPhasePrompt after a resumed start must not
+  // overwrite the seeded validateStartedAt (blockers-note cutoff)
+  private pendingResume = false
 
   constructor(deps: FlowLoopDeps) {
     this.deps = deps
@@ -158,14 +172,32 @@ class FlowLoopImpl implements FlowLoop {
       this.deps.setActiveRef?.(null)
       return
     }
-    this.state = {
-      ref: input.ref,
-      currentPhase: input.phase,
-      awaitingOutcome: false,
-      blockerRetries: 0,
-      validateStartedAt: now(),
-      promptInput: input.promptInput,
+    const resume = input.resume
+    const resumed = resume !== undefined
+    if (resumed) {
+      this.state = {
+        ref: input.ref,
+        currentPhase: input.phase,
+        awaitingOutcome: false,
+        blockerRetries: resume.blockerRetries,
+        validateStartedAt: resume.validateStartedAt,
+        promptInput: input.promptInput,
+      }
+    } else {
+      this.state = {
+        ref: input.ref,
+        currentPhase: input.phase,
+        awaitingOutcome: false,
+        blockerRetries: 0,
+        validateStartedAt: now(),
+        promptInput: input.promptInput,
+      }
     }
+    // AIDEV-NOTE: PMR-XTQQ — loop-state snapshot journaling: budget and
+    // cutoff live on the journal so a restart restores them; cleared only
+    // by terminal snapshots.
+    this.pendingResume = resumed
+    this.snapshot('running')
     this.deps.setActiveRef?.(input.ref)
     this.deps.resetLandingState?.()
     await this.sendPhasePrompt(input.phase)
@@ -213,6 +245,7 @@ class FlowLoopImpl implements FlowLoop {
           await this.deps.avenNote(ref, text)
           this.deps.journal({ kind: 'note', at: now(), ref, text })
           this.deps.notify(`/flow ${ref}: ${text}`, 'info')
+          this.snapshot('paused')
           this.state = null
           clearFlowEnv(this.env)
           this.deps.onFlowEnvChange?.()
@@ -260,6 +293,9 @@ class FlowLoopImpl implements FlowLoop {
       ref: state.ref,
       text: `validate left review blockers — re-running implement (retry ${state.blockerRetries}/${MAX_ATTEMPTS - 1})`,
     })
+    // AIDEV-NOTE: journal AFTER incrementing so a restart restores the
+    // incremented budget, not the pre-retry one.
+    this.snapshot('running')
     this.deps.notify(
       `/flow ${state.ref}: validate left review blockers — re-running implement (retry ${state.blockerRetries}/${MAX_ATTEMPTS - 1})`,
       'info',
@@ -276,6 +312,7 @@ class FlowLoopImpl implements FlowLoop {
     await this.deps.avenNote(ref, text)
     this.deps.journal({ kind: 'note', at: now(), ref, text })
     this.deps.notify(`/flow ${ref}: ${text}`, 'warning')
+    this.snapshot('halted')
     this.state = null
     // AIDEV-NOTE: PMR-HFK1 — terminal transition: no child spawned from now
     // on may attribute to this (dead) run.
@@ -327,9 +364,34 @@ class FlowLoopImpl implements FlowLoop {
     // spawned in later phases attribute to the phase doing the work.
     stampFlowPhase(this.env, phase)
     this.deps.onFlowEnvChange?.()
-    if (phase === 'validate') this.state.validateStartedAt = now()
+    if (phase === 'validate' && !this.pendingResume) {
+      this.state.validateStartedAt = now()
+    }
+    this.pendingResume = false
     this.deps.sendPrompt(result.prompt + suffix)
     this.state.awaitingOutcome = true
+    this.snapshot('running')
+  }
+
+  // AIDEV-NOTE: PMR-XTQQ — loop-state snapshot: journaled at start, every
+  // phase prompt (awaitingOutcome=true, running), the plan-approval pause
+  // (paused, awaitingOutcome=false — phase-3's pending protocol parks ONLY
+  // on awaitingOutcome=true + running), every retry increment, and on the
+  // terminal transitions (halted/done). Last-wins in the projection.
+  private snapshot(status: LoopRunStatus): void {
+    if (this.state === null) return
+    this.deps.journal({
+      kind: 'loop-state',
+      at: now(),
+      ref: this.state.ref,
+      loop: {
+        phase: this.state.currentPhase,
+        awaitingOutcome: this.state.awaitingOutcome,
+        blockerRetries: this.state.blockerRetries,
+        validateStartedAt: this.state.validateStartedAt,
+        status,
+      },
+    })
   }
 
   // AIDEV-NOTE: advanceAfter runs after a settled phase turn whose label
@@ -354,6 +416,7 @@ class FlowLoopImpl implements FlowLoop {
         text: 'flow complete — all phase labels present',
       })
       this.deps.notify(`/flow ${ref}: all phases complete.`, 'info')
+      this.snapshot('done')
       this.state = null
       clearFlowEnv(this.env)
       this.deps.onFlowEnvChange?.()

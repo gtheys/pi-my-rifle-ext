@@ -59,6 +59,7 @@ import {
   registerAvenPrefixes,
   trackingRef,
 } from './flow/ref-kind.ts'
+import { resumeSeedFromEvents } from './flow/resume.ts'
 import {
   type FlowBindingSnapshot,
   parseFlowBindingSnapshot,
@@ -666,17 +667,52 @@ export default function (pi: ExtensionAPI) {
         mode,
         trackRef,
       })
+      // AIDEV-NOTE: PMR-XTQQ phase 2 — resume seeding. The journal tail's
+      // latest loop-state restores the blocker-retry budget and the validate
+      // blockers-note cutoff exactly; the journaled run-input scalars win
+      // over a fresh rebuild ONLY while their gitRoot still exists (else the
+      // fresh commandPhaseInput result is used). Phase position is never
+      // seeded — aven labels re-derive it via nextPhase above.
+      const seed = resumeSeedFromEvents(
+        await readRunEvents(getAgentDir(), ref),
+        (p) => existsSync(p),
+      )
+      let promptInput = await commandPhaseInput(pi, {
+        mode,
+        ref,
+        cwd: ctx.cwd,
+      })
+      if (seed.input !== undefined) {
+        promptInput = {
+          ...promptInput,
+          mode: seed.input.mode,
+          gitRoot: seed.input.gitRoot,
+          workRoots: seed.input.workRoots,
+        }
+      }
+      // AIDEV-NOTE: serializable prompt-input subset; closures
+      // (findTicketRef, ...) are rebuilt per invocation, never journaled.
+      await journal({
+        kind: 'run-input',
+        at: new Date().toISOString(),
+        ref,
+        input: {
+          mode: promptInput.mode,
+          gitRoot: promptInput.gitRoot,
+          workRoots: [...promptInput.workRoots],
+        },
+      })
       await adhocCloseMain()
-      await loop.start({
+      const startInput: Parameters<typeof loop.start>[0] = {
         ref,
         trackRef,
         phase: next.phase,
-        promptInput: await commandPhaseInput(pi, {
-          mode,
-          ref,
-          cwd: ctx.cwd,
-        }),
-      })
+        promptInput,
+      }
+      if (seed.resume !== undefined) {
+        startInput.resume = seed.resume
+      }
+      await loop.start(startInput)
     },
   })
 

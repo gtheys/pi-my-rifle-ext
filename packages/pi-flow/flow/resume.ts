@@ -1,0 +1,50 @@
+// AIDEV-NOTE: PMR-XTQQ phase 2 — resume seeding from the durable journal.
+// Pure tail-reader over readRunEvents output: picks the latest run-input and
+// loop-state events for a ref. The seed restores the loop's retry budget and
+// the validate blockers-note cutoff EXACTLY (a fresh Date.now() would
+// re-narrow the freshness window). Phase position is NEVER seeded here —
+// aven labels remain the run state; the loop re-derives it via nextPhase().
+// The journaled prompt-input scalars are used only when their gitRoot still
+// exists on disk (otherwise the handler rebuilds fresh via commandPhaseInput).
+import type {
+  FlowRunEvent,
+  LoopRunStatus,
+  LoopStateRecord,
+  RunInputRecord,
+} from '../run-state.ts'
+
+export interface FlowResumeSeed {
+  /** Restored budget/cutoff; present when the last snapshot was non-terminal. */
+  resume?: { blockerRetries: number; validateStartedAt: string }
+  /** Journaled prompt-input scalars; present only when gitRoot still exists. */
+  input?: RunInputRecord
+}
+
+const NON_TERMINAL: readonly LoopRunStatus[] = ['running', 'paused']
+
+export function resumeSeedFromEvents(
+  events: FlowRunEvent[] | null,
+  gitRootExists: (p: string) => boolean,
+): FlowResumeSeed {
+  const seed: FlowResumeSeed = {}
+  let loop: LoopStateRecord | null = null
+  let input: RunInputRecord | null = null
+  if (events !== null) {
+    for (const event of events) {
+      if (event.kind === 'loop-state') loop = event.loop
+      if (event.kind === 'run-input') input = event.input
+    }
+  }
+  // AIDEV-NOTE: only non-terminal snapshots seed — a halted/done run must
+  // not leak a stale blockers cutoff into a fresh rerun.
+  if (loop !== null && NON_TERMINAL.includes(loop.status)) {
+    seed.resume = {
+      blockerRetries: loop.blockerRetries,
+      validateStartedAt: loop.validateStartedAt,
+    }
+  }
+  if (input !== null && gitRootExists(input.gitRoot)) {
+    seed.input = input
+  }
+  return seed
+}

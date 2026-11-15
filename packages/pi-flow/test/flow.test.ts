@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parseFlowArgs } from '../flow/args.ts'
 import { nextPhase, PHASE_LABEL } from '../flow/orchestrate.ts'
+import { resumeSeedFromEvents } from '../flow/resume.ts'
 
 // --- parseFlowArgs ---
 
@@ -109,4 +110,142 @@ test('parseFlowArgs: kind prefixes force the kind (PMR-PCVK)', () => {
     kind: 'jira',
     jiraId: 'DP-71',
   })
+})
+
+// --- resumeSeedFromEvents (PMR-XTQQ phase 2: /flow resume seeding) ---
+
+test('resume seed: parked loop-state + run-input seeds budget, cutoff, and input', async () => {
+  const cutoff = '2026-11-14T10:00:00.000Z'
+  const events = [
+    {
+      kind: 'run-start' as const,
+      at: 't',
+      ref: 'R',
+      mode: 'personal' as const,
+    },
+    {
+      kind: 'run-input' as const,
+      at: 't',
+      ref: 'R',
+      input: { mode: 'personal' as const, gitRoot: '/repo', workRoots: [] },
+    },
+    {
+      kind: 'loop-state' as const,
+      at: 't',
+      ref: 'R',
+      loop: {
+        phase: 'validate' as const,
+        awaitingOutcome: true,
+        blockerRetries: 1,
+        validateStartedAt: cutoff,
+        status: 'running' as const,
+      },
+    },
+  ]
+  const seed = resumeSeedFromEvents(events, () => true)
+  assert.deepEqual(seed.resume, {
+    blockerRetries: 1,
+    validateStartedAt: cutoff,
+  })
+  assert.deepEqual(seed.input, {
+    mode: 'personal',
+    gitRoot: '/repo',
+    workRoots: [],
+  })
+})
+
+test('resume seed: latest loop-state and run-input win (journal tail)', async () => {
+  const events = [
+    {
+      kind: 'loop-state' as const,
+      at: 't1',
+      ref: 'R',
+      loop: {
+        phase: 'plan' as const,
+        awaitingOutcome: true,
+        blockerRetries: 0,
+        validateStartedAt: 'old',
+        status: 'running' as const,
+      },
+    },
+    {
+      kind: 'loop-state' as const,
+      at: 't2',
+      ref: 'R',
+      loop: {
+        phase: 'validate' as const,
+        awaitingOutcome: true,
+        blockerRetries: 2,
+        validateStartedAt: 'new',
+        status: 'running' as const,
+      },
+    },
+  ]
+  const seed = resumeSeedFromEvents(events, () => true)
+  assert.deepEqual(seed.resume, {
+    blockerRetries: 2,
+    validateStartedAt: 'new',
+  })
+})
+
+test('resume seed: terminal snapshots never seed', async () => {
+  const events = [
+    {
+      kind: 'loop-state' as const,
+      at: 't',
+      ref: 'R',
+      loop: {
+        phase: 'validate' as const,
+        awaitingOutcome: false,
+        blockerRetries: 2,
+        validateStartedAt: 'cutoff',
+        status: 'halted' as const,
+      },
+    },
+  ]
+  assert.deepEqual(
+    resumeSeedFromEvents(events, () => true),
+    {},
+  )
+})
+
+test('resume seed: journaled run-input ignored when its gitRoot vanished', async () => {
+  const events = [
+    {
+      kind: 'run-input' as const,
+      at: 't',
+      ref: 'R',
+      input: {
+        mode: 'personal' as const,
+        gitRoot: '/gone/worktree',
+        workRoots: [],
+      },
+    },
+    {
+      kind: 'loop-state' as const,
+      at: 't',
+      ref: 'R',
+      loop: {
+        phase: 'plan' as const,
+        awaitingOutcome: true,
+        blockerRetries: 0,
+        validateStartedAt: 'cutoff',
+        status: 'running' as const,
+      },
+    },
+  ]
+  const seed = resumeSeedFromEvents(events, () => false)
+  assert.equal(seed.input, undefined)
+  assert.notEqual(seed.resume, undefined)
+})
+
+test('resume seed: empty or missing journal seeds nothing', async () => {
+  assert.deepEqual(
+    resumeSeedFromEvents(null, () => true),
+    {},
+  )
+  assert.deepEqual(
+    resumeSeedFromEvents([], () => true),
+    {},
+  )
 })

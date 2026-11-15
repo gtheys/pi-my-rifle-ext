@@ -48,6 +48,7 @@
     "flow/phase-command.ts",
     "flow/phase-prompts.ts",
     "flow/ref-kind.ts",
+    "flow/resume.ts",
     "flow/worktree-context.ts",
     "gates.ts",
     "herdr/sync.ts",
