@@ -59,7 +59,11 @@ import {
   registerAvenPrefixes,
   trackingRef,
 } from './flow/ref-kind.ts'
-import { resumeSeedFromEvents } from './flow/resume.ts'
+import {
+  mergeSeedInput,
+  resumeSeedFromEvents,
+  runInputRecord,
+} from './flow/resume.ts'
 import {
   type FlowBindingSnapshot,
   parseFlowBindingSnapshot,
@@ -743,25 +747,16 @@ export default function (pi: ExtensionAPI) {
         ref,
         cwd: ctx.cwd,
       })
-      if (seed.input !== undefined) {
-        promptInput = {
-          ...promptInput,
-          mode: seed.input.mode,
-          gitRoot: seed.input.gitRoot,
-          workRoots: seed.input.workRoots,
-        }
-      }
+      promptInput = mergeSeedInput(promptInput, seed)
       // AIDEV-NOTE: serializable prompt-input subset; closures
       // (findTicketRef, ...) are rebuilt per invocation, never journaled.
+      // mergeSeedInput (override rule) and runInputRecord (journaled shape)
+      // live in flow/resume.ts — flow.test.ts covers both.
       await journal({
         kind: 'run-input',
         at: new Date().toISOString(),
         ref,
-        input: {
-          mode: promptInput.mode,
-          gitRoot: promptInput.gitRoot,
-          workRoots: [...promptInput.workRoots],
-        },
+        input: runInputRecord(promptInput),
       })
       await adhocCloseMain()
       const startInput: Parameters<typeof loop.start>[0] = {

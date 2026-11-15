@@ -56,6 +56,10 @@ async function seedParkedJournal(
     ref,
     mode: 'personal',
   })
+  let status: 'running' | 'paused' = 'paused'
+  if (parked) {
+    status = 'running'
+  }
   await recordRunEvent(agentDir, {
     kind: 'loop-state',
     at: new Date().toISOString(),
@@ -65,7 +69,7 @@ async function seedParkedJournal(
       awaitingOutcome: parked,
       blockerRetries: 0,
       validateStartedAt: new Date().toISOString(),
-      status: parked ? 'running' : 'paused',
+      status,
     },
   })
 }

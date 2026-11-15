@@ -155,12 +155,16 @@ export async function maintainPending(
     ) {
       createdAt = existing.createdAt
     }
+    let sourceAt = createdAt
+    if (state !== null) {
+      sourceAt = state.updatedAt
+    }
     const record: PendingRecord = {
       schema: PENDING_SCHEMA,
       ref,
       phase,
       createdAt,
-      sourceAt: state !== null ? state.updatedAt : createdAt,
+      sourceAt,
     }
     if (existing !== null && recordsEqual(existing, record)) return
     await writePending(pendingDir, record, io)
@@ -329,6 +333,17 @@ function main(): void {
     )
     .catch((err: unknown) => {
       log(agentDir, `failed to write pidfile: ${String(err)}`)
+    })
+
+  // AIDEV-NOTE: PMR-XTQQ phase 1 — pending/ is created harmlessly at startup
+  // (spec acceptance): the on-disk layout exists before the first parked run
+  // and the consumer never needs to mkdir (consumePending only renames).
+  // Best-effort: an unwritable agent dir degrades exactly like every other
+  // daemon io failure (the journal stays authoritative).
+  fsp
+    .mkdir(pendingDirPath(agentDir), { recursive: true })
+    .catch((err: unknown) => {
+      log(agentDir, `failed to create pending dir: ${String(err)}`)
     })
 
   log(

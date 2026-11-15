@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { parseFlowArgs } from '../flow/args.ts'
 import { nextPhase, PHASE_LABEL } from '../flow/orchestrate.ts'
-import { resumeSeedFromEvents } from '../flow/resume.ts'
+import {
+  mergeSeedInput,
+  resumeSeedFromEvents,
+  runInputRecord,
+} from '../flow/resume.ts'
 
 // --- parseFlowArgs ---
 
@@ -248,4 +252,42 @@ test('resume seed: empty or missing journal seeds nothing', async () => {
     resumeSeedFromEvents([], () => true),
     {},
   )
+})
+
+// --- /flow run-input journaling content (PMR-XTQQ 2.2; call site: the
+// --- /flow command handler in index.ts, via mergeSeedInput + runInputRecord)
+
+test('run-input: seed override wins; journal carries only the serializable subset', () => {
+  const promptInput = {
+    mode: 'personal' as const,
+    gitRoot: '/repo',
+    workRoots: ['/fresh'],
+    labels: ['planned'] as readonly string[],
+    findTicketRef: () => null,
+  }
+  const seeded = mergeSeedInput(promptInput, {
+    input: { mode: 'work', gitRoot: '/parked', workRoots: ['/parked-w'] },
+  })
+  // The journaled record: journaled scalars win, closures/labels never leak.
+  assert.deepEqual(runInputRecord(seeded), {
+    mode: 'work',
+    gitRoot: '/parked',
+    workRoots: ['/parked-w'],
+  })
+  // The merged promptInput keeps its non-journaled fields.
+  assert.equal(seeded.labels, promptInput.labels)
+})
+
+test('run-input: no seed keeps the freshly rebuilt promptInput as-is', () => {
+  const promptInput = {
+    mode: 'personal' as const,
+    gitRoot: '/repo',
+    workRoots: ['/fresh'],
+  }
+  assert.equal(mergeSeedInput(promptInput, {}), promptInput)
+  assert.deepEqual(runInputRecord(promptInput), {
+    mode: 'personal',
+    gitRoot: '/repo',
+    workRoots: ['/fresh'],
+  })
 })

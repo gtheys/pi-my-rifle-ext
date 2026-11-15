@@ -116,8 +116,10 @@ checkout) instead of machine-wide.
 
 Since PMR-XTQQ, a small detached daemon (plain node, own event loop) makes
 `/flow` runs survive a session exit. The extension ensures it is alive at
-`/flow` start and on session start (pidfile + liveness + protocol-version
-probe at `<agentDir>/pi-flow/server.pid`; mismatch → kill + respawn).
+`/flow` start only (pidfile + liveness + protocol-version probe at
+`<agentDir>/pi-flow/server.pid`; mismatch → kill + respawn). Reopening a
+session does not spawn it — only the pending-record consumer runs then; a
+dead daemon is respawned by the next `/flow`.
 
 What it does: the daemon is the ONLY projection writer while alive — journal
 writers route journal-only through `server/writer.ts` (per-write liveness

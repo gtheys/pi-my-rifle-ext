@@ -22,6 +22,10 @@ function parkedEvents(ref: string, parked: boolean): FlowRunEvent[] {
     ref,
     mode: 'personal',
   }
+  let status: 'running' | 'paused' = 'paused'
+  if (parked) {
+    status = 'running'
+  }
   const event: FlowRunEvent = {
     kind: 'loop-state',
     at: new Date().toISOString(),
@@ -31,7 +35,7 @@ function parkedEvents(ref: string, parked: boolean): FlowRunEvent[] {
       awaitingOutcome: parked,
       blockerRetries: 0,
       validateStartedAt: new Date().toISOString(),
-      status: parked ? 'running' : 'paused',
+      status,
     },
   }
   return [start, event]

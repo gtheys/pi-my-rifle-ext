@@ -93,9 +93,10 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
     assert.equal(child.exitCode, null, 'daemon exited prematurely')
     assert.equal(child.signalCode, null, 'daemon was signaled prematurely')
 
-    // pending/ is not created by the phase-1 daemon; its absence must not
-    // have broken anything (startup reached pidfile + projections above).
-    assert.equal(existsSync(join(piFlowDir, 'pending')), false)
+    // pending/ is created harmlessly at daemon startup (spec phase-1
+    // acceptance); its presence must not have broken anything (startup
+    // reached pidfile + projections above).
+    await waitFor(() => existsSync(join(piFlowDir, 'pending')), 'pending dir')
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL')

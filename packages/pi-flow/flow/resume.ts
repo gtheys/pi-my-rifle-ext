@@ -48,3 +48,46 @@ export function resumeSeedFromEvents(
   }
   return seed
 }
+
+export interface JournalablePromptInput {
+  mode: 'work' | 'personal'
+  gitRoot: string
+  workRoots: readonly string[]
+}
+
+/**
+ * AIDEV-NOTE: PMR-XTQQ 2.2 — the /flow handler's seed override: journaled
+ * scalars win over the freshly rebuilt commandPhaseInput result (the gitRoot
+ * existence gate already ran in resumeSeedFromEvents, so an override here is
+ * safe). Extracted pure so flow.test.ts exercises exactly what the handler
+ * merges before it journals run-input.
+ */
+export function mergeSeedInput<T extends JournalablePromptInput>(
+  promptInput: T,
+  seed: FlowResumeSeed,
+): T {
+  if (seed.input === undefined) {
+    return promptInput
+  }
+  return {
+    ...promptInput,
+    mode: seed.input.mode,
+    gitRoot: seed.input.gitRoot,
+    workRoots: seed.input.workRoots,
+  }
+}
+
+/**
+ * AIDEV-NOTE: PMR-XTQQ 2.2 — the serializable prompt-input subset the /flow
+ * handler journals as a run-input event. Closures and labels (findTicketRef,
+ * epicHasOpenChildren, ...) are rebuilt per invocation and never journaled.
+ */
+export function runInputRecord(
+  promptInput: JournalablePromptInput,
+): RunInputRecord {
+  return {
+    mode: promptInput.mode,
+    gitRoot: promptInput.gitRoot,
+    workRoots: [...promptInput.workRoots],
+  }
+}

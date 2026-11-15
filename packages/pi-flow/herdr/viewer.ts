@@ -1,8 +1,11 @@
 // AIDEV-NOTE: Herdr adapter for the flow run-state viewer (ported from
 // pi-workflows' herdr-viewer design). Uses ONLY public herdr CLI verbs
 // through pi.exec with bounded timeouts and bounded JSON parsing. No polling,
-// no daemon, no state file — dedupe keys off the pane LABEL ("flow · <ref>"),
-// which survives Pi reloads because it lives in herdr's own snapshot.
+// no state file — and no daemon of its own (deliberate stance, updated for
+// PMR-XTQQ: pi-flow now owns exactly one daemon, the durable run server in
+// server/daemon.ts; this viewer stays daemon-free and only reads files).
+// Dedupe keys off the pane LABEL ("flow · <ref>"), which survives Pi
+// reloads because it lives in herdr's own snapshot.
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
