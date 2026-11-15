@@ -448,7 +448,7 @@ test('buildCodeReviewGatePrompt: instructs the code_review tool call', () => {
   assert.match(prompt, /PMR-ABC1/)
 })
 
-// --- registered execute: agent-attested pass gate (PMR-3ZY1 P1) ---
+// --- registered execute: ask-unavailable fail-closed (PMR-R5VB phase 4) ---
 
 const AVEN_FAKE_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-cr-bin-'))
 writeFileSync(path.join(AVEN_FAKE_DIR, 'aven'), '#!/bin/sh\nexit 0\n')
@@ -466,7 +466,7 @@ type ToolCtx = {
 
 type CodeReviewExecute = (
   toolCallId: string,
-  params: { ref: string; outcome?: 'pass' },
+  params: { ref: string },
   signal: AbortSignal,
   onUpdate: unknown,
   ctx: ToolCtx,
@@ -531,32 +531,22 @@ async function withFakeAvenPath(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-test('execute: outcome="pass" refused when ask_user_question is available', async () => {
-  const { execute } = codeReviewExecute()
-  const result = await execute(
-    't1',
-    { ref: 'PMR-ABC1', outcome: 'pass' },
-    new AbortController().signal,
-    undefined,
-    ctxWith([{ name: 'ask_user_question' }]),
-  )
-  assert.equal(result.isError, true)
-  assert.match(result.content.map((c) => c.text).join('\n'), /refused/)
-})
-
-test('execute: outcome="pass" records marker when ask_user_question is absent', async () => {
+test('execute: ask_user_question unavailable fails closed (no marker, no note)', async () => {
   await withFakeAvenPath(async () => {
-    const { execute, landingState } = codeReviewExecute()
+    const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
+    const { execute, landingState } = codeReviewExecute(exec)
     const result = await execute(
-      't2',
-      { ref: 'PMR-ABC1', outcome: 'pass' },
+      't1',
+      { ref: 'PMR-ABC1' },
       new AbortController().signal,
       undefined,
       ctxWith([]),
     )
-    assert.notEqual(result.isError, true)
-    assert.equal(landingState.humanReviewPassed, 'PMR-ABC1')
-    assert.match(result.content.map((c) => c.text).join('\n'), /flow_land/)
+    assert.equal(result.isError, true)
+    assert.equal(landingState.humanReviewPassed, null)
+    const text = result.content.map((c) => c.text).join('\n')
+    assert.match(text, /agent-attested/)
+    assert.match(text, /\/flow answer PMR-ABC1/)
   })
 })
 
@@ -704,7 +694,7 @@ test('execute: fail with empty comments falls back to free-text findings', async
   })
 })
 
-test('execute: unclear ask answer does NOT point at outcome="pass"', async () => {
+test('execute: unclear ask answer directs re-call via blocking gate', async () => {
   await withFakeAvenPath(async () => {
     const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
     const { execute } = codeReviewExecute(exec)
@@ -720,7 +710,7 @@ test('execute: unclear ask answer does NOT point at outcome="pass"', async () =>
     assert.equal(result.isError, true)
     const text = result.content.map((c) => c.text).join('\n')
     assert.match(text, /unclear/)
-    assert.doesNotMatch(text, /outcome="pass"/)
+    assert.doesNotMatch(text, /outcome/)
   })
 })
 

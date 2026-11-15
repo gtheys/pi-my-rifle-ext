@@ -8,16 +8,13 @@
 // sibling ticket PMR-C6AK — deliberately NOT here). Fail records the tuicr
 // findings as an aven note and routes back to /implement. The tool's I/O
 // seams (ReviewDeps) are injected so tests assert the exact exec sequences.
-// AIDEV-NOTE: agent-attested fallback (PMR-3ZY1 decision 4) — when the
-// pi-ask-user-question extension is absent, the tool returns after opening
-// tuicr and a second code_review call with outcome="pass" records the
-// marker WITHOUT a blocking human ask. Weaker by design: the marker then
-// rests on the agent's own question to the human, not on our blocking gate.
-// Residual weakness: when the extension IS absent, the recorded pass is only
-// agent-attested — we cannot distinguish "the agent really asked" from
-// "the agent invented it". Scope is deliberately limited to that case: with
-// ask_user_question available, outcome="pass" is refused (the blocking ask
-// is the only sanctioned path).
+// AIDEV-NOTE: PMR-R5VB phase 4 — the agent-attested fallback (PMR-3ZY1
+// decision 4, the outcome="pass" parameter) was REMOVED: fail closed. The
+// blocking ask_user_question gate is now the ONLY in-session pass route;
+// when the ask extension is absent the tool returns an isError refusal
+// directing the human to the durable, human-only /flow answer <ref>
+// pass|fail command (accepted by flow_land). No code path here sets
+// humanReviewPassed outside that blocking ask.
 import { existsSync } from 'node:fs'
 import type {
   AgentToolResult,
@@ -83,48 +80,21 @@ export function registerCodeReviewTool(
     promptGuidelines: [
       'Call code_review with the flow ref when the validate phase reaches the human review gate (step H1).',
       'A failure result names what broke and the manual tuicr command — fix the cause or open it manually, then re-call.',
-      'When ask_user_question is unavailable, ask the human yourself, then re-call code_review with outcome="pass" to record the marker.',
+      'When ask_user_question is unavailable, code_review fails closed — direct the human to run /flow answer <ref> pass|fail; never re-call with an outcome param (it no longer exists).',
     ],
     parameters: Type.Object({
       ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
-      outcome: Type.Optional(
-        Type.Union([Type.Literal('pass')], {
-          description:
-            'Fallback only: record an agent-attested pass after the human answered YOUR OWN ask_user_question (used when the nested ask is unavailable).',
-        }),
-      ),
     }),
     async execute(
       _toolCallId: string,
-      params: { ref: string; outcome?: 'pass' },
+      params: { ref: string },
       _signal: AbortSignal,
       _onUpdate: unknown,
       ctx: ExtensionToolContext,
     ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
-      const askAvailable =
-        ctx.tools.find((t) => t.name === 'ask_user_question') !== undefined
-
-      // Agent-attested fallback path: the human already answered the agent's
-      // own ask — record the marker without a second blocking ask. ONLY valid
-      // when the blocking gate is unavailable (PMR-3ZY1 decision 4); with the
-      // extension present the agent could otherwise record a "human" pass
-      // with no human involved.
-      if (params.outcome === 'pass') {
-        if (askAvailable) {
-          return toolResult(
-            `code_review refused: outcome="pass" is only allowed when ask_user_question is unavailable, and it IS available here. Re-call code_review with just ref="${params.ref}" and answer the blocking pass/fail question yourself (or via the human).`,
-            { ok: false, reason: 'blocking ask available' },
-            { isError: true },
-          )
-        }
-        const routing = routeReviewPass(params.ref, new Date().toISOString())
-        landingState.humanReviewPassed = routing.marker
-        const noted = await writeAvenNote(params.ref, routing.avenNote)
-        return toolResult(
-          `${routing.message}${noted ? '' : '\n(warning: the aven note write failed — record it manually)'}`,
-          { ok: true, reason: '' },
-        )
-      }
+      // AIDEV-NOTE: PMR-R5VB phase 4 — the ask availability check that fed
+      // the removed agent-attested fallback is gone; ask_user_question is
+      // re-looked-up below the tuicr open.
 
       const deps = productionDeps(pi, ctx)
       let worktree: ResolvedWorktree
@@ -155,13 +125,19 @@ export function registerCodeReviewTool(
 
       const askTool = ctx.tools.find((t) => t.name === 'ask_user_question')
       if (askTool === undefined) {
+        // AIDEV-NOTE: PMR-R5VB phase 4 — fail closed. The old agent-attested
+        // fallback (re-call with outcome="pass") is gone; a pass recorded
+        // here would rest on the agent's word alone. The human records the
+        // verdict durably via the human-only /flow answer command, which
+        // flow_land accepts for merge-main.
         return toolResult(
-          `code_review: tuicr is open for ${params.ref} (${worktree.path}, ${worktree.branch || 'branch unverified'}). ask_user_question is not callable from tools — ask the human pass/fail yourself via ask_user_question, then re-call code_review with ref="${params.ref}" outcome="pass" (or handle the fail per their answer).`,
-          { ok: true, reason: 'ask extension unavailable' },
+          `code_review: ask_user_question is unavailable — recording a pass here would be agent-attested, which is not allowed. The human records the verdict with the human-only command /flow answer ${params.ref} pass (or fail); flow_land accepts that durable answer for merge-main.\ntuicr is open for ${params.ref} in a herdr tab (${worktree.path}, ${worktree.branch || 'branch unverified'}).`,
+          { ok: false, reason: 'ask extension unavailable' },
+          { isError: true },
         )
       }
 
-      const outcome = await ctx.executeTool('ask_user_question', {
+      const askResult = await ctx.executeTool('ask_user_question', {
         question: `Human code review of ${params.ref}: pass or fail?`,
         details: `tuicr is open in a herdr tab (${worktree.path}). Review the diff (branch scope), then answer.`,
         options: [
@@ -169,16 +145,17 @@ export function registerCodeReviewTool(
           { label: 'fail', value: 'fail' },
         ],
       })
-      const answerText = outcome.result.content
+      const answerText = askResult.result.content
         .map((c) => (c.type === 'text' ? c.text : ''))
         .join('\n')
       const answer = parseAskAnswer(answerText)
       if (answer === null) {
         return toolResult(
-          // AIDEV-NOTE: PMR-G68P — do NOT point the agent at outcome="pass"
-          // here: this branch only runs when ask_user_question IS available,
-          // and outcome="pass" is refused in that case (727b939).
-          `code_review: the human's answer was unclear ("${answerText.slice(0, 200)}") — ask the human a plain pass/fail question again via ask_user_question, then re-call code_review with ref="${params.ref}" (no outcome) to record their answer through the blocking gate.`,
+          // AIDEV-NOTE: PMR-G68P — updated for PMR-R5VB phase 4: the
+          // outcome param no longer exists at all, so this branch simply
+          // re-asks and routes back through the blocking gate; there is no
+          // fallback to point the agent at.
+          `code_review: the human's answer was unclear ("${answerText.slice(0, 200)}") — ask the human a plain pass/fail question again via ask_user_question, then re-call code_review with ref="${params.ref}" to record their answer through the blocking gate.`,
           { ok: false, reason: 'unclear answer' },
           { isError: true },
         )
