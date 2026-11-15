@@ -213,6 +213,7 @@ describe('flow_land ref validation', () => {
       createLandingState(),
       () => activeRef,
       async () => ({ ok: true, summary: 'ok' }),
+      async () => null,
     )
     if (!execute) throw new Error('flow_land tool not registered')
     return execute

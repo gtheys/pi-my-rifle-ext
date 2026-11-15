@@ -31,6 +31,7 @@ import {
   lastAvenResolutionFailure,
   readAvenLabels,
   readFreshBlockers,
+  readGateAnswer,
   readJiraRef,
   readPlanState,
   setAvenSessionCwd,
@@ -355,7 +356,23 @@ export default function (pi: ExtensionAPI) {
   })
 
   registerPhaseCompleteTool(pi)
-  registerLandTool(pi, landingState, () => loop.activeRef(), defaultSuiteRunner)
+  // AIDEV-NOTE: PMR-R5VB — merge-main's human-review gate also accepts the
+  // durable aven answer (human-only /flow answer <ref> pass); the read is
+  // fail-closed (null on failure -> marker-only evaluation).
+  registerLandTool(
+    pi,
+    landingState,
+    () => loop.activeRef(),
+    defaultSuiteRunner,
+    // AIDEV-NOTE: PMR-R5VB — readGateAnswer's AnswerChoice also allows
+    // 'approve'/'reject' (other gates); narrow to this gate's vocabulary.
+    async (ref) => {
+      const answer = await readGateAnswer(ref, 'review')
+      if (answer === 'pass') return 'pass' as const
+      if (answer === 'fail') return 'fail' as const
+      return null
+    },
+  )
   // AIDEV-NOTE: PMR-T8ZG — the human code-review gate (PMR-3ZY1): the
   // code_review tool shares landingState with flow_land so a pass recorded
   // here is visible to the later flow_land check (PMR-C6AK, not wired yet).

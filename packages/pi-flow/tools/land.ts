@@ -33,6 +33,10 @@ const LAND_SUITE_TAIL_CHARS = 2000
 // AIDEV-NOTE: PMR-T8ZG — humanReviewPassed records the human code-review
 // gate pass for the ref (set ONLY by the code_review tool). The flow_land
 // CHECK that reads it lives below (PMR-C6AK) and gates route=merge-main.
+// AIDEV-NOTE: PMR-R5VB — the marker now has a durable aven-backed
+// alternative: flow_land also accepts a durable 'pass' gate answer for the
+// ref (human-only, via /flow answer <ref> pass), read through the injected
+// readReviewAnswer dep — so the gate can pass cross-session.
 // PMR-HYZA: route=merge-main NEVER sets `authorized` — the personal landing
 // is a LOCAL ff-only merge into main in the main checkout, so a git push
 // stays blocked even after flow_land returns ok. Only route=pr (work mode)
@@ -56,6 +60,14 @@ export interface SuiteRun {
 }
 
 export type SuiteRunner = (cwd: string) => Promise<SuiteRun>
+
+// AIDEV-NOTE: PMR-R5VB — durable human-decision read for the merge-main
+// review gate. Injected (production: readGateAnswer(ref, 'review')) so
+// land.ts stays aven-import-free beyond types. Fail-closed by contract:
+// any read failure returns null, which can never fabricate a pass.
+export type ReviewAnswerReader = (
+  ref: string,
+) => Promise<'pass' | 'fail' | null>
 
 export const DEFAULT_LAND_TEST_COMMAND = ['bun', 'run', 'test'] as const
 
@@ -189,6 +201,9 @@ export function registerLandTool(
   activeRef: () => string | null,
   // AIDEV-NOTE: PMR-05HX — injected so tests never run a real suite.
   runSuite: SuiteRunner,
+  // AIDEV-NOTE: PMR-R5VB — durable aven answer reader for the merge-main
+  // human-review gate (null = absent or read failure -> marker-only).
+  readReviewAnswer: ReviewAnswerReader,
   receipts: ReceiptJournal = createReceiptJournal(getAgentDir()),
   // AIDEV-NOTE: PMR-4S6V — receipts adopt only when the worktree HEAD is
   // unchanged since the committed transition (PMR-05HX: never land work
@@ -204,7 +219,7 @@ export function registerLandTool(
       'Gated landing for PIV flow runs — call before pushing the branch or creating the PR.',
     promptGuidelines: [
       'Call flow_land AFTER flow_phase_complete(phase="validate") and BEFORE git push / gh pr create — direct landing commands are blocked until it returns ok.',
-      'For route=merge-main (personal), call the code_review tool first — flow_land refuses until the human pass marker for the ref is recorded. After ok, merge locally: git -C <main repo> merge --ff-only <branch> (find the main repo via `git worktree list` first entry). NEVER push.',
+      'For route=merge-main (personal), collect the human pass first — via the code_review tool (in-session) or the human-only /flow answer <ref> pass (durable, accepted cross-session) — flow_land refuses until one of them has passed for the ref. After ok, merge locally: git -C <main repo> merge --ff-only <branch> (find the main repo via `git worktree list` first entry). NEVER push.',
       'flow_land runs the test suite itself before authorizing (landTestCommand config, default bun run test) — a red suite refuses the landing with the failing output. Never claim tests are green to skip it; the gate does not read claims.',
       'A refusal carries the gate reason (missing review-passed label, blockers in the artifact, missing human code-review pass, red test suite); fix the cause, do not retry the call.',
     ],
@@ -233,6 +248,11 @@ export function registerLandTool(
       // (PMR-T8ZG wrote the field) so behavior flips in one child. Only
       // route=merge-main (personal) requires the marker recorded by the
       // code_review tool for THIS ref; route=pr (work) is unchanged.
+      // AIDEV-NOTE: PMR-R5VB — two accepted routes: the in-session marker
+      // (short-circuits, the durable read is skipped) OR a durable 'pass'
+      // aven answer. Null on read failure or absence -> refusal (fail
+      // closed by construction); 'fail' also refuses. The refusal names
+      // both routes so the agent can route the human to either.
       // AIDEV-NOTE: PMR-VZEV — ref validation: a live flow only lands its
       // OWN ref. null = no flow active, the gate does not apply (matches
       // the interceptor, which also stands down without an active ref).
@@ -244,15 +264,21 @@ export function registerLandTool(
           { isError: true },
         )
       }
-      if (
-        params.route === 'merge-main' &&
-        state.humanReviewPassed !== params.ref
-      ) {
-        return toolResult(
-          `flow_land refused landing ${params.ref} via merge-main: the human code-review gate has not passed — call the code_review tool with ref=${params.ref} and collect the human's pass first`,
-          { ok: false, reason: 'human code-review gate not passed' },
-          { isError: true },
-        )
+      if (params.route === 'merge-main') {
+        let humanPassed = false
+        if (state.humanReviewPassed === params.ref) {
+          humanPassed = true
+        } else {
+          const durable = await readReviewAnswer(params.ref)
+          if (durable === 'pass') humanPassed = true
+        }
+        if (!humanPassed) {
+          return toolResult(
+            `flow_land refused landing ${params.ref} via merge-main: the human code-review gate has not passed — collect the human's pass via the code_review tool's blocking ask (in-session), or have the human run /flow answer ${params.ref} pass (human-only; flow_land accepts that durable answer cross-session)`,
+            { ok: false, reason: 'human code-review gate not passed' },
+            { isError: true },
+          )
+        }
       }
       const labels = await readAvenLabels(params.ref)
       const decision = landDecision(labels, params.artifact ?? null)
