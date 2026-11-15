@@ -155,10 +155,12 @@ test('plan settles without "planned" while plan-state=review: awaiting-approval 
   assert.equal(loop.isActive(), false)
   assert.equal(h.notes.length, 1)
   assert.match(h.notes[0].text, /awaiting spec approval/)
+  assert.match(h.notes[0].text, /\/flow answer .* approve/)
   assert.doesNotMatch(h.notes[0].text, /halted/)
   const last = h.notifications.at(-1)
   assert.equal(last?.level, 'info')
   assert.match(last?.message ?? '', /awaiting spec approval/)
+  assert.match(last?.message ?? '', /\/flow answer .* approve/)
   assert.equal(h.events.at(-1)?.kind, 'note')
 })
 

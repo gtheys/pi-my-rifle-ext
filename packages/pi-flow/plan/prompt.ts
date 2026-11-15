@@ -13,9 +13,20 @@ export interface PlanPromptInput {
   ref: string
 }
 
+// AIDEV-NOTE: PMR-R5VB — approval is a HUMAN action (/flow answer <ref>
+// approve, human-only; starts no model turn) that writes a durable receipt;
+// the agent's spec_approve tool is receipt-gated and refuses without it.
+// Raw aven plan-state edits are forbidden in flow context. flow_phase_complete
+// instructions and the planned-label consequences are unchanged.
 const APPROVAL_SUFFIX = `
-When the skill workflow is FULLY complete — including the user's explicit
-approval and the aven phase/subtask hierarchy — set the ticket status to
+Approval is recorded by the HUMAN, not the agent: the human runs
+"/flow answer <ticket ref> approve" (a human-only slash command — it starts
+no model turn and writes the durable approval receipt). Your spec_approve
+tool is receipt-gated: it refuses until that receipt exists, so call it only
+AFTER the human has answered. Never run raw
+"aven edit --metadata plan-state=approved" in flow context.
+When the receipt exists and the skill workflow is FULLY complete — including
+the aven phase/subtask hierarchy — set the ticket status to
 "todo" and call the flow_phase_complete tool with ref=<ticket ref> and
 phase="plan" — it applies the "planned" label after re-checking the gates,
 and its result confirms the label landed. The "planned" label lands
@@ -66,11 +77,14 @@ Personal aven flow. Steps:
    The skill's resume ladder owns ALL resume states (no plan.md yet, draft,
    review, approved, existing children) — do NOT re-check the epic tree or
    parse plan-state here.
-   In personal mode the skill's own approval (plan-state=approved, set when
-   the user says "approve") is authoritative; the flow_phase_complete gate
-   checks only lifecycle-label order — it never reads plan-state — so call
-   flow_phase_complete ONLY after the skill's approval has set
-   plan-state=approved. /spec-review and the spec_approve tool stay
-   compatible with this flow.
+   Approval is receipt-gated in flow context: when the user says "approve",
+   tell them to run "/flow answer ${input.ref} approve" first (human-only;
+   writes the durable receipt), then call the spec_approve tool — it refuses
+   without the receipt, so re-call it only once the human has answered. Do
+   NOT run raw "aven edit --metadata plan-state=approved" in flow context
+   (the feature-plan-aven skill's standalone approval outside a flow is
+   unchanged). The flow_phase_complete gate checks only lifecycle-label
+   order — it never reads plan-state — so call flow_phase_complete only
+   after the receipt-gated spec_approve has succeeded.
 ${APPROVAL_SUFFIX}`
 }
