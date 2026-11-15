@@ -391,7 +391,7 @@ export default function (pi: ExtensionAPI) {
   // AIDEV-NOTE: PMR-T8ZG — the human code-review gate (PMR-3ZY1): the
   // code_review tool shares landingState with flow_land so a pass recorded
   // here is visible to the later flow_land check (PMR-C6AK, not wired yet).
-  registerCodeReviewTool(pi, landingState)
+  registerCodeReviewTool(pi, landingState, undefined, undefined, writer)
   // AIDEV-NOTE: PMR-R9EN — the deviation gate is a registered tool so the
   // validate prompt can instruct the agent to CALL something (D3/D4) instead
   // of naming TS functions it cannot invoke.

@@ -24,9 +24,12 @@ import type {
   ExtensionAPI,
   ExtensionToolContext,
 } from '@earendil-works/pi-coding-agent'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { writeAvenNote } from '../aven/client.ts'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
+import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
+import type { EventWriter } from '../server/writer.ts'
 import { worktreeList } from '../worktree/herdr.ts'
 import {
   openTuicrReview,
@@ -38,6 +41,7 @@ import {
   routeReviewFail,
   routeReviewPass,
 } from './code-review-parse.ts'
+import { defaultResolveHead } from './land.ts'
 import { toolResult } from './result.ts'
 
 export { buildCodeReviewGatePrompt } from './code-review-parse.ts'
@@ -72,7 +76,43 @@ function productionDeps(
 export function registerCodeReviewTool(
   pi: ExtensionAPI,
   landingState: { authorized: string | null; humanReviewPassed: string | null },
+  receipts: ReceiptJournal = createReceiptJournal(getAgentDir()),
+  // AIDEV-NOTE: PMR-XTQQ 5.1 — injected HEAD resolution for the durable pass
+  // receipt; same worktree-scoped shape as flow_land's adoption pin.
+  resolveHead: () => Promise<string | null> = defaultResolveHead,
+  // AIDEV-NOTE: PMR-XTQQ — mode-aware writer (server/writer.ts). Present =
+  // receipt writes route through it (journal-only while the daemon owns the
+  // projection); absent = today's exact full-writer behavior.
+  writer?: EventWriter,
 ): void {
+  let effectiveReceipts = receipts
+  if (writer !== undefined) {
+    effectiveReceipts = createReceiptJournal(
+      getAgentDir(),
+      undefined,
+      writer.record,
+    )
+  }
+  // AIDEV-NOTE: PMR-XTQQ 5.1 — durable twin of humanReviewPassed: after a
+  // HUMAN pass, best-effort record a headSha-pinned code_review receipt
+  // (target=ref). In-memory marker is still set first — resolveHead failure
+  // or a journal error degrades to today's session-scoped behavior, never
+  // blocks the pass. flow_land adoption of this receipt is PMR-XTQQ 5.2.
+  const recordPassReceipt = async (ref: string): Promise<void> => {
+    let head: string | null
+    try {
+      head = await resolveHead()
+    } catch {
+      return
+    }
+    if (head === null) return
+    await effectiveReceipts.record({
+      ref,
+      command: 'code_review',
+      target: ref,
+      headSha: head,
+    })
+  }
   pi.registerTool({
     name: 'code_review',
     label: 'code review gate',
@@ -119,6 +159,7 @@ export function registerCodeReviewTool(
         }
         const routing = routeReviewPass(params.ref, new Date().toISOString())
         landingState.humanReviewPassed = routing.marker
+        await recordPassReceipt(params.ref)
         const noted = await writeAvenNote(params.ref, routing.avenNote)
         return toolResult(
           `${routing.message}${noted ? '' : '\n(warning: the aven note write failed — record it manually)'}`,
@@ -186,6 +227,7 @@ export function registerCodeReviewTool(
       if (answer === 'pass') {
         const routing = routeReviewPass(params.ref, new Date().toISOString())
         landingState.humanReviewPassed = routing.marker
+        await recordPassReceipt(params.ref)
         const noted = await writeAvenNote(params.ref, routing.avenNote)
         return toolResult(
           `${routing.message}${noted ? '' : '\n(warning: the aven note write failed — record it manually)'}`,

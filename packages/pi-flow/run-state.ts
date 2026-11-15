@@ -40,11 +40,15 @@ export type GateDecisionStatus =
 // resume seeding) and the attempt ledger is durable since 4.2 —
 // tools/run-attempt.ts reads/journals attempt-record events (the projection
 // half landed in phase 4) through the writer seam.
-export type ReceiptCommand = 'flow_land' | 'flow_phase_complete'
+// AIDEV-NOTE: PMR-XTQQ 5.1 — 'code_review' joins the receipt commands: the
+// code_review tool records a headSha-pinned receipt after a HUMAN pass, the
+// durable twin of LandingState.humanReviewPassed (flow_land adoption is 5.2).
+export type ReceiptCommand = 'flow_land' | 'flow_phase_complete' | 'code_review'
 
 const RECEIPT_COMMANDS: readonly ReceiptCommand[] = [
   'flow_land',
   'flow_phase_complete',
+  'code_review',
 ]
 
 export interface CommandReceiptRecord {

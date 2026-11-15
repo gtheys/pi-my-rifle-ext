@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import type { ReceiptJournal } from '../run-state.ts'
 import { registerCodeReviewTool } from '../tools/code-review.ts'
 import {
   buildCodeReviewGatePrompt,
@@ -481,7 +482,13 @@ type MockExec = (
   opts?: { cwd?: string },
 ) => Promise<{ code: number; stdout: string; stderr: string }>
 
-function codeReviewExecute(exec?: MockExec): {
+function codeReviewExecute(
+  exec?: MockExec,
+  deps?: {
+    receipts?: ReceiptJournal
+    resolveHead?: () => Promise<string | null>
+  },
+): {
   execute: CodeReviewExecute
   landingState: { authorized: string | null; humanReviewPassed: string | null }
 } {
@@ -496,9 +503,40 @@ function codeReviewExecute(exec?: MockExec): {
   registerCodeReviewTool(
     mockPi as unknown as Parameters<typeof registerCodeReviewTool>[0],
     landingState,
+    deps?.receipts,
+    deps?.resolveHead,
   )
   if (!execute) throw new Error('code_review tool not registered')
   return { execute, landingState }
+}
+
+function fakeReceipts(): {
+  journal: ReceiptJournal
+  recorded: Array<{
+    ref: string
+    command: string
+    target: string
+    headSha?: string
+  }>
+} {
+  const recorded: Array<{
+    ref: string
+    command: string
+    target: string
+    headSha?: string
+  }> = []
+  const journal: ReceiptJournal = {
+    find: async () => null,
+    record: async (query) => {
+      recorded.push({
+        ref: query.ref,
+        command: query.command,
+        target: query.target,
+        headSha: query.headSha,
+      })
+    },
+  }
+  return { journal, recorded }
 }
 
 function ctxWith(
@@ -643,6 +681,84 @@ test('execute: pass via blocking ask records marker and note', async () => {
     assert.notEqual(result.isError, true)
     assert.equal(landingState.humanReviewPassed, 'PMR-ABC1')
     assert.match(result.content.map((c) => c.text).join('\n'), /human PASS/)
+  })
+})
+
+// AIDEV-NOTE: PMR-XTQQ 5.1 — the durable humanReviewPassed twin: a pass
+// records a headSha-pinned code_review receipt; resolveHead failure degrades
+// to the in-memory marker only.
+test('execute: pass via blocking ask records code_review receipt with headSha', async () => {
+  await withFakeAvenPath(async () => {
+    const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
+    const { journal, recorded } = fakeReceipts()
+    const { execute, landingState } = codeReviewExecute(exec, {
+      receipts: journal,
+      resolveHead: async () => 'head0123',
+    })
+    const result = await execute(
+      't3b',
+      { ref: 'PMR-ABC1' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([{ name: 'ask_user_question' }], async () =>
+        askAnswer('User selected: pass (Recommended)'),
+      ),
+    )
+    assert.notEqual(result.isError, true)
+    assert.equal(landingState.humanReviewPassed, 'PMR-ABC1')
+    assert.deepEqual(recorded, [
+      {
+        ref: 'PMR-ABC1',
+        command: 'code_review',
+        target: 'PMR-ABC1',
+        headSha: 'head0123',
+      },
+    ])
+  })
+})
+
+test('execute: pass still records in-memory marker when resolveHead returns null', async () => {
+  await withFakeAvenPath(async () => {
+    const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
+    const { journal, recorded } = fakeReceipts()
+    const { execute, landingState } = codeReviewExecute(exec, {
+      receipts: journal,
+      resolveHead: async () => null,
+    })
+    const result = await execute(
+      't3c',
+      { ref: 'PMR-ABC1' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([{ name: 'ask_user_question' }], async () =>
+        askAnswer('User selected: pass (Recommended)'),
+      ),
+    )
+    assert.notEqual(result.isError, true)
+    assert.equal(landingState.humanReviewPassed, 'PMR-ABC1')
+    assert.deepEqual(recorded, [])
+  })
+})
+
+test('execute: pass still records in-memory marker when resolveHead throws', async () => {
+  await withFakeAvenPath(async () => {
+    const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
+    const { execute, landingState } = codeReviewExecute(exec, {
+      resolveHead: async () => {
+        throw new Error('git exploded')
+      },
+    })
+    const result = await execute(
+      't3d',
+      { ref: 'PMR-ABC1' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([{ name: 'ask_user_question' }], async () =>
+        askAnswer('User selected: pass (Recommended)'),
+      ),
+    )
+    assert.notEqual(result.isError, true)
+    assert.equal(landingState.humanReviewPassed, 'PMR-ABC1')
   })
 })
 
