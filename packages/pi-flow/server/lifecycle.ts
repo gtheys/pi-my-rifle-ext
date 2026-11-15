@@ -27,6 +27,16 @@ const PID_FILE_NAME = 'server.pid'
 const LOG_FILE_NAME = 'server.log'
 const POLL_INTERVAL_MS = 50
 const SPAWN_READY_BUDGET_MS = 2_000
+// AIDEV-NOTE: spawn-in-progress window — a pidfile with a DEAD pid whose
+// mtime is younger than this is treated as a spawn racing/just-crashed, not
+// as an immediate respawn trigger (prevents trusting a recycled pid and
+// prevents two rapid /flow starts from double-spawning). The pidfile is
+// written by the daemon child right after startup, so "fresh but dead" means
+// either the child died within milliseconds or another ensureDaemon's spawn
+// is in flight; either way we wait briefly, re-probe, and only report a
+// typed status — never spawn a duplicate ourselves in that window.
+const SPAWN_IN_PROGRESS_MAX_AGE_MS = 5_000
+const SPAWN_IN_PROGRESS_WAIT_MS = 1_500
 
 export function pidFilePath(agentDir: string): string {
   return path.join(agentDir, 'pi-flow', PID_FILE_NAME)
@@ -69,6 +79,12 @@ export interface LifecycleIo {
   openLogFd: (p: string) => number
   closeFd: (fd: number) => void
   sleep: (ms: number) => Promise<void>
+  /** Pidfile mtime in ms, or null when missing/unreadable (injectable clock
+   * pairs with `now`). */
+  statMtimeMs: (p: string) => Promise<number | null>
+  /** Wall clock in ms (injectable so the spawn-in-progress wait costs
+   * nothing in tests even with instant sleeps). */
+  now: () => number
 }
 
 function realIsProcessAlive(pid: number): boolean {
@@ -108,6 +124,15 @@ const realIo: LifecycleIo = {
     closeSync(fd)
   },
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  statMtimeMs: async (p) => {
+    try {
+      const st = await fsp.stat(p)
+      return st.mtimeMs
+    } catch {
+      return null
+    }
+  },
+  now: () => Date.now(),
 }
 
 export type ProbeResult =
@@ -174,6 +199,42 @@ export type EnsureDaemonResult =
   | { status: 'spawned'; pid: number }
   | { status: 'spawn-timeout' }
   | { status: 'spawn-failed'; reason: string }
+  | { status: 'spawn-in-progress' }
+
+/**
+ * Spawn-in-progress guard: when the pidfile holds a DEAD pid but is FRESH
+ * (mtime within SPAWN_IN_PROGRESS_MAX_AGE_MS), another ensureDaemon's spawn
+ * may be in flight (or a just-started daemon died instantly). Do not spawn a
+ * duplicate: wait up to SPAWN_IN_PROGRESS_WAIT_MS (injectable clock via
+ * io.now/io.sleep), re-probing as we go. Daemon came up (or the pidfile was
+ * replaced by a live one) → 'already-running'. Still dead after the wait →
+ * 'spawn-in-progress' so the caller's journal write degrades to the full
+ * writer path without a double-spawn. Old/missing/unreadable pidfile → null
+ * (caller falls through to the normal respawn decision). Never throws.
+ */
+async function spawnInProgressStatus(
+  agentDir: string,
+  io: LifecycleIo,
+): Promise<EnsureDaemonResult | null> {
+  let mtimeMs: number | null = null
+  try {
+    mtimeMs = await io.statMtimeMs(pidFilePath(agentDir))
+  } catch {
+    mtimeMs = null
+  }
+  if (mtimeMs === null) return null
+  const age = io.now() - mtimeMs
+  // Negative age = clock skew / just-written: treat as fresh.
+  if (age > SPAWN_IN_PROGRESS_MAX_AGE_MS) return null
+  const deadline = io.now() + SPAWN_IN_PROGRESS_WAIT_MS
+  let last: ProbeResult = { alive: false, reason: 'dead-process' }
+  while (io.now() < deadline) {
+    await io.sleep(POLL_INTERVAL_MS)
+    last = await probeDaemon(agentDir, io)
+    if (last.alive) return { status: 'already-running', pid: last.pid }
+  }
+  return { status: 'spawn-in-progress' }
+}
 
 /**
  * Ensure a live, version-matching daemon. Alive+matching → no-op; stale,
@@ -188,6 +249,13 @@ export async function ensureDaemon(
   try {
     const probe = await probeDaemon(agentDir, io)
     if (probe.alive) return { status: 'already-running', pid: probe.pid }
+
+    // Fresh dead pidfile → spawn-in-progress window (see the anchor note on
+    // the constants): never spawn a duplicate, just wait + re-probe.
+    if (probe.reason === 'dead-process') {
+      const inProgress = await spawnInProgressStatus(agentDir, io)
+      if (inProgress !== null) return inProgress
+    }
 
     // Best-effort SIGTERM of a stale/mismatched daemon; the dead-process
     // case carries a pid too but killing it is pointless — kill() swallows

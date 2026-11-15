@@ -8,6 +8,13 @@
 // it must NOT import @earendil-works/pi-coding-agent; the agent dir arrives
 // via PI_FLOW_AGENT_DIR from the spawner.
 //
+// KEEPALIVE RULE (PMR-XTQQ review fix): the 1s poll interval is the daemon's
+// LIVENESS BACKSTOP and must NEVER be unref'd — fs.watch(runsDir) can fail at
+// startup (ENOENT: runs/ is only created by the first journal write, and
+// ensureDaemon runs before that), and when it does the poll alone must keep
+// the event loop alive. Watcher failures degrade silently to the poll
+// (close the watcher, never retry fs.watch in a hot loop).
+//
 // BUMP TOGETHER: SERVER_PROTOCOL_VERSION must be kept in sync with
 // server/lifecycle.ts (written in subtask 1.2) — a long-lived daemon can
 // outlive a package upgrade, so the pidfile pins the version and a mismatch
@@ -333,13 +340,18 @@ function main(): void {
   // PERMANENT fallback and the correctness backstop (dir-watch does not
   // reliably report appends into existing files); fs.watch only buys latency
   // for new journals, and its failure degrades silently to poll.
+  // AIDEV-NOTE: KEEPALIVE — pollTimer is intentionally NOT unref'd. It is the
+  // only guaranteed event-loop handle when fs.watch(runsDir) fails (runs/ may
+  // not exist at startup); unref'ing it let the daemon exit milliseconds after
+  // writing its pidfile (PMR-XTQQ review blocker). If you add another handle,
+  // this interval must remain ref'd or the daemon must gain an explicit
+  // keepalive handle.
   const schedule = createDebouncedScheduler(() => {
     void scanRuns(agentDir, queue)
   }, DEBOUNCE_MS)
   const pollTimer = setInterval(() => {
     void scanRuns(agentDir, queue)
   }, POLL_INTERVAL_MS)
-  pollTimer.unref()
   try {
     const watcher = watch(runsDir(agentDir), () => {
       schedule()
@@ -355,6 +367,12 @@ function main(): void {
   const shutdown = (): void => {
     clearInterval(pollTimer)
     log(agentDir, 'daemon stopping')
+    // AIDEV-NOTE: best-effort pidfile unlink on clean shutdown (SIGTERM/SIGINT)
+    // so a drained daemon doesn't leave a stale server.pid behind. A SIGKILL
+    // still leaves one — acceptable: probeDaemon's pid-liveness check is the
+    // source of truth, and lifecycle.ts treats a fresh dead-pid pidfile as
+    // spawn-in-progress rather than trusting it.
+    fsp.unlink(pidPath).catch(() => undefined)
     void queue
       .drain()
       .catch(() => undefined)

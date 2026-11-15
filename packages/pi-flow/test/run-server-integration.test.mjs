@@ -191,3 +191,131 @@ async function waitFor(predicate, what) {
   }
   throw new Error(`timed out waiting for ${what}`)
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// AIDEV-NOTE: PMR-XTQQ review-blocker regression — the daemon MUST stay alive
+// when runs/ does not exist at startup (the default first-/flow path): the
+// ref'd 1s poll is the keepalive backstop when fs.watch fails with ENOENT.
+// The old code unref'd the poll timer and exited within milliseconds after
+// writing its pidfile. Also proves the degraded-to-poll path picks up a
+// journal created AFTER startup (watcher can't be attached to it).
+test('real daemon: no runs/ dir at startup → stays alive on poll, picks up later-created journal', async () => {
+  const agentDir = mkdtempSync(join(tmpdir(), 'pi-flow-daemon-it-'))
+  // Deliberately NO pi-flow/ dir at all.
+  const piFlowDir = join(agentDir, 'pi-flow')
+  const runsDir = join(piFlowDir, 'runs')
+  const pidFile = join(piFlowDir, 'server.pid')
+
+  const ref = 'PMR-LATE'
+  const journalFile = join(runsDir, `${ref}.journal.jsonl`)
+  const projectionFile = join(runsDir, `${ref}.json`)
+
+  const child = spawn(process.execPath, [DAEMON_SCRIPT], {
+    env: { ...process.env, PI_FLOW_AGENT_DIR: agentDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk
+  })
+
+  try {
+    // Pidfile appears even though runs/ never existed.
+    await waitFor(() => existsSync(pidFile), 'pidfile')
+    const pidInfo = JSON.parse(readFileSync(pidFile, 'utf8'))
+    assert.equal(pidInfo.pid, child.pid)
+
+    // THE BLOCKER: daemon must STILL be alive after 1.5s with no runs/ dir
+    // (old code exited code 0 within milliseconds).
+    await sleep(1_500)
+    assert.equal(child.exitCode, null, 'daemon exited while runs/ missing')
+    assert.equal(child.signalCode, null, 'daemon was signaled prematurely')
+
+    // Create the journal AFTER startup (fs.watch never attached to runs/) —
+    // the poll scan must pick it up and produce the projection ≤5s.
+    mkdirSync(runsDir, { recursive: true })
+    writeFileSync(
+      journalFile,
+      `${JSON.stringify({
+        kind: 'run-start',
+        at: '2026-11-15T01:00:00Z',
+        ref,
+        mode: 'personal',
+      })}\n`,
+    )
+    await waitFor(
+      () => existsSync(projectionFile),
+      'projection for post-startup journal (poll backstop)',
+    )
+
+    const markerPhase = `late${Math.random().toString(36).slice(2)}`
+    appendFileSync(
+      journalFile,
+      `${JSON.stringify({
+        kind: 'phase-start',
+        at: new Date().toISOString(),
+        ref,
+        phase: markerPhase,
+      })}\n`,
+    )
+    await waitFor(() => {
+      if (!existsSync(projectionFile)) return false
+      const state = JSON.parse(readFileSync(projectionFile, 'utf8'))
+      return state.currentPhase === markerPhase
+    }, 'projection reflects appended phase-start')
+
+    assert.equal(child.exitCode, null, 'daemon exited after journal pickup')
+    assert.equal(child.signalCode, null, 'daemon was signaled after pickup')
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL')
+    }
+    rmSync(agentDir, { recursive: true, force: true })
+  }
+  if (stderr.includes('PI_FLOW_AGENT_DIR must be set')) {
+    throw new Error(`daemon rejected env: ${stderr}`)
+  }
+})
+
+// AIDEV-NOTE: (b) pidfile cleanup — a clean SIGTERM shutdown unlinks
+// server.pid best-effort; SIGKILL (used by the other tests) intentionally
+// leaves it, liveness probing is the source of truth.
+test('real daemon: SIGTERM shutdown removes pidfile and exits cleanly', async () => {
+  const agentDir = mkdtempSync(join(tmpdir(), 'pi-flow-daemon-it-'))
+  const piFlowDir = join(agentDir, 'pi-flow')
+  const runsDir = join(piFlowDir, 'runs')
+  mkdirSync(runsDir, { recursive: true })
+  const pidFile = join(piFlowDir, 'server.pid')
+
+  const ref = 'PMR-TERM'
+  writeFileSync(
+    join(runsDir, `${ref}.journal.jsonl`),
+    `${JSON.stringify({
+      kind: 'run-start',
+      at: '2026-11-15T01:00:00Z',
+      ref,
+      mode: 'personal',
+    })}\n`,
+  )
+
+  const child = spawn(process.execPath, [DAEMON_SCRIPT], {
+    env: { ...process.env, PI_FLOW_AGENT_DIR: agentDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  try {
+    await waitFor(() => existsSync(pidFile), 'pidfile')
+    child.kill('SIGTERM')
+    await waitFor(() => !existsSync(pidFile), 'pidfile removal on SIGTERM')
+    await waitFor(() => child.exitCode !== null, 'daemon exit')
+    assert.equal(child.exitCode, 0)
+    assert.equal(child.signalCode, null, 'daemon should exit cleanly')
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL')
+    }
+    rmSync(agentDir, { recursive: true, force: true })
+  }
+})

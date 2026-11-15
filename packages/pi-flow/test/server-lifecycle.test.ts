@@ -39,20 +39,28 @@ function makeIo(pidfile: string | null): LifecycleIo & {
     spawnThrows: null as string | null,
     logFdsOpened: [] as string[],
   }
-  return {
+  const io = {
     pidfile: state.pidfile,
     killed: state.killed,
     spawns: state.spawns,
     spawnThrows: state.spawnThrows,
     logFdsOpened: state.logFdsOpened,
     readFile: async (_p: string) => {
-      return state.pidfile
+      return io.pidfile
     },
     isProcessAlive: (_pid: number) => true,
     kill: (pid: number) => {
       state.killed.push(pid)
     },
-    spawn: (cmd, args, opts) => {
+    spawn: (
+      cmd: string,
+      args: string[],
+      opts: {
+        detached: boolean
+        stdio: ['ignore', number, number]
+        env: NodeJS.ProcessEnv
+      },
+    ) => {
       if (state.spawnThrows !== null) throw new Error(state.spawnThrows)
       state.spawns.push({
         cmd,
@@ -62,7 +70,7 @@ function makeIo(pidfile: string | null): LifecycleIo & {
       })
       // Fake daemon: immediately write the fresh pidfile like the real one.
       const pid = 4242
-      state.pidfile = `${JSON.stringify({ pid, version: '1', startedAt: 'now', agentDir: AGENT_DIR })}\n`
+      io.pidfile = `${JSON.stringify({ pid, version: '1', startedAt: 'now', agentDir: AGENT_DIR })}\n`
       return { pid, unref: () => undefined }
     },
     mkdir: async () => undefined,
@@ -72,6 +80,22 @@ function makeIo(pidfile: string | null): LifecycleIo & {
     },
     closeFd: () => undefined,
     sleep: async () => undefined,
+    // Default: unknown mtime → old pidfile → normal respawn decision
+    // (keeps the pre-spawn-in-progress behavior for existing tests).
+    statMtimeMs: async () => null,
+    now: () => Date.now(),
+  }
+  return io as LifecycleIo & {
+    pidfile: string | null
+    killed: number[]
+    spawns: Array<{
+      cmd: string
+      args: string[]
+      detached: boolean
+      env: Record<string, string | undefined>
+    }>
+    spawnThrows: string | null
+    logFdsOpened: string[]
   }
 }
 
@@ -197,6 +221,76 @@ test('ensure: stale pidfile cleaned before spawn check — fresh pidfile from fa
   // not confuse it with the stale one.
   const io = makeIo('{"pid":999,"version":"1"}')
   io.isProcessAlive = (pid: number) => pid !== 999
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+})
+
+// --- spawn-in-progress window (fresh dead-pid pidfile) ---
+
+/** Fake clock: now() is a counter advanced by sleep(ms) so instant sleeps
+ * still terminate the bounded wait. */
+function makeFakeClock(io: LifecycleIo, start = 1_000_000): void {
+  let clock = start
+  io.now = () => clock
+  io.sleep = async (ms: number) => {
+    clock += ms
+  }
+}
+
+const DEAD_PIDFILE = '{"pid":999,"version":"1"}'
+
+function deadUntil(pid: number): (pid: number) => boolean {
+  return (candidate: number) => candidate !== pid
+}
+
+// AIDEV-NOTE: regression guard for the PMR-XTQQ review fix — a FRESH dead-pid
+// pidfile must NOT trigger an immediate duplicate spawn.
+test('ensure: recent dead-pid pidfile → spawn-in-progress, no spawn call', async () => {
+  const io = makeIo(DEAD_PIDFILE)
+  io.isProcessAlive = deadUntil(999)
+  io.statMtimeMs = async () => 500_000
+  makeFakeClock(io, 500_100) // age = 100ms → fresh
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'spawn-in-progress' })
+  assert.equal(io.spawns.length, 0)
+})
+
+test('ensure: old dead-pid pidfile → normal respawn (spawn called)', async () => {
+  const io = makeIo(DEAD_PIDFILE)
+  io.isProcessAlive = deadUntil(999)
+  io.statMtimeMs = async () => 500_000
+  makeFakeClock(io, 560_000) // age = 60s → stale, no window
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+  assert.equal(io.spawns.length, 1)
+})
+
+test('ensure: fresh dead-pid pidfile becomes live mid-wait → already-running, no spawn', async () => {
+  const io = makeIo(DEAD_PIDFILE)
+  io.isProcessAlive = (pid: number) => pid === 777 || pid !== 999
+  io.statMtimeMs = async () => 500_000
+  let clock = 500_100
+  io.now = () => clock
+  let ticks = 0
+  io.sleep = async (ms: number) => {
+    ticks += 1
+    clock += ms
+    if (ticks === 1) {
+      // The racing spawn's daemon wrote a live pidfile.
+      io.pidfile = `${JSON.stringify({ pid: 777, version: '1', startedAt: 'now', agentDir: AGENT_DIR })}\n`
+    }
+  }
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'already-running', pid: 777 })
+  assert.equal(io.spawns.length, 0)
+})
+
+test('ensure: statMtimeMs rejection degrades to respawn decision (never throws)', async () => {
+  const io = makeIo(DEAD_PIDFILE)
+  io.isProcessAlive = deadUntil(999)
+  io.statMtimeMs = async () => {
+    throw new Error('EACCES')
+  }
   const res = await ensureDaemon(AGENT_DIR, io)
   assert.deepEqual(res, { status: 'spawned', pid: 4242 })
 })
