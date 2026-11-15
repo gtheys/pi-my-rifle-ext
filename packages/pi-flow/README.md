@@ -112,6 +112,34 @@ checkout) instead of machine-wide.
 }
 ```
 
+### Durable run server
+
+Since PMR-XTQQ, a small detached daemon (plain node, own event loop) makes
+`/flow` runs survive a session exit. The extension ensures it is alive at
+`/flow` start and on session start (pidfile + liveness + protocol-version
+probe at `<agentDir>/pi-flow/server.pid`; mismatch → kill + respawn).
+
+What it does: the daemon is the ONLY projection writer while alive — journal
+writers route journal-only through `server/writer.ts` (per-write liveness
+probe) and the daemon reprojects. Parked runs (awaiting an outcome at a phase
+or human gate) are recorded in `pending/<ref>.json`; when a session with a
+restored flow binding for that ref reopens, the record is consumed exactly
+once (atomic rename) and `/flow <ref>` is re-presented automatically.
+Loop state (blocker retries, validate cutoff), the attempt ledger, and the
+human code-review pass receipt are all journaled and re-seeded on resume.
+
+On-disk layout under `<agentDir>/pi-flow/`: `server.pid`, `server.log`,
+`pending/`, `runs/`.
+
+- **Disable**: set `"runServer": { "enabled": false }` — the daemon is never
+  spawned and writers permanently use the in-session full path.
+- **Degrade**: daemon absent or dead = today's pre-PMR-XTQQ behavior. The
+  journal stays the authority; the projection and pending records are
+  rebuildable caches. Known limits: the projection lags ≤~1s while the daemon
+  owns it (only `/flow-view` reads it — receipts and gates read the journal
+  and aven directly), and a brand-new session in the same worktree without a
+  restored binding is not re-presented (binding-scoped only).
+
 ### Telemetry (OTLP traces)
 
 Optional and **disabled by default**. When enabled, every Pi session (the main session and each spawned worker, joined via the flow env stamps) exports spans to any OTLP/HTTP receiver (metadata only unless you opt in to content capture below) — Tempo, Alloy, the OTel collector, whatever speaks `/v1/traces`.

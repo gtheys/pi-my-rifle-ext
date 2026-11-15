@@ -288,7 +288,11 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   its completion label landed; it no longer halts mid-phase while a subagent
   is in flight (`90f41b6`, via pi-interactive-subagents durable assignments).
   A flow pauses gracefully while a spec awaits approval (`be43caf`) instead of
-  forcing a halt.
+  forcing a halt. Runs are durable since PMR-XTQQ: loop state, the retry
+  budget, and the human code-review pass are journaled, and a detached
+  run-server daemon parks mid-loop runs in `pending/<ref>.json` and has them
+  re-presented (`/flow <ref>`) when the origin session reopens with a
+  restored flow binding.
 - **Aven resolution** (`flow/aven-resolve.ts`): workspace comes from the
   **session cwd** (`c0145ea`, `8155cd9` — config override and `avenWorkspace`
   are both resolved per-session, not process-global), falling back to
@@ -308,14 +312,19 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   rendering that state (dedupe by pane label `flow · <ref>` via
   `herdr api snapshot` — survives Pi reloads); `/herdr-sync` links the plugin
   explicitly and idempotently (preflight enforces manifest/package version
-  equality). Aven labels remain the gate source of truth; the journal is an
-  evidence record only. Full design:
+  equality). Aven labels remain the gate source of truth; the journal is the
+  durable record — since PMR-XTQQ it also holds loop state and the attempt
+  ledger the `/flow` loop re-seeds from on resume. Full design:
   [`docs/herdr-flow-integration.md`](../../docs/herdr-flow-integration.md).
-- **Invariants:** no polling/daemon/state-store on the Pi side; public herdr
-  verbs only; 5s exec timeouts + bounded JSON parsing; panes resolve nothing
-  from PATH (session passes `PI_FLOW_REF`/`PI_FLOW_RUN_FILE` via `--env`).
+- **Invariants:** no polling/daemon/state-store in the herdr viewer path (the
+  pi-flow run-server daemon is a separate, journal-side component); public
+  herdr verbs only; 5s exec timeouts + bounded JSON parsing; panes resolve
+  nothing from PATH (session passes `PI_FLOW_REF`/`PI_FLOW_RUN_FILE` via
+  `--env`).
 - **Config:** `~/.pi/agent/pi-flow/config.json` — `workRoots` (work-vs-personal
-  mode by path prefix), `avenWorkspace` (pin a workspace, skip inference).
+  mode by path prefix), `avenWorkspace` (pin a workspace, skip inference),
+  `runServer.enabled` (kill switch for the durable run server daemon, default
+  `true`).
 
 ### plan-tools/ (absorbed from pi-planning)
 
