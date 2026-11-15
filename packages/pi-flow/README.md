@@ -96,6 +96,7 @@ checkout) instead of machine-wide.
 | `telemetry.captureContent` | `"off" \| "text" \| "tools" \| "all"` | `"off"` | Content layers added to spans (cumulative): `off` metadata only, `text` assistant text, `tools` + tool calls and tool input/output, `all` + model reasoning. See [Capturing content](#capturing-content-in-spans) |
 | `telemetry.jiraBaseUrl` | `string` | unset | Base URL for Jira issue links, e.g. `https://example.atlassian.net/browse/`. Work-mode spans then carry `flow.url` = base + Jira key, so dashboards can link tickets to Jira. Unset = no links |
 | `telemetry.maxContentChars` | `integer` (100–100000) | `2000` | Max characters per captured content attribute; longer values end with `…[truncated N chars]`. Tempo drops anything past its `max_attribute_bytes` (default 2048) silently, so raise both together |
+| `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
 
 ```json
 {
@@ -104,7 +105,10 @@ checkout) instead of machine-wide.
     "/home/geert/Code/salaryhero"
   ],
   "avenWorkspace": "personal",
-  "landTestCommand": ["bun", "run", "test"]
+  "landTestCommand": ["bun", "run", "test"],
+  "runServer": {
+    "enabled": true
+  }
 }
 ```
 

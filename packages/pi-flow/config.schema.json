@@ -65,6 +65,17 @@
       },
       "required": ["enabled", "otlpEndpoint"],
       "additionalProperties": false
+    },
+    "runServer": {
+      "type": "object",
+      "description": "Durable run server (daemon) settings",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Kill switch for the durable run server (PMR-XTQQ). false = never spawn the daemon and journal writers permanently use today’s full in-session path. Default true"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "required": ["workRoots"],

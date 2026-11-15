@@ -105,6 +105,19 @@ const PiFlowConfigSchema = Type.Object({
       { description: 'Optional OTLP telemetry export (PMR-R8AG)' },
     ),
   ),
+  runServer: Type.Optional(
+    Type.Object(
+      {
+        enabled: Type.Optional(
+          Type.Boolean({
+            description:
+              'Kill switch for the durable run server (PMR-XTQQ). false = never spawn the daemon and journal writers permanently use today\u2019s full in-session path. Default true',
+          }),
+        ),
+      },
+      { description: 'Durable run server (daemon) settings' },
+    ),
+  ),
 })
 
 export type PiFlowConfig = Static<typeof PiFlowConfigSchema>

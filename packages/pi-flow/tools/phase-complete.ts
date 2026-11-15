@@ -13,6 +13,7 @@ import { readAvenLabels, writeAvenLabel } from '../aven/client.ts'
 import { checkPhaseCompletion } from '../flow/label-gate.ts'
 import { PHASE_LABEL, type Phase } from '../flow/orchestrate.ts'
 import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
+import type { EventWriter } from '../server/writer.ts'
 import { toolResult } from './result.ts'
 
 export interface PhaseCompleteDetails {
@@ -46,7 +47,19 @@ async function recordPhaseReceipt(
 export function registerPhaseCompleteTool(
   pi: ExtensionAPI,
   receipts: ReceiptJournal = createReceiptJournal(getAgentDir()),
+  // AIDEV-NOTE: PMR-XTQQ — mode-aware writer (server/writer.ts). Present =
+  // receipt writes route through it (journal-only while the daemon owns the
+  // projection); absent = today's exact full-writer behavior.
+  writer?: EventWriter,
 ): void {
+  let effectiveReceipts = receipts
+  if (writer !== undefined) {
+    effectiveReceipts = createReceiptJournal(
+      getAgentDir(),
+      undefined,
+      writer.record,
+    )
+  }
   pi.registerTool({
     name: 'flow_phase_complete',
     label: 'flow phase complete',
@@ -100,7 +113,7 @@ export function registerPhaseCompleteTool(
       }
       const label = PHASE_LABEL[params.phase]
       if (labels.includes(label)) {
-        await recordPhaseReceipt(receipts, params.ref, params.phase)
+        await recordPhaseReceipt(effectiveReceipts, params.ref, params.phase)
         return toolResult(
           `flow_phase_complete: "${label}" already recorded on ${params.ref} — phase ${params.phase} was already complete`,
           { ok: true, refused: false, already: true, reason: '', label },
@@ -116,7 +129,7 @@ export function registerPhaseCompleteTool(
       }
       // AIDEV-NOTE: PMR-4S6V — journal the receipt only after the label write succeeded;
       // best-effort, never fails the ok result.
-      await recordPhaseReceipt(receipts, params.ref, params.phase)
+      await recordPhaseReceipt(effectiveReceipts, params.ref, params.phase)
       return toolResult(
         `flow_phase_complete: "${label}" landed on ${params.ref} — phase ${params.phase} recorded, the label is verified by this result`,
         { ok: true, refused: false, already: false, reason: '', label },

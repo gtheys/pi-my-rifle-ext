@@ -21,6 +21,7 @@ import { loadConfig } from '../config.ts'
 import { landDecision } from '../flow/land-gate.ts'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
 import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
+import type { EventWriter } from '../server/writer.ts'
 import { toolResult } from './result.ts'
 
 const execFileAsync = promisify(execFile)
@@ -194,7 +195,19 @@ export function registerLandTool(
   // unchanged since the committed transition (PMR-05HX: never land work
   // the gate has not seen a green suite over). Null = unresolvable -> no adoption.
   resolveHead: () => Promise<string | null> = defaultResolveHead,
+  // AIDEV-NOTE: PMR-XTQQ — mode-aware writer (server/writer.ts). Present =
+  // receipt writes route through it (journal-only while the daemon owns the
+  // projection); absent = today's exact full-writer behavior.
+  writer?: EventWriter,
 ): void {
+  let effectiveReceipts = receipts
+  if (writer !== undefined) {
+    effectiveReceipts = createReceiptJournal(
+      getAgentDir(),
+      undefined,
+      writer.record,
+    )
+  }
   pi.registerTool({
     name: 'flow_land',
     label: 'flow land',
@@ -269,7 +282,7 @@ export function registerLandTool(
       // only ever skips the suite, never the ref/human/labels gates above.
       const head = await resolveHead()
       if (head !== null) {
-        const stored = await receipts.find({
+        const stored = await effectiveReceipts.find({
           ref: params.ref,
           command: 'flow_land',
           target: params.route,
@@ -305,7 +318,7 @@ export function registerLandTool(
       // AIDEV-NOTE: PMR-4S6V — best-effort receipt record after a green
       // suite (both routes); a journal failure never blocks authorization.
       try {
-        await receipts.record({
+        await effectiveReceipts.record({
           ref: params.ref,
           command: 'flow_land',
           target: params.route,

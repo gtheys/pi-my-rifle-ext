@@ -65,7 +65,11 @@ import {
   getActiveFlowRef,
   getFlowWorktree,
 } from '../flow/worktree-context.ts'
-import { recordRunEvent } from '../run-state.ts'
+import {
+  createDaemonAliveProbe,
+  createEventWriter,
+  type EventWriter,
+} from '../server/writer.ts'
 import { type Exec, getMergeBase } from '../shared/diff-base.ts'
 import { readFlowBase } from '../shared/flow-base.ts'
 import {
@@ -1193,7 +1197,15 @@ async function buildSemReviewInstructions(
   }
 }
 
-export default function reviewExtension(pi: ExtensionAPI) {
+// AIDEV-NOTE: PMR-XTQQ — default writer probes per write; index.ts passes
+// the shared runServer-configured writer so the kill switch applies here too.
+export default function reviewExtension(
+  pi: ExtensionAPI,
+  writer: EventWriter = createEventWriter(
+    getAgentDir(),
+    createDaemonAliveProbe(getAgentDir()),
+  ),
+) {
   pi.on('session_start', (_event, ctx) => {
     applyReviewState(ctx)
   })
@@ -1905,7 +1917,7 @@ ${result.summary}`
     const activeRef = getActiveFlowRef()
     if (pin !== null && activeRef !== null) {
       try {
-        await recordRunEvent(getAgentDir(), {
+        await writer.record({
           kind: 'gate-target',
           at: new Date().toISOString(),
           ref: activeRef,
@@ -1922,7 +1934,7 @@ ${result.summary}`
           pin.headSha,
         )
         if (attribution.ok) {
-          await recordRunEvent(getAgentDir(), {
+          await writer.record({
             kind: 'subtask-ranges',
             at: new Date().toISOString(),
             ref: activeRef,

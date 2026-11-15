@@ -85,12 +85,13 @@ import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts
 import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import prQualityExtension from './pr-quality/index.ts'
 import reviewExtension from './review/review.ts'
+import { readRunEvents, runStatePath } from './run-state.ts'
+import { ensureDaemon } from './server/lifecycle.ts'
 import {
-  readRunEvents,
-  recordRunEvent,
-  recordRunEventJournalOnly,
-  runStatePath,
-} from './run-state.ts'
+  createDaemonAliveProbe,
+  createEventWriter,
+  type EventWriter,
+} from './server/writer.ts'
 import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
@@ -122,29 +123,34 @@ export {
   saveViewerPlacement,
 } from './config.ts'
 
-// AIDEV-NOTE: Best-effort journal write — run-state recording must never
-// break a flow phase; aven labels remain the gate source of truth.
-async function journal(
-  event: Parameters<typeof recordRunEvent>[1],
-): Promise<void> {
-  try {
-    await recordRunEvent(getAgentDir(), event)
-  } catch {
-    // best-effort by design
-  }
-}
-
-async function journalOnly(
-  event: Parameters<typeof recordRunEventJournalOnly>[1],
-): Promise<void> {
-  try {
-    await recordRunEventJournalOnly(getAgentDir(), event)
-  } catch {
-    // best-effort by design
-  }
-}
+// AIDEV-NOTE: PMR-XTQQ — best-effort journal write seam. Writers route
+// through the mode-aware writer: journal-only while the durable run server
+// owns the projection (per-write liveness probe), today's full writer path
+// when absent. Journal failures must never break a flow phase; aven labels
+// remain the gate source of truth.
 
 export default function (pi: ExtensionAPI) {
+  // AIDEV-NOTE: PMR-XTQQ — runServer.enabled kill switch; flipped from the
+  // loaded config at every /flow start (default true). false = the probe
+  // always reports absent (full-writer path permanently) and ensureDaemon
+  // never spawns.
+  let runServerEnabled = true
+  const writer: EventWriter = createEventWriter(
+    getAgentDir(),
+    createDaemonAliveProbe(getAgentDir(), () => runServerEnabled),
+  )
+
+  async function journal(
+    event: Parameters<typeof writer.record>[0],
+  ): Promise<void> {
+    await writer.record(event)
+  }
+
+  async function journalOnly(
+    event: Parameters<typeof writer.recordJournalOnly>[0],
+  ): Promise<void> {
+    await writer.recordJournalOnly(event)
+  }
   // AIDEV-NOTE: ui.notify holder — command and event handlers each get their
   // own ctx; the loop needs one stable notify. session_start fires before any
   // command or agent_settled event, so the holder is always populated by then.
@@ -212,8 +218,9 @@ export default function (pi: ExtensionAPI) {
     // AIDEV-NOTE: nested spawns — in a flow WORKER (scouts spawned by a plan
     // agent, ...) the loop is not running, but the worker inherited
     // PI_FLOW_REF, so its spawns still belong to that flow. Those notes go to
-    // the journal only (see recordRunEventJournalOnly); the main process keeps
-    // the full journal + projection path.
+    // the journal only (recordJournalOnly); the main process routes through
+    // the mode-aware writer (journal-only while the daemon owns the
+    // projection, full writer otherwise).
     const target = spawnJournalTarget(loop.activeRef(), process.env)
     if (target === null) return
     const { ref, nested } = target
@@ -327,8 +334,16 @@ export default function (pi: ExtensionAPI) {
     return undefined
   })
 
-  registerPhaseCompleteTool(pi)
-  registerLandTool(pi, landingState, () => loop.activeRef(), defaultSuiteRunner)
+  registerPhaseCompleteTool(pi, undefined, writer)
+  registerLandTool(
+    pi,
+    landingState,
+    () => loop.activeRef(),
+    defaultSuiteRunner,
+    undefined,
+    undefined,
+    writer,
+  )
   // AIDEV-NOTE: PMR-T8ZG — the human code-review gate (PMR-3ZY1): the
   // code_review tool shares landingState with flow_land so a pass recorded
   // here is visible to the later flow_land check (PMR-C6AK, not wired yet).
@@ -336,7 +351,7 @@ export default function (pi: ExtensionAPI) {
   // AIDEV-NOTE: PMR-R9EN — the deviation gate is a registered tool so the
   // validate prompt can instruct the agent to CALL something (D3/D4) instead
   // of naming TS functions it cannot invoke.
-  registerDeviationReviewTool(pi)
+  registerDeviationReviewTool(pi, writer)
   registerRunAttemptTool(pi)
   registerSpecApproveTool(pi)
   // AIDEV-NOTE: PMR-XCA9 — plan-tools absorbed from the retired pi-planning
@@ -351,7 +366,7 @@ export default function (pi: ExtensionAPI) {
   // retired pi-review package. Each is a self-registering extension
   // entrypoint (own commands + agent tool); pi-review is deleted, so these
   // register exactly once, here.
-  reviewExtension(pi)
+  reviewExtension(pi, writer)
   sonarqubeExtension(pi)
   prQualityExtension(pi)
 
@@ -587,6 +602,29 @@ export default function (pi: ExtensionAPI) {
           'warning',
         )
         return
+      }
+      // AIDEV-NOTE: PMR-XTQQ — ensure the durable run server at run start,
+      // BEFORE the loop starts: a live daemon takes over projection ownership
+      // so every subsequent journal write routes journal-only. Spawn failure
+      // or disabled switch → notify once and continue (never block the flow;
+      // the full-writer fallback is today's exact behavior).
+      const config = await loadConfig(ctx.cwd)
+      runServerEnabled = config.runServer?.enabled !== false
+      if (runServerEnabled) {
+        const ensured = await ensureDaemon(getAgentDir())
+        if (
+          ensured.status === 'spawn-timeout' ||
+          ensured.status === 'spawn-failed'
+        ) {
+          let detail = ''
+          if (ensured.status === 'spawn-failed') {
+            detail = ` (${ensured.reason})`
+          }
+          ctx.ui.notify(
+            `pi-flow: run server not started${detail} — continuing in-session; runs won't survive a session exit`,
+            'warning',
+          )
+        }
       }
       const labels = await readAvenLabels(ref)
       if (labels === null) {

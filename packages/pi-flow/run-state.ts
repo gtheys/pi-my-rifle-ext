@@ -651,8 +651,13 @@ export function createReceiptJournal(
     writeFile: (p: string, data: string) => Promise<void>
     mkdir: (dir: string, recursive: true) => Promise<void>
   },
+  // AIDEV-NOTE: PMR-XTQQ — optional mode-aware record fn (server/writer.ts)
+  // threaded through registerLandTool/registerPhaseCompleteTool so receipt
+  // writes route journal-only while the daemon owns the projection. Absent =
+  // today's exact full-writer behavior.
+  record?: (event: FlowRunEvent) => Promise<void>,
 ): ReceiptJournal {
-  const record = async (query: ReceiptQuery): Promise<void> => {
+  const recordEvent = async (query: ReceiptQuery): Promise<void> => {
     const event: FlowRunEvent = {
       kind: 'command-receipt',
       at: new Date().toISOString(),
@@ -662,6 +667,14 @@ export function createReceiptJournal(
       status: 'ok',
     }
     if (query.headSha !== undefined) event.headSha = query.headSha
+    if (record !== undefined) {
+      try {
+        await record(event)
+      } catch {
+        // best-effort — journal failures never block a gate transition
+      }
+      return
+    }
     try {
       await recordRunEvent(agentDir, event, io)
     } catch {
@@ -695,5 +708,5 @@ export function createReceiptJournal(
       return null
     }
   }
-  return { find, record }
+  return { find, record: recordEvent }
 }

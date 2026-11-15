@@ -27,7 +27,12 @@ import {
   type DeviationReviewInput,
   startDeviationReview,
 } from '../review/deviation.ts'
-import { recordRunEvent } from '../run-state.ts'
+import type { FlowRunEvent } from '../run-state.ts'
+import {
+  createDaemonAliveProbe,
+  createEventWriter,
+  type EventWriter,
+} from '../server/writer.ts'
 import {
   commitMessagesForRange,
   diffForRange,
@@ -144,15 +149,14 @@ export async function verifyDeviationGateResult(
   return verifyGateWithExec(exec, cwd, target, artifact)
 }
 
-/** Best-effort journal write — never breaks the gate (house rule). */
+/** Best-effort journal write — never breaks the gate (house rule). Routed
+ * through the mode-aware writer (PMR-XTQQ): journal-only while the daemon
+ * owns the projection, full writer when absent. */
 async function journalGateEvent(
-  event: Parameters<typeof recordRunEvent>[1],
+  event: FlowRunEvent,
+  writer: EventWriter,
 ): Promise<void> {
-  try {
-    await recordRunEvent(getAgentDir(), event)
-  } catch {
-    // best-effort by design
-  }
+  await writer.record(event)
 }
 
 /** One-line description of the range, shown to agent and human. */
@@ -196,7 +200,15 @@ function failedResult(result: SubagentResult): string {
   return `deviation_review: reviewer subagent failed — ${detail}. Re-run the deviation_review tool. NEVER treat this as 0 deviations.`
 }
 
-export function registerDeviationReviewTool(pi: ExtensionAPI): void {
+export function registerDeviationReviewTool(
+  pi: ExtensionAPI,
+  // AIDEV-NOTE: PMR-XTQQ — mode-aware writer seam; default probes per write
+  // (daemon enabled). index.ts passes the shared runServer-configured writer.
+  writer: EventWriter = createEventWriter(
+    getAgentDir(),
+    createDaemonAliveProbe(getAgentDir()),
+  ),
+): void {
   pi.registerTool({
     name: 'deviation_review',
     label: 'deviation review',
@@ -251,16 +263,19 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
       let target: GateTarget | null = null
       if ('diffSha256' in built) {
         target = built
-        await journalGateEvent({
-          kind: 'gate-target',
-          at: new Date().toISOString(),
-          ref: params.ref,
-          gate: 'deviation',
-          targetId: gateTargetId(target),
-          baseSha: target.baseSha,
-          headSha: target.headSha,
-          diffSha256: target.diffSha256,
-        })
+        await journalGateEvent(
+          {
+            kind: 'gate-target',
+            at: new Date().toISOString(),
+            ref: params.ref,
+            gate: 'deviation',
+            targetId: gateTargetId(target),
+            baseSha: target.baseSha,
+            headSha: target.headSha,
+            diffSha256: target.diffSha256,
+          },
+          writer,
+        )
         // AIDEV-NOTE: PMR-6EEW per-subtask ranges — journal the subtask →
         // commits attribution of the pinned range (Subtask: trailers).
         // Best-effort by design; unattributed commits are surfaced in the
@@ -273,16 +288,19 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
             target.headSha,
           )
           if (attribution.ok) {
-            await journalGateEvent({
-              kind: 'subtask-ranges',
-              at: new Date().toISOString(),
-              ref: params.ref,
-              gate: 'deviation',
-              baseSha: target.baseSha,
-              headSha: target.headSha,
-              bySubtask: attribution.attribution.bySubtask,
-              unattributed: attribution.attribution.unattributed,
-            })
+            await journalGateEvent(
+              {
+                kind: 'subtask-ranges',
+                at: new Date().toISOString(),
+                ref: params.ref,
+                gate: 'deviation',
+                baseSha: target.baseSha,
+                headSha: target.headSha,
+                bySubtask: attribution.attribution.bySubtask,
+                unattributed: attribution.attribution.unattributed,
+              },
+              writer,
+            )
           }
         } catch {
           // best-effort — the gate itself is unaffected
@@ -339,28 +357,34 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
           result.summary,
         )
         if (!verification.ok) {
-          await journalGateEvent({
-            kind: 'gate-decision',
-            at: new Date().toISOString(),
-            ref: params.ref,
-            gate: 'deviation',
-            targetId: gateTargetId(target),
-            status: verification.status,
-          })
+          await journalGateEvent(
+            {
+              kind: 'gate-decision',
+              at: new Date().toISOString(),
+              ref: params.ref,
+              gate: 'deviation',
+              targetId: gateTargetId(target),
+              status: verification.status,
+            },
+            writer,
+          )
           return toolResult(
             `deviation_review: gate integrity check FAILED (${verification.status}) — ${verification.reason}. The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
             { ok: false as const, reason: verification.reason },
             { isError: true },
           )
         }
-        await journalGateEvent({
-          kind: 'gate-decision',
-          at: new Date().toISOString(),
-          ref: params.ref,
-          gate: 'deviation',
-          targetId: gateTargetId(target),
-          status: 'pass',
-        })
+        await journalGateEvent(
+          {
+            kind: 'gate-decision',
+            at: new Date().toISOString(),
+            ref: params.ref,
+            gate: 'deviation',
+            targetId: gateTargetId(target),
+            status: 'pass',
+          },
+          writer,
+        )
       }
       if (diffPath !== undefined) {
         const check = checkDiffLinesRead(resolved.value.diff, result.summary)
