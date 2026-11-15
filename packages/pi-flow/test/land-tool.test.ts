@@ -489,3 +489,123 @@ test('receipt adoption: receipts and resolveHead are optional (defaults wired)',
   )
   assert.equal(registered, true)
 })
+
+// ---------------------------------------------------------------------------
+// PMR-XTQQ 5.2 — merge-main human-gate adoption from a code_review receipt.
+// The in-memory marker path is untouched; adoption requires an exact HEAD
+// (headSha) match between resolveHead() and the stored code_review receipt.
+// ---------------------------------------------------------------------------
+
+test('human gate: merge-main adopts a code_review receipt on the exact HEAD without a fresh pass (5.2)', async () => {
+  const receipts = memReceipts()
+  receipts.entries.push({
+    ref: 'PMR-ABC1',
+    command: 'code_review',
+    target: 'PMR-ABC1',
+    headSha: 'aaa111',
+  })
+  const harness = landHarness({ receipts })
+  await withFakeAven(async () => {
+    const result = await harness.execute('h1', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /gated ok via merge-main/)
+    assert.match(
+      result.content[0].text,
+      /pass adopted from the code_review receipt/,
+    )
+    // The gate was passed via receipt; the suite still ran (fresh flow_land
+    // gate, no flow_land receipt yet) and a flow_land receipt was recorded.
+    assert.equal(harness.suiteRuns(), 1)
+    assert.equal(harness.receipts.entries.length, 2)
+    assert.deepEqual(harness.receipts.entries[1], {
+      ref: 'PMR-ABC1',
+      command: 'flow_land',
+      target: 'merge-main',
+      headSha: 'aaa111',
+    })
+  })
+})
+
+test('human gate: merge-main refuses on HEAD drift despite a code_review receipt (5.2)', async () => {
+  const receipts = memReceipts()
+  receipts.entries.push({
+    ref: 'PMR-ABC1',
+    command: 'code_review',
+    target: 'PMR-ABC1',
+    headSha: 'stale999',
+  })
+  const harness = landHarness({ receipts, resolveHead: async () => 'aaa111' })
+  await withFakeAven(async () => {
+    const result = await harness.execute('h2', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /code_review tool/)
+    assert.match(
+      result.content[0].text,
+      /human code-review gate has not passed/,
+    )
+    assert.equal(harness.suiteRuns(), 0)
+  })
+})
+
+test('human gate: unresolvable HEAD means no adoption — merge-main refused (5.2)', async () => {
+  const receipts = memReceipts()
+  receipts.entries.push({
+    ref: 'PMR-ABC1',
+    command: 'code_review',
+    target: 'PMR-ABC1',
+    headSha: 'aaa111',
+  })
+  const harness = landHarness({ receipts, resolveHead: async () => null })
+  await withFakeAven(async () => {
+    const result = await harness.execute('h3', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /code_review tool/)
+    assert.equal(harness.suiteRuns(), 0)
+  })
+})
+
+test('human gate: in-memory marker short-circuits — no receipt consulted (5.2)', async () => {
+  const receipts = memReceipts()
+  const landing = createLandingState()
+  landing.humanReviewPassed = 'PMR-ABC1'
+  const harness = landHarness({ receipts, landing })
+  await withFakeAven(async () => {
+    const result = await harness.execute('h4', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, undefined)
+    assert.doesNotMatch(
+      result.content[0].text,
+      /pass adopted from the code_review receipt/,
+    )
+    // Only the flow_land receipt was recorded — no code_review query needed.
+    assert.equal(harness.receipts.entries.length, 1)
+  })
+})
+
+test('human gate: route=pr is unaffected by the merge-main gate and code_review receipts (5.2)', async () => {
+  const receipts = memReceipts()
+  receipts.entries.push({
+    ref: 'PMR-ABC1',
+    command: 'code_review',
+    target: 'PMR-ABC1',
+    headSha: 'aaa111',
+  })
+  const harness = landHarness({ receipts })
+  await withFakeAven(async () => {
+    const result = await harness.execute('h5', { ref: 'PMR-ABC1', route: 'pr' })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /authorized via pr/)
+    assert.equal(harness.suiteRuns(), 1)
+  })
+})

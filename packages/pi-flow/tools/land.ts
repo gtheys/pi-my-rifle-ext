@@ -257,15 +257,40 @@ export function registerLandTool(
           { isError: true },
         )
       }
+      // AIDEV-NOTE: PMR-C6AK — the merge-main human pass has a durable twin
+      // (PMR-XTQQ/5.2): when the in-memory marker is absent (e.g. after a
+      // session reopen or resetLandingState, which clears ONLY the marker —
+      // never the journal), a code_review receipt pinned to the CURRENT HEAD
+      // (command='code_review', target=ref) adopts the pass. Exact headSha
+      // equality only: a moved HEAD is work the gate's human pass never saw,
+      // so it refuses with the gate message. In-memory match short-circuits.
+      let humanGateAdopted = false
       if (
         params.route === 'merge-main' &&
         state.humanReviewPassed !== params.ref
       ) {
-        return toolResult(
-          `flow_land refused landing ${params.ref} via merge-main: the human code-review gate has not passed — call the code_review tool with ref=${params.ref} and collect the human's pass first`,
-          { ok: false, reason: 'human code-review gate not passed' },
-          { isError: true },
-        )
+        const head = await resolveHead()
+        if (head !== null) {
+          const pass = await effectiveReceipts.find({
+            ref: params.ref,
+            command: 'code_review',
+            target: params.ref,
+            headSha: head,
+          })
+          humanGateAdopted = pass !== null
+        }
+        if (!humanGateAdopted) {
+          return toolResult(
+            `flow_land refused landing ${params.ref} via merge-main: the human code-review gate has not passed — call the code_review tool with ref=${params.ref} and collect the human's pass first`,
+            { ok: false, reason: 'human code-review gate not passed' },
+            { isError: true },
+          )
+        }
+      }
+      let humanGateNote = ''
+      if (humanGateAdopted) {
+        humanGateNote =
+          ' Human code-review pass adopted from the code_review receipt (HEAD unchanged) — no fresh pass was needed.'
       }
       const labels = await readAvenLabels(params.ref)
       const decision = landDecision(labels, params.artifact ?? null)
@@ -297,7 +322,7 @@ export function registerLandTool(
             )
           }
           return toolResult(
-            `flow_land: landing for ${params.ref} gated ok via merge-main — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run. Merge the branch into main LOCALLY in the main checkout with git -C <main repo> merge --ff-only <branch> (find the main repo path via \`git worktree list\`, first entry). Do not push.`,
+            `flow_land: landing for ${params.ref} gated ok via merge-main — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run.${humanGateNote} Merge the branch into main LOCALLY in the main checkout with git -C <main repo> merge --ff-only <branch> (find the main repo path via \`git worktree list\`, first entry). Do not push.`,
             { ok: true, reason: '' },
           )
         }
@@ -339,7 +364,7 @@ export function registerLandTool(
         )
       }
       return toolResult(
-        `flow_land: landing for ${params.ref} gated ok via merge-main — merge the branch into main LOCALLY in the main checkout with git -C <main repo> merge --ff-only <branch> (find the main repo path via \`git worktree list\`, first entry). Do not push.`,
+        `flow_land: landing for ${params.ref} gated ok via merge-main${humanGateNote} — the suite ran green just now. Merge the branch into main LOCALLY in the main checkout with git -C <main repo> merge --ff-only <branch> (find the main repo path via \`git worktree list\`, first entry). Do not push.`,
         { ok: true, reason: '' },
       )
     },
