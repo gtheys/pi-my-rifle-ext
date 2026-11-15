@@ -22,10 +22,9 @@ import { Type } from 'typebox'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
 import {
   buildDeviationReviewPrompt,
-  countDiffLines,
+  checkDiffLinesRead,
   DEVIATION_INLINE_DIFF_MAX,
   type DeviationReviewInput,
-  extractDiffLinesRead,
   startDeviationReview,
 } from '../review/deviation.ts'
 import { recordRunEvent } from '../run-state.ts'
@@ -364,11 +363,10 @@ export function registerDeviationReviewTool(pi: ExtensionAPI): void {
         })
       }
       if (diffPath !== undefined) {
-        const expected = countDiffLines(resolved.value.diff)
-        const got = extractDiffLinesRead(result.summary)
-        if (got !== expected) {
+        const check = checkDiffLinesRead(resolved.value.diff, result.summary)
+        if (!check.ok) {
           return toolResult(
-            `deviation_review: reviewer did not prove it read the whole diff file (diff_lines_read: expected ${expected}, got ${got ?? 'none'}). The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
+            `deviation_review: reviewer did not prove it read the whole diff file (diff_lines_read: expected ${check.expected}, got ${check.got ?? 'none'}). The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
             { ok: false as const, reason: 'diff_lines_read mismatch' },
             { isError: true },
           )

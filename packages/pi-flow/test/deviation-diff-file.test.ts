@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildDeviationReviewPrompt, fenceBlock } from '../review/deviation.ts'
+import {
+  buildDeviationReviewPrompt,
+  checkDiffLinesRead,
+  countDiffLines,
+  fenceBlock,
+} from '../review/deviation.ts'
 
 const base = {
   mode: 'work' as const,
@@ -51,4 +56,48 @@ test('prompt: file mode asks for the proof without leaking the count', () => {
   })
   assert.ok(p.includes('diff_lines_read: <N>'))
   assert.ok(!p.includes('diff_lines_read: 4'))
+})
+
+test('countDiffLines: detection matrix — trailing newline, none, single line, empty', () => {
+  // PMR-Q23K: git diffs end with a newline; the expected count must match
+  // what the read tool shows the reviewer (and wc -l), not split('\n').length.
+  assert.equal(countDiffLines('a\nb\n'), 2)
+  assert.equal(countDiffLines('a\nb\nc'), 3)
+  assert.equal(countDiffLines('a\n'), 1)
+  assert.equal(countDiffLines('a'), 1)
+  assert.equal(countDiffLines(''), 0)
+  assert.equal(countDiffLines('a\n\n'), 2)
+})
+
+test('countDiffLines: a real 1142-line trailing-newline diff counts 1142 (incident regression)', () => {
+  // PMR-Q23K incident: git diff 5e46608..HEAD was exactly 1142 lines by
+  // wc -l; the gate expected 1143 and no reviewer could ever pass.
+  const lines = Array.from({ length: 1142 }, (_, i) => `+line ${i + 1}`)
+  const diff = `${lines.join('\n')}\n`
+  assert.equal(countDiffLines(diff), 1142)
+})
+
+test('gate contract: a verdict echoing every line passes; a skipped line fails (PMR-Q23K)', () => {
+  const lines = Array.from({ length: 1142 }, (_, i) => `+line ${i + 1}`)
+  const diff = `${lines.join('\n')}\n`
+  // Reviewer read all 1142 lines of the trailing-newline diff → accepted.
+  assert.deepEqual(checkDiffLinesRead(diff, 'diff_lines_read: 1142'), {
+    ok: true,
+  })
+  // Reviewer genuinely skipped a line → still rejected.
+  assert.deepEqual(checkDiffLinesRead(diff, 'diff_lines_read: 1141'), {
+    ok: false,
+    expected: 1142,
+    got: 1141,
+  })
+  // No echo at all → rejected.
+  assert.deepEqual(checkDiffLinesRead(diff, 'looks fine'), {
+    ok: false,
+    expected: 1142,
+    got: null,
+  })
+  // Diff without a trailing newline: the unterminated last line counts.
+  assert.deepEqual(checkDiffLinesRead('a\nb\nc', 'diff_lines_read: 3'), {
+    ok: true,
+  })
 })
