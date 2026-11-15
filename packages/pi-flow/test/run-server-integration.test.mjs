@@ -2,9 +2,10 @@
 // actual server/daemon.ts entry via process.execPath (type stripping must work
 // on the running runtime) against a mkdtemp agent dir, mirroring the
 // flow-viewer.test.mjs harness (seed journal BEFORE spawn so fs.watch attaches,
-// poll ≤5s, SIGKILL + rmSync in finally). `pending/` is a phase-2 concept and
-// the daemon does not create it yet — asserted here only as "its absence does
-// not break startup" (see subtask report).
+// poll ≤5s, SIGKILL + rmSync in finally). The second test (subtask 3.2)
+// exercises pending maintenance: a parked loop-state produces
+// pending/<ref>.json, a terminal snapshot clears it, and a stray
+// <ref>.consumed.json is swept.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import {
@@ -103,6 +104,80 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
   }
   if (stderr.includes('PI_FLOW_AGENT_DIR must be set')) {
     throw new Error(`daemon rejected env: ${stderr}`)
+  }
+})
+
+test('real daemon: parked loop-state creates pending record, terminal snapshot clears it, consumed swept', async () => {
+  const agentDir = mkdtempSync(join(tmpdir(), 'pi-flow-daemon-it-'))
+  const piFlowDir = join(agentDir, 'pi-flow')
+  const runsDir = join(piFlowDir, 'runs')
+  mkdirSync(runsDir, { recursive: true })
+
+  const ref = 'PMR-PEND'
+  const journalFile = join(runsDir, `${ref}.journal.jsonl`)
+  const pendingFile = join(piFlowDir, 'pending', `${ref}.json`)
+  const consumedFile = join(piFlowDir, 'pending', `${ref}.consumed.json`)
+
+  const appendEvent = (event) => {
+    appendFileSync(journalFile, `${JSON.stringify(event)}\n`)
+  }
+  appendEvent({
+    kind: 'run-start',
+    at: '2026-11-15T01:00:00Z',
+    ref,
+    mode: 'personal',
+  })
+  appendEvent({
+    kind: 'loop-state',
+    at: '2026-11-15T01:00:01Z',
+    ref,
+    loop: {
+      phase: 'plan',
+      awaitingOutcome: true,
+      blockerRetries: 0,
+      validateStartedAt: '',
+      status: 'running',
+    },
+  })
+
+  const child = spawn(process.execPath, [DAEMON_SCRIPT], {
+    env: { ...process.env, PI_FLOW_AGENT_DIR: agentDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  child.stderr.setEncoding('utf8')
+
+  try {
+    // Pending record appears ≤5s from the parked journal.
+    await waitFor(() => existsSync(pendingFile), 'pending record')
+    const record = JSON.parse(readFileSync(pendingFile, 'utf8'))
+    assert.equal(record.ref, ref)
+    assert.equal(record.phase, 'plan')
+    assert.equal(record.sourceAt, '2026-11-15T01:00:01Z')
+
+    // A fake consumed marker (left from an earlier consume) is swept.
+    mkdirSync(join(piFlowDir, 'pending'), { recursive: true })
+    writeFileSync(consumedFile, '{}\n')
+    await waitFor(() => !existsSync(consumedFile), 'consumed sweep')
+
+    // Terminal loop-state appended AFTER spawn clears the pending record.
+    appendEvent({
+      kind: 'loop-state',
+      at: new Date().toISOString(),
+      ref,
+      loop: {
+        phase: 'plan',
+        awaitingOutcome: false,
+        blockerRetries: 0,
+        validateStartedAt: '',
+        status: 'done',
+      },
+    })
+    await waitFor(() => !existsSync(pendingFile), 'pending record cleared')
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL')
+    }
+    rmSync(agentDir, { recursive: true, force: true })
   }
 })
 

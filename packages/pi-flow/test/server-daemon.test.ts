@@ -11,16 +11,22 @@ import path from 'node:path'
 import { test } from 'node:test'
 import {
   type FlowRunEvent,
+  type FlowRunState,
+  type LoopStateRecord,
   recordRunEvent,
   recordRunEventJournalOnly,
   runStatePath,
 } from '../run-state.ts'
 import {
   createSerialQueue,
+  decidePending,
+  maintainPending,
+  pendingDirPath,
   projectionChanged,
   reprojectRun,
   SERVER_PROTOCOL_VERSION,
 } from '../server/daemon.ts'
+import { PENDING_SCHEMA } from '../server/pending.ts'
 
 function mkAgentDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'pi-flow-daemon-test-'))
@@ -146,6 +152,80 @@ test('reprojectRun: torn tail lines are skipped', async () => {
   await fs.appendFile(journalPath, '{"kind":"run-start","ref":', 'utf8')
   const result = await reprojectRun(agentDir, ref)
   assert.equal(result, 'unchanged')
+})
+
+// --- pending maintenance (subtask 3.2) ---
+
+function parkedState(ref: string, at: string): FlowRunState {
+  const loop: LoopStateRecord = {
+    phase: 'plan',
+    awaitingOutcome: true,
+    blockerRetries: 0,
+    validateStartedAt: '',
+    status: 'running',
+  }
+  return {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref,
+    mode: 'personal',
+    startedAt: at,
+    updatedAt: at,
+    completedPhases: [],
+    currentPhase: 'plan',
+    notes: [],
+    loop,
+  }
+}
+
+test('decidePending: parked loop-state writes, everything else clears', () => {
+  assert.equal(decidePending(parkedState('PMR-A', 'x')), 'write')
+  assert.equal(decidePending(null), 'clear')
+  const done = parkedState('PMR-B', 'x')
+  if (done.loop === undefined) throw new Error('unreachable')
+  done.loop.status = 'done'
+  assert.equal(decidePending(done), 'clear')
+  const paused = parkedState('PMR-C', 'x')
+  if (paused.loop === undefined) throw new Error('unreachable')
+  paused.loop.status = 'paused'
+  assert.equal(decidePending(paused), 'clear')
+})
+
+test('pendingDirPath sits next to runs/ under pi-flow/', () => {
+  assert.equal(pendingDirPath('/a'), path.join('/a', 'pi-flow', 'pending'))
+})
+
+test('maintainPending: parked state writes a record, stable across rescan', async () => {
+  const pendingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-flow-pend-'))
+  const state = parkedState('PMR-PP1', '2026-11-15T01:00:00Z')
+  await maintainPending(pendingDir, 'PMR-PP1', state)
+  const raw = await fs.readFile(path.join(pendingDir, 'PMR-PP1.json'), 'utf8')
+  const parsed = JSON.parse(raw)
+  assert.equal(parsed.schema, PENDING_SCHEMA)
+  assert.equal(parsed.phase, 'plan')
+  assert.equal(parsed.sourceAt, state.updatedAt)
+
+  // Idempotent: identical state must not rewrite the file (mtime stable).
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await maintainPending(pendingDir, 'PMR-PP1', state)
+  const raw2 = await fs.readFile(path.join(pendingDir, 'PMR-PP1.json'), 'utf8')
+  assert.equal(raw2, raw)
+
+  // Terminal loop-state clears the record.
+  const done = parkedState('PMR-PP1', '2026-11-15T02:00:00Z')
+  if (done.loop === undefined) throw new Error('unreachable')
+  done.loop.status = 'done'
+  await maintainPending(pendingDir, 'PMR-PP1', done)
+  await assert.rejects(
+    () => fs.readFile(path.join(pendingDir, 'PMR-PP1.json'), 'utf8'),
+    { code: 'ENOENT' },
+  )
+
+  // Absent pending dir is fine (lazy creation on first write only).
+  await maintainPending(path.join(pendingDir, 'missing'), 'PMR-PP2', null)
+  await assert.rejects(
+    () => fs.readFile(path.join(pendingDir, 'missing', 'PMR-PP2.json'), 'utf8'),
+    { code: 'ENOENT' },
+  )
 })
 
 // --- projectionChanged (reproject decision, pure) ---

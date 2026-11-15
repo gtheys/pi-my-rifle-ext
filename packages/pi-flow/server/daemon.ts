@@ -12,18 +12,40 @@
 // server/lifecycle.ts (written in subtask 1.2) — a long-lived daemon can
 // outlive a package upgrade, so the pidfile pins the version and a mismatch
 // means kill + respawn.
+//
+// PENDING MAINTENANCE (subtask 3.2): after each per-ref reproject the same
+// journal read also drives pending-record maintenance — parked loop-state
+// (awaitingOutcome=true, status='running') → writePending (idempotent,
+// skipped when the existing record already matches), otherwise → clearPending
+// (terminal/paused/halted/done or no run); <ref>.consumed.json files are
+// swept once per scan. Pending records are NOT journal events (they live in
+// pending/), so writing them does NOT violate the daemon-never-appends-
+// journal-events invariant above.
 
 import { promises as fsp, watch } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   type FlowRunEvent,
+  type FlowRunState,
   isFlowRunState,
   projectRunState,
   readRunEvents,
   runStatePath,
   runsDir,
 } from '../run-state.ts'
+import {
+  clearPending,
+  defaultPendingIo,
+  isParkedLoop,
+  PENDING_SCHEMA,
+  type PendingIo,
+  type PendingPhase,
+  type PendingRecord,
+  parsePendingRecord,
+  sweepConsumed,
+  writePending,
+} from './pending.ts'
 
 export const SERVER_PROTOCOL_VERSION = '1'
 
@@ -46,6 +68,100 @@ export function projectionChanged(
 
 export type ReprojectResult = 'written' | 'unchanged' | 'no-journal'
 
+const defaultReprojectIo = {
+  readFile: (p: string) => fsp.readFile(p, 'utf8'),
+  writeFile: async (p: string, data: string) => {
+    await fsp.writeFile(p, data, 'utf8')
+  },
+}
+
+interface ReprojectIo {
+  readFile: (p: string) => Promise<string>
+  writeFile: (p: string, data: string) => Promise<void>
+}
+
+export interface ReprojectOutcome {
+  result: ReprojectResult
+  /** Reprojected state; null when there is no readable journal/projection. */
+  state: FlowRunState | null
+}
+
+/** AIDEV-NOTE: pending/ lives next to runs/ under <agentDir>/pi-flow/. */
+export function pendingDirPath(agentDir: string): string {
+  return path.join(agentDir, 'pi-flow', 'pending')
+}
+
+/**
+ * Pending decision from one journal read: parked loop → 'write', anything
+ * else (terminal/paused/halted/done or no run at all) → 'clear'. Pure.
+ */
+export function decidePending(state: FlowRunState | null): 'write' | 'clear' {
+  if (state === null) return 'clear'
+  if (isParkedLoop(state.loop)) return 'write'
+  return 'clear'
+}
+
+function recordsEqual(a: PendingRecord, b: PendingRecord): boolean {
+  return (
+    a.schema === b.schema &&
+    a.ref === b.ref &&
+    a.phase === b.phase &&
+    a.createdAt === b.createdAt &&
+    a.sourceAt === b.sourceAt
+  )
+}
+
+/**
+ * Pending maintenance for one ref, derived from the SAME journal read as the
+ * reproject (no second readRunEvents). Parked → idempotent writePending,
+ * keeping the original createdAt when only sourceAt advanced, and skipping
+ * the write entirely when the on-disk record already matches (the daemon
+ * writes on every 1s scan while parked — keep it cheap). Non-parked or
+ * no-run → clearPending. Best-effort: failures are logged by the scan task,
+ * never thrown into the queue tail.
+ */
+export async function maintainPending(
+  pendingDir: string,
+  ref: string,
+  state: FlowRunState | null,
+  io: PendingIo = defaultPendingIo,
+): Promise<void> {
+  let existing: PendingRecord | null = null
+  const decision = decidePending(state)
+  if (decision === 'write') {
+    try {
+      existing = parsePendingRecord(
+        await io.readFile(path.join(pendingDir, `${ref}.json`)),
+      )
+    } catch {
+      existing = null
+    }
+    const loop = state?.loop
+    if (loop === undefined) return
+    const phase: PendingPhase = loop.phase
+    let createdAt = new Date().toISOString()
+    if (
+      existing !== null &&
+      existing.phase === phase &&
+      existing.schema === PENDING_SCHEMA &&
+      existing.ref === ref
+    ) {
+      createdAt = existing.createdAt
+    }
+    const record: PendingRecord = {
+      schema: PENDING_SCHEMA,
+      ref,
+      phase,
+      createdAt,
+      sourceAt: state !== null ? state.updatedAt : createdAt,
+    }
+    if (existing !== null && recordsEqual(existing, record)) return
+    await writePending(pendingDir, record, io)
+    return
+  }
+  await clearPending(pendingDir, ref, io)
+}
+
 /**
  * Reproject one run from its journal: read events (torn tails skipped),
  * project, and write the projection atomically-in-process ONLY when the
@@ -57,22 +173,27 @@ export type ReprojectResult = 'written' | 'unchanged' | 'no-journal'
 export async function reprojectRun(
   agentDir: string,
   ref: string,
-  io: {
-    readFile: (p: string) => Promise<string>
-    writeFile: (p: string, data: string) => Promise<void>
-  } = {
-    readFile: (p) => fsp.readFile(p, 'utf8'),
-    writeFile: async (p, data) => {
-      await fsp.writeFile(p, data, 'utf8')
-    },
-  },
+  io: ReprojectIo = defaultReprojectIo,
 ): Promise<ReprojectResult> {
+  const outcome = await reprojectRunDetailed(agentDir, ref, io)
+  return outcome.result
+}
+
+/**
+ * Same read path as reprojectRun but also returns the reprojected state so
+ * the scan's pending-maintenance step needs no second journal read.
+ */
+export async function reprojectRunDetailed(
+  agentDir: string,
+  ref: string,
+  io: ReprojectIo = defaultReprojectIo,
+): Promise<ReprojectOutcome> {
   const events = await readRunEvents(agentDir, ref, { readFile: io.readFile })
-  if (events === null) return 'no-journal'
+  if (events === null) return { result: 'no-journal', state: null }
   const state = projectRunState(events)
-  if (state === null) return 'no-journal'
+  if (state === null) return { result: 'no-journal', state: null }
   const statePath = runStatePath(agentDir, ref)
-  if (statePath === null) return 'no-journal'
+  if (statePath === null) return { result: 'no-journal', state: null }
   let currentRaw: string | null = null
   try {
     currentRaw = await io.readFile(statePath)
@@ -87,9 +208,11 @@ export async function reprojectRun(
       currentRaw = null
     }
   }
-  if (!projectionChanged(currentRaw, state)) return 'unchanged'
+  if (!projectionChanged(currentRaw, state)) {
+    return { result: 'unchanged', state }
+  }
   await io.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`)
-  return 'written'
+  return { result: 'written', state }
 }
 
 /**
@@ -136,7 +259,8 @@ function log(agentDir: string, message: string): void {
     .catch(() => undefined)
 }
 
-/** Scan the runs dir and queue a reproject for every journal found. */
+/** Scan the runs dir; per ref, reproject + maintain pending from one read,
+ * and sweep consumed markers once per scan. */
 async function scanRuns(agentDir: string, queue: SerialQueue): Promise<void> {
   const dir = runsDir(agentDir)
   let entries: string[]
@@ -145,15 +269,26 @@ async function scanRuns(agentDir: string, queue: SerialQueue): Promise<void> {
   } catch {
     return // runs dir does not exist yet — nothing to scan
   }
+  const refs: string[] = []
   for (const entry of entries) {
     if (!entry.endsWith('.journal.jsonl')) continue
-    const ref = entry.slice(0, -'.journal.jsonl'.length)
+    refs.push(entry.slice(0, -'.journal.jsonl'.length))
+  }
+  const pendingDir = pendingDirPath(agentDir)
+  for (const ref of refs) {
     queue.push(async () => {
       try {
-        await reprojectRun(agentDir, ref)
+        const outcome = await reprojectRunDetailed(agentDir, ref)
+        // Same journal read drives the pending decision (subtask 3.2).
+        await maintainPending(pendingDir, ref, outcome.state)
       } catch (err) {
-        log(agentDir, `reproject failed for ${ref}: ${String(err)}`)
+        log(agentDir, `scan maintenance failed for ${ref}: ${String(err)}`)
       }
+    })
+  }
+  if (refs.length > 0) {
+    queue.push(async () => {
+      await sweepConsumed(pendingDir)
     })
   }
 }
