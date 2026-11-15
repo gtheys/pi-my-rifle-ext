@@ -33,6 +33,15 @@ function workSection(ref: string): string {
      normal flow phases). NEVER fix such a
      finding silently inside feedback. NEVER ignore a finding: every finding
      ends as either a fix commit or a new task. Nothing is left unresolved.
+   - Non-blocking review observations (P2/P3, "for later", "non-blocking",
+     "worth knowing") each become their OWN backlog ticket labeled
+     review-feedback (aven add "<sentence-case title>" --label
+     review-feedback --status backlog --priority <medium|low>; create the
+     label first with aven label create if missing), carrying the finding,
+     the source artifact, file references, and a done-when. Skip purely
+     informational/self-healing notes and anything an open ticket already
+     covers; mention siblings ("related to PMR-XXXX") when one exists.
+     Skip silently when there are none.
 3. Fix-now findings: use the pr_quality tool for review-thread context, fix, and COMMIT each fix.
 4. Address all unresolved GitHub review comments on the PR (same triage
    rules; reply to comments you escalated, linking the new task).
