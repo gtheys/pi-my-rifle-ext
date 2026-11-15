@@ -882,3 +882,80 @@ test('run-input / loop-state: projection round-trips through projectRunState', (
   assert.equal(state.loop?.phase, 'implement')
   assert.equal(isFlowRunState(state), true)
 })
+// --- gate-answer event kind (PMR-R5VB) ---
+
+test('gate-answer: projection records the latest choice per gate', () => {
+  const run = applyEvent(null, {
+    kind: 'run-start',
+    at: 't0',
+    ref: 'PMR-1',
+    mode: 'work',
+  })
+  let state = applyEvent(run, {
+    kind: 'gate-answer',
+    at: 't1',
+    ref: 'PMR-1',
+    gate: 'spec-review',
+    choice: 'approve',
+  })
+  state = applyEvent(state, {
+    kind: 'gate-answer',
+    at: 't2',
+    ref: 'PMR-1',
+    gate: 'code-review',
+    choice: 'fail',
+  })
+  const answers = state.gateAnswers
+  assert.equal(answers?.length, 2)
+  assert.deepEqual(
+    answers?.find((a) => a.gate === 'spec-review'),
+    { gate: 'spec-review', choice: 'approve', at: 't1' },
+  )
+
+  // A later answer for the same gate replaces the earlier one.
+  state = applyEvent(state, {
+    kind: 'gate-answer',
+    at: 't3',
+    ref: 'PMR-1',
+    gate: 'spec-review',
+    choice: 'reject',
+  })
+  assert.equal(state.gateAnswers?.length, 2)
+  assert.deepEqual(
+    state.gateAnswers?.find((a) => a.gate === 'spec-review'),
+    { gate: 'spec-review', choice: 'reject', at: 't3' },
+  )
+
+  // Events for another ref are ignored.
+  const other = applyEvent(state, {
+    kind: 'gate-answer',
+    at: 't4',
+    ref: 'PMR-2',
+    gate: 'spec-review',
+    choice: 'pass',
+  })
+  assert.equal(other.gateAnswers?.length, 2)
+})
+
+test('gate-answer: rebuild over a journal mixing known and unknown kinds stays safe', () => {
+  const events = [
+    { kind: 'run-start', at: 't0', ref: 'PMR-1', mode: 'work' },
+    { kind: 'some-future-event', at: 't1', ref: 'PMR-1' },
+    {
+      kind: 'gate-answer',
+      at: 't2',
+      ref: 'PMR-1',
+      gate: 'spec-review',
+      choice: 'approve',
+    },
+    { kind: 'note', at: 't3', ref: 'PMR-1', text: 'hello' },
+    { kind: 'another-unknown', at: 't4', ref: 'PMR-1' },
+  ] as unknown as FlowRunEvent[]
+  const state = projectRunState(events)
+  assert.ok(state)
+  assert.equal(state.ref, 'PMR-1')
+  assert.deepEqual(state.gateAnswers, [
+    { gate: 'spec-review', choice: 'approve', at: 't2' },
+  ])
+  assert.deepEqual(state.notes, [{ at: 't3', text: 'hello' }])
+})

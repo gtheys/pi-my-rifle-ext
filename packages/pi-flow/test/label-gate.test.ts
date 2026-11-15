@@ -6,6 +6,7 @@ import { describe, it } from 'node:test'
 import {
   checkPhaseCompletion,
   lifecycleLabelMutation,
+  receiptMetadataMutation,
 } from '../flow/label-gate.ts'
 
 describe('checkPhaseCompletion', () => {
@@ -180,5 +181,120 @@ describe('lifecycleLabelMutation', () => {
     assert.equal(lifecycleLabelMutation('aven show PMR-1 --json'), null)
     assert.equal(lifecycleLabelMutation('aven note PMR-1 "active work"'), null)
     assert.equal(lifecycleLabelMutation('bun run test'), null)
+  })
+})
+
+describe('receiptMetadataMutation', () => {
+  it('blocks aven edit writing a receipt metadata key', () => {
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata spec-answer=approve'),
+      'spec-answer',
+    )
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata review-answer=pass'),
+      'review-answer',
+    )
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata spec-answer=reject'),
+      'spec-answer',
+    )
+  })
+
+  it('blocks receipt keys under aven add and aven bulk-update', () => {
+    assert.equal(
+      receiptMetadataMutation(
+        'aven add "title" --metadata spec-answer=approve',
+      ),
+      'spec-answer',
+    )
+    assert.equal(
+      receiptMetadataMutation(
+        'aven bulk-update --query "PMR-1" --metadata review-answer=fail',
+      ),
+      'review-answer',
+    )
+  })
+
+  it('blocks receipt keys with extra whitespace and quoted values', () => {
+    assert.equal(
+      receiptMetadataMutation(
+        'aven edit PMR-1 --metadata  spec-answer=approve',
+      ),
+      'spec-answer',
+    )
+    assert.equal(
+      receiptMetadataMutation(
+        'aven edit PMR-1 --metadata "spec-answer=approve"',
+      ),
+      'spec-answer',
+    )
+    assert.equal(
+      receiptMetadataMutation(
+        "aven edit PMR-1 --metadata 'review-answer=pass'",
+      ),
+      'review-answer',
+    )
+  })
+
+  it('blocks the one-token --metadata=key=value form', () => {
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata=spec-answer=approve'),
+      'spec-answer',
+    )
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata=review-answer=pass'),
+      'review-answer',
+    )
+  })
+
+  it('blocks a receipt key smuggled as a second --metadata flag (PMR-9P9E)', () => {
+    assert.equal(
+      receiptMetadataMutation(
+        'aven edit PMR-1 --metadata plan-state=draft --metadata spec-answer=approve',
+      ),
+      'spec-answer',
+    )
+  })
+
+  it('blocks plan-state=approved but allows draft and review', () => {
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata plan-state=approved'),
+      'plan-state=approved',
+    )
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata=plan-state=approved'),
+      'plan-state=approved',
+    )
+    assert.equal(
+      receiptMetadataMutation(
+        'aven edit PMR-1 --metadata  "plan-state=approved"',
+      ),
+      'plan-state=approved',
+    )
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata plan-state=draft'),
+      null,
+    )
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata plan-state=review'),
+      null,
+    )
+  })
+
+  it('allows non-receipt metadata keys', () => {
+    assert.equal(
+      receiptMetadataMutation('aven edit PMR-1 --metadata other-key=whatever'),
+      null,
+    )
+  })
+
+  it('allows read-only aven commands and non-aven commands', () => {
+    assert.equal(
+      receiptMetadataMutation('aven show PMR-1 --metadata spec-answer=approve'),
+      null,
+    )
+    assert.equal(receiptMetadataMutation('aven note PMR-1 "hi"'), null)
+    assert.equal(receiptMetadataMutation('bun run test'), null)
+    assert.equal(receiptMetadataMutation(''), null)
   })
 })

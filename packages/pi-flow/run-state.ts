@@ -7,6 +7,7 @@
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import type { AnswerChoice } from './aven/client.ts'
 
 // AIDEV-NOTE: PMR-Z2K7 — 'research' left the flow lifecycle (PIV); old
 // journals containing research phases fail isFlowRunState and are rebuilt
@@ -129,6 +130,20 @@ export type FlowRunEvent =
     }
   | {
       /**
+       * AIDEV-NOTE: PMR-R5VB — a human's raw gate answer (approve/reject/
+       * pass/fail) recorded journal-only by index.ts's journalOnly helper.
+       * The projection keeps the LATEST answer per gate. Journal kinds the
+       * reader doesn't know are ignored by design (PMR-Z2K7): old readers
+       * skip 'gate-answer' and new readers replay old journals fine.
+       */
+      kind: 'gate-answer'
+      at: string
+      ref: string
+      gate: Extract<GateJournalKind, 'spec-review' | 'code-review'>
+      choice: AnswerChoice
+    }
+  | {
+      /**
        * AIDEV-NOTE: main-session cost attribution — the main pi session file
        * active when a phase started. /flow-cost splits this file's usage
        * across phases by journal timestamps (workers are attributed via
@@ -237,6 +252,13 @@ export type FlowRunState = {
   // AIDEV-NOTE: PMR-XTQQ — optional so pre-attempt-ledger projections (and
   // old journals rebuilt without attempt-record events) stay valid.
   attempts?: number
+  gateAnswers?: GateAnswerRecord[]
+}
+
+export interface GateAnswerRecord {
+  gate: GateJournalKind
+  choice: AnswerChoice
+  at: string
 }
 
 export interface SubtaskRangesRecord {
@@ -449,6 +471,30 @@ export function applyEvent(
         notes: [...state.notes, { at: event.at, text: event.text }],
         updatedAt: event.at,
       }
+    }
+    case 'gate-answer': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      // AIDEV-NOTE: PMR-R5VB — latest answer wins per gate: later answers for
+      // the same gate replace earlier entries instead of appending.
+      const answers = (state.gateAnswers ?? []).filter(
+        (a) => a.gate !== event.gate,
+      )
+      return {
+        ...state,
+        gateAnswers: [
+          ...answers,
+          { gate: event.gate, choice: event.choice, at: event.at },
+        ],
+        updatedAt: event.at,
+      }
+    }
+    // AIDEV-NOTE: PMR-Z2K7 — journal lines from a NEWER writer (kinds this
+    // reader doesn't know) are ignored rather than crashing replay. Without
+    // this default an unknown kind would make applyEvent return undefined and
+    // poison every later event in the replay.
+    default: {
+      return state as FlowRunState
     }
   }
 }

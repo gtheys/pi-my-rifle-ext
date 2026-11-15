@@ -35,7 +35,12 @@ const landingState = createLandingState()
 
 const greenSuite: SuiteRunner = async () => ({ ok: true, summary: 'ok' })
 
-function landExecute(runSuite: SuiteRunner = greenSuite): LandExecute {
+type ReadReviewAnswer = (ref: string) => Promise<'pass' | 'fail' | null>
+
+function landExecute(
+  runSuite: SuiteRunner = greenSuite,
+  readReviewAnswer: ReadReviewAnswer = async () => null,
+): LandExecute {
   let execute: LandExecute | undefined
   const mockPi = {
     registerTool: (options: { execute: LandExecute }) => {
@@ -47,6 +52,7 @@ function landExecute(runSuite: SuiteRunner = greenSuite): LandExecute {
     landingState,
     () => null,
     runSuite,
+    readReviewAnswer,
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return execute
@@ -69,6 +75,65 @@ test('merge-main is refused without the human code-review marker', async () => {
     assert.equal(result.isError, true)
     assert.match(result.content[0].text, /code_review tool/)
     assert.match(result.content[0].text, /human code-review gate/)
+  })
+})
+
+test('merge-main succeeds on the durable aven answer pass even with no marker (PMR-R5VB)', async () => {
+  landingState.humanReviewPassed = null
+  const execute = landExecute(greenSuite, async (ref) => {
+    assert.equal(ref, 'PMR-ABC1')
+    return 'pass'
+  })
+  await withFakeAven(async () => {
+    const result = await execute('d1', { ref: 'PMR-ABC1', route: 'merge-main' })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /merge --ff-only/)
+  })
+})
+
+test('merge-main succeeds on the in-session marker even when the durable read returns null (PMR-R5VB)', async () => {
+  landingState.humanReviewPassed = 'PMR-ABC1'
+  let durableReads = 0
+  const execute = landExecute(greenSuite, async () => {
+    durableReads += 1
+    return null
+  })
+  await withFakeAven(async () => {
+    const result = await execute('d2', { ref: 'PMR-ABC1', route: 'merge-main' })
+    assert.equal(result.isError, undefined)
+    assert.equal(
+      durableReads,
+      0,
+      'marker hit must short-circuit the durable read',
+    )
+  })
+})
+
+test('merge-main is refused with neither marker nor durable pass — refusal names BOTH routes', async () => {
+  landingState.humanReviewPassed = null
+  const execute = landExecute(greenSuite, async () => null)
+  await withFakeAven(async () => {
+    const result = await execute('d3', { ref: 'PMR-ABC1', route: 'merge-main' })
+    assert.equal(result.isError, true)
+    assert.match(
+      result.content[0].text,
+      /human code-review gate has not passed/,
+    )
+    assert.match(result.content[0].text, /code_review tool/)
+    assert.match(result.content[0].text, /\/flow answer PMR-ABC1 pass/)
+  })
+})
+
+test('merge-main is refused when the durable aven answer is fail (PMR-R5VB)', async () => {
+  landingState.humanReviewPassed = null
+  const execute = landExecute(greenSuite, async () => 'fail')
+  await withFakeAven(async () => {
+    const result = await execute('d4', { ref: 'PMR-ABC1', route: 'merge-main' })
+    assert.equal(result.isError, true)
+    assert.match(
+      result.content[0].text,
+      /human code-review gate has not passed/,
+    )
   })
 })
 
@@ -115,6 +180,7 @@ test('schema rejects route push-main (PMR-HYZA)', async () => {
     landingState,
     () => null,
     greenSuite,
+    async () => null,
   )
   assert.equal(
     Value.Check(parameters as never, { ref: 'PMR-ABC1', route: 'merge-main' }),
@@ -275,6 +341,7 @@ interface LandHarness {
 
 function landHarness(options?: {
   runSuite?: SuiteRunner
+  readReviewAnswer?: ReadReviewAnswer
   receipts?: ReceiptJournal & { entries: ReceiptQuery[] }
   resolveHead?: () => Promise<string | null>
   landing?: ReturnType<typeof createLandingState>
@@ -299,6 +366,7 @@ function landHarness(options?: {
     landing,
     () => null,
     countingSuite,
+    options?.readReviewAnswer ?? (async () => null),
     receipts,
     options?.resolveHead ?? (async () => 'aaa111'),
   )
@@ -486,6 +554,7 @@ test('receipt adoption: receipts and resolveHead are optional (defaults wired)',
     createLandingState(),
     () => null,
     greenSuite,
+    async () => null,
   )
   assert.equal(registered, true)
 })

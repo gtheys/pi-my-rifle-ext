@@ -21,12 +21,15 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
 - `flow_run_attempt` — records each test attempt against the retry budget.
 - `deviation_review` / `code_review` — validate-phase gates (see step 3).
 - `spec_publish` — publishes an approved plan after `spec_approve`.
-- `spec_approve` — the only path from plan-state `review` → `approved`
-  (explicit "approve <REF>" only); a `/flow` run pauses gracefully while a
-  spec awaits approval instead of halting.
+- `spec_approve` — the only path from plan-state `review` → `approved`,
+  receipt-gated: the HUMAN runs `/flow answer <ref> approve` first (human-only
+  slash command; writes the durable approval receipt), then the agent's
+  `spec_approve` accepts — it refuses without the receipt. A `/flow` run
+  pauses gracefully while a spec awaits approval instead of halting.
 
 1. **Plan** — work: `feature-plan-aven` skill (epic/dep tree, plan-state
-   approval gate); personal: now also delegates to the `feature-plan-aven`
+   approval gate — answer-first: the human runs `/flow answer <ref> approve`,
+   then the receipt-gated `spec_approve` goes through); personal: now also delegates to the `feature-plan-aven`
    skill (the old split-gate module was removed); a personal oneshot skips
    the spec-approval gate → `planned`.
 2. **Implement** — gate: `planned` required; worktree isolation; routes

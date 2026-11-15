@@ -101,12 +101,15 @@ test('buildPlanPrompt: personal plan route delegates to feature-plan-aven by nam
   assert.match(prompt, /engineering:feature-plan-aven/)
   assert.match(prompt, /personal aven ticket PMR-F7YM/)
   assert.match(prompt, /resume ladder owns ALL resume states/)
-  // Personal-mode approval: the skill's own approval is authoritative; the
-  // flow_phase_complete gate checks only lifecycle-label order (it never
-  // reads plan-state), so flow_phase_complete must wait for plan-state=approved.
-  assert.match(prompt, /plan-state=approved/)
-  assert.match(prompt, /authoritative/)
-  assert.match(prompt, /spec_approve/)
+  // Personal-mode approval: receipt-gated — the human runs /flow answer
+  // first, then spec_approve accepts; raw aven plan-state edits are
+  // forbidden in flow context. flow_phase_complete still never reads
+  // plan-state.
+  assert.match(prompt, /\/flow answer PMR-F7YM approve/)
+  assert.match(prompt, /receipt-gated/)
+  assert.match(prompt, /refuses[\s\S]*?without the receipt/)
+  assert.match(prompt, /NOT run raw/)
+  assert.match(prompt, /aven edit --metadata plan-state=approved/)
   assert.match(prompt, /never reads plan-state/)
   assert.ok(
     !/only reads plan-state/.test(prompt),

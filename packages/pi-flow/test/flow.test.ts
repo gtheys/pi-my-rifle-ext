@@ -1,5 +1,17 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { after, test } from 'node:test'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { answerUsageText } from '../flow/answer.ts'
 import { parseFlowArgs } from '../flow/args.ts'
 import { nextPhase, PHASE_LABEL } from '../flow/orchestrate.ts'
 import {
@@ -7,6 +19,7 @@ import {
   resumeSeedFromEvents,
   runInputRecord,
 } from '../flow/resume.ts'
+import flowExtension, { setAvenSessionCwd } from '../index.ts'
 
 // --- parseFlowArgs ---
 
@@ -289,5 +302,198 @@ test('run-input: no seed keeps the freshly rebuilt promptInput as-is', () => {
     mode: 'personal',
     gitRoot: '/repo',
     workRoots: ['/fresh'],
+  })
+})
+// --- /flow handler dispatch: answer path (PMR-R5VB subtask 1.4) ---
+
+const HANDLER_BIN = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-handler-bin-'))
+const HANDLER_LOG = path.join(HANDLER_BIN, 'calls.txt')
+const HANDLER_MODE = path.join(HANDLER_BIN, 'mode.txt')
+writeFileSync(HANDLER_MODE, 'ok')
+writeFileSync(HANDLER_LOG, '')
+writeFileSync(
+  path.join(HANDLER_BIN, 'aven'),
+  `#!/bin/sh
+printf '%s ' "$@" >> ${HANDLER_LOG}
+echo >> ${HANDLER_LOG}
+mode=$(cat ${HANDLER_MODE})
+if [ "$1" = "show" ]; then
+  if [ "$mode" = "error" ]; then
+    exit 1
+  fi
+  echo "$2 status=todo title=x"
+  exit 0
+fi
+if [ "$1" = "edit" ]; then
+  echo "updated $2"
+  exit 0
+fi
+if [ "$1" = "note" ]; then
+  exit 0
+fi
+exit 1
+`,
+)
+chmodSync(path.join(HANDLER_BIN, 'aven'), 0o755)
+
+const HANDLER_WS = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-handler-ws-'))
+// PMR-XTQQ: keep the handler tests hermetic — the merged /flow run path
+// ensures the durable run server before reading aven labels; the kill switch
+// (project override config) skips the daemon spawn in these tests.
+mkdirSync(path.join(HANDLER_WS, '.pi', 'pi-flow'), { recursive: true })
+writeFileSync(
+  path.join(HANDLER_WS, '.pi', 'pi-flow', 'config.json'),
+  JSON.stringify({ workRoots: [], runServer: { enabled: false } }),
+)
+const HANDLER_AGENT_DIR = mkdtempSync(
+  path.join(os.tmpdir(), 'pi-flow-handler-agent-'),
+)
+
+after(() => {
+  rmSync(HANDLER_BIN, { recursive: true, force: true })
+  rmSync(HANDLER_WS, { recursive: true, force: true })
+  rmSync(HANDLER_AGENT_DIR, { recursive: true, force: true })
+})
+
+function withHandlerEnv(fn: () => Promise<void>): Promise<void> {
+  const previousPath = process.env.PATH
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR
+  process.env.PATH = `${HANDLER_BIN}:${previousPath ?? ''}`
+  process.env.PI_CODING_AGENT_DIR = HANDLER_AGENT_DIR
+  setAvenSessionCwd(HANDLER_WS)
+  return fn().finally(() => {
+    if (previousPath === undefined) {
+      delete process.env.PATH
+    } else {
+      process.env.PATH = previousPath
+    }
+    if (previousAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR
+    } else {
+      process.env.PI_CODING_AGENT_DIR = previousAgentDir
+    }
+    writeFileSync(HANDLER_LOG, '')
+  })
+}
+
+interface FlowCallCtx {
+  handler: (args: string, ctx: unknown) => Promise<void>
+  sent: string[]
+}
+
+// AIDEV-NOTE: fake ExtensionAPI via Proxy — captures registerCommand('flow')
+// and sendUserMessage; every other registration method is a no-op so the
+// full default extension wires without a live Pi session.
+function captureFlowCommand(): FlowCallCtx {
+  const commands = new Map<
+    string,
+    { handler: (args: string, ctx: unknown) => Promise<void> }
+  >()
+  const sent: string[] = []
+  const base = {
+    registerCommand: (
+      name: string,
+      def: { handler: (args: string, ctx: unknown) => Promise<void> },
+    ) => {
+      commands.set(name, def)
+    },
+    sendUserMessage: (message: string) => {
+      sent.push(message)
+    },
+    exec: async () => ({ stdout: `${HANDLER_WS}\n`, stderr: '' }),
+  }
+  const pi = new Proxy(base, {
+    get(target, prop) {
+      if (prop in target) {
+        return target[prop as keyof typeof target]
+      }
+      return () => {}
+    },
+  }) as unknown as ExtensionAPI
+  flowExtension(pi)
+  const def = commands.get('flow')
+  if (def === undefined) {
+    throw new Error('/flow command was not registered')
+  }
+  return { handler: def.handler, sent }
+}
+
+function flowCtx(
+  notifications: Array<{ message: string; level: string }>,
+): unknown {
+  return {
+    cwd: HANDLER_WS,
+    ui: {
+      notify: (message: string, level: string) =>
+        notifications.push({ message, level }),
+    },
+  }
+}
+
+test('flow handler: answer routes to answer path, never sendUserMessage', async () => {
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler('answer PMR-XXX approve', flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /PMR-XXX spec=approve recorded/)
+    const calls = readFileSync(HANDLER_LOG, 'utf8')
+    assert.match(calls, /edit PMR-XXX/)
+    assert.match(calls, /spec-answer=approve/)
+    assert.match(calls, /note PMR-XXX/)
+    const journal = readFileSync(
+      path.join(HANDLER_AGENT_DIR, 'pi-flow', 'runs', 'PMR-XXX.journal.jsonl'),
+      'utf8',
+    )
+    assert.match(journal, /"kind":"gate-answer"/)
+    assert.match(journal, /"gate":"spec-review"/)
+  })
+})
+
+test('flow handler: answer bad choice and bare answer show usage, no writes', async () => {
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler('answer PMR-XXX maybe', flowCtx(notifications))
+    await handler('answer', flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 2)
+    assert.equal(notifications[0].message, answerUsageText)
+    assert.equal(notifications[0].level, 'info')
+    assert.equal(notifications[1].message, answerUsageText)
+    assert.equal(readFileSync(HANDLER_LOG, 'utf8'), '')
+  })
+})
+
+test('flow handler: answer with invalid ref charset warns, no writes', async () => {
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler('answer bad!ref approve', flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'warning')
+    assert.match(notifications[0].message, /invalid ref/)
+    assert.equal(readFileSync(HANDLER_LOG, 'utf8'), '')
+  })
+})
+
+test('flow handler: plain ref takes the run path (aven labels read), no answer writes', async () => {
+  await withHandlerEnv(async () => {
+    writeFileSync(HANDLER_MODE, 'error')
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler('PMR-XXX', flowCtx(notifications))
+    writeFileSync(HANDLER_MODE, 'ok')
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'warning')
+    assert.match(notifications[0].message, /cannot read aven labels/)
+    const calls = readFileSync(HANDLER_LOG, 'utf8')
+    assert.match(calls, /show PMR-XXX/)
+    assert.doesNotMatch(calls, /edit PMR-XXX/)
+    assert.doesNotMatch(calls, /note PMR-XXX/)
   })
 })

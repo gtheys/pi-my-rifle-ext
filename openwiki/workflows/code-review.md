@@ -64,8 +64,13 @@ Beyond `/review`, validate runs two more gates (`packages/pi-flow/tools/`):
   parsing, parse error = re-run, never 0 deviations.
 - `code_review` (`tools/code-review.ts`, `code-review-parse.ts`) — human gate:
   opens `tuicr` on the flow worktree (matched by title-derived branch; external
-  worktrees accepted), human answers pass/fail. Required before personal
-  `flow_land route=merge-main`.
+  worktrees accepted), then blocks on `ask_user_question` for the human's
+  pass/fail — the only in-session route (the removed agent-attested fallback
+  is gone; the tool cannot record an outcome by itself). When
+  `ask_user_question` is unavailable it fails closed and directs the human to
+  the durable, human-only `/flow answer <ref> pass|fail`. Required before
+  personal `flow_land route=merge-main`, which also accepts that durable
+  answer cross-session.
 
 ## `/sonarqube` — `packages/pi-flow/sonarqube/sonarqube.ts`
 

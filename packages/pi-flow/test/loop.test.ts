@@ -184,15 +184,23 @@ test('plan settles without "planned" while plan-state=review: awaiting-approval 
   assert.equal(loop.isActive(), false)
   assert.equal(h.notes.length, 1)
   assert.match(h.notes[0].text, /awaiting spec approval/)
+  assert.match(h.notes[0].text, /\/flow answer .* approve/)
   assert.doesNotMatch(h.notes[0].text, /halted/)
   const last = h.notifications.at(-1)
   assert.equal(last?.level, 'info')
   assert.match(last?.message ?? '', /awaiting spec approval/)
-  assert.equal(h.events.at(-1)?.kind, 'loop-state')
+  // PMR-R5VB: the pause notify directs the human to the human-only answer
+  // command; the loop journals a 'note' event for it.
+  assert.match(last?.message ?? '', /\/flow answer .* approve/)
+  const noteEvent = h.events.find((e) => e.kind === 'note')
+  assert.ok(noteEvent, 'plan pause must journal a note event')
+  // PMR-XTQQ: the pause ALSO journals a paused loop-state snapshot (the last
+  // event — resume seeding and the pending protocol read the latest
+  // snapshot); the pending protocol parks ONLY on awaitingOutcome=true +
+  // running, so the snapshot must carry awaitingOutcome=false.
   const paused = h.events.at(-1)
+  assert.equal(paused?.kind, 'loop-state')
   if (paused?.kind === 'loop-state') {
-    // phase-3's pending protocol parks ONLY on awaitingOutcome=true +
-    // running — the approval pause must journal awaitingOutcome=false.
     assert.equal(paused.loop.status, 'paused')
     assert.equal(paused.loop.awaitingOutcome, false)
   }

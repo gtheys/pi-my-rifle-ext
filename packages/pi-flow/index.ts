@@ -31,10 +31,12 @@ import {
   lastAvenResolutionFailure,
   readAvenLabels,
   readFreshBlockers,
+  readGateAnswer,
   readJiraRef,
   readPlanState,
   setAvenSessionCwd,
   writeAvenNote,
+  writeGateAnswer,
 } from './aven/client.ts'
 import {
   loadConfig,
@@ -42,6 +44,12 @@ import {
   resolveRunServerEnabled,
   saveViewerPlacement,
 } from './config.ts'
+import {
+  type AnswerDeps,
+  answerUsageText,
+  executeFlowAnswer,
+  parseFlowAnswerArgs,
+} from './flow/answer.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { spawnJournalTarget } from './flow/attribution.ts'
 import { pushToGateway } from './flow/cost.ts'
@@ -51,7 +59,10 @@ import {
   registerFlowCostCommand,
 } from './flow/cost-command.ts'
 import { resolveJiraEpic } from './flow/jira-ref.ts'
-import { lifecycleLabelMutation } from './flow/label-gate.ts'
+import {
+  lifecycleLabelMutation,
+  receiptMetadataMutation,
+} from './flow/label-gate.ts'
 import { landingIntercept } from './flow/land-gate.ts'
 import { createFlowLoop } from './flow/loop.ts'
 import { nextPhase } from './flow/orchestrate.ts'
@@ -128,8 +139,10 @@ import worktreeExtension from './worktree/index.ts'
 // from index.ts; the implementations now live in the boundary modules.
 export {
   readAvenLabels,
+  readGateAnswer,
   setAvenSessionCwd,
   specApprove,
+  writeGateAnswer,
 } from './aven/client.ts'
 export {
   loadConfig,
@@ -144,6 +157,10 @@ export {
 // owns the projection (per-write liveness probe), today's full writer path
 // when absent. Journal failures must never break a flow phase; aven labels
 // remain the gate source of truth.
+
+// AIDEV-NOTE: production wiring for the /flow answer dispatch lives INSIDE
+// the extension closure below (makeAnswerDeps) so the answer path's journal
+// appends route through the mode-aware writer seam.
 
 export default function (pi: ExtensionAPI) {
   // AIDEV-NOTE: PMR-XTQQ — runServer.enabled kill switch (default true).
@@ -198,6 +215,27 @@ export default function (pi: ExtensionAPI) {
     event: Parameters<typeof writer.recordJournalOnly>[0],
   ): Promise<void> {
     await writer.recordJournalOnly(event)
+  }
+
+  // AIDEV-NOTE: production wiring for the /flow answer dispatch (PMR-R5VB) —
+  // the only place where human answers reach aven. `ctx` is the command
+  // handler's context, structurally narrowed. Lives inside the extension
+  // closure so appendJournal routes through the mode-aware writer seam
+  // (journal-only while the durable run server owns the projection).
+  function makeAnswerDeps(ctx: {
+    cwd: string
+    ui: {
+      notify(message: string, level: 'info' | 'warning' | 'error'): void
+    }
+  }): AnswerDeps {
+    return {
+      notify: (message, level) => ctx.ui.notify(message, level),
+      writeGateAnswer: (ref, gate, choice) =>
+        writeGateAnswer(ref, gate, choice),
+      writeAvenNote: (ref, text) => writeAvenNote(ref, text),
+      appendJournal: (event) => journalOnly(event),
+      now: () => new Date().toISOString(),
+    }
   }
   // AIDEV-NOTE: ui.notify holder — command and event handlers each get their
   // own ctx; the loop needs one stable notify. session_start fires before any
@@ -367,7 +405,9 @@ export default function (pi: ExtensionAPI) {
   // returns {block, reason}), so no guard-wrapper fallback script is needed.
   // The boundary is the agent's bash TOOL: a human running aven by hand is
   // out of scope (humans own the run). Type labels (bug, oneshot, plan) stay
-  // agent-writable.
+  // agent-writable. PMR-R5VB (review blocker fix): the same tool_call
+  // interceptor also blocks forged human receipts via bash metadata writes —
+  // see receiptMetadataMutation below.
   // AIDEV-NOTE: PMR-06RH — landing interceptor. `git push` / `gh pr create`
   // are blocked ONLY while the flow loop has an active ref, and only until
   // flow_land authorizes that ref's landing (landingState). No flow active →
@@ -390,6 +430,27 @@ export default function (pi: ExtensionAPI) {
         reason: `lifecycle label "${label}" is extension-governed — call the flow_phase_complete tool instead of writing aven labels directly`,
       }
     }
+    // AIDEV-NOTE: PMR-R5VB — receipt forge blocker. Writing aven metadata
+    // spec-answer/review-answer (any value) or plan-state=approved directly
+    // from the model's bash would forge a human receipt, reaching
+    // spec_approve / flow_land merge-main without a human /flow answer.
+    // receiptMetadataMutation (flow/label-gate.ts) gates those at this same
+    // boundary; the extension's own aven writes (flow/answer.ts) bypass it
+    // because they are not model tool calls.
+    const metadata = receiptMetadataMutation(event.input.command)
+    if (metadata !== null) {
+      if (metadata === 'plan-state=approved') {
+        return {
+          block: true,
+          reason:
+            'plan-state=approved is extension-governed — approval transitions go through the receipt-gated spec_approve tool, which requires a human /flow answer first',
+        }
+      }
+      return {
+        block: true,
+        reason: `aven metadata "${metadata}" is human-gated — the human records receipts with /flow answer <ref> <choice>; model-written receipts are not proof of anything`,
+      }
+    }
     const decision = landingIntercept(
       event.input.command,
       loop.activeRef(),
@@ -406,11 +467,22 @@ export default function (pi: ExtensionAPI) {
   })
 
   registerPhaseCompleteTool(pi, undefined, writer)
+  // AIDEV-NOTE: PMR-R5VB — merge-main's human-review gate also accepts the
+  // durable aven answer (human-only /flow answer <ref> pass); the read is
+  // fail-closed (null on failure -> marker-only evaluation).
   registerLandTool(
     pi,
     landingState,
     () => loop.activeRef(),
     defaultSuiteRunner,
+    // AIDEV-NOTE: PMR-R5VB — readGateAnswer's AnswerChoice also allows
+    // 'approve'/'reject' (other gates); narrow to this gate's vocabulary.
+    async (ref) => {
+      const answer = await readGateAnswer(ref, 'review')
+      if (answer === 'pass') return 'pass' as const
+      if (answer === 'fail') return 'fail' as const
+      return null
+    },
     undefined,
     undefined,
     writer,
@@ -639,7 +711,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('flow', {
     description:
-      'PIV run-all (plan -> implement -> validate -> feedback; personal mode stops after validate). Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>>. Brainstorm topics go through /brainstorm.',
+      'PIV run-all (plan -> implement -> validate -> feedback; personal mode stops after validate) or record a protected human decision. Usage: /flow <ref> | /flow answer <ref> <approve|reject|pass|fail>. Brainstorm topics go through /brainstorm.',
     // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
     // failure aborts, never starts mid-phase by accident). nextPhase()
     // resolves the first phase whose completion label is missing, then the
@@ -648,6 +720,31 @@ export default function (pi: ExtensionAPI) {
     // agent_settled when the phase label lands. No driver agent — the model
     // never sequences phases.
     handler: async (args, ctx) => {
+      const answerParsed = parseFlowAnswerArgs(args)
+      if (answerParsed.kind === 'answer-help') {
+        ctx.ui.notify(answerUsageText, 'info')
+        return
+      }
+      if (answerParsed.kind === 'answer') {
+        // AIDEV-NOTE: PMR-R5VB — /flow answer is the HUMAN-ONLY decision
+        // recorder. Slash commands run before the agent loop (extensions.md),
+        // and this path must never call pi.sendUserMessage: the work runs and
+        // returns (same shape as /herdr-sync below), so no model turn is ever
+        // triggered by an answer. Same ref charset guard as the run path —
+        // the journal filename derives from the ref.
+        if (!isValidRef(answerParsed.ref)) {
+          ctx.ui.notify(
+            `/flow answer ${answerParsed.ref}: invalid ref (must match [A-Za-z0-9][A-Za-z0-9._-]{0,99}) — aborting.`,
+            'warning',
+          )
+          return
+        }
+        await executeFlowAnswer(
+          { ref: answerParsed.ref, choice: answerParsed.choice },
+          makeAnswerDeps(ctx),
+        )
+        return
+      }
       const parsed = parseFlowArgs(args)
       if (parsed.kind === 'help') {
         ctx.ui.notify(
