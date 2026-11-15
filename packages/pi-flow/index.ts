@@ -35,8 +35,15 @@ import {
   readPlanState,
   setAvenSessionCwd,
   writeAvenNote,
+  writeGateAnswer,
 } from './aven/client.ts'
 import { loadConfig, resolveMode, saveViewerPlacement } from './config.ts'
+import {
+  type AnswerDeps,
+  answerUsageText,
+  executeFlowAnswer,
+  parseFlowAnswerArgs,
+} from './flow/answer.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { spawnJournalTarget } from './flow/attribution.ts'
 import { pushToGateway } from './flow/cost.ts'
@@ -143,6 +150,24 @@ async function journalOnly(
     await recordRunEventJournalOnly(getAgentDir(), event)
   } catch {
     // best-effort by design
+  }
+}
+
+// AIDEV-NOTE: production wiring for the /flow answer dispatch — the only
+// place where human answers reach aven. `ctx` is the command handler's
+// context, structurally narrowed.
+function makeAnswerDeps(ctx: {
+  cwd: string
+  ui: {
+    notify(message: string, level: 'info' | 'warning' | 'error'): void
+  }
+}): AnswerDeps {
+  return {
+    notify: (message, level) => ctx.ui.notify(message, level),
+    writeGateAnswer: (ref, gate, choice) => writeGateAnswer(ref, gate, choice),
+    writeAvenNote: (ref, text) => writeAvenNote(ref, text),
+    appendJournal: (event) => journalOnly(event),
+    now: () => new Date().toISOString(),
   }
 }
 
@@ -537,7 +562,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('flow', {
     description:
-      'PIV run-all (plan -> implement -> validate -> feedback; personal mode stops after validate). Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>>. Brainstorm topics go through /brainstorm.',
+      'PIV run-all (plan -> implement -> validate -> feedback; personal mode stops after validate) or record a protected human decision. Usage: /flow <ref> | /flow answer <ref> <approve|reject|pass|fail>. Brainstorm topics go through /brainstorm.',
     // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
     // failure aborts, never starts mid-phase by accident). nextPhase()
     // resolves the first phase whose completion label is missing, then the
@@ -546,6 +571,31 @@ export default function (pi: ExtensionAPI) {
     // agent_settled when the phase label lands. No driver agent — the model
     // never sequences phases.
     handler: async (args, ctx) => {
+      const answerParsed = parseFlowAnswerArgs(args)
+      if (answerParsed.kind === 'answer-help') {
+        ctx.ui.notify(answerUsageText, 'info')
+        return
+      }
+      if (answerParsed.kind === 'answer') {
+        // AIDEV-NOTE: PMR-R5VB — /flow answer is the HUMAN-ONLY decision
+        // recorder. Slash commands run before the agent loop (extensions.md),
+        // and this path must never call pi.sendUserMessage: the work runs and
+        // returns (same shape as /herdr-sync below), so no model turn is ever
+        // triggered by an answer. Same ref charset guard as the run path —
+        // the journal filename derives from the ref.
+        if (!isValidRef(answerParsed.ref)) {
+          ctx.ui.notify(
+            `/flow answer ${answerParsed.ref}: invalid ref (must match [A-Za-z0-9][A-Za-z0-9._-]{0,99}) — aborting.`,
+            'warning',
+          )
+          return
+        }
+        await executeFlowAnswer(
+          { ref: answerParsed.ref, choice: answerParsed.choice },
+          makeAnswerDeps(ctx),
+        )
+        return
+      }
       const parsed = parseFlowArgs(args)
       if (parsed.kind === 'help') {
         ctx.ui.notify(
