@@ -136,6 +136,41 @@ export type FlowRunEvent =
       ref: string
       text: string
     }
+  | {
+      /**
+       * AIDEV-NOTE: durable run server — serializable prompt-input subset
+       * ({ mode, gitRoot, workRoots }); labels are re-derived live and
+       * findTicketRef/epicHasOpenChildren are rebuilt closures, never
+       * serialized. Last-wins in the projection.
+       */
+      kind: 'run-input'
+      at: string
+      ref: string
+      input: RunInputRecord
+    }
+  | {
+      /** AIDEV-NOTE: durable run server — loop snapshot; last-wins. */
+      kind: 'loop-state'
+      at: string
+      ref: string
+      loop: LoopStateRecord
+    }
+
+export interface RunInputRecord {
+  mode: 'work' | 'personal'
+  gitRoot: string
+  workRoots: string[]
+}
+
+export type LoopRunStatus = 'running' | 'paused' | 'halted' | 'done'
+
+export interface LoopStateRecord {
+  phase: FlowPhase
+  awaitingOutcome: boolean
+  blockerRetries: number
+  validateStartedAt: string
+  status: LoopRunStatus
+}
 
 export interface GateTargetRecord {
   targetId: string
@@ -170,6 +205,10 @@ export type FlowRunState = {
   // AIDEV-NOTE: PMR-4S6V — optional so pre-receipt projections (and old
   // journals rebuilt without command-receipt events) stay valid.
   receipts?: CommandReceiptRecord[]
+  // AIDEV-NOTE: durable run server — optional so pre-input/loop projections
+  // (and old journals rebuilt without these events) stay valid.
+  input?: RunInputRecord
+  loop?: LoopStateRecord
 }
 
 export interface SubtaskRangesRecord {
@@ -343,6 +382,24 @@ export function applyEvent(
       // evidence for /flow-cost only; the projection stays unchanged
       return state as FlowRunState
     }
+    case 'run-input': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      return {
+        ...state,
+        input: event.input,
+        updatedAt: event.at,
+      }
+    }
+    case 'loop-state': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      return {
+        ...state,
+        loop: event.loop,
+        updatedAt: event.at,
+      }
+    }
     case 'note': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
@@ -368,6 +425,13 @@ const GATE_KINDS: readonly GateJournalKind[] = [
   'deviation',
   'code-review',
   'spec-review',
+]
+
+const LOOP_STATUSES: readonly LoopRunStatus[] = [
+  'running',
+  'paused',
+  'halted',
+  'done',
 ]
 
 const GATE_STATUSES: readonly GateDecisionStatus[] = [
@@ -470,6 +534,31 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
           typeof (r as Record<string, unknown>).headSha === 'string'),
     )
     if (!receiptsOk) return false
+  }
+  // AIDEV-NOTE: durable run server — input/loop validated only when present
+  // (old journals/projections lack them).
+  if (v.input !== undefined) {
+    const input = v.input as Record<string, unknown>
+    const inputOk =
+      typeof input === 'object' &&
+      input !== null &&
+      (input.mode === 'work' || input.mode === 'personal') &&
+      typeof input.gitRoot === 'string' &&
+      Array.isArray(input.workRoots) &&
+      input.workRoots.every((r) => typeof r === 'string')
+    if (!inputOk) return false
+  }
+  if (v.loop !== undefined) {
+    const loop = v.loop as Record<string, unknown>
+    const loopOk =
+      typeof loop === 'object' &&
+      loop !== null &&
+      PHASES.includes(loop.phase as FlowPhase) &&
+      typeof loop.awaitingOutcome === 'boolean' &&
+      typeof loop.blockerRetries === 'number' &&
+      typeof loop.validateStartedAt === 'string' &&
+      LOOP_STATUSES.includes(loop.status as LoopRunStatus)
+    if (!loopOk) return false
   }
   return true
 }

@@ -554,3 +554,221 @@ test('createReceiptJournal: find returns null when readFile rejects', async () =
     null,
   )
 })
+
+// --- run-input / loop-state (durable-run-server) ---
+
+const inputRun = {
+  kind: 'run-start' as const,
+  at: '2026-11-15T00:00:00Z',
+  ref: 'PMR-INPUT',
+  mode: 'work' as const,
+}
+
+const loopRun = {
+  kind: 'run-start' as const,
+  at: '2026-11-15T00:00:00Z',
+  ref: 'PMR-LOOP',
+  mode: 'personal' as const,
+}
+
+test('run-input: applyEvent sets the input snapshot (last-wins per ref)', () => {
+  let state = applyEvent(null, inputRun)
+  state = applyEvent(state, {
+    kind: 'run-input',
+    at: 't1',
+    ref: 'PMR-INPUT',
+    input: { mode: 'work', gitRoot: '/repo', workRoots: ['/a'] },
+  })
+  assert.deepEqual(state.input, {
+    mode: 'work',
+    gitRoot: '/repo',
+    workRoots: ['/a'],
+  })
+  state = applyEvent(state, {
+    kind: 'run-input',
+    at: 't2',
+    ref: 'PMR-INPUT',
+    input: { mode: 'work', gitRoot: '/repo2', workRoots: ['/b', '/c'] },
+  })
+  assert.deepEqual(state.input, {
+    mode: 'work',
+    gitRoot: '/repo2',
+    workRoots: ['/b', '/c'],
+  })
+  assert.equal(state.updatedAt, 't2')
+})
+
+test('run-input: mismatched ref is ignored', () => {
+  let state = applyEvent(null, inputRun)
+  const before = state
+  state = applyEvent(state, {
+    kind: 'run-input',
+    at: 't1',
+    ref: 'OTHER',
+    input: { mode: 'work', gitRoot: '/repo', workRoots: [] },
+  })
+  assert.equal(state, before)
+  assert.equal(before.input, undefined)
+})
+
+test('loop-state: applyEvent sets and overwrites the loop snapshot', () => {
+  let state = applyEvent(null, loopRun)
+  state = applyEvent(state, {
+    kind: 'loop-state',
+    at: 't1',
+    ref: 'PMR-LOOP',
+    loop: {
+      phase: 'validate',
+      awaitingOutcome: true,
+      blockerRetries: 0,
+      validateStartedAt: 't1',
+      status: 'running',
+    },
+  })
+  assert.deepEqual(state.loop, {
+    phase: 'validate',
+    awaitingOutcome: true,
+    blockerRetries: 0,
+    validateStartedAt: 't1',
+    status: 'running',
+  })
+  state = applyEvent(state, {
+    kind: 'loop-state',
+    at: 't2',
+    ref: 'PMR-LOOP',
+    loop: {
+      phase: 'feedback',
+      awaitingOutcome: false,
+      blockerRetries: 2,
+      validateStartedAt: 't2',
+      status: 'halted',
+    },
+  })
+  assert.equal(state.loop?.status, 'halted')
+  assert.equal(state.loop?.blockerRetries, 2)
+  assert.equal(state.updatedAt, 't2')
+})
+
+test('loop-state: mismatched ref is ignored', () => {
+  let state = applyEvent(null, loopRun)
+  const before = state
+  state = applyEvent(state, {
+    kind: 'loop-state',
+    at: 't1',
+    ref: 'OTHER',
+    loop: {
+      phase: 'plan',
+      awaitingOutcome: false,
+      blockerRetries: 0,
+      validateStartedAt: 't1',
+      status: 'paused',
+    },
+  })
+  assert.equal(state, before)
+  assert.equal(before.loop, undefined)
+})
+
+test('run-input / loop-state: old journals without them still project', () => {
+  const state = projectRunState([inputRun])
+  assert.ok(state)
+  assert.equal(state.input, undefined)
+  assert.equal(state.loop, undefined)
+  assert.equal(isFlowRunState(state), true)
+})
+
+test('isFlowRunState: validates input/loop only when present', () => {
+  const baseState: Record<string, unknown> = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+    mode: 'work',
+    startedAt: 't0',
+    updatedAt: 't1',
+    completedPhases: [],
+    currentPhase: null,
+    notes: [],
+  }
+  const validInput = {
+    ...baseState,
+    input: { mode: 'work', gitRoot: '/repo', workRoots: ['/a'] },
+  }
+  assert.equal(isFlowRunState(validInput), true)
+  const badInput = {
+    ...validInput,
+    input: { mode: 'sometimes', gitRoot: 5, workRoots: 'nope' },
+  }
+  assert.equal(isFlowRunState(badInput), false)
+
+  const validLoop = {
+    ...validInput,
+    loop: {
+      phase: 'implement',
+      awaitingOutcome: false,
+      blockerRetries: 1,
+      validateStartedAt: 't1',
+      status: 'paused',
+    },
+  }
+  assert.equal(isFlowRunState(validLoop), true)
+  const badLoopPhase = {
+    ...validInput,
+    loop: {
+      phase: 'research',
+      awaitingOutcome: false,
+      blockerRetries: 0,
+      validateStartedAt: 't1',
+      status: 'done',
+    },
+  }
+  assert.equal(isFlowRunState(badLoopPhase), false)
+  const badLoopStatus = {
+    ...validInput,
+    loop: {
+      phase: 'plan',
+      awaitingOutcome: false,
+      blockerRetries: 0,
+      validateStartedAt: 't1',
+      status: 'exploded',
+    },
+  }
+  assert.equal(isFlowRunState(badLoopStatus), false)
+  const badLoopRetries = {
+    ...validInput,
+    loop: {
+      phase: 'plan',
+      awaitingOutcome: 'yes',
+      blockerRetries: 'none',
+      validateStartedAt: 't1',
+      status: 'running',
+    },
+  }
+  assert.equal(isFlowRunState(badLoopRetries), false)
+})
+
+test('run-input / loop-state: projection round-trips through projectRunState', () => {
+  const events: FlowRunEvent[] = [
+    inputRun,
+    {
+      kind: 'run-input',
+      at: 't1',
+      ref: 'PMR-INPUT',
+      input: { mode: 'work', gitRoot: '/repo', workRoots: ['/a'] },
+    },
+    {
+      kind: 'loop-state',
+      at: 't2',
+      ref: 'PMR-INPUT',
+      loop: {
+        phase: 'implement',
+        awaitingOutcome: true,
+        blockerRetries: 0,
+        validateStartedAt: 't2',
+        status: 'running',
+      },
+    },
+  ]
+  const state = projectRunState(events)
+  assert.ok(state)
+  assert.equal(state.input?.gitRoot, '/repo')
+  assert.equal(state.loop?.phase, 'implement')
+  assert.equal(isFlowRunState(state), true)
+})
