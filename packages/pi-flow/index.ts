@@ -108,7 +108,10 @@ import {
   registerLandTool,
 } from './tools/land.ts'
 import { registerPhaseCompleteTool } from './tools/phase-complete.ts'
-import { registerRunAttemptTool } from './tools/run-attempt.ts'
+import {
+  createAttemptLedger,
+  registerRunAttemptTool,
+} from './tools/run-attempt.ts'
 import { registerSpecApproveTool } from './tools/spec-approve.ts'
 import worktreeExtension from './worktree/index.ts'
 
@@ -393,7 +396,16 @@ export default function (pi: ExtensionAPI) {
   // validate prompt can instruct the agent to CALL something (D3/D4) instead
   // of naming TS functions it cannot invoke.
   registerDeviationReviewTool(pi, writer)
-  registerRunAttemptTool(pi)
+  // AIDEV-NOTE: PMR-XTQQ 4.2 — the flow_run_attempt budget is durable: the
+  // tool journals attempt-record snapshots through the mode-aware writer
+  // (journal-only while the daemon owns the projection) and seeds from the
+  // journal on first call per ref. Ledger io failures degrade to in-memory.
+  registerRunAttemptTool(
+    pi,
+    createAttemptLedger(getAgentDir(), {
+      record: (event) => writer.record(event),
+    }),
+  )
   registerSpecApproveTool(pi)
   // AIDEV-NOTE: PMR-XCA9 — plan-tools absorbed from the retired pi-planning
   // package (resolve_spec_path, resolve_feature_path, open_in_pane,

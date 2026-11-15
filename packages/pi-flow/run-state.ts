@@ -34,12 +34,12 @@ export type GateDecisionStatus =
 // transition; duplicates adopt the stored receipt instead of repeating the
 // transition. BEST-EFFORT by design: missing/corrupt/torn receipts degrade
 // to label checks + suite re-run; aven labels stay the gate of record.
-// AIDEV-NOTE: PMR-2HFC/PMR-XTQQ — the flow_run_attempt budget was
-// non-durable (PMR-2HFC); the loop-level blockerRetries budget is durable
-// since phase 2 (loop-state snapshots + resume seeding). The attempt ledger
-// PROJECTION half landed in phase 4 (attempt-record kind + `attempts`
-// projection below); the tool-side durable ledger (tools/run-attempt.ts
-// reading/journaling it) is subtask 4.2 of PMR-XTQQ.
+// AIDEV-NOTE: PMR-2HFC/PMR-XTQQ — the flow_run_attempt budget WAS
+// non-durable (PMR-2HFC); it is durable as of PMR-XTQQ 4.2: the loop-level
+// blockerRetries budget is durable since phase 2 (loop-state snapshots +
+// resume seeding) and the attempt ledger is durable since 4.2 —
+// tools/run-attempt.ts reads/journals attempt-record events (the projection
+// half landed in phase 4) through the writer seam.
 export type ReceiptCommand = 'flow_land' | 'flow_phase_complete'
 
 const RECEIPT_COMMANDS: readonly ReceiptCommand[] = [
@@ -100,7 +100,7 @@ export type FlowRunEvent =
        * AIDEV-NOTE: PMR-4S6V — command receipt: one per COMMITTED gate
        * transition. The flow_run_attempt ledger projection landed in phase 4
        * (attempt-record kind + `attempts` projection); the tool-side durable
-       * ledger (tools/run-attempt.ts) is subtask 4.2 of PMR-XTQQ.
+       * ledger (tools/run-attempt.ts) landed in PMR-XTQQ 4.2.
        */
       kind: 'command-receipt'
       at: string
