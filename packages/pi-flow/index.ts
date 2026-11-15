@@ -36,7 +36,12 @@ import {
   setAvenSessionCwd,
   writeAvenNote,
 } from './aven/client.ts'
-import { loadConfig, resolveMode, saveViewerPlacement } from './config.ts'
+import {
+  loadConfig,
+  resolveMode,
+  resolveRunServerEnabled,
+  saveViewerPlacement,
+} from './config.ts'
 import { parseFlowArgs } from './flow/args.ts'
 import { spawnJournalTarget } from './flow/attribution.ts'
 import { pushToGateway } from './flow/cost.ts'
@@ -130,6 +135,7 @@ export {
   loadConfig,
   readConfigFile,
   resolveMode,
+  resolveRunServerEnabled,
   saveViewerPlacement,
 } from './config.ts'
 
@@ -140,10 +146,13 @@ export {
 // remain the gate source of truth.
 
 export default function (pi: ExtensionAPI) {
-  // AIDEV-NOTE: PMR-XTQQ — runServer.enabled kill switch; flipped from the
-  // loaded config at every /flow start (default true). false = the probe
-  // always reports absent (full-writer path permanently) and ensureDaemon
-  // never spawns.
+  // AIDEV-NOTE: PMR-XTQQ — runServer.enabled kill switch (default true).
+  // Synced from config at session_start (deviation JKD6RFC0MYY3N29C: the
+  // switch must be live from extension init, not only from the first /flow,
+  // so a disabled session gets exactly today's full-writer/no-injection
+  // behavior before any /flow ran) and re-synced at every /flow start.
+  // false = the probe always reports absent (full-writer path permanently),
+  // ensureDaemon never spawns, and the pending consumer is a no-op.
   let runServerEnabled = true
   // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — in-process per-ref latch for the
   // pending-record consumer. Added on a successful consumption attempt
@@ -328,7 +337,21 @@ export default function (pi: ExtensionAPI) {
         'info',
       )
       boundRef = savedRef
-      void resumeParkedRun(resumeConsumerDeps(savedRef))
+      // AIDEV-NOTE: PMR-XTQQ — sync the kill switch from config BEFORE the
+      // consumer runs (deviation JKD6RFC0MYY3N29C): with runServer.enabled
+      // false, resumeParkedRun must no-op (today's behavior) even though no
+      // /flow has run in this session yet. Config read failure keeps the
+      // enabled default — best-effort; /flow re-syncs per start and surfaces
+      // config errors loudly there.
+      void (async () => {
+        try {
+          const config = await loadConfig(ctx.cwd)
+          runServerEnabled = resolveRunServerEnabled(config)
+        } catch {
+          // best-effort init; /flow re-syncs per start
+        }
+        await resumeParkedRun(resumeConsumerDeps(savedRef))
+      })()
     }
     setBindingChangeListener((snapshot) => {
       pi.appendEntry('pi-flow-binding', snapshot)
@@ -675,7 +698,7 @@ export default function (pi: ExtensionAPI) {
       // or disabled switch → notify once and continue (never block the flow;
       // the full-writer fallback is today's exact behavior).
       const config = await loadConfig(ctx.cwd)
-      runServerEnabled = config.runServer?.enabled !== false
+      runServerEnabled = resolveRunServerEnabled(config)
       if (runServerEnabled) {
         const ensured = await ensureDaemon(getAgentDir())
         if (

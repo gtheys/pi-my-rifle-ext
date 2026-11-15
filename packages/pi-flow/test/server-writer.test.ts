@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { readConfigFile } from '../config.ts'
+import { readConfigFile, resolveRunServerEnabled } from '../config.ts'
 import {
   EXPECTED_SERVER_PROTOCOL_VERSION,
   pidFilePath,
@@ -188,6 +188,20 @@ test('config: runServer.enabled defaults to undefined (treated as true)', async 
   } finally {
     await rm(agentDir, { recursive: true, force: true })
   }
+})
+
+test('resolveRunServerEnabled: absent/undefined/true enabled, only explicit false kills', () => {
+  // The derivation both the session_start init and the /flow start sync use.
+  assert.equal(resolveRunServerEnabled({ workRoots: [] }), true)
+  assert.equal(resolveRunServerEnabled({ workRoots: [], runServer: {} }), true)
+  assert.equal(
+    resolveRunServerEnabled({ workRoots: [], runServer: { enabled: true } }),
+    true,
+  )
+  assert.equal(
+    resolveRunServerEnabled({ workRoots: [], runServer: { enabled: false } }),
+    false,
+  )
 })
 
 test('config: invalid runServer.enabled → clear throw mentioning the property', async () => {

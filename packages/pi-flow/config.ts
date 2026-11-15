@@ -217,6 +217,17 @@ async function mainCheckoutRoot(cwd: string): Promise<string | undefined> {
   }
 }
 
+/**
+ * AIDEV-NOTE: PMR-XTQQ — the runServer.enabled kill-switch contract (plan
+ * decision 9): absent/true → durable run server enabled; explicit false →
+ * the probe reports absent, ensureDaemon never spawns, and the pending
+ * consumer stays off — from extension init (session_start sync) through
+ * every /flow start. Pure so the derivation is pinned by tests.
+ */
+export function resolveRunServerEnabled(config: PiFlowConfig): boolean {
+  return config.runServer?.enabled !== false
+}
+
 export async function loadConfig(cwd: string): Promise<PiFlowConfig> {
   const globalPath = path.join(getAgentDir(), 'pi-flow', 'config.json')
   const projectPath = path.join(cwd, CONFIG_DIR_NAME, 'pi-flow', 'config.json')
