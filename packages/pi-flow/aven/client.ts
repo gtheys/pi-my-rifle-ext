@@ -13,6 +13,7 @@ import { classifyLabelFailure } from '../flow/ensure-labels.ts'
 import { ALL_LABELS } from '../phase-state.ts'
 import { approveSpec } from '../spec-review/approve.ts'
 import { avenErrorText, parseMetadataBlock } from '../spec-review/aven-spec.ts'
+import { escapeRegExp } from '../spec-review/escape-regexp.ts'
 
 const execFileAsync = promisify(execFile)
 const AVEN_TIMEOUT_MS = 5_000
@@ -255,6 +256,125 @@ export async function epicHasOpenChildren(ref: string): Promise<boolean> {
         (c) => c.open === true,
       )
     return false
+  } catch (error: unknown) {
+    recordAvenFailure(error)
+    return false
+  }
+}
+
+// AIDEV-NOTE: PMR-R5VB — exact-ref-guarded gate-answer read/write (the
+// protected-decision answers the human records on the aven ticket). aven
+// prefix-matches refs (PMR-F8HB), so BOTH the read and the write go through
+// `showFullGuarded` first: a case-insensitive first-line ref mismatch means
+// the operation targets the WRONG ticket and fails closed. aven exits 0 on
+// errors — never trust exit codes, only output text (stderr for reads,
+// `updated <ref>` stdout for writes).
+export type AnswerGate = 'spec' | 'review'
+export type AnswerChoice = 'approve' | 'reject' | 'pass' | 'fail'
+export const ANSWER_METADATA_KEY: Record<AnswerGate, string> = {
+  spec: 'spec-answer',
+  review: 'review-answer',
+}
+
+/**
+ * PMR-R5VB — pure extraction of the resolved ticket ref from
+ * `aven show <ref> --full` output (the --full analog of ticketSnapshotFor):
+ * the first token of the first line (`<ref> status=...`).
+ */
+export function resolveShowFullRef(stdout: string): string | null {
+  const firstLine = stdout.split('\n')[0] ?? ''
+  const match = /^(\S+) status=/.exec(firstLine)
+  if (match === null) return null
+  return match[1] ?? null
+}
+
+export type ShowFullResult = { ok: true; stdout: string } | { ok: false }
+
+async function showFullGuarded(
+  ref: string,
+  workspace?: string,
+): Promise<ShowFullResult> {
+  try {
+    let args: string[]
+    if (workspace !== undefined) {
+      args = ['show', ref, '--full', '--workspace', workspace]
+    } else {
+      args = await avenArgsWithWorkspace(['show', ref, '--full'], ref)
+    }
+    const { stdout, stderr } = await execFileAsync('aven', args, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    // AIDEV-NOTE: PMR-69V8 — stderr only; note bodies quote "Error:".
+    if (avenErrorText('', stderr) !== null) return { ok: false }
+    const resolvedRef = resolveShowFullRef(stdout)
+    if (resolvedRef === null) return { ok: false }
+    // Case-insensitive compare like ticketSnapshotFor: a case variant is
+    // the same ticket; anything else is a different (wrong) ticket.
+    if (resolvedRef.toUpperCase() !== ref.toUpperCase()) return { ok: false }
+    return { ok: true, stdout }
+  } catch {
+    return { ok: false }
+  }
+}
+
+/**
+ * PMR-R5VB — best-effort gate-answer read: null on any aven failure or
+ * when the metadata field is absent / holds an unknown value (the
+ * readPlanState fail-closed precedent).
+ */
+export async function readGateAnswer(
+  ref: string,
+  gate: AnswerGate,
+  workspace?: string,
+): Promise<AnswerChoice | null> {
+  const guarded = await showFullGuarded(ref, workspace)
+  if (!guarded.ok) return null
+  const value = parseMetadataBlock(guarded.stdout, ANSWER_METADATA_KEY[gate])
+  if (
+    value === 'approve' ||
+    value === 'reject' ||
+    value === 'pass' ||
+    value === 'fail'
+  ) {
+    return value
+  }
+  return null
+}
+
+/**
+ * PMR-R5VB — guarded gate-answer write (the writeAvenLabel pattern): the
+ * exact-ref read must pass first or nothing is written. Success is judged
+ * by `updated <ref>` on stdout — aven exits 0 on errors.
+ */
+export async function writeGateAnswer(
+  ref: string,
+  gate: AnswerGate,
+  choice: AnswerChoice,
+  workspace?: string,
+): Promise<boolean> {
+  const guarded = await showFullGuarded(ref, workspace)
+  if (!guarded.ok) return false
+  try {
+    let args: string[]
+    if (workspace !== undefined) {
+      args = [
+        'edit',
+        ref,
+        '--metadata',
+        `${ANSWER_METADATA_KEY[gate]}=${choice}`,
+        '--workspace',
+        workspace,
+      ]
+    } else {
+      args = await avenArgsWithWorkspace(
+        ['edit', ref, '--metadata', `${ANSWER_METADATA_KEY[gate]}=${choice}`],
+        ref,
+      )
+    }
+    const { stdout } = await execFileAsync('aven', args, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    return new RegExp(`^updated ${escapeRegExp(ref)}(\\s|$)`, 'm').test(stdout)
   } catch (error: unknown) {
     recordAvenFailure(error)
     return false

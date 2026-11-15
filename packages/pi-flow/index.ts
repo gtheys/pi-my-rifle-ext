@@ -112,8 +112,10 @@ import worktreeExtension from './worktree/index.ts'
 // from index.ts; the implementations now live in the boundary modules.
 export {
   readAvenLabels,
+  readGateAnswer,
   setAvenSessionCwd,
   specApprove,
+  writeGateAnswer,
 } from './aven/client.ts'
 export {
   loadConfig,
