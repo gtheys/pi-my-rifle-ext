@@ -744,6 +744,116 @@ test('isFlowRunState: validates input/loop only when present', () => {
   assert.equal(isFlowRunState(badLoopRetries), false)
 })
 
+test('attempt-record: applyEvent snapshots the attempt count (last-wins per ref)', () => {
+  let state = applyEvent(null, loopRun)
+  state = applyEvent(state, {
+    kind: 'attempt-record',
+    at: 't1',
+    ref: 'PMR-LOOP',
+    tool: 'flow_run_attempt',
+    outcome: 'retry',
+    attempts: 1,
+  })
+  assert.equal(state.attempts, 1)
+  state = applyEvent(state, {
+    kind: 'attempt-record',
+    at: 't2',
+    ref: 'PMR-LOOP',
+    tool: 'flow_run_attempt',
+    outcome: 'retry',
+    attempts: 2,
+  })
+  assert.equal(state.attempts, 2)
+  assert.equal(state.updatedAt, 't2')
+})
+
+test('attempt-record: outcome passed resets attempts to 0', () => {
+  let state = applyEvent(null, loopRun)
+  state = applyEvent(state, {
+    kind: 'attempt-record',
+    at: 't1',
+    ref: 'PMR-LOOP',
+    tool: 'flow_run_attempt',
+    outcome: 'retry',
+    attempts: 3,
+  })
+  state = applyEvent(state, {
+    kind: 'attempt-record',
+    at: 't2',
+    ref: 'PMR-LOOP',
+    tool: 'flow_run_attempt',
+    outcome: 'escalate',
+    attempts: 4,
+  })
+  assert.equal(state.attempts, 4)
+  state = applyEvent(state, {
+    kind: 'attempt-record',
+    at: 't3',
+    ref: 'PMR-LOOP',
+    tool: 'flow_run_attempt',
+    outcome: 'passed',
+    attempts: 0,
+  })
+  assert.equal(state.attempts, 0)
+  assert.equal(state.updatedAt, 't3')
+})
+
+test('attempt-record: mismatched ref is ignored', () => {
+  let state = applyEvent(null, loopRun)
+  const before = state
+  state = applyEvent(state, {
+    kind: 'attempt-record',
+    at: 't1',
+    ref: 'OTHER',
+    tool: 'flow_run_attempt',
+    outcome: 'retry',
+    attempts: 1,
+  })
+  assert.equal(state, before)
+  assert.equal(before.attempts, undefined)
+})
+
+test('attempt-record: old journals without it still project', () => {
+  const state = projectRunState([loopRun])
+  assert.ok(state)
+  assert.equal(state.attempts, undefined)
+  assert.equal(isFlowRunState(state), true)
+})
+
+test('isFlowRunState: validates attempts only when present', () => {
+  const baseState: Record<string, unknown> = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+    mode: 'work',
+    startedAt: 't0',
+    updatedAt: 't1',
+    completedPhases: [],
+    currentPhase: null,
+    notes: [],
+  }
+  assert.equal(isFlowRunState({ ...baseState, attempts: 2 }), true)
+  assert.equal(isFlowRunState({ ...baseState, attempts: 0 }), true)
+  assert.equal(isFlowRunState({ ...baseState, attempts: 'two' }), false)
+})
+
+test('attempt-record: projection round-trips through projectRunState', () => {
+  const events: FlowRunEvent[] = [
+    loopRun,
+    {
+      kind: 'attempt-record',
+      at: 't1',
+      ref: 'PMR-LOOP',
+      tool: 'flow_run_attempt',
+      outcome: 'retry',
+      attempts: 1,
+    },
+  ]
+  const state = projectRunState(events)
+  assert.ok(state)
+  assert.equal(state.attempts, 1)
+  assert.equal(isFlowRunState(state), true)
+})
+
 test('run-input / loop-state: projection round-trips through projectRunState', () => {
   const events: FlowRunEvent[] = [
     inputRun,

@@ -34,9 +34,12 @@ export type GateDecisionStatus =
 // transition; duplicates adopt the stored receipt instead of repeating the
 // transition. BEST-EFFORT by design: missing/corrupt/torn receipts degrade
 // to label checks + suite re-run; aven labels stay the gate of record.
-// The flow_run_attempt budget stays non-durable (PMR-2HFC); the loop-level
-// blockerRetries budget IS durable since phase 2 (loop-state snapshots +
-// resume seeding); the durable attempt ledger lands in phase 4 (PMR-XTQQ).
+// AIDEV-NOTE: PMR-2HFC/PMR-XTQQ — the flow_run_attempt budget was
+// non-durable (PMR-2HFC); the loop-level blockerRetries budget is durable
+// since phase 2 (loop-state snapshots + resume seeding). The attempt ledger
+// PROJECTION half landed in phase 4 (attempt-record kind + `attempts`
+// projection below); the tool-side durable ledger (tools/run-attempt.ts
+// reading/journaling it) is subtask 4.2 of PMR-XTQQ.
 export type ReceiptCommand = 'flow_land' | 'flow_phase_complete'
 
 const RECEIPT_COMMANDS: readonly ReceiptCommand[] = [
@@ -95,10 +98,9 @@ export type FlowRunEvent =
   | {
       /**
        * AIDEV-NOTE: PMR-4S6V — command receipt: one per COMMITTED gate
-       * transition. The flow_run_attempt budget stays non-durable
-       * (PMR-2HFC); the loop-level blockerRetries budget IS durable since
-       * phase 2 (loop-state snapshots + resume seeding); the durable
-       * attempt ledger lands in phase 4 (PMR-XTQQ).
+       * transition. The flow_run_attempt ledger projection landed in phase 4
+       * (attempt-record kind + `attempts` projection); the tool-side durable
+       * ledger (tools/run-attempt.ts) is subtask 4.2 of PMR-XTQQ.
        */
       kind: 'command-receipt'
       at: string
@@ -158,6 +160,22 @@ export type FlowRunEvent =
       ref: string
       loop: LoopStateRecord
     }
+  | {
+      /**
+       * AIDEV-NOTE: PMR-XTQQ durable attempt ledger — post-transition
+       * snapshot of the flow_run_attempt budget; last-wins per ref.
+       * `outcome: 'passed'` resets the projection `attempts` to 0;
+       * 'retry'/'escalate' carry the post-transition count. Journal-only
+       * consumers (e.g. the flow viewer) skip unknown kinds, so this stays
+       * forward-compatible.
+       */
+      kind: 'attempt-record'
+      at: string
+      ref: string
+      tool: 'flow_run_attempt'
+      outcome: 'passed' | 'retry' | 'escalate'
+      attempts: number
+    }
 
 export interface RunInputRecord {
   mode: 'work' | 'personal'
@@ -212,6 +230,9 @@ export type FlowRunState = {
   // (and old journals rebuilt without these events) stay valid.
   input?: RunInputRecord
   loop?: LoopStateRecord
+  // AIDEV-NOTE: PMR-XTQQ — optional so pre-attempt-ledger projections (and
+  // old journals rebuilt without attempt-record events) stay valid.
+  attempts?: number
 }
 
 export interface SubtaskRangesRecord {
@@ -403,6 +424,19 @@ export function applyEvent(
         updatedAt: event.at,
       }
     }
+    case 'attempt-record': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      // AIDEV-NOTE: PMR-XTQQ — post-transition snapshot, last-wins. 'passed'
+      // resets durably; 'retry'/'escalate' carry the post-transition count.
+      let attempts = event.attempts
+      if (event.outcome === 'passed') attempts = 0
+      return {
+        ...state,
+        attempts,
+        updatedAt: event.at,
+      }
+    }
     case 'note': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
@@ -562,6 +596,10 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
       typeof loop.validateStartedAt === 'string' &&
       LOOP_STATUSES.includes(loop.status as LoopRunStatus)
     if (!loopOk) return false
+  }
+  // AIDEV-NOTE: PMR-XTQQ — attempts validated only when present (old journals).
+  if (v.attempts !== undefined) {
+    if (typeof v.attempts !== 'number') return false
   }
   return true
 }
