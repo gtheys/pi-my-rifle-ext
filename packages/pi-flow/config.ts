@@ -6,8 +6,11 @@
 // it. Malformed config throws a clear error — never silent defaults
 // (AGENTS.md rule). resolveMode is the pi-bound mode resolver; the pure
 // modeForToplevel decision lives in work-mode.ts.
+
+import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import {
   CONFIG_DIR_NAME,
   type ExtensionAPI,
@@ -165,11 +168,54 @@ export async function readConfigFile(
 // AIDEV-NOTE: Global getAgentDir()/pi-flow/config.json, then project override
 // ctx.cwd/CONFIG_DIR_NAME/pi-flow/config.json wins. Missing files = empty
 // merge; present-but-invalid = throw.
+//
+// PMR-BF8W: herdr worktree bootstrap copies only .env*, so a linked git
+// worktree has no .pi/pi-flow/config.json and a stale global landTestCommand
+// (e.g. ["cargo","test"] left over for another project) silently won the
+// flow_land gate. When cwd sits in a LINKED worktree (git rev-parse
+// --git-common-dir points outside the worktree's own .git), the main
+// checkout's project config is consulted as a middle layer:
+//   global < main checkout project < worktree-local project (nearest wins)
+// Main-checkout behavior is unchanged (project wins over global). The git
+// lookup is best-effort: outside a repo or on git failure the layer is simply
+// absent. Present-but-invalid config files still throw via readConfigFile —
+// never silent defaults (AGENTS.md rule).
+const execFileAsync = promisify(execFile)
+
+// Absolute path of the main checkout that owns the linked worktree containing
+// cwd, or undefined when cwd is not inside a linked worktree (plain checkout,
+// non-git dir, git unavailable/failed).
+async function mainCheckoutRoot(cwd: string): Promise<string | undefined> {
+  try {
+    const toplevel = (
+      await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd })
+    ).stdout.trim()
+    const commonDir = (
+      await execFileAsync('git', ['rev-parse', '--git-common-dir'], { cwd })
+    ).stdout.trim()
+    // Resolve both against cwd (git prints relative paths when cwd is the
+    // repo root) so the comparison is stable for any nesting depth.
+    const resolvedCommon = path.resolve(cwd, commonDir)
+    const ownGitDir = path.resolve(toplevel, '.git')
+    if (resolvedCommon === ownGitDir) return undefined
+    return path.dirname(resolvedCommon)
+  } catch {
+    return undefined
+  }
+}
+
 export async function loadConfig(cwd: string): Promise<PiFlowConfig> {
   const globalPath = path.join(getAgentDir(), 'pi-flow', 'config.json')
   const projectPath = path.join(cwd, CONFIG_DIR_NAME, 'pi-flow', 'config.json')
+  const mainRoot = await mainCheckoutRoot(cwd)
+  let mainPath: string | undefined
+  if (mainRoot === undefined) mainPath = undefined
+  else mainPath = path.join(mainRoot, CONFIG_DIR_NAME, 'pi-flow', 'config.json')
   const merged: PiFlowConfig = { workRoots: [] }
   Object.assign(merged, await readConfigFile(globalPath))
+  if (mainPath !== undefined) {
+    Object.assign(merged, await readConfigFile(mainPath))
+  }
   Object.assign(merged, await readConfigFile(projectPath))
   return merged
 }
