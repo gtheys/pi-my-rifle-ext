@@ -73,3 +73,40 @@ export function lifecycleLabelMutation(command: string): string | null {
   }
   return null
 }
+
+// Matches bash commands that directly write gated aven metadata under the
+// mutating subcommands. Returns the offending key (e.g. "spec-answer") or
+// "plan-state=approved" for the P2 case so the interceptor can name it in
+// the block reason; null when the command is allowed.
+//
+// AIDEV-NOTE: PMR-R5VB — receipt keys spec-answer/review-answer are blocked
+// with ANY value (writing any value — approve, reject, pass, fail, or empty
+// — is a forge attempt; even clearing a reject must go through /flow
+// answer). plan-state is blocked ONLY with the value "approved": the
+// protected transition goes through the receipt-gated spec_approve tool.
+// plan-state=draft/review stay agent-writable — deliberate: the
+// feature-plan-aven skill legitimately writes those standalone, outside
+// flow context.
+//
+// AIDEV-NOTE: PMR-TCE5/PMR-8N7C (mirrors lifecycleLabelMutation) — the
+// match only fires under the mutating subcommands `aven edit`, `aven add`,
+// `aven bulk-update`; read-only commands like `aven show --metadata ...`
+// must pass. PMR-9P9E — matchAll over ALL --metadata flags so a receipt key
+// smuggled behind an innocent first flag still blocks. The separator is
+// (?:=|\s+) so `--metadata  key=value` (extra whitespace) cannot evade; the
+// key is captured followed by `=` — any remainder (including embedded `=`)
+// is the value.
+export function receiptMetadataMutation(command: string): string | null {
+  if (!command.includes('aven')) return null
+  if (!/\baven\s+(edit|add|bulk-update)\b/.test(command)) return null
+  const keys = new Set<string>(['spec-answer', 'review-answer'])
+  for (const flag of command.matchAll(/--metadata(?:=|\s+)["']?([\w-]+)=/g)) {
+    if (keys.has(flag[1])) return flag[1]
+  }
+  if (
+    /--metadata(?:=|\s+)["']?plan-state(?:=|\s+)["']?approved\b/.test(command)
+  ) {
+    return 'plan-state=approved'
+  }
+  return null
+}

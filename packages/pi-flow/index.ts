@@ -54,7 +54,10 @@ import {
   registerFlowCostCommand,
 } from './flow/cost-command.ts'
 import { resolveJiraEpic } from './flow/jira-ref.ts'
-import { lifecycleLabelMutation } from './flow/label-gate.ts'
+import {
+  lifecycleLabelMutation,
+  receiptMetadataMutation,
+} from './flow/label-gate.ts'
 import { landingIntercept } from './flow/land-gate.ts'
 import { createFlowLoop } from './flow/loop.ts'
 import { nextPhase } from './flow/orchestrate.ts'
@@ -317,7 +320,9 @@ export default function (pi: ExtensionAPI) {
   // returns {block, reason}), so no guard-wrapper fallback script is needed.
   // The boundary is the agent's bash TOOL: a human running aven by hand is
   // out of scope (humans own the run). Type labels (bug, oneshot, plan) stay
-  // agent-writable.
+  // agent-writable. PMR-R5VB (review blocker fix): the same tool_call
+  // interceptor also blocks forged human receipts via bash metadata writes —
+  // see receiptMetadataMutation below.
   // AIDEV-NOTE: PMR-06RH — landing interceptor. `git push` / `gh pr create`
   // are blocked ONLY while the flow loop has an active ref, and only until
   // flow_land authorizes that ref's landing (landingState). No flow active →
@@ -338,6 +343,27 @@ export default function (pi: ExtensionAPI) {
       return {
         block: true,
         reason: `lifecycle label "${label}" is extension-governed — call the flow_phase_complete tool instead of writing aven labels directly`,
+      }
+    }
+    // AIDEV-NOTE: PMR-R5VB — receipt forge blocker. Writing aven metadata
+    // spec-answer/review-answer (any value) or plan-state=approved directly
+    // from the model's bash would forge a human receipt, reaching
+    // spec_approve / flow_land merge-main without a human /flow answer.
+    // receiptMetadataMutation (flow/label-gate.ts) gates those at this same
+    // boundary; the extension's own aven writes (flow/answer.ts) bypass it
+    // because they are not model tool calls.
+    const metadata = receiptMetadataMutation(event.input.command)
+    if (metadata !== null) {
+      if (metadata === 'plan-state=approved') {
+        return {
+          block: true,
+          reason:
+            'plan-state=approved is extension-governed — approval transitions go through the receipt-gated spec_approve tool, which requires a human /flow answer first',
+        }
+      }
+      return {
+        block: true,
+        reason: `aven metadata "${metadata}" is human-gated — the human records receipts with /flow answer <ref> <choice>; model-written receipts are not proof of anything`,
       }
     }
     const decision = landingIntercept(
