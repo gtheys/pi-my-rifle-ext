@@ -14,6 +14,7 @@ import {
   parseJournal,
   renderActivity,
   renderState,
+  replayBodyText,
 } from '../../../plugins/herdr/flow-viewer.mjs'
 
 const sampleState = {
@@ -507,4 +508,18 @@ test('replayFooter: renders event k/N and key hints', () => {
   assert.match(footer, /event 2\/5/)
   assert.match(footer, /←\/→/)
   assert.match(footer, /g\/G/)
+})
+
+// PMR-ZGPY fix round 2 (deviation 1): the footer renders at EVERY cursor
+// position when the journal has events — k=0 included (ISC-9). The
+// empty-state screen is reserved for a truly empty journal (N=0).
+test('replayBodyText: footer renders at k=0 with events; absent only for empty journal', () => {
+  const body0 = replayBodyText(happyJournal, 0, REF)
+  assert.match(body0, /no events yet/)
+  assert.match(body0, /event 0\/[0-9]+/)
+  const bodyLast = replayBodyText(happyJournal, happyJournal.length, REF)
+  assert.match(bodyLast, /event [0-9]+\/[0-9]+/)
+  const empty = replayBodyText([], 0, REF)
+  assert.match(empty, /no events yet/)
+  assert.doesNotMatch(empty, /event /)
 })

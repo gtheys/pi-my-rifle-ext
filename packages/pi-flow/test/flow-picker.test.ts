@@ -335,3 +335,11 @@ test('grep-proof: picker module has no sendUserMessage / pickup / spawn', async 
   assert.ok(!/pickup/i.test(src))
   assert.ok(!/spawn/i.test(src))
 })
+
+// PMR-ZGPY fix round 2 (deviation 2): no-UI + zero gates must produce the
+// 'empty' plan so the handler notifies once — a fallback plan with zero
+// lines printed nothing (the reviewed deviation).
+test('planPickerOutcome: no-UI zero gates → empty (one-line notify path)', () => {
+  const plan = planPickerOutcome(false, [])
+  assert.equal(plan.kind, 'empty')
+})

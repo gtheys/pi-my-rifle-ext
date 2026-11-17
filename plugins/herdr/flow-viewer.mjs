@@ -97,6 +97,32 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main()
 }
 
+// PMR-ZGPY fix round 2 (deviation 1, ISC-9): the footer renders at EVERY
+// cursor position when the journal has events — k=0 included; the
+// empty-state screen is reserved for a truly empty journal (N=0). Extracted
+// pure so the k=0-with-events case is testable without a TTY.
+export function replayBodyText(events, k, ref) {
+  if (events.length === 0) {
+    return 'no events yet'
+  }
+  const clamped = Math.min(k, events.length)
+  const slice = events.slice(0, clamped)
+  const state = replayProject(slice)
+  let body
+  if (state === null) {
+    // k = 0: nothing projected yet, but events exist — show the empty-state
+    // body WITH the footer so the cursor position stays visible.
+    body = 'no events yet'
+  } else {
+    body = renderState(state, ref)
+    const activity = renderActivity(slice)
+    if (activity !== '') {
+      body = `${body}${EOL}${EOL}${activity}`
+    }
+  }
+  return `${body}${EOL}${EOL}${replayFooter(clamped, events.length)}`
+}
+
 function main() {
   const ref = process.env.PI_FLOW_REF ?? ''
   const runFile = process.env.PI_FLOW_RUN_FILE ?? ''
@@ -147,20 +173,7 @@ function runReplay(ref, journalFile) {
   let k = 0
 
   const renderReplay = () => {
-    k = Math.min(k, events.length)
-    const slice = events.slice(0, k)
-    const state = replayProject(slice)
-    if (state === null) {
-      renderText(composePaneLabel(ref, 'replay'), 'no events yet')
-    } else {
-      let body = renderState(state, ref)
-      const activity = renderActivity(slice)
-      if (activity !== '') {
-        body = `${body}${EOL}${EOL}${activity}`
-      }
-      body = `${body}${EOL}${EOL}${replayFooter(k, events.length)}`
-      renderText(composePaneLabel(ref, 'replay'), body)
-    }
+    renderText(composePaneLabel(ref, 'replay'), replayBodyText(events, k, ref))
   }
 
   const load = () => {

@@ -143,6 +143,14 @@ export function planPickerOutcome(
   gates: readonly OpenGate[],
   selection?: PickerSelection,
 ): PickerPlan {
+  // Zero gates → 'empty' regardless of UI mode (fix round 2, deviation 2):
+  // the no-UI fallback branch with zero lines printed NOTHING, swallowing the
+  // promised one-line notify. The handler's empty branch notifies once for
+  // both modes; a selection can never coexist with zero gates (the menu
+  // requires gates to render).
+  if (gates.length === 0) {
+    return { kind: 'empty' }
+  }
   if (!hasUI) {
     return { kind: 'fallback', lines: buildGateFallbackLines(gates) }
   }
