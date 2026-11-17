@@ -76,7 +76,11 @@ export function registerCodeReviewTool(
   receipts: ReceiptJournal = createReceiptJournal(getAgentDir()),
   // AIDEV-NOTE: PMR-XTQQ 5.1 — injected HEAD resolution for the durable pass
   // receipt; same worktree-scoped shape as flow_land's adoption pin.
-  resolveHead: () => Promise<string | null> = defaultResolveHead,
+  // AIDEV-NOTE: PMR-1TCN — the seam is now worktree-scoped: callers pass the
+  // RESOLVED REVIEW WORKTREE path (the tree the tuicr run saw), so the
+  // receipt pins that tree's HEAD even when landingSuiteCwd() resolves
+  // elsewhere (no-binding path falls back to process.cwd()).
+  resolveHead: (cwd: string) => Promise<string | null> = defaultResolveHead,
   // AIDEV-NOTE: PMR-XTQQ — mode-aware writer (server/writer.ts). Present =
   // receipt writes route through it (journal-only while the daemon owns the
   // projection); absent = today's exact full-writer behavior.
@@ -95,10 +99,16 @@ export function registerCodeReviewTool(
   // (target=ref). In-memory marker is still set first — resolveHead failure
   // or a journal error degrades to today's session-scoped behavior, never
   // blocks the pass. flow_land adoption of this receipt is PMR-XTQQ 5.2.
-  const recordPassReceipt = async (ref: string): Promise<void> => {
+  // AIDEV-NOTE: PMR-1TCN — resolveHead is called with the resolved review
+  // worktree path, NOT landingSuiteCwd(): the receipt must pin the exact
+  // worktree HEAD the reviewed tuicr run saw.
+  const recordPassReceipt = async (
+    ref: string,
+    worktreePath: string,
+  ): Promise<void> => {
     let head: string | null
     try {
-      head = await resolveHead()
+      head = await resolveHead(worktreePath)
     } catch {
       return
     }
@@ -203,7 +213,7 @@ export function registerCodeReviewTool(
       if (answer === 'pass') {
         const routing = routeReviewPass(params.ref, new Date().toISOString())
         landingState.humanReviewPassed = routing.marker
-        await recordPassReceipt(params.ref)
+        await recordPassReceipt(params.ref, worktree.path)
         const noted = await writeAvenNote(params.ref, routing.avenNote)
         return toolResult(
           `${routing.message}${noted ? '' : '\n(warning: the aven note write failed — record it manually)'}`,

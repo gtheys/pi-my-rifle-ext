@@ -486,7 +486,7 @@ function codeReviewExecute(
   exec?: MockExec,
   deps?: {
     receipts?: ReceiptJournal
-    resolveHead?: () => Promise<string | null>
+    resolveHead?: (cwd: string) => Promise<string | null>
   },
 ): {
   execute: CodeReviewExecute
@@ -702,6 +702,46 @@ test('execute: pass via blocking ask records code_review receipt with headSha', 
         command: 'code_review',
         target: 'PMR-ABC1',
         headSha: 'head0123',
+      },
+    ])
+  })
+})
+
+// AIDEV-NOTE: PMR-1TCN — the receipt must pin the HEAD of the RESOLVED
+// review worktree (the tree tuicr ran in), not landingSuiteCwd(): in the
+// no-binding path those differ and flow_land's exact-equality adoption
+// could accept across a moved HEAD elsewhere.
+test('execute: pass pins receipt headSha to the resolved review worktree HEAD', async () => {
+  await withFakeAvenPath(async () => {
+    const { exec } = gateExec({ listStdout: '[]', commentsStdout: '' })
+    const { journal, recorded } = fakeReceipts()
+    const seenCwds: string[] = []
+    const { execute, landingState } = codeReviewExecute(exec, {
+      receipts: journal,
+      resolveHead: async (cwd) => {
+        seenCwds.push(cwd)
+        if (cwd === CR_WT_DIR) return 'worktreeHeadSha'
+        return 'otherHeadSha'
+      },
+    })
+    const result = await execute(
+      't3e',
+      { ref: 'PMR-ABC1' },
+      new AbortController().signal,
+      undefined,
+      ctxWith([{ name: 'ask_user_question' }], async () =>
+        askAnswer('User selected: pass (Recommended)'),
+      ),
+    )
+    assert.notEqual(result.isError, true)
+    assert.equal(landingState.humanReviewPassed, 'PMR-ABC1')
+    assert.deepEqual(seenCwds, [CR_WT_DIR])
+    assert.deepEqual(recorded, [
+      {
+        ref: 'PMR-ABC1',
+        command: 'code_review',
+        target: 'PMR-ABC1',
+        headSha: 'worktreeHeadSha',
       },
     ])
   })

@@ -183,10 +183,20 @@ export function landingSuiteCwd(): string {
 // AIDEV-NOTE: PMR-4S6V — HEAD-pin anchor for receipt adoption (PMR-05HX:
 // never land work the gate has not seen a green suite over — unresolvable
 // HEAD -> no adoption, full suite re-run). Returns null on any error.
-export async function defaultResolveHead(): Promise<string | null> {
+// PMR-1TCN — optional cwd param: the code_review tool passes its RESOLVED
+// review worktree path so the receipt pins that tree's HEAD; with no arg
+// (the land tool's own adoption/record call sites) it still resolves
+// landingSuiteCwd() exactly as before.
+export async function defaultResolveHead(cwd?: string): Promise<string | null> {
+  let headCwd: string
+  if (cwd !== undefined) {
+    headCwd = cwd
+  } else {
+    headCwd = landingSuiteCwd()
+  }
   try {
     const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
-      cwd: landingSuiteCwd(),
+      cwd: headCwd,
     })
     return stdout.trim()
   } catch {
