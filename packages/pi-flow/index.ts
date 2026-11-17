@@ -72,7 +72,11 @@ import {
   commandPhaseInput,
   registerPhaseCommands,
 } from './flow/phase-command.ts'
-import { planPickerOutcome } from './flow/picker.ts'
+import {
+  isPickerInvocation,
+  planPickerOutcome,
+  splitGateValue,
+} from './flow/picker.ts'
 import {
   parseRefKind,
   registerAvenPrefixes,
@@ -790,15 +794,19 @@ export default function (pi: ExtensionAPI) {
         return
       }
       const parsed = parseFlowArgs(args)
-      if (parsed.kind === 'help') {
-        // AIDEV-NOTE (PMR-ZGPY 4.2, PMR-XQA1): zero-arg /flow → two-step
-        // picker (gate select → choice select). The picker ANSWERS gates via
+      if (isPickerInvocation(args)) {
+        // AIDEV-NOTE (PMR-ZGPY 4.2, PMR-XQA1; fix round 2): ONLY zero-arg
+        // /flow opens the two-step picker (gate select → choice select). Every
+        // other arg shape keeps the parseFlowArgs usage notify below —
+        // /flow X Y is a typo, not a picker. The picker ANSWERS gates via
         // executeFlowAnswer with the SAME deps the /flow answer subcommand
         // uses (makeAnswerDeps) — it never resumes runs, never spawns, and
         // never calls sendUserMessage (PMR-W60H, ISC-A-1). It is fully
         // independent of T6 (D10). All decision logic is pure
         // (planPickerOutcome); this handler only performs ctx.ui.select IO
-        // and acts on the plan. collectOpenGates failure is fail-closed:
+        // and acts on the plan. Menu option values are the composite
+        // ref|kind (splitGateValue) so same-ref rows resolve their own
+        // vocabulary (fix round 2). collectOpenGates failure is fail-closed:
         // warn once, never throw (ISC-13). ctx.ui.select returns the option
         // STRING or undefined on cancel (Pi types.d.ts) — labels map back to
         // values through the option lists.
@@ -830,9 +838,13 @@ export default function (pi: ExtensionAPI) {
               stage: 'gate-cancelled',
             })
           } else {
+            // Composite value → ref+kind (fix round 2): ref-only lookup could
+            // first-match another row sharing the ref.
+            const split = splitGateValue(labelToValue.get(picked) ?? '')
             plan = planPickerOutcome(ctx.hasUI, gates, {
               stage: 'gate-picked',
-              gateRef: labelToValue.get(picked) ?? '',
+              gateRef: split.ref,
+              gateKind: split.kind,
             })
           }
         }
@@ -848,11 +860,13 @@ export default function (pi: ExtensionAPI) {
             plan = planPickerOutcome(ctx.hasUI, gates, {
               stage: 'choice-cancelled',
               gateRef: plan.gateRef,
+              gateKind: plan.gateKind,
             })
           } else {
             plan = planPickerOutcome(ctx.hasUI, gates, {
               stage: 'answered',
               gateRef: plan.gateRef,
+              gateKind: plan.gateKind,
               choice: labelToValue.get(chosen) ?? '',
             })
           }
@@ -884,6 +898,15 @@ export default function (pi: ExtensionAPI) {
             makeAnswerDeps(ctx),
           )
         }
+        return
+      }
+      if (parsed.kind === 'help') {
+        // Fix round 2: non-zero-arg /flow keeps the pre-picker usage notify —
+        // the picker is exclusively the zero-arg invocation (isPickerInvocation).
+        ctx.ui.notify(
+          'Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>>. Brainstorm topics go through /brainstorm.',
+          'info',
+        )
         return
       }
       const mode = await resolveMode(pi, ctx.cwd)

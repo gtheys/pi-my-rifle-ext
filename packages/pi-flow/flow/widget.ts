@@ -13,6 +13,8 @@
 // an error. The re-register guard mirrors subagents :1115: when already
 // registered we update the cache and ask for a redraw (widgetTui
 // .requestRender()) instead of re-registering, which would reset the tick.
+// Fix round 2: dispose() resets the registration flag, so a NEW session_start
+// ctx re-registers a fresh component (setWidget runs again).
 
 import type {
   ExtensionAPI,
@@ -168,7 +170,15 @@ async function updateWidgetUnsafe(): Promise<void> {
       invalidate() {},
       dispose() {
         stopTick()
-        widgetTui = null
+        // PMR-ZGPY fix round 2 (mirrors subagents index.ts dispose): the
+        // registration flag MUST reset, or after a session reload tears the
+        // component down every refresh takes the cheap requestRender no-op
+        // path and the widget never returns. Guarded by the same identity
+        // check the precedent uses, BEFORE nulling.
+        if (widgetTui === tui) {
+          widgetTui = null
+          widgetRegistered = false
+        }
       },
       render(width: number): string[] {
         return cachedLines.map((line) => line.slice(0, Math.max(0, width)))

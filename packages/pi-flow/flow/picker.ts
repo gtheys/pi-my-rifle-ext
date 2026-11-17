@@ -24,6 +24,31 @@ export interface PickerOption {
   value: string
 }
 
+// AIDEV-NOTE (fix round 2): menu option values are the composite
+// `${ref}|${kind}` — deriveRunGates can emit two gates with the SAME ref
+// (code-review + answer-gate), and a bare ref value would make the menu
+// resolve first-match, presenting row B's vocabulary for row A. Refs cannot
+// contain '|' (runFileName charset), so '|' is an unambiguous separator.
+const GATE_VALUE_SEPARATOR = '|'
+
+/** Split a composite menu value back into its ref + kind parts. A value
+ * without a separator yields an empty kind — ref+kind lookups then simply
+ * miss (fail-closed), never first-match another row. */
+export function splitGateValue(value: string): { ref: string; kind: string } {
+  const idx = value.lastIndexOf(GATE_VALUE_SEPARATOR)
+  if (idx === -1) {
+    return { ref: value, kind: '' }
+  }
+  return { ref: value.slice(0, idx), kind: value.slice(idx + 1) }
+}
+
+// AIDEV-NOTE (fix round 2, /flow dispatch): the zero-arg /flow picker must not
+// swallow other arg shapes — /flow X Y etc. keep parseFlowArgs's usage notify.
+// The dispatch condition is this pure predicate so tests drive it directly.
+export function isPickerInvocation(args: string): boolean {
+  return args.trim().length === 0
+}
+
 /** Escape value the caller (4.2) turns into printing the exact command. */
 export const COMMAND_ESCAPE_VALUE = '__command__'
 
@@ -43,13 +68,17 @@ function choiceValuesForKind(kind: OpenGate['kind']): string[] {
   return ['approve', 'reject']
 }
 
-/** One select option per gate; label is the gate's single-line title, value the unique ref. */
+/** One select option per gate; label is the gate's single-line title, value
+ * the composite ref|kind (fix round 2 — same-ref rows stay distinct). */
 export function buildGateMenuOptions(
   gates: readonly OpenGate[],
 ): PickerOption[] {
   const options: PickerOption[] = []
   for (const gate of gates) {
-    options.push({ label: gate.title, value: gate.ref })
+    options.push({
+      label: gate.title,
+      value: `${gate.ref}${GATE_VALUE_SEPARATOR}${gate.kind}`,
+    })
   }
   return options
 }
@@ -81,12 +110,14 @@ export function buildGateFallbackLines(gates: readonly OpenGate[]): string[] {
 // index.ts stays thin: collect gates → planPickerOutcome → act on the plan.
 // ---------------------------------------------------------------------------
 
-/** Which step of the two-select interaction produced this state. */
+/** Which step of the two-select interaction produced this state. gateKind
+ * threads the composite value's kind half so ref+kind lookups can never
+ * resolve a different row sharing the same ref (fix round 2). */
 export type PickerSelection =
   | { stage: 'gate-cancelled' }
-  | { stage: 'gate-picked'; gateRef: string }
-  | { stage: 'choice-cancelled'; gateRef: string }
-  | { stage: 'answered'; gateRef: string; choice: string }
+  | { stage: 'gate-picked'; gateRef: string; gateKind: string }
+  | { stage: 'choice-cancelled'; gateRef: string; gateKind: string }
+  | { stage: 'answered'; gateRef: string; gateKind: string; choice: string }
 
 /**
  * The action the /flow handler should take. Pure — tests drive the full
@@ -98,7 +129,12 @@ export type PickerPlan =
   | { kind: 'fallback'; lines: string[] }
   | { kind: 'empty' }
   | { kind: 'menu'; options: PickerOption[] }
-  | { kind: 'choice-menu'; gateRef: string; options: PickerOption[] }
+  | {
+      kind: 'choice-menu'
+      gateRef: string
+      gateKind: string
+      options: PickerOption[]
+    }
   | { kind: 'answer'; ref: string; choice: AnswerChoice }
   | { kind: 'print-command'; ref: string; choices: string[] }
 
@@ -120,7 +156,11 @@ export function planPickerOutcome(
     // Cancel at the first select: notify nothing.
     return { kind: 'empty' }
   }
-  const gate = gates.find((g) => g.ref === selection.gateRef)
+  // Ref+kind lookup (fix round 2): the kind half guarantees the vocabulary
+  // always matches the exact row the user picked, even across same-ref rows.
+  const gate = gates.find(
+    (g) => g.ref === selection.gateRef && g.kind === selection.gateKind,
+  )
   if (gate === undefined) {
     return { kind: 'empty' }
   }
@@ -128,6 +168,7 @@ export function planPickerOutcome(
     return {
       kind: 'choice-menu',
       gateRef: gate.ref,
+      gateKind: gate.kind,
       options: gateChoices(gate),
     }
   }

@@ -7,7 +7,9 @@ import {
   buildGateMenuOptions,
   COMMAND_ESCAPE_VALUE,
   gateChoices,
+  isPickerInvocation,
   planPickerOutcome,
+  splitGateValue,
 } from '../flow/picker.ts'
 
 const gates: OpenGate[] = [
@@ -30,12 +32,12 @@ const gates: OpenGate[] = [
   },
 ]
 
-test('buildGateMenuOptions: one option per gate, label = title, value = ref', () => {
+test('buildGateMenuOptions: one option per gate, label = title, value = ref|kind composite', () => {
   const options = buildGateMenuOptions(gates)
   assert.equal(options.length, 4)
   for (let i = 0; i < gates.length; i++) {
     assert.equal(options[i].label, gates[i].title)
-    assert.equal(options[i].value, gates[i].ref)
+    assert.equal(options[i].value, `${gates[i].ref}|${gates[i].kind}`)
   }
 })
 
@@ -43,6 +45,80 @@ test('buildGateMenuOptions: values unique across distinct refs', () => {
   const options = buildGateMenuOptions(gates)
   const values = new Set(options.map((o) => o.value))
   assert.equal(values.size, options.length)
+})
+
+// PMR-ZGPY fix round 2 — ref collision: deriveRunGates can emit two gates
+// with the SAME ref (code-review + answer-gate); composite values keep the
+// rows distinct and each pick resolves its own vocabulary.
+const colliding: OpenGate[] = [
+  {
+    ref: 'PMR-EEE',
+    kind: 'code-review',
+    title: 'PMR-EEE — validate phase awaiting code review',
+  },
+  {
+    ref: 'PMR-EEE',
+    kind: 'answer-gate',
+    title: 'PMR-EEE — spec-review gate awaiting answer',
+    answerCommand: '/flow answer PMR-EEE',
+  },
+]
+
+test('same ref, two kinds → two menu options with distinct composite values', () => {
+  const options = buildGateMenuOptions(colliding)
+  assert.equal(options.length, 2)
+  assert.notEqual(options[0].value, options[1].value)
+  assert.deepEqual(
+    options.map((o) => o.value),
+    ['PMR-EEE|code-review', 'PMR-EEE|answer-gate'],
+  )
+})
+
+test('splitGateValue: composite value splits into ref + kind', () => {
+  assert.deepEqual(splitGateValue('PMR-EEE|code-review'), {
+    ref: 'PMR-EEE',
+    kind: 'code-review',
+  })
+  assert.deepEqual(splitGateValue('PMR-1|answer-gate'), {
+    ref: 'PMR-1',
+    kind: 'answer-gate',
+  })
+})
+
+test('splitGateValue: ref without separator → empty kind (lookup misses, safe)', () => {
+  assert.deepEqual(splitGateValue('PMR-1'), { ref: 'PMR-1', kind: '' })
+})
+
+test('planPickerOutcome: picking each colliding row resolves its own vocabulary', () => {
+  const menu = planPickerOutcome(true, colliding)
+  assert.equal(menu.kind, 'menu')
+  if (menu.kind !== 'menu') return
+  const options = menu.options
+  for (const option of options) {
+    const split = splitGateValue(option.value)
+    const plan = planPickerOutcome(true, colliding, {
+      stage: 'gate-picked',
+      gateRef: split.ref,
+      gateKind: split.kind,
+    })
+    assert.equal(plan.kind, 'choice-menu')
+    if (plan.kind !== 'choice-menu') return
+    const picked = colliding.find(
+      (g) => g.ref === split.ref && g.kind === split.kind,
+    )
+    if (picked === undefined) throw new Error('fixture row missing')
+    const expected = gateChoices(picked)
+    assert.deepEqual(plan.options, expected)
+  }
+})
+
+test('planPickerOutcome: gate-picked with mismatched kind → empty (no first-match steal)', () => {
+  const plan = planPickerOutcome(true, colliding, {
+    stage: 'gate-picked',
+    gateRef: 'PMR-EEE',
+    gateKind: 'plan-review',
+  })
+  assert.equal(plan.kind, 'empty')
 })
 
 test('buildGateMenuOptions: empty gates → empty array', () => {
@@ -151,6 +227,7 @@ test('planPickerOutcome: gate picked → choice-menu for that gate', () => {
   const plan = planPickerOutcome(true, gates, {
     stage: 'gate-picked',
     gateRef: 'PMR-CCC',
+    gateKind: 'code-review',
   })
   assert.equal(plan.kind, 'choice-menu')
   if (plan.kind === 'choice-menu') {
@@ -165,6 +242,7 @@ test('planPickerOutcome: gate picked with unknown ref → empty', () => {
   const plan = planPickerOutcome(true, gates, {
     stage: 'gate-picked',
     gateRef: 'PMR-NOPE',
+    gateKind: 'code-review',
   })
   assert.equal(plan.kind, 'empty')
 })
@@ -173,6 +251,7 @@ test('planPickerOutcome: answered with a real choice → answer', () => {
   const plan = planPickerOutcome(true, gates, {
     stage: 'answered',
     gateRef: 'PMR-AAA',
+    gateKind: 'plan-review',
     choice: 'approve',
   })
   assert.equal(plan.kind, 'answer')
@@ -186,6 +265,7 @@ test('planPickerOutcome: answered with escape value → print-command', () => {
   const plan = planPickerOutcome(true, gates, {
     stage: 'answered',
     gateRef: 'PMR-BBB',
+    gateKind: 'flow-paused',
     choice: COMMAND_ESCAPE_VALUE,
   })
   assert.equal(plan.kind, 'print-command')
@@ -199,6 +279,7 @@ test('planPickerOutcome: second select cancelled → print-command', () => {
   const plan = planPickerOutcome(true, gates, {
     stage: 'choice-cancelled',
     gateRef: 'PMR-AAA',
+    gateKind: 'plan-review',
   })
   assert.equal(plan.kind, 'print-command')
   if (plan.kind === 'print-command') {
@@ -212,6 +293,7 @@ test('planPickerOutcome: answered/cancelled with unknown ref → empty', () => {
     planPickerOutcome(true, gates, {
       stage: 'answered',
       gateRef: 'PMR-NOPE',
+      gateKind: 'plan-review',
       choice: 'approve',
     }).kind,
     'empty',
@@ -220,6 +302,7 @@ test('planPickerOutcome: answered/cancelled with unknown ref → empty', () => {
     planPickerOutcome(true, gates, {
       stage: 'choice-cancelled',
       gateRef: 'PMR-NOPE',
+      gateKind: 'plan-review',
     }).kind,
     'empty',
   )
@@ -228,6 +311,19 @@ test('planPickerOutcome: answered/cancelled with unknown ref → empty', () => {
 test('planPickerOutcome: first select cancelled → empty (notify nothing)', () => {
   const plan: Selection = { stage: 'gate-cancelled' }
   assert.equal(planPickerOutcome(true, gates, plan).kind, 'empty')
+})
+
+// PMR-ZGPY fix round 2 — /flow dispatch: picker ONLY on zero args; every
+// other arg shape keeps the parseFlowArgs usage notify.
+test('isPickerInvocation: empty/whitespace args → true', () => {
+  assert.equal(isPickerInvocation(''), true)
+  assert.equal(isPickerInvocation('   '), true)
+})
+
+test('isPickerInvocation: one or more args → false', () => {
+  assert.equal(isPickerInvocation('X'), false)
+  assert.equal(isPickerInvocation('X Y'), false)
+  assert.equal(isPickerInvocation('answer PMR-1 approve'), false)
 })
 
 test('grep-proof: picker module has no sendUserMessage / pickup / spawn', async () => {

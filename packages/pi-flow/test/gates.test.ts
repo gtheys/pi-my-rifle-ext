@@ -161,12 +161,14 @@ test('gate target answered via gateAnswers kind (fallback) yields no gate', () =
 })
 
 test('gate target open when decision is absent even though another target was decided', () => {
+  // Fix round 2: real decisions carry gate 'deviation' (tools/deviation.ts is
+  // the only decision writer); 'review' pins are excluded from derivation.
   const state = baseState({
-    gateTargets: [gateTarget('t1', 'review'), gateTarget('t2', 'review')],
+    gateTargets: [gateTarget('t1', 'deviation'), gateTarget('t2', 'deviation')],
     gateDecisions: [
       {
         targetId: 't1',
-        gate: 'review',
+        gate: 'deviation',
         status: 'stale',
         at: '2026-11-17T10:50:00Z',
       },
@@ -199,6 +201,58 @@ test('answered gate does NOT reopen via either mechanism (conservative OR, D6)',
     ],
   })
   assert.deepEqual(deriveRunGates([state]), [])
+})
+
+// --- PMR-ZGPY fix round 2 — real-writer semantics for 'review' pins ---
+// Real writers: gate-target 'review' pins are journalled by /review
+// (review/review.ts); gate-decisions exist ONLY for 'deviation' targets
+// (tools/deviation.ts); gate-answers only carry 'spec-review' | 'code-review'
+// (flow/answer.ts GATE_JOURNAL). A 'review' pin therefore has NO closer and
+// must never derive an answer-gate — it is covered by the phase-derived
+// code-review gate rule instead.
+
+test('review pin during validate derives exactly ONE code-review gate, no answer-gate', () => {
+  const state = baseState({
+    currentPhase: 'validate',
+    gateTargets: [gateTarget('t1', 'review')],
+  })
+  const gates = deriveRunGates([state])
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0].kind, 'code-review')
+  assert.equal(gates[0].ref, 'PMR-1')
+})
+
+test('review pin after validate completed derives NO gates', () => {
+  const state = baseState({
+    completedPhases: ['plan', 'implement', 'validate'],
+    currentPhase: 'feedback',
+    gateTargets: [gateTarget('t1', 'review')],
+  })
+  assert.deepEqual(deriveRunGates([state]), [])
+})
+
+test('review pin with a REAL code-review gate-answer stays closed', () => {
+  const state = baseState({
+    currentPhase: 'validate',
+    gateTargets: [gateTarget('t1', 'review')],
+    gateAnswers: [
+      { gate: 'code-review', choice: 'pass', at: '2026-11-17T10:50:00Z' },
+    ],
+  })
+  assert.deepEqual(deriveRunGates([state]), [])
+})
+
+test('a state emitting the code-review gate emits no answer-gates (suppression)', () => {
+  const state = baseState({
+    currentPhase: 'validate',
+    gateTargets: [
+      gateTarget('t1', 'spec-review'),
+      gateTarget('t2', 'deviation'),
+    ],
+  })
+  const gates = deriveRunGates([state])
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0].kind, 'code-review')
 })
 
 // --- research-era / old projections without optional fields ---

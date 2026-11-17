@@ -1,11 +1,18 @@
-// AIDEV-NOTE (PMR-ZGPY 2.1, D4/D5/D6): pure open-gate derivation over run
-// projections — the shared data source for the flow-status widget and the
-// answer picker. No IO here beyond the GateDeps interface declaration (2.2
+// AIDEV-NOTE (PMR-ZGPY 2.1, D4/D5/D6; fix round 2): pure open-gate derivation
+// over run projections — the shared data source for the flow-status widget and
+// the answer picker. No IO here beyond the GateDeps interface declaration (2.2
 // wires real IO); D4: the code-review gate is journal-derived (receipt
-// presence), no in-memory state. D6 anti-false-open: a gate is closed when
-// EITHER record mechanism says answered — gateDecisions by targetId is
-// primary, gateAnswers by gate kind is the fallback (applyEvent keeps only
-// the latest answer per gate kind). Paused runs whose ref also has
+// presence), no in-memory state. D6 anti-false-open, REAL-WRITER SEMANTICS
+// (fix round 2): closers exist only for spec-review/code-review kinds —
+// gate-decisions are written only by tools/deviation.ts (gate 'deviation'),
+// gate-answers only carry 'spec-review' | 'code-review' (flow/answer.ts
+// GATE_JOURNAL). 'review' pins (journalled by /review, review/review.ts) have
+// NO closer, so they are EXCLUDED from answer-gate derivation entirely — the
+// validate-phase code-review gate rule covers that same human decision and
+// genuinely closes when the human passes (receipt/answer lands) or when the
+// phase progresses. Suppression rule: a state that emits the code-review gate
+// emits NO answer-gates (one human decision per phase boundary; the
+// code-review decision subsumes them). Paused runs whose ref also has
 // plan-state=review are deduped in collectOpenGates (2.2), not here — no
 // aven knowledge in this module.
 
@@ -49,6 +56,21 @@ function hasCodeReviewReceipt(state: FlowRunState): boolean {
   return receipts.some((r) => r.command === 'code_review')
 }
 
+// AIDEV-NOTE (fix round 2): the phase-derived code-review gate closes via the
+// conservative OR over every record mechanism a REAL writer can produce for
+// the code-review kind — a code_review command receipt, a gate-answer
+// ('code-review', from /flow answer pass|fail), or a gate-decision. Receipt
+// alone was the round-1 shape; the OR matches isAnswered's D6 semantics.
+function isCodeReviewGateClosed(state: FlowRunState): boolean {
+  const answers = state.gateAnswers ?? []
+  const decisions = state.gateDecisions ?? []
+  return (
+    hasCodeReviewReceipt(state) ||
+    answers.some((a) => a.gate === 'code-review') ||
+    decisions.some((d) => d.gate === 'code-review')
+  )
+}
+
 function isAnswered(
   state: FlowRunState,
   targetId: string,
@@ -76,15 +98,24 @@ export function deriveRunGates(states: readonly FlowRunState[]): OpenGate[] {
         title: `${state.ref} — flow run paused`,
       })
     }
-    if (state.currentPhase === 'validate' && !hasCodeReviewReceipt(state)) {
+    const codeReviewGateOpen =
+      state.currentPhase === 'validate' && !isCodeReviewGateClosed(state)
+    if (codeReviewGateOpen) {
       gates.push({
         ref: state.ref,
         kind: 'code-review',
         title: `${state.ref} — validate phase awaiting code review`,
       })
     }
+    // Suppression (fix round 2): the code-review decision subsumes any
+    // answer-gates for this state — one human decision per phase boundary.
+    if (codeReviewGateOpen) continue
     const targets = state.gateTargets ?? []
     for (const target of targets) {
+      // 'review' pins have no real closer (see module AIDEV-NOTE) — never
+      // derive an answer-gate for them; the code-review gate rule above owns
+      // that decision.
+      if (target.gate === 'review') continue
       if (!isAnswered(state, target.targetId, target.gate)) {
         gates.push({
           ref: state.ref,

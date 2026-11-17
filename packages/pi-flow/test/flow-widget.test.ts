@@ -45,19 +45,6 @@ function makeHarness(
       if (event === 'session_start') handler = fn
     },
   } as unknown as ExtensionAPI
-  const ctx = {
-    hasUI: true,
-    ui: {
-      setWidget(name: string, comp: unknown) {
-        calls.push({ name, component: comp })
-        if (comp !== undefined) {
-          component = (
-            comp as (tui: unknown) => ReturnType<Harness['lastComponent']>
-          )({ requestRender() {} })
-        }
-      },
-    },
-  } as unknown as ExtensionContext
   const injectedSetInterval = (() => {
     return setInterval(() => {}, 10_000)
   }) as unknown as ReturnType<typeof setInterval>
@@ -76,7 +63,21 @@ function makeHarness(
   return {
     fireSessionStart() {
       if (handler === null) throw new Error('session_start not registered')
-      // AIDEV-NOTE: TS can't see the assignment inside the mock's closure.
+      // AIDEV-NOTE: each session start models a NEW ctx (session reload);
+      // setWidget calls from every session share the same `calls` recorder.
+      const ctx = {
+        hasUI: true,
+        ui: {
+          setWidget(name: string, comp: unknown) {
+            calls.push({ name, component: comp })
+            if (comp !== undefined) {
+              component = (
+                comp as (tui: unknown) => ReturnType<Harness['lastComponent']>
+              )({ requestRender() {} })
+            }
+          },
+        },
+      } as unknown as ExtensionContext
       const registered = handler as (
         event: unknown,
         ctx: ExtensionContext,
@@ -202,6 +203,23 @@ describe('flow widget lifecycle', () => {
     registered({}, ctx)
     // Must not throw.
     await refreshFlowWidget()
+  })
+
+  it('dispose → new session_start → refresh re-registers the widget (fix round 2)', async () => {
+    const h = makeHarness({ readState: async () => makeState() })
+    h.fireSessionStart()
+    await refreshFlowWidget()
+    assert.equal(h.setWidgetCalls().length, 1)
+    const comp = h.lastComponent()
+    assert.notEqual(comp, undefined)
+    comp?.dispose()
+    // RED today: without the registration-flag reset, refresh takes the
+    // cheap requestRender no-op path and setWidget is never called again.
+    h.fireSessionStart()
+    await refreshFlowWidget()
+    const calls = h.setWidgetCalls()
+    assert.equal(calls.length, 2)
+    assert.notEqual(calls[calls.length - 1]?.component, undefined)
   })
 
   it('assigns of OTHER parents are filtered out (parentPid)', async () => {
