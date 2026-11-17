@@ -263,9 +263,11 @@ export function renderActivity(events) {
 }
 
 export function renderState(state, fallbackRef = '') {
-  const phases = ['research', 'plan', 'implement', 'validate', 'feedback']
+  // AIDEV-NOTE: PMR-Z2K7 dropped 'research' from the lifecycle; phase list
+  // aligned to run-state.ts FlowPhase (plan/implement/validate/feedback) —
+  // research-era states with researchSkipNote/completedPhases entries render fine.
+  const phases = ['plan', 'implement', 'validate', 'feedback']
   const labels = {
-    research: 'researched',
     plan: 'planned',
     implement: 'active',
     validate: 'review-passed',
@@ -280,10 +282,6 @@ export function renderState(state, fallbackRef = '') {
     const mark = completed.includes(phase) ? '[x]' : '[ ]'
     const active = state.currentPhase === phase ? ' <- running' : ''
     lines.push(`${mark} ${phase.padEnd(11)} (${labels[phase]})${active}`)
-  }
-  if (state.researchSkipNote) {
-    lines.push('')
-    lines.push(`research skipped: ${state.researchSkipNote}`)
   }
   if (Array.isArray(state.notes) && state.notes.length > 0) {
     lines.push('')
