@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { deriveRunGates } from '../flow/gates.ts'
+import { parsePlanReviewRefs } from '../aven/client.ts'
+import {
+  collectOpenGates,
+  deriveRunGates,
+  type GateDeps,
+  type GateIo,
+  readRunsFromDisk,
+} from '../flow/gates.ts'
 import type {
   CommandReceiptRecord,
   FlowRunState,
@@ -233,4 +240,142 @@ test('multiple states produce gates in input order', () => {
 
 test('empty input yields no gates', () => {
   assert.deepEqual(deriveRunGates([]), [])
+})
+
+// --- collectOpenGates (PMR-ZGPY 2.2) — fake deps, no fs/aven ---
+
+function fakeDeps(
+  runs: FlowRunState[] | Error,
+  reviewRefs: string[] | Error,
+): GateDeps {
+  const readRuns = (): Promise<FlowRunState[]> =>
+    runs instanceof Error ? Promise.reject(runs) : Promise.resolve(runs)
+  const listPlansAtReview = (): Promise<string[]> =>
+    reviewRefs instanceof Error
+      ? Promise.reject(reviewRefs)
+      : Promise.resolve(reviewRefs)
+  return { readRuns, listPlansAtReview }
+}
+
+test('collectOpenGates happy merge: paused run + different review ref -> both gates', async () => {
+  const deps = fakeDeps(
+    [baseState({ ref: 'PMR-1', loop: loopState('paused') })],
+    ['PMR-2'],
+  )
+  const gates = await collectOpenGates(deps)
+  assert.equal(gates.length, 2)
+  assert.deepEqual(
+    gates.map((g) => [g.ref, g.kind]),
+    [
+      ['PMR-1', 'flow-paused'],
+      ['PMR-2', 'plan-review'],
+    ],
+  )
+  const planReview = gates[1]
+  assert.equal(planReview?.title, 'PMR-2 · plan awaiting approval')
+  assert.equal(planReview?.answerCommand, '/flow answer PMR-2')
+})
+
+test('collectOpenGates dedupe: paused run with same ref in review list -> exactly one gate', async () => {
+  const deps = fakeDeps(
+    [baseState({ ref: 'PMR-1', loop: loopState('paused') })],
+    ['PMR-1'],
+  )
+  const gates = await collectOpenGates(deps)
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0]?.kind, 'flow-paused')
+  assert.match(gates[0]?.title ?? '', /paused/)
+})
+
+test('collectOpenGates aven failure -> runs-only gates', async () => {
+  const deps = fakeDeps(
+    [baseState({ ref: 'PMR-1', loop: loopState('paused') })],
+    new Error('aven down'),
+  )
+  const gates = await collectOpenGates(deps)
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0]?.ref, 'PMR-1')
+  assert.equal(gates[0]?.kind, 'flow-paused')
+})
+
+test('collectOpenGates runs failure -> plans-only gates', async () => {
+  const deps = fakeDeps(new Error('disk boom'), ['PMR-2'])
+  const gates = await collectOpenGates(deps)
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0]?.kind, 'plan-review')
+  assert.equal(gates[0]?.ref, 'PMR-2')
+})
+
+test('collectOpenGates both sources empty/failing -> []', async () => {
+  const empty = await collectOpenGates(fakeDeps([], []))
+  assert.deepEqual(empty, [])
+  const failing = await collectOpenGates(
+    fakeDeps(new Error('a'), new Error('b')),
+  )
+  assert.deepEqual(failing, [])
+})
+
+// --- readRunsFromDisk (fake io) ---
+
+function fakeIo(
+  entries: string[],
+  files: Map<string, string>,
+  readdirError?: Error,
+): GateIo {
+  return {
+    readdir: async (_dir: string) => {
+      if (readdirError) throw readdirError
+      return entries
+    },
+    readFile: async (path: string) => {
+      const body = files.get(path)
+      if (body === undefined) throw new Error(`missing: ${path}`)
+      return body
+    },
+  }
+}
+
+test('readRunsFromDisk keeps valid run files and skips corrupt/missing ones', async () => {
+  const good = baseState({ ref: 'PMR-1' })
+  // The dir prefix must match between readdir and readFile, so both sides are
+  // built around the real runsDir layout instead of the string fakeIo helper.
+  const runs = await readRunsFromDisk('<agent>', {
+    readdir: async (dir) => {
+      assert.equal(dir.includes('pi-flow'), true)
+      return ['PMR-1.json', 'broken.json', 'not-a-run.json', 'notes.txt']
+    },
+    readFile: async (path) => {
+      if (path.endsWith('PMR-1.json')) return JSON.stringify(good)
+      if (path.endsWith('broken.json')) return '{not json'
+      if (path.endsWith('not-a-run.json')) return JSON.stringify({ hello: 1 })
+      throw new Error(`unexpected read: ${path}`)
+    },
+  })
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0]?.ref, 'PMR-1')
+})
+
+test('readRunsFromDisk missing runs dir -> []', async () => {
+  const runs = await readRunsFromDisk(
+    '<agent>',
+    fakeIo([], new Map(), new Error('ENOENT')),
+  )
+  assert.deepEqual(runs, [])
+})
+
+// --- parsePlanReviewRefs (pure, PMR-ZGPY 2.2) ---
+
+test('parsePlanReviewRefs extracts string refs from aven list JSON', () => {
+  const stdout = JSON.stringify([
+    { ref: 'PMR-2', title: 'x' },
+    { ref: 'dp-9' },
+    { title: 'no ref' },
+    'not-an-object',
+  ])
+  assert.deepEqual(parsePlanReviewRefs(stdout), ['PMR-2', 'dp-9'])
+})
+
+test('parsePlanReviewRefs fail-closed on bad JSON or non-array', () => {
+  assert.deepEqual(parsePlanReviewRefs('oops'), [])
+  assert.deepEqual(parsePlanReviewRefs(JSON.stringify({ a: 1 })), [])
 })

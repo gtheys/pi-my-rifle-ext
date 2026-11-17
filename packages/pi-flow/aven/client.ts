@@ -401,6 +401,48 @@ export async function readPlanState(ref: string): Promise<string | null> {
   }
 }
 
+// AIDEV-NOTE (PMR-ZGPY 2.2, D5): refs of tickets with plan-state=review,
+// across ALL projects (--all-projects required per DP-252 — aven >=0.1.51
+// scopes a plain `list` to the cwd-inferred project). Aven prints
+// unknown-metadata-field with exit 0 when no ticket in the workspace ever
+// registered plan-state — same as an empty list, NOT a failure. Fail-closed:
+// any spawn/parse problem returns [] so the flow-status widget keeps showing
+// run-derived gates only. Only aven/client.ts shells out to aven (boundary
+// rule); flow/gates.ts consumes this via the GateDeps seam.
+export function parsePlanReviewRefs(stdout: string): string[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  const refs: string[] = []
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const ref = (entry as { ref?: unknown }).ref
+    if (typeof ref === 'string' && ref.length > 0) refs.push(ref)
+  }
+  return refs
+}
+
+export async function listPlansAtReviewRefs(): Promise<string[]> {
+  try {
+    const out = await avenExec([
+      'list',
+      '--metadata',
+      'plan-state=review',
+      '--all-projects',
+      '--json',
+    ])
+    if (/unknown-metadata-field/.test(out.stdout)) return []
+    return parsePlanReviewRefs(out.stdout)
+  } catch (error: unknown) {
+    recordAvenFailure(error)
+    return []
+  }
+}
+
 /**
  * `jira-ref` metadata of a local aven epic (the Jira key it mirrors), or null
  * when absent/unreadable. Used so work-mode runs started from the aven epic

@@ -9,7 +9,10 @@
 // plan-state=review are deduped in collectOpenGates (2.2), not here — no
 // aven knowledge in this module.
 
+import { readdir, readFile } from 'node:fs/promises'
+import { listPlansAtReviewRefs } from '../aven/client.ts'
 import type { FlowRunState } from '../run-state.ts'
+import { isFlowRunState, runsDir } from '../run-state.ts'
 
 /** One actionable gate the user can open or answer. */
 export interface OpenGate {
@@ -27,6 +30,18 @@ export interface GateDeps {
   listPlansAtReview(): Promise<string[]>
   /** Validated FlowRunState projections from the local runs dir. */
   readRuns(): Promise<FlowRunState[]>
+}
+
+// AIDEV-NOTE: injectable fs seam for readRunsFromDisk (the readRunEvents io
+// param pattern) — tests inject a fake fs; no real disk touched.
+export interface GateIo {
+  readdir(dir: string): Promise<string[]>
+  readFile(path: string): Promise<string>
+}
+
+const nodeGateIo: GateIo = {
+  readdir: (dir) => readdir(dir),
+  readFile: (path) => readFile(path, 'utf8'),
 }
 
 function hasCodeReviewReceipt(state: FlowRunState): boolean {
@@ -79,6 +94,74 @@ export function deriveRunGates(states: readonly FlowRunState[]): OpenGate[] {
         })
       }
     }
+  }
+  return gates
+}
+
+// AIDEV-NOTE (PMR-ZGPY 2.2, D5): disk scan of runsDir(agentDir) — one
+// validated FlowRunState per *.json file. Fail-soft per file: unreadable,
+// unparsable, or non-conforming files are skipped (a corrupt run file must
+// never blank the widget). io is injectable so tests run without disk.
+export async function readRunsFromDisk(
+  agentDir: string,
+  io: GateIo = nodeGateIo,
+): Promise<FlowRunState[]> {
+  const dir = runsDir(agentDir)
+  let entries: string[]
+  try {
+    entries = await io.readdir(dir)
+  } catch {
+    return []
+  }
+  const runs: FlowRunState[] = []
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue
+    try {
+      const raw = await io.readFile(`${dir}/${entry}`)
+      const parsed: unknown = JSON.parse(raw)
+      if (isFlowRunState(parsed)) runs.push(parsed)
+    } catch {
+      // corrupt/missing file — skip
+    }
+  }
+  return runs
+}
+
+// AIDEV-NOTE (PMR-ZGPY 2.2): real GateDeps factory for phases 3–4 consumers.
+// Aven boundary rule: the aven shell-out itself lives in aven/client.ts
+// (listPlansAtReviewRefs) — this module only calls through it; nothing else
+// in flow/ may exec aven.
+export function createGateDeps(agentDir: string): GateDeps {
+  return {
+    listPlansAtReview: () => listPlansAtReviewRefs(),
+    readRuns: () => readRunsFromDisk(agentDir),
+  }
+}
+
+// AIDEV-NOTE (PMR-ZGPY 2.2, D5, ISC-13): merges run-derived gates with the
+// aven plan-state=review list. Each source fails closed INDEPENDENTLY — an
+// aven failure keeps run-derived gates, a runs-scan failure keeps
+// plan-review gates — so one broken source never blanks the other's signal.
+// Dedupe per D5: a ref that already has ANY run-derived gate (in practice
+// the flow-paused gate, whose title already mentions the pause) appears
+// exactly once; only review refs with no run-derived gate get a fresh
+// plan-review row.
+export async function collectOpenGates(deps: GateDeps): Promise<OpenGate[]> {
+  const [runs, reviewRefs] = await Promise.all([
+    deps.readRuns().catch(() => [] as FlowRunState[]),
+    deps.listPlansAtReview().catch(() => [] as string[]),
+  ])
+  const runGates = deriveRunGates(runs)
+  const gatedRefs = new Set(runGates.map((g) => g.ref))
+  const gates = [...runGates]
+  for (const ref of reviewRefs) {
+    if (gatedRefs.has(ref)) continue
+    gates.push({
+      ref,
+      kind: 'plan-review',
+      title: `${ref} · plan awaiting approval`,
+      answerCommand: `/flow answer ${ref}`,
+    })
   }
   return gates
 }
