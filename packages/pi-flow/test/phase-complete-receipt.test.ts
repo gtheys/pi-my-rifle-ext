@@ -23,6 +23,11 @@ import { registerPhaseCompleteTool } from '../tools/phase-complete.ts'
 const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-pc-bin-'))
 const LABEL_STATE = path.join(BIN_DIR, 'labels.txt')
 const EDIT_FAILS = path.join(BIN_DIR, 'edit-fails')
+// PMR-3MTZ: the spec-answer receipt file the fake `aven show --full` serves
+// (empty/absent = no receipt; 'approve'/'reject' = the human's recorded
+// answer). READ_FAILS makes the --full read emit an Error line on stderr.
+const ANSWER_FILE = path.join(BIN_DIR, 'spec-answer')
+const READ_FAILS = path.join(BIN_DIR, 'read-fails')
 // `aven edit <ref> --label <label>` appends the label to LABEL_STATE (or
 // exits non-zero when EDIT_FAILS exists, to simulate a write failure);
 // `aven show <ref> --json` prints the ticket with the stored labels.
@@ -30,6 +35,22 @@ const SHIM = [
   '#!/bin/sh',
   `if [ -f "${EDIT_FAILS}" ] && [ "$1" = "edit" ]; then`,
   '  exit 1',
+  'fi',
+  // PMR-3MTZ: `aven show <ref> --full` — guarded read for readGateAnswer.
+  // First line must resolve to the ref; the metadata block carries the
+  // spec-answer receipt. stderr Error line = read failure (fail closed).
+  'if [ "$1" = "show" ] && [ "$3" = "--full" ]; then',
+  '  echo "PMR-TEST status=todo"',
+  `  if [ -f "${READ_FAILS}" ]; then`,
+  '    echo "Error: simulated read failure" >&2',
+  '  fi',
+  `  if [ -f "${ANSWER_FILE}" ]; then`,
+  '    echo "metadata field_id=f1 key=spec-answer"',
+  '    echo "value<<EOF"',
+  `    cat "${ANSWER_FILE}"`,
+  '    echo "EOF"',
+  '  fi',
+  '  exit 0',
   'fi',
   'if [ "$1" = "edit" ]; then',
   `  printf '%s\\n' "$4" >> "${LABEL_STATE}"`,
@@ -131,6 +152,9 @@ async function withFakeAven(fn: () => Promise<void>): Promise<void> {
 }
 
 test('fresh path: ok result and receipt recorded for the phase', async () => {
+  // PMR-3MTZ: the plan fresh path now requires the human approve receipt.
+  writeFileSync(ANSWER_FILE, 'approve\n')
+  rmSync(LABEL_STATE, { force: true })
   const receipts = memReceipts({ requireLabelWritten: true })
   const execute = phaseCompleteExecute(receipts)
   await withFakeAven(async () => {
@@ -149,6 +173,8 @@ test('fresh path: ok result and receipt recorded for the phase', async () => {
 test('fresh path: no receipt when the label write fails', async () => {
   const { rmSync } = await import('node:fs')
   rmSync(LABEL_STATE, { force: true })
+  // PMR-3MTZ: plan needs the approve receipt to reach the write attempt.
+  writeFileSync(ANSWER_FILE, 'approve\n')
   const receipts = memReceipts()
   const execute = phaseCompleteExecute(receipts)
   await withFakeAven(async () => {
@@ -184,6 +210,9 @@ test('already path: result unchanged and receipt still recorded', async () => {
 })
 
 test('best-effort: a throwing record leaves the fresh-path result ok', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  // PMR-3MTZ: plan needs the approve receipt to reach the fresh path.
+  writeFileSync(ANSWER_FILE, 'approve\n')
   const receipts = memReceipts({ recordThrowing: true })
   const execute = phaseCompleteExecute(receipts)
   await withFakeAven(async () => {
@@ -217,6 +246,96 @@ test('refusal path: no receipt recorded on gate refusal', async () => {
     })
     assert.equal(result.isError, true)
     assert.equal(receipts.entries.length, 0)
+  })
+})
+
+// AIDEV-NOTE: PMR-3MTZ — receipt-gate tests for the plan phase. The fresh
+// write path must refuse unless readGateAnswer(ref, 'spec') === 'approve':
+// absent/unreadable receipt and a 'reject' answer both fail closed; the
+// already-complete fast path stays receipt-free (idempotency, PMR-4S6V);
+// implement/validate/feedback remain label-order-only.
+test('plan fresh path: refuses without an approve receipt', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  rmSync(ANSWER_FILE, { force: true })
+  const receipts = memReceipts()
+  const execute = phaseCompleteExecute(receipts)
+  await withFakeAven(async () => {
+    const result = await execute('g1', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /\/flow answer PMR-TEST approve/)
+    assert.match(result.content[0].text, /none\/unreadable/)
+    assert.equal(existsSync(LABEL_STATE), false)
+    assert.equal(receipts.entries.length, 0)
+  })
+})
+
+test('plan fresh path: proceeds with approve receipt and writes the label', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  writeFileSync(ANSWER_FILE, 'approve\n')
+  const receipts = memReceipts({ requireLabelWritten: true })
+  const execute = phaseCompleteExecute(receipts)
+  await withFakeAven(async () => {
+    const result = await execute('g2', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /planned/)
+    assert.equal(receipts.entries.length, 1)
+  })
+})
+
+test('plan fresh path: refuses on a reject receipt', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  writeFileSync(ANSWER_FILE, 'reject\n')
+  const receipts = memReceipts()
+  const execute = phaseCompleteExecute(receipts)
+  await withFakeAven(async () => {
+    const result = await execute('g3', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /\/flow answer PMR-TEST approve/)
+    assert.match(result.content[0].text, /reject/)
+    assert.equal(existsSync(LABEL_STATE), false)
+  })
+})
+
+test('plan fresh path: refuses when the receipt read fails', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  rmSync(ANSWER_FILE, { force: true })
+  writeFileSync(READ_FAILS, 'x')
+  try {
+    const receipts = memReceipts()
+    const execute = phaseCompleteExecute(receipts)
+    await withFakeAven(async () => {
+      const result = await execute('g4', { ref: 'PMR-TEST', phase: 'plan' })
+      assert.equal(result.isError, true)
+      assert.match(result.content[0].text, /\/flow answer PMR-TEST approve/)
+      assert.equal(existsSync(LABEL_STATE), false)
+    })
+  } finally {
+    rmSync(READ_FAILS, { force: true })
+  }
+})
+
+test('plan already path: stays receipt-free (idempotency preserved)', async () => {
+  writeFileSync(LABEL_STATE, 'planned\n')
+  rmSync(ANSWER_FILE, { force: true })
+  const receipts = memReceipts()
+  const execute = phaseCompleteExecute(receipts)
+  await withFakeAven(async () => {
+    const result = await execute('g5', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /already recorded/)
+  })
+})
+
+test('implement phase: still label-order-only, no receipt required', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  writeFileSync(LABEL_STATE, 'planned\n')
+  rmSync(ANSWER_FILE, { force: true })
+  const receipts = memReceipts({ requireLabelWritten: true })
+  const execute = phaseCompleteExecute(receipts)
+  await withFakeAven(async () => {
+    const result = await execute('g6', { ref: 'PMR-TEST', phase: 'implement' })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /active/)
   })
 })
 

@@ -15,7 +15,11 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
 `gh pr create` calls are blocked while a flow is active:
 
 - `flow_phase_complete` — the only way to apply a lifecycle label; refuses
-  out-of-order completion.
+  out-of-order completion. For the **plan** phase it is also receipt-gated
+  (PMR-3MTZ): the fresh write of `planned` refuses unless the human's
+  `/flow answer <ref> approve` receipt exists (fail-closed like
+  `spec_approve`); the already-complete fast path stays receipt-free and
+  implement/validate/feedback remain label-order-only.
 - `flow_land` — verifies `review-passed` (and the `blockers_count` artifact
   when given) before authorizing a push (personal) or PR creation (work).
 - `flow_run_attempt` — records each test attempt against the retry budget.
@@ -31,7 +35,8 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
    approval gate — answer-first: the human runs `/flow answer <ref> approve`,
    then the receipt-gated `spec_approve` goes through); personal: now also delegates to the `feature-plan-aven`
    skill (the old split-gate module was removed); a personal oneshot skips
-   the spec-approval gate → `planned`.
+   the spec-approval gate but still needs the human's `/flow answer <ref>
+   approve` receipt before `flow_phase_complete(plan)` applies `planned`.
 2. **Implement** — gate: `planned` required; worktree isolation; routes
    bug / plan / oneshot; retry budget **3 total attempts** (the 3rd failure
    escalates and refuses further attempts) → blocked + escalate →

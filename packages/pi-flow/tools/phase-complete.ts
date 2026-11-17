@@ -3,13 +3,22 @@
 // on refusal returns the gate reason as a tool error; on success execs the
 // same writeAvenLabel path the flow loop uses. Idempotent: an
 // already-complete phase returns ok without re-writing.
+// AIDEV-NOTE: PMR-3MTZ — the plan phase's fresh write is additionally
+// receipt-gated: readGateAnswer(ref, 'spec') must return 'approve' (the
+// human's /flow answer receipt) before 'planned' is written; refusal is
+// fail-closed like spec_approve (PMR-R5VB). The fast path stays
+// receipt-free and implement/validate/feedback stay label-order-only.
 import type {
   AgentToolResult,
   ExtensionAPI,
 } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { readAvenLabels, writeAvenLabel } from '../aven/client.ts'
+import {
+  readAvenLabels,
+  readGateAnswer,
+  writeAvenLabel,
+} from '../aven/client.ts'
 import { checkPhaseCompletion } from '../flow/label-gate.ts'
 import { PHASE_LABEL, type Phase } from '../flow/orchestrate.ts'
 import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
@@ -64,12 +73,13 @@ export function registerPhaseCompleteTool(
     name: 'flow_phase_complete',
     label: 'flow phase complete',
     description:
-      'Record completion of a PIV flow phase by applying its lifecycle label (plan=planned, implement=active, validate=review-passed, feedback=done). The gate re-checks phase order and refuses out-of-order completion with the reason. This is the ONLY way to write lifecycle labels — direct aven label edits on the ticket are blocked.',
+      'Record completion of a PIV flow phase by applying its lifecycle label (plan=planned, implement=active, validate=review-passed, feedback=done). The gate re-checks phase order and refuses out-of-order completion with the reason; the plan phase additionally refuses until the human ran /flow answer <ref> approve. This is the ONLY way to write lifecycle labels — direct aven label edits on the ticket are blocked.',
     promptSnippet:
       'Gated lifecycle-label completion for PIV flow phases (plan/implement/validate/feedback).',
     promptGuidelines: [
       'Call flow_phase_complete to close a flow phase — never run `aven edit <ref> --label <lifecycle>` yourself; that mutation is blocked.',
       'A refusal carries the gate reason (missing prior phase); run the missing phase, do not retry the call.',
+      'The plan phase additionally requires a human approval receipt: flow_phase_complete(plan) refuses until the human ran `/flow answer <ref> approve`. On that refusal, tell the human to run `/flow answer <ref> approve`, then re-call flow_phase_complete once the receipt exists — never fake or bypass it with raw aven commands.',
     ],
     parameters: Type.Object({
       ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
@@ -118,6 +128,36 @@ export function registerPhaseCompleteTool(
           `flow_phase_complete: "${label}" already recorded on ${params.ref} — phase ${params.phase} was already complete`,
           { ok: true, refused: false, already: true, reason: '', label },
         )
+      }
+      // AIDEV-NOTE: PMR-3MTZ — plan-phase receipt gate (fail-closed, the
+      // spec_approve PMR-R5VB pattern): the fresh write of 'planned' must be
+      // preceded by a human approval receipt (readGateAnswer(ref, 'spec') ===
+      // 'approve'). null covers both an absent spec-answer metadata block and an
+      // aven read failure; 'reject' or any other choice refuses too. The
+      // already-complete fast path below stays receipt-free (PMR-4S6V
+      // idempotency), and implement/validate/feedback remain label-order-only.
+      if (params.phase === 'plan') {
+        const answer = await readGateAnswer(params.ref, 'spec')
+        if (answer !== 'approve') {
+          let found: string
+          if (answer === null) {
+            found = 'none/unreadable'
+          } else {
+            found = answer
+          }
+          const text = `flow_phase_complete refused: no human approval receipt for plan on ${params.ref} — the human must run /flow answer ${params.ref} approve (human-only slash command; the receipt is the exact-ref-guarded aven spec-answer metadata). Found: ${found}. After the human answers, re-call flow_phase_complete.`
+          return toolResult(
+            text,
+            {
+              ok: false,
+              refused: true,
+              already: false,
+              reason: text,
+              label: '',
+            },
+            { isError: true },
+          )
+        }
       }
       const written = await writeAvenLabel(params.ref, label)
       if (!written) {
