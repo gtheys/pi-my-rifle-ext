@@ -70,8 +70,31 @@ export function decidePlacement(
   return { kind: 'prompt' }
 }
 
+// AIDEV-NOTE (PMR-ZGPY 5.3): pane labels double as herdr dedupe keys, so live
+// (`flow · <ref>`) and replay (`flow · <ref> · replay`) labels MUST stay
+// distinct — hence the load-bearing ` · replay` suffix. Keep these two strings
+// in sync with composePaneLabel in plugins/herdr/flow-viewer.mjs (cannot be
+// imported from TS here; byte-equality is pinned in test/herdr-viewer.test.ts
+// by importing the .mjs from the test side). Live label is byte-identical to
+// pre-replay output (ISC-8/ISC-10).
 export function viewerPaneLabel(ref: string): string {
   return `${VIEWER_LABEL_PREFIX}${ref}`
+}
+
+export const REPLAY_LABEL_SUFFIX = ' · replay'
+
+export function replayPaneLabel(ref: string): string {
+  return `${viewerPaneLabel(ref)}${REPLAY_LABEL_SUFFIX}`
+}
+
+export type FlowViewerMode = 'live' | 'replay'
+
+// AIDEV-NOTE: mirrors composePaneLabel in plugins/herdr/flow-viewer.mjs.
+function paneLabelFor(ref: string, mode: FlowViewerMode): string {
+  if (mode === 'replay') {
+    return replayPaneLabel(ref)
+  }
+  return viewerPaneLabel(ref)
 }
 
 /**
@@ -79,8 +102,12 @@ export function viewerPaneLabel(ref: string): string {
  * PI_FLOW_REF, PI_FLOW_RUN_FILE and PI_FLOW_JOURNAL_FILE so the pane prefers
  * the journal path from env and only falls back to deriving it from runFile.
  */
-export function buildViewerOpenEnv(ref: string, runFile: string): string[] {
-  return [
+export function buildViewerOpenEnv(
+  ref: string,
+  runFile: string,
+  mode: FlowViewerMode = 'live',
+): string[] {
+  const args = [
     '--env',
     `PI_FLOW_REF=${ref}`,
     '--env',
@@ -88,6 +115,10 @@ export function buildViewerOpenEnv(ref: string, runFile: string): string[] {
     '--env',
     `PI_FLOW_JOURNAL_FILE=${journalPathFor(runFile)}`,
   ]
+  if (mode === 'replay') {
+    args.push('--env', 'PI_FLOW_VIEWER_MODE=replay')
+  }
+  return args
 }
 
 /** Strict ref charset — the same rule as runFileName, enforced at the boundary. */
@@ -148,22 +179,28 @@ export class FlowHerdrViewer {
   async open(
     ref: string,
     placement: ViewerPlacement,
+    mode: FlowViewerMode = 'live',
   ): Promise<ViewerOpenResult> {
-    const pending = this.opening.get(ref)
+    // AIDEV-NOTE (PMR-ZGPY 5.3): dedupe key is the pane LABEL string, so live
+    // and replay panes for the same ref never collide. Live path byte-identical.
+    const key = paneLabelFor(ref, mode)
+    const pending = this.opening.get(key)
     if (pending !== undefined) return await pending
 
-    const opening = this.openOnce(ref, placement).finally(() => {
-      if (this.opening.get(ref) === opening) this.opening.delete(ref)
+    const opening = this.openOnce(ref, placement, mode).finally(() => {
+      if (this.opening.get(key) === opening) this.opening.delete(key)
     })
-    this.opening.set(ref, opening)
+    this.opening.set(key, opening)
     return await opening
   }
 
   private async openOnce(
     ref: string,
     placement: ViewerPlacement,
+    mode: FlowViewerMode,
   ): Promise<ViewerOpenResult> {
-    const existing = await this.findAndFocus(ref)
+    const label = paneLabelFor(ref, mode)
+    const existing = await this.findAndFocus(label)
     if (existing !== undefined) {
       return { paneId: existing, reused: true }
     }
@@ -180,7 +217,7 @@ export class FlowHerdrViewer {
       HERDR_PLUGIN_ID,
       '--entrypoint',
       HERDR_PLUGIN_ENTRYPOINT,
-      ...buildViewerOpenEnv(ref, runFile),
+      ...buildViewerOpenEnv(ref, runFile, mode),
       '--focus',
     ]
     if (placement === 'tab') {
@@ -216,25 +253,25 @@ export class FlowHerdrViewer {
         throw error
       }
     }
-    this.knownPanes.set(ref, opened.paneId)
+    this.knownPanes.set(label, opened.paneId)
     return { paneId: opened.paneId, reused: false }
   }
 
-  private async findAndFocus(ref: string): Promise<string | undefined> {
-    const knownPaneId = this.knownPanes.get(ref)
+  private async findAndFocus(label: string): Promise<string | undefined> {
+    const knownPaneId = this.knownPanes.get(label)
     if (knownPaneId !== undefined) {
       try {
         await this.run('herdr', ['plugin', 'pane', 'focus', knownPaneId])
         return knownPaneId
       } catch {
-        this.knownPanes.delete(ref)
+        this.knownPanes.delete(label)
       }
     }
-    const existing = await this.find(ref)
+    const existing = await this.findByLabel(label)
     if (existing === undefined) return undefined
     try {
       await this.run('herdr', ['plugin', 'pane', 'focus', existing.paneId])
-      this.knownPanes.set(ref, existing.paneId)
+      this.knownPanes.set(label, existing.paneId)
       return existing.paneId
     } catch {
       // The pane can close between the snapshot and the focus request.
@@ -242,11 +279,19 @@ export class FlowHerdrViewer {
     }
   }
 
-  async find(ref: string): Promise<HerdrPane | undefined> {
+  // AIDEV-NOTE (PMR-ZGPY 5.3): matches the EXACT label for the requested mode
+  // — a live open must never focus a replay pane for the same ref and vice
+  // versa (ISC-10 label-dedupe protection).
+  async find(
+    ref: string,
+    mode: FlowViewerMode = 'live',
+  ): Promise<HerdrPane | undefined> {
+    return this.findByLabel(paneLabelFor(ref, mode))
+  }
+
+  private async findByLabel(label: string): Promise<HerdrPane | undefined> {
     const snapshot = await this.runJson('herdr', ['api', 'snapshot'])
-    return snapshotPanes(snapshot).find(
-      (pane) => pane.label === viewerPaneLabel(ref),
-    )
+    return snapshotPanes(snapshot).find((pane) => pane.label === label)
   }
 
   async installedPlugin(): Promise<ReturnType<typeof parseInstalledPlugin>> {

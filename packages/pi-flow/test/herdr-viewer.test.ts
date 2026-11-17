@@ -255,3 +255,194 @@ test('decidePlacement: arg undefined + config set for every placement', () => {
     })
   }
 })
+
+// --- PMR-ZGPY 5.3: replay mode plumbing + label-dedupe protection ---
+
+import { composePaneLabel } from '../../../plugins/herdr/flow-viewer.mjs'
+import { replayPaneLabel } from '../herdr/viewer.ts'
+
+test('viewerPaneLabel stays byte-identical to composePaneLabel live output', () => {
+  assert.equal(viewerPaneLabel('PMR-X'), composePaneLabel('PMR-X'))
+  assert.equal(viewerPaneLabel('PMR-X'), 'flow · PMR-X')
+})
+
+test('replayPaneLabel matches composePaneLabel replay output and is distinct', () => {
+  assert.equal(replayPaneLabel('PMR-X'), composePaneLabel('PMR-X', 'replay'))
+  assert.equal(replayPaneLabel('PMR-X'), 'flow · PMR-X · replay')
+  assert.notEqual(replayPaneLabel('PMR-X'), viewerPaneLabel('PMR-X'))
+})
+
+test('buildViewerOpenEnv: replay mode appends PI_FLOW_VIEWER_MODE=replay', () => {
+  const env = buildViewerOpenEnv(
+    'PMR-TEST',
+    '/tmp/runs/PMR-TEST.json',
+    'replay',
+  )
+  assert.deepEqual(env, [
+    '--env',
+    'PI_FLOW_REF=PMR-TEST',
+    '--env',
+    'PI_FLOW_RUN_FILE=/tmp/runs/PMR-TEST.json',
+    '--env',
+    'PI_FLOW_JOURNAL_FILE=/tmp/runs/PMR-TEST.journal.jsonl',
+    '--env',
+    'PI_FLOW_VIEWER_MODE=replay',
+  ])
+})
+
+test('buildViewerOpenEnv: live mode (default) has no PI_FLOW_VIEWER_MODE', () => {
+  const env = buildViewerOpenEnv('PMR-TEST', '/tmp/runs/PMR-TEST.json')
+  assert.deepEqual(env, [
+    '--env',
+    'PI_FLOW_REF=PMR-TEST',
+    '--env',
+    'PI_FLOW_RUN_FILE=/tmp/runs/PMR-TEST.json',
+    '--env',
+    'PI_FLOW_JOURNAL_FILE=/tmp/runs/PMR-TEST.journal.jsonl',
+  ])
+  assert.ok(!env.some((arg) => arg.startsWith('PI_FLOW_VIEWER_MODE')))
+})
+
+// Scriptable fake exec: dispatches herdr responses by subcommand so open()
+// flows (snapshot / current / open / focus) can run end-to-end.
+type Call = { command: string; args: string[] }
+
+function scriptedViewer(snapshotPanes: Array<Record<string, unknown>>): {
+  viewer: FlowHerdrViewer
+  calls: Call[]
+} {
+  const calls: Call[] = []
+  let openedCount = 0
+  const exec = (command: string, args: string[]): Promise<ExecResult> => {
+    calls.push({ command, args })
+    let stdout = ''
+    if (args.includes('snapshot')) {
+      stdout = JSON.stringify({
+        result: { snapshot: { panes: snapshotPanes } },
+      })
+    } else if (args.includes('current')) {
+      stdout = JSON.stringify({
+        result: {
+          pane: {
+            pane_id: 'w1:t1:p0',
+            tab_id: 'w1:t1',
+            workspace_id: 'w1',
+            label: 'Pi',
+          },
+        },
+      })
+    } else if (args.includes('open')) {
+      openedCount += 1
+      stdout = JSON.stringify({
+        result: {
+          plugin_pane: {
+            pane: {
+              pane_id: `w1:t1:p${openedCount}`,
+              tab_id: 'w1:t1',
+              workspace_id: 'w1',
+            },
+          },
+        },
+      })
+    }
+    return Promise.resolve({
+      code: 0,
+      stdout,
+      stderr: '',
+      killed: false,
+      truncated: false,
+    })
+  }
+  return { viewer: new FlowHerdrViewer(exec), calls }
+}
+
+const paneWithLabel = (
+  paneId: string,
+  label: string,
+): Record<string, unknown> => ({
+  pane_id: paneId,
+  tab_id: 'w1:t1',
+  workspace_id: 'w1',
+  label,
+})
+
+function openArgs(calls: Call[]): Call {
+  const call = calls.find(
+    (c) => c.command === 'herdr' && c.args.includes('open'),
+  )
+  assert.ok(call, 'expected a herdr plugin pane open call')
+  return call
+}
+
+test('find: live find never matches a replay-labeled pane (ISC-10)', async () => {
+  const { viewer } = scriptedViewer([
+    paneWithLabel('w1:t1:p1', 'flow · PMR-X · replay'),
+  ])
+  const found = await viewer.find('PMR-X', 'live')
+  assert.equal(found, undefined)
+})
+
+test('find: replay find never matches a live-labeled pane (ISC-10)', async () => {
+  const { viewer } = scriptedViewer([paneWithLabel('w1:t1:p1', 'flow · PMR-X')])
+  const found = await viewer.find('PMR-X', 'replay')
+  assert.equal(found, undefined)
+})
+
+test('find: exact label match per mode', async () => {
+  const { viewer } = scriptedViewer([
+    paneWithLabel('w1:t1:p1', 'flow · PMR-X'),
+    paneWithLabel('w1:t1:p2', 'flow · PMR-X · replay'),
+  ])
+  const live = await viewer.find('PMR-X', 'live')
+  const replay = await viewer.find('PMR-X', 'replay')
+  const liveDefault = await viewer.find('PMR-X')
+  assert.equal(live?.paneId, 'w1:t1:p1')
+  assert.equal(liveDefault?.paneId, 'w1:t1:p1')
+  assert.equal(replay?.paneId, 'w1:t1:p2')
+})
+
+test('open(live): snapshot replay pane is NOT focused; live pane created', async () => {
+  const { viewer, calls } = scriptedViewer([
+    paneWithLabel('w1:t1:p9', 'flow · PMR-X · replay'),
+  ])
+  const result = await viewer.open('PMR-X', 'right')
+  assert.equal(result.reused, false)
+  const openCall = openArgs(calls)
+  assert.ok(!openCall.args.some((a) => a.startsWith('PI_FLOW_VIEWER_MODE')))
+  assert.ok(!calls.some((c) => c.args.includes('focus')))
+})
+
+test('open(replay): snapshot live pane is NOT focused; replay pane created with mode env', async () => {
+  const { viewer, calls } = scriptedViewer([
+    paneWithLabel('w1:t1:p9', 'flow · PMR-X'),
+  ])
+  const result = await viewer.open('PMR-X', 'right', 'replay')
+  assert.equal(result.reused, false)
+  const openCall = openArgs(calls)
+  const idx = openCall.args.indexOf('PI_FLOW_VIEWER_MODE=replay')
+  assert.ok(idx > 0)
+  assert.equal(openCall.args[idx - 1], '--env')
+  assert.ok(!calls.some((c) => c.args.includes('focus')))
+})
+
+test('open(replay) twice: second open reuses/focuses the replay pane', async () => {
+  const { viewer, calls } = scriptedViewer([])
+  const first = await viewer.open('PMR-X', 'right', 'replay')
+  assert.equal(first.reused, false)
+  const second = await viewer.open('PMR-X', 'right', 'replay')
+  assert.equal(second.reused, true)
+  assert.equal(second.paneId, first.paneId)
+  const focusCount = calls.filter((c) => c.args.includes('focus')).length
+  assert.equal(focusCount, 1)
+})
+
+test('open(live) twice: reuse semantics unchanged from today', async () => {
+  const { viewer, calls } = scriptedViewer([])
+  const first = await viewer.open('PMR-X', 'right')
+  const second = await viewer.open('PMR-X', 'right')
+  assert.equal(first.reused, false)
+  assert.equal(second.reused, true)
+  assert.equal(second.paneId, first.paneId)
+  const focusCount = calls.filter((c) => c.args.includes('focus')).length
+  assert.equal(focusCount, 1)
+})
