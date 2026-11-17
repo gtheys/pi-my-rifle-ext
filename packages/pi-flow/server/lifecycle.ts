@@ -278,18 +278,19 @@ function claimIsStale(claim: SpawnClaim | null, io: LifecycleIo): boolean {
 }
 
 /**
- * Try to win the spawn claim. Returns true when the caller may spawn (and
- * owns the lock file, including after a stale-claim steal). Never throws.
+ * Try to win the spawn claim. Returns `won: true` (with the claim timestamp
+ * `at` for ownership-checked release) when the caller may spawn and owns the
+ * lock file, including after a stale-claim steal. Never throws.
  */
 async function acquireSpawnClaim(
   agentDir: string,
   io: LifecycleIo,
-): Promise<boolean> {
+): Promise<{ won: boolean; at: number }> {
   const lockPath = spawnLockPath(agentDir)
   const myAt = io.now()
   const claimJson = JSON.stringify({ pid: process.pid, at: myAt })
   const won = await io.tryCreateExclusive(lockPath, claimJson)
-  if (won) return true
+  if (won) return { won: true, at: myAt }
 
   // Contended: is the existing claim stale enough to steal?
   let raw: string | null = null
@@ -299,13 +300,33 @@ async function acquireSpawnClaim(
     raw = null
   }
   const existing = parseSpawnClaim(raw ?? '')
-  if (!claimIsStale(existing, io)) return false
+  // PMR-HRGJ: young-empty-lock guard — between open('wx') and the content
+  // write the lock exists but is EMPTY; parsing it yields null and the old
+  // code treated that as "stale", clobbering the winner's fresh claim. If
+  // the unparsable/empty lock is YOUNG (mtime within the age bound), a
+  // winner is writing it right now → contend, never steal. Old (or
+  // unmeasurable) empty/garbage locks stay stale → steal below.
+  if (existing === null) {
+    let lockMtime: number | null = null
+    try {
+      lockMtime = await io.statMtimeMs(lockPath)
+    } catch {
+      lockMtime = null
+    }
+    if (
+      lockMtime !== null &&
+      io.now() - lockMtime <= SPAWN_IN_PROGRESS_MAX_AGE_MS
+    ) {
+      return { won: false, at: myAt }
+    }
+  }
+  if (!claimIsStale(existing, io)) return { won: false, at: myAt }
 
   // Atomic steal: exclusive temp claim, then rename over the lock. Losing
   // the rename means another contender claimed/refreshed first.
   const tmpPath = `${lockPath}.${process.pid}.${io.now()}.tmp`
   const tmpCreated = await io.tryCreateExclusive(tmpPath, claimJson)
-  if (!tmpCreated) return false
+  if (!tmpCreated) return { won: false, at: myAt }
   const stolen = await io.renameOver(tmpPath, lockPath)
   if (stolen) {
     // PMR-HRGJ — rename replaces UNCONDITIONALLY, so a faster contender's
@@ -320,12 +341,35 @@ async function acquireSpawnClaim(
       verified.pid === process.pid &&
       verified.at === myAt
     ) {
-      return true
+      return { won: true, at: myAt }
     }
-    return false
+    return { won: false, at: myAt }
   }
   await io.unlinkFile(tmpPath)
-  return false
+  return { won: false, at: myAt }
+}
+
+// PMR-HRGJ: ownership-checked release — the winner may be >5s stalled, by
+// which time a contender has legitimately stolen the aged claim and is
+// spawning under it. A blind unlink would delete the STEALER's fresh claim
+// and re-open the double-spawn window. Only unlink when the lock still holds
+// OUR pid + OUR claim timestamp; otherwise leave it alone.
+async function releaseSpawnClaimIfOwned(
+  agentDir: string,
+  io: LifecycleIo,
+  myAt: number,
+): Promise<void> {
+  const lockPath = spawnLockPath(agentDir)
+  let raw: string | null = null
+  try {
+    raw = await io.readFile(lockPath)
+  } catch {
+    raw = null
+  }
+  const claim = parseSpawnClaim(raw ?? '')
+  if (claim !== null && claim.pid === process.pid && claim.at === myAt) {
+    await io.unlinkFile(lockPath)
+  }
 }
 
 /**
@@ -411,9 +455,33 @@ export async function ensureDaemon(
     // PMR-HRGJ: cross-process claim before any SIGTERM/spawn — with NO
     // pidfile the fresh-dead window below cannot fire, so this lock is the
     // only guard against two concurrent ensureDaemons double-spawning.
-    const claimed = await acquireSpawnClaim(agentDir, io)
-    if (!claimed) return await contendedStatus(agentDir, io)
+    const claim = await acquireSpawnClaim(agentDir, io)
+    if (!claim.won) return await contendedStatus(agentDir, io)
+    // PMR-HRGJ: keepClaim — on spawn-timeout the claim is deliberately KEPT:
+    // the child may still be >2s from writing its pidfile, so releasing
+    // would let a contender spawn a duplicate while the slow child is
+    // starting. The SPAWN_IN_PROGRESS_MAX_AGE_MS (5s) age bound reclaims the
+    // claim eventually — a contender steals it once stale, and until then
+    // contention resolves via wait-and-reprobe (contendedStatus).
+    let keepClaim = false
     try {
+      // PMR-HRGJ: post-claim re-probe — the pre-claim probe above is a
+      // STALE OBSERVATION once we hold the claim. Two interleavings:
+      // (a) a scheduling/GC stall in the probe→claim gap lets a rival
+      //     complete claim→spawn→pidfile→release; we then win the now-free
+      //     lock and would spawn over a live daemon;
+      // (b) a claimant SIGKILLed after spawning but before release leaves a
+      //     dead-claimant lock that we steal while the orphan child is still
+      //     starting.
+      // Re-probing here fully closes (a) and shrinks (b) to the sub-window
+      // where the orphan's pidfile has not yet landed. Recording the child
+      // pid in the claim was considered and deferred — the child pid is
+      // unknowable before spawn().
+      const reprobe = await probeDaemon(agentDir, io)
+      if (reprobe.alive) {
+        return { status: 'already-running', pid: reprobe.pid }
+      }
+
       // Best-effort SIGTERM of a stale/mismatched daemon; the dead-process
       // case carries a pid too but killing it is pointless — kill() swallows
       // ESRCH either way, so a single unguarded call is fine.
@@ -443,11 +511,16 @@ export async function ensureDaemon(
         const check = await probeDaemon(agentDir, io)
         if (check.alive) return { status: 'spawned', pid: check.pid }
       }
+      keepClaim = true
       return { status: 'spawn-timeout' }
     } finally {
-      // Release in ALL spawn exit paths (spawned / timeout / failed); the
-      // thrown-error case still lands in the outer catch as spawn-failed.
-      await io.unlinkFile(spawnLockPath(agentDir))
+      // Release in all exit paths EXCEPT spawn-timeout (keepClaim above);
+      // the thrown-error case still lands in the outer catch as
+      // spawn-failed. Release is ownership-checked: a stealer's fresh claim
+      // must survive our stalled finally.
+      if (!keepClaim) {
+        await releaseSpawnClaimIfOwned(agentDir, io, claim.at)
+      }
     }
   } catch (err) {
     return { status: 'spawn-failed', reason: String(err) }

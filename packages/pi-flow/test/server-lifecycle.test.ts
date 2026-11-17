@@ -442,19 +442,26 @@ test('ensure: live fresh claim → no spawn, no SIGTERM, spawn-in-progress', asy
   assert.equal(io.killed.length, 0, 'loser must not SIGTERM under a live claim')
 })
 
-test('ensure: claim released on spawned, spawn-timeout, and spawn-failed', async () => {
+test('ensure: claim released on spawned and spawn-failed, KEPT on spawn-timeout', async () => {
   // spawned
   const ok = makeIo(null)
   await ensureDaemon(AGENT_DIR, ok)
   assert.equal(ok.files.has(LOCK_PATH), false)
 
-  // spawn-timeout (spawn never writes a pidfile)
+  // PMR-HRGJ: spawn-timeout (spawn never writes a pidfile) — the claim is
+  // deliberately KEPT: a slow child may still be >2s from writing its
+  // pidfile, so releasing would let a contender spawn a duplicate. The 5s
+  // SPAWN_IN_PROGRESS_MAX_AGE_MS age bound reclaims the claim instead.
   const timeout = makeIo(null)
   makeFakeClock(timeout, 2_000_000)
   timeout.spawn = () => ({ pid: 4242, unref: () => undefined })
   const timeoutRes = await ensureDaemon(AGENT_DIR, timeout)
   assert.equal(timeoutRes.status, 'spawn-timeout')
-  assert.equal(timeout.files.has(LOCK_PATH), false)
+  assert.equal(
+    timeout.files.has(LOCK_PATH),
+    true,
+    'timeout must keep the claim; the age bound reclaims it',
+  )
 
   // spawn-failed (spawn throws; release still happens via finally)
   const failed = makeIo(null)
@@ -464,6 +471,113 @@ test('ensure: claim released on spawned, spawn-timeout, and spawn-failed', async
   const failedRes = await ensureDaemon(AGENT_DIR, failed)
   assert.equal(failedRes.status, 'spawn-failed')
   assert.equal(failed.files.has(LOCK_PATH), false)
+})
+
+// PMR-HRGJ fix 1 (interleaving a): a stale pre-claim probe must not spawn
+// over a daemon that came up in the probe→claim gap — re-probe after winning
+// the claim and report already-running instead of spawning a duplicate.
+test('ensure: daemon appears between probe and claim → already-running, no spawn', async () => {
+  const io = makeIo(null)
+  makeFakeClock(io, 1_000_000)
+  let pidfileReads = 0
+  const baseRead = io.readFile
+  io.readFile = async (p: string) => {
+    if (p.endsWith('.pid')) {
+      pidfileReads += 1
+      if (pidfileReads === 1) return null
+      // By the time the claim is won, a rival's daemon is live.
+      io.pidfile = `${JSON.stringify({ pid: 777, version: '1', startedAt: 'now', agentDir: AGENT_DIR })}\n`
+    }
+    return baseRead(p)
+  }
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'already-running', pid: 777 })
+  assert.equal(io.spawns.length, 0)
+  assert.equal(
+    io.files.has(LOCK_PATH),
+    false,
+    'claim released on the already-running re-probe path',
+  )
+})
+
+// PMR-HRGJ fix 2: an empty lock file with a FRESH mtime means a winner is
+// mid-write (between open('wx') and the content write) — contending is the
+// only safe move; stealing would clobber the winner's fresh claim.
+test('ensure: young empty lock → contend, no steal, no spawn', async () => {
+  const io = makeIo(null)
+  makeFakeClock(io, 1_000_000)
+  io.files.set(LOCK_PATH, '') // empty lock = winner mid-write
+  io.statMtimeMs = async () => io.now() - 100 // 100ms old → fresh
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.equal(
+    res.status === 'spawn-in-progress' || res.status === 'already-running',
+    true,
+    'contended status expected',
+  )
+  assert.equal(io.spawns.length, 0)
+  assert.equal(io.renames.length, 0, 'a young empty lock must NOT be stolen')
+  assert.deepEqual(io.files.get(LOCK_PATH), '')
+})
+
+// PMR-HRGJ fix 4 (+ fix 3): after a spawn-timeout the claim is kept; once it
+// ages past the 5s bound (claimant alive, so age is the only reclaim path) a
+// later ensureDaemon steals it, spawns, and releases its OWN claim.
+test('ensure: spawn-timeout keeps claim until aged, then a later call steals and releases it', async () => {
+  const timeout = makeIo(null)
+  makeFakeClock(timeout, 2_000_000)
+  timeout.spawn = () => ({ pid: 4242, unref: () => undefined })
+  const timeoutRes = await ensureDaemon(AGENT_DIR, timeout)
+  assert.equal(timeoutRes.status, 'spawn-timeout')
+  assert.equal(timeout.files.has(LOCK_PATH), true)
+
+  // Age the claim (claimant is us — alive — so only age can make it stale).
+  await timeout.sleep(6_000)
+  // This spawn DOES write the pidfile, so the stealing call succeeds.
+  timeout.spawn = () => {
+    timeout.pidfile = `${JSON.stringify({ pid: 4242, version: '1', startedAt: 'now', agentDir: AGENT_DIR })}\n`
+    return { pid: 4242, unref: () => undefined }
+  }
+  const stolen = await ensureDaemon(AGENT_DIR, timeout)
+  assert.deepEqual(stolen, { status: 'spawned', pid: 4242 })
+  assert.equal(timeout.renames.length, 1, 'aged claim stolen via rename')
+  assert.equal(
+    timeout.files.has(LOCK_PATH),
+    false,
+    'own claim released after the stolen-claim spawn',
+  )
+})
+
+// PMR-HRGJ fix 3: a >5s-stalled winner whose poll loop finally succeeds must
+// NOT delete a stealer's fresh claim — release is ownership-checked.
+test('ensure: release is ownership-checked — stealer claim survives a stalled winner', async () => {
+  const io = makeIo(null)
+  let clock = 1_000_000
+  io.now = () => clock
+  let polls = 0
+  io.sleep = async (ms: number) => {
+    clock += ms
+    polls += 1
+    if (polls === 3) {
+      // Mid-flight hijack: our claim ages out and a stealer takes the lock.
+      clock += 6_000 // > SPAWN_IN_PROGRESS_MAX_AGE_MS (5s)
+      io.files.set(LOCK_PATH, JSON.stringify({ pid: 999, at: clock }))
+      // The stalled winner's child only THEN gets its pidfile written.
+      io.pidfile = `${JSON.stringify({ pid: 4242, version: '1', startedAt: 'now', agentDir: AGENT_DIR })}\n`
+    }
+  }
+  // The fake spawn itself does NOT write the pidfile; it lands mid-poll above.
+  io.spawn = () => ({ pid: 4242, unref: () => undefined })
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+  assert.equal(
+    io.files.has(LOCK_PATH),
+    true,
+    'release must NOT unlink a claim we no longer own',
+  )
+  const leftover = JSON.parse(io.files.get(LOCK_PATH) ?? '{}') as {
+    pid?: number
+  }
+  assert.equal(leftover.pid, 999, 'stealer claim intact')
 })
 
 test('ensure: released claim → a later ensureDaemon can spawn again', async () => {
