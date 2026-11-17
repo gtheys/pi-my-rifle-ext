@@ -7,15 +7,52 @@
 // path is gated on a human answer receipt: readGateAnswer must return
 // 'approve' before any aven edit. The receipt is read-only here — it is
 // never consumed or cleared (single-use dedup is PMR-CD46).
+// AIDEV-NOTE: PMR-CD46 — single-use dedup realized via receipt adoption:
+// a stored {ref, command:'spec_approve', target:'plan'} receipt (recorded
+// best-effort after a prior successful approval, PMR-4S6V machinery) is
+// adopted FIRST, before the human gate — a stored receipt can only exist
+// because a prior human-gated approval succeeded, so adoption short-circuits
+// even if the spec-answer metadata was later cleared. Missing/corrupt
+// receipts fall forward to the gate + fresh edit exactly as before; journal
+// failures never block an approval.
 import type {
   AgentToolResult,
   ExtensionAPI,
 } from '@earendil-works/pi-coding-agent'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { readGateAnswer, specApprove } from '../aven/client.ts'
+import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
+import type { EventWriter } from '../server/writer.ts'
 import { toolResult } from './result.ts'
 
-export function registerSpecApproveTool(pi: ExtensionAPI): void {
+// AIDEV-NOTE: PMR-CD46 — best-effort receipt write; a journal failure never
+// fails the tool result, mirroring recordPhaseReceipt (PMR-4S6V).
+async function recordSpecReceipt(receipts: ReceiptJournal, ref: string) {
+  await receipts
+    .record({ ref, command: 'spec_approve', target: 'plan' })
+    .catch(() => {
+      // best-effort — journal failures never fail the tool result
+    })
+}
+
+// AIDEV-NOTE: PMR-CD46 — signature mirrors registerPhaseCompleteTool
+// (PMR-4S6V/PMR-XTQQ): receipts defaults to the real run-journal-backed
+// journal so callers stay untouched; optional mode-aware writer routes
+// receipt writes journal-only while the daemon owns the projection.
+export function registerSpecApproveTool(
+  pi: ExtensionAPI,
+  receipts: ReceiptJournal = createReceiptJournal(getAgentDir()),
+  writer?: EventWriter,
+): void {
+  let effectiveReceipts = receipts
+  if (writer !== undefined) {
+    effectiveReceipts = createReceiptJournal(
+      getAgentDir(),
+      undefined,
+      writer.record,
+    )
+  }
   pi.registerTool({
     name: 'spec_approve',
     label: 'spec approve',
@@ -40,6 +77,18 @@ export function registerSpecApproveTool(pi: ExtensionAPI): void {
       _toolCallId: string,
       params: { ref: string; workspace?: string },
     ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
+      // AIDEV-NOTE: PMR-CD46 — receipt adoption comes FIRST: a stored
+      // receipt implies a prior human-gated approval succeeded, so the
+      // dedup check safely short-circuits the gate and the aven edit.
+      const stored = await effectiveReceipts.find({
+        ref: params.ref,
+        command: 'spec_approve',
+        target: 'plan',
+      })
+      if (stored !== null) {
+        const text = `spec_approve: ${params.ref} was already approved — adopting the stored approval receipt; the aven edit was skipped. Proceed to spec_publish.`
+        return toolResult(text, { ok: true, reason: 'adopted' })
+      }
       // PMR-R5VB receipt gate: fail closed. null covers both a missing
       // spec-answer metadata block and an aven read failure; 'reject' and
       // any non-'approve' choice refuse too. Workspace threading matches
@@ -69,6 +118,10 @@ export function registerSpecApproveTool(pi: ExtensionAPI): void {
           { isError: true },
         )
       }
+      // AIDEV-NOTE: PMR-CD46 — journal-after-success only (mirrors
+      // phase-complete): never recorded on refusal/failure paths, so a
+      // stored receipt always proves a committed approval.
+      await recordSpecReceipt(effectiveReceipts, params.ref)
       return toolResult(result.text, { ok: true, reason: '' })
     },
   })

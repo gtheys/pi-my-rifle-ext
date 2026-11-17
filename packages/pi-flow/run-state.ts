@@ -44,12 +44,20 @@ export type GateDecisionStatus =
 // AIDEV-NOTE: PMR-XTQQ 5.1 — 'code_review' joins the receipt commands: the
 // code_review tool records a headSha-pinned receipt after a HUMAN pass, the
 // durable twin of LandingState.humanReviewPassed (flow_land adoption is 5.2).
-export type ReceiptCommand = 'flow_land' | 'flow_phase_complete' | 'code_review'
+// AIDEV-NOTE: PMR-CD46 — 'spec_approve' joins the receipt commands: the
+// spec_approve tool records a target='plan' receipt after a successful
+// approval and adopts it on duplicate calls (single-use dedup).
+export type ReceiptCommand =
+  | 'flow_land'
+  | 'flow_phase_complete'
+  | 'code_review'
+  | 'spec_approve'
 
 const RECEIPT_COMMANDS: readonly ReceiptCommand[] = [
   'flow_land',
   'flow_phase_complete',
   'code_review',
+  'spec_approve',
 ]
 
 export interface CommandReceiptRecord {

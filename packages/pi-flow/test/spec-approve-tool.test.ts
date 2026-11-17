@@ -15,6 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { after, test } from 'node:test'
 import { setAvenSessionCwd, specApprove } from '../index.ts'
+import type { ReceiptJournal, ReceiptQuery } from '../run-state.ts'
 import { registerSpecApproveTool } from '../tools/spec-approve.ts'
 
 const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-approve-bin-'))
@@ -150,15 +151,31 @@ type SpecApproveExecute = (
   details: { ok: boolean }
 }>
 
-function specApproveExecute(): SpecApproveExecute {
+function specApproveExecute(receipts?: ReceiptJournal): SpecApproveExecute {
   let execute: SpecApproveExecute | undefined
   const mockPi = {
     registerTool: (options: { execute: SpecApproveExecute }) => {
       execute = options.execute
     },
   }
+  // AIDEV-NOTE: PMR-CD46 — default stub keeps existing tests hermetic
+  // instead of journaling to the real agent dir; find returns null so the
+  // dedup check never short-circuits unless a test pre-seeds it.
+  let effectiveReceipts = receipts
+  if (effectiveReceipts === undefined) {
+    const entries: ReceiptQuery[] = []
+    effectiveReceipts = {
+      async find() {
+        return null
+      },
+      async record(query: ReceiptQuery) {
+        entries.push(query)
+      },
+    }
+  }
   registerSpecApproveTool(
     mockPi as unknown as Parameters<typeof registerSpecApproveTool>[0],
+    effectiveReceipts,
   )
   if (!execute) throw new Error('spec_approve tool not registered')
   return execute
@@ -225,5 +242,118 @@ test('spec_approve tool: refuses when the aven read errors (fail closed)', async
     assert.match(result.content[0].text, /none\/unreadable/)
     assert.ok(!lastArgs().includes('edit'))
     writeFileSync(MODE_FILE, 'ok')
+  })
+})
+
+// AIDEV-NOTE: PMR-CD46 — dedup tests. A stored spec_approve receipt
+// ({ref, command:'spec_approve', target:'plan'}) short-circuits BEFORE the
+// human-gate: adoption skips the aven edit and still returns ok. Missing
+// receipt falls through to today's fail-closed gate; fresh success records
+// best-effort after the edit.
+type SpecReceiptStub = ReceiptJournal & { entries: ReceiptQuery[] }
+
+function memReceipts(options?: {
+  seeded?: boolean
+  findNull?: boolean
+  recordThrowing?: boolean
+}): SpecReceiptStub {
+  const entries: ReceiptQuery[] = []
+  return {
+    entries,
+    async find(query: ReceiptQuery) {
+      if (options?.findNull === true) return null
+      if (options?.seeded === true) {
+        // AIDEV-NOTE: PMR-CD46 — single-ref stub: seeded = a stored receipt
+        // exists for whatever ref the tool queries.
+        return {
+          command: query.command,
+          target: query.target,
+          status: 'ok' as const,
+          at: new Date().toISOString(),
+        }
+      }
+      for (const entry of entries) {
+        if (
+          entry.ref === query.ref &&
+          entry.command === query.command &&
+          entry.target === query.target
+        ) {
+          return {
+            command: query.command,
+            target: query.target,
+            status: 'ok' as const,
+            at: new Date().toISOString(),
+          }
+        }
+      }
+      return null
+    },
+    async record(query: ReceiptQuery) {
+      if (options?.recordThrowing === true) {
+        throw new Error('journal write failed')
+      }
+      entries.push(query)
+    },
+  }
+}
+
+test('spec_approve tool: duplicate adopts the stored receipt and skips the edit', async () => {
+  const receipts = memReceipts({ seeded: true })
+  const execute = specApproveExecute(receipts)
+  await withFakeAven(async () => {
+    writeFileSync(ANSWER_FILE, '')
+    const result = await execute('t5', { ref: 'PMR-DUP1' })
+    assert.equal(result.isError, undefined)
+    assert.equal(result.details.ok, true)
+    assert.ok(!lastArgs().includes('edit'))
+    assert.match(result.content[0].text, /adopt/i)
+    assert.match(result.content[0].text, /skipped/i)
+  })
+})
+
+test('spec_approve tool: fresh approval runs the edit and records the receipt', async () => {
+  const receipts = memReceipts()
+  const execute = specApproveExecute(receipts)
+  await withFakeAven(async () => {
+    writeFileSync(ANSWER_FILE, 'approve\n')
+    const result = await execute('t6', { ref: 'PMR-FRESH1' })
+    assert.equal(result.isError, undefined)
+    assert.equal(result.details.ok, true)
+    assert.ok(lastArgs().includes('edit'))
+    assert.equal(receipts.entries.length, 1)
+    assert.deepEqual(receipts.entries[0], {
+      ref: 'PMR-FRESH1',
+      command: 'spec_approve',
+      target: 'plan',
+    })
+  })
+})
+
+test('spec_approve tool: missing receipt falls back to edit + record', async () => {
+  const receipts = memReceipts({ findNull: true })
+  const execute = specApproveExecute(receipts)
+  await withFakeAven(async () => {
+    writeFileSync(ANSWER_FILE, 'approve\n')
+    const result = await execute('t7', { ref: 'PMR-FALL1' })
+    assert.equal(result.isError, undefined)
+    assert.equal(result.details.ok, true)
+    assert.ok(lastArgs().includes('edit'))
+    assert.deepEqual(receipts.entries[0], {
+      ref: 'PMR-FALL1',
+      command: 'spec_approve',
+      target: 'plan',
+    })
+  })
+})
+
+test('spec_approve tool: a throwing journal never fails a fresh approval', async () => {
+  const receipts = memReceipts({ recordThrowing: true })
+  const execute = specApproveExecute(receipts)
+  await withFakeAven(async () => {
+    writeFileSync(ANSWER_FILE, 'approve\n')
+    const result = await execute('t8', { ref: 'PMR-THROW1' })
+    assert.equal(result.isError, undefined)
+    assert.equal(result.details.ok, true)
+    assert.ok(lastArgs().includes('edit'))
   })
 })

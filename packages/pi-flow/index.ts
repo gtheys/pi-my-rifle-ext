@@ -505,7 +505,10 @@ export default function (pi: ExtensionAPI) {
       record: (event) => writer.record(event),
     }),
   )
-  registerSpecApproveTool(pi)
+  // AIDEV-NOTE: PMR-CD46 — mode-aware writer so spec_approve receipt
+  // writes route journal-only while the daemon owns the projection
+  // (mirrors registerPhaseCompleteTool above).
+  registerSpecApproveTool(pi, undefined, writer)
   // AIDEV-NOTE: PMR-XCA9 — plan-tools absorbed from the retired pi-planning
   // package (resolve_spec_path, resolve_feature_path, open_in_pane,
   // jira_create_branch; /review-spec lives in spec-review/commands.ts).
