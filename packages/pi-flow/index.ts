@@ -58,6 +58,7 @@ import {
   type FlowCostDeps,
   registerFlowCostCommand,
 } from './flow/cost-command.ts'
+import { collectOpenGates, createGateDeps } from './flow/gates.ts'
 import { resolveJiraEpic } from './flow/jira-ref.ts'
 import {
   lifecycleLabelMutation,
@@ -80,6 +81,11 @@ import {
   resumeSeedFromEvents,
   runInputRecord,
 } from './flow/resume.ts'
+import {
+  initFlowWidget,
+  refreshFlowWidget,
+  type WidgetAssignment,
+} from './flow/widget.ts'
 import {
   type FlowBindingSnapshot,
   parseFlowBindingSnapshot,
@@ -106,7 +112,7 @@ import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts
 import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import prQualityExtension from './pr-quality/index.ts'
 import reviewExtension from './review/review.ts'
-import { readRunEvents, runStatePath } from './run-state.ts'
+import { projectRunState, readRunEvents, runStatePath } from './run-state.ts'
 import { type ResumeConsumerDeps, resumeParkedRun } from './server/consumer.ts'
 import { pendingDirPath } from './server/daemon.ts'
 import { ensureDaemon } from './server/lifecycle.ts'
@@ -331,6 +337,36 @@ export default function (pi: ExtensionAPI) {
       return
     }
     void journal(event)
+    // AIDEV-NOTE (PMR-ZGPY 3.2): widget refresh on subagent lifecycle change.
+    void refreshFlowWidget()
+  })
+
+  // AIDEV-NOTE (PMR-ZGPY 3.2): flow-status widget wiring ONLY — lifecycle
+  // and data collection live in flow/widget.ts. refreshFlowWidget() is
+  // pulled from agent_settled + the onFlowSpawn hook; assignment filtering
+  // to THIS process's children happens inside the widget via parentPid.
+  initFlowWidget(pi, {
+    readState: async () => {
+      const ref = loop.activeRef()
+      if (ref === null) return null
+      const events = await readRunEvents(getAgentDir(), ref)
+      if (events === null) return null
+      return projectRunState(events)
+    },
+    listAssignments: () => {
+      const assignments: WidgetAssignment[] = []
+      for (const view of listAssignments()) {
+        if (view.state === 'unknown') continue
+        assignments.push({
+          name: view.record.name,
+          status: view.record.status,
+          parentPid: view.record.claim.pid,
+        })
+      }
+      return assignments
+    },
+    collectOpenGates: () => collectOpenGates(createGateDeps(getAgentDir())),
+    parentPid: process.pid,
   })
 
   pi.on('session_start', (_event, ctx) => {
@@ -539,6 +575,9 @@ export default function (pi: ExtensionAPI) {
   // or halts — advancement is code, not model.
   pi.on('agent_settled', () => {
     void loop.onSettled()
+    // AIDEV-NOTE (PMR-ZGPY 3.2): pull-based widget refresh — no fs.watch in
+    // the flow process (ISC-A-3); the widget updates on settle signals.
+    void refreshFlowWidget()
     // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — belt-and-braces consumer path. A
     // parked record for the restored binding is consumed + re-presented here
     // when session_start's check found nothing (e.g. the daemon parked the
