@@ -64,11 +64,11 @@
     "shiki": "^4.6.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^1.5.0",
-    "@earendil-works/pi-coding-agent": "^1.5.0",
-    "@earendil-works/pi-tui": "^1.5.0",
-    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^1.5.0",
-    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^1.5.0",
+    "@earendil-works/pi-agent-core": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-tui": "^1.5.2",
+    "@mariozechner/pi-coding-agent": "npm:@earendil-works/pi-coding-agent@^1.5.2",
+    "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^1.5.2",
     "@biomejs/biome": "2.5.12",
     "@types/diff": "^8.0.0",
     "lefthook": "2.1.12",
