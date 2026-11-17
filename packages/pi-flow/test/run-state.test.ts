@@ -836,6 +836,40 @@ test('isFlowRunState: validates attempts only when present', () => {
   assert.equal(isFlowRunState({ ...baseState, attempts: 'two' }), false)
 })
 
+test('isFlowRunState: validates gateAnswers only when present', () => {
+  const baseState: Record<string, unknown> = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+    mode: 'work',
+    startedAt: 't0',
+    updatedAt: 't1',
+    completedPhases: [],
+    currentPhase: null,
+    notes: [],
+  }
+  const good = [{ gate: 'review', choice: 'approve', at: 't2' }]
+  // PMR-MGHQ — absent gateAnswers stays valid (old journals).
+  assert.equal(isFlowRunState(baseState), true)
+  assert.equal(isFlowRunState({ ...baseState, gateAnswers: good }), true)
+  assert.equal(isFlowRunState({ ...baseState, gateAnswers: 'nope' }), false)
+  assert.equal(isFlowRunState({ ...baseState, gateAnswers: ['nope'] }), false)
+  assert.equal(
+    isFlowRunState({ ...baseState, gateAnswers: [{ ...good[0], gate: 'x' }] }),
+    false,
+  )
+  assert.equal(
+    isFlowRunState({
+      ...baseState,
+      gateAnswers: [{ ...good[0], choice: 'nonsense' }],
+    }),
+    false,
+  )
+  assert.equal(
+    isFlowRunState({ ...baseState, gateAnswers: [{ ...good[0], at: 42 }] }),
+    false,
+  )
+})
+
 test('attempt-record: projection round-trips through projectRunState', () => {
   const events: FlowRunEvent[] = [
     loopRun,

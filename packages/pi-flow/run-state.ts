@@ -537,6 +537,15 @@ const GATE_STATUSES: readonly GateDecisionStatus[] = [
   'stale',
 ]
 
+// PMR-MGHQ — runtime mirror of AnswerChoice's members; the annotation is
+// compile-checked against the type, so the validator cannot drift from it.
+const ANSWER_CHOICES: readonly AnswerChoice[] = [
+  'approve',
+  'reject',
+  'pass',
+  'fail',
+]
+
 export function isFlowRunState(value: unknown): value is FlowRunState {
   if (typeof value !== 'object' || value === null) return false
   const v = value as Record<string, unknown>
@@ -611,6 +620,23 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
         typeof (r as Record<string, unknown>).at === 'string',
     )
     if (!rangesOk) return false
+  }
+  // AIDEV-NOTE: PMR-6EEW / PMR-MGHQ — gate answers optional, validated when present.
+  if (v.gateAnswers !== undefined) {
+    if (!Array.isArray(v.gateAnswers)) return false
+    const answersOk = v.gateAnswers.every(
+      (a) =>
+        typeof a === 'object' &&
+        a !== null &&
+        GATE_KINDS.includes(
+          (a as Record<string, unknown>).gate as GateJournalKind,
+        ) &&
+        ANSWER_CHOICES.includes(
+          (a as Record<string, unknown>).choice as AnswerChoice,
+        ) &&
+        typeof (a as Record<string, unknown>).at === 'string',
+    )
+    if (!answersOk) return false
   }
   // AIDEV-NOTE: PMR-4S6V — receipts validated only when present (old journals).
   if (v.receipts !== undefined) {
