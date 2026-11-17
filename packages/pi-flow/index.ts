@@ -3,7 +3,7 @@
 // tools/* own the four agent tools; flow/phase-command.ts owns the 5 phase
 // commands; spec-review/commands.ts owns the spec commands. What stays here:
 // the extension entrypoint, the enforcement interceptors, the flow loop
-// wiring, and /flow + /herdr-sync + /flow-view.
+// wiring, and /flow + /herdr-sync + /flow-view + /flow-view-replay.
 import { randomBytes } from 'node:crypto'
 import { existsSync, promises as fs, readFileSync } from 'node:fs'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
@@ -1218,6 +1218,166 @@ export default function (pi: ExtensionAPI) {
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         ctx.ui.notify(`/flow-view ${ref}: ${msg}`, 'warning')
+      }
+    },
+  })
+
+  pi.registerCommand('flow-view-replay', {
+    description:
+      'Open the flow journal replay viewer in a Herdr pane. Usage: /flow-view-replay <jira-id | aven-ref | aven:<ref> | jira:<key>> [right|below|left|above|tab]',
+    // AIDEV-NOTE: PMR-ZGPY 5.4 wiring — byte-for-byte mirror of the
+    // /flow-view handler above with one difference: viewer.open is called
+    // with 'replay' mode (typecheck-enforced union in FlowHerdrViewer.open).
+    // The handler body is intentionally duplicated rather than extracted
+    // (wiring-only subtask); if a third mode ever lands, extract then.
+    handler: async (args, ctx) => {
+      const parts = args.trim().split(/\s+/).filter(Boolean)
+      const rawRef = parts[0]
+      const placementArg = parts[1]
+      let ref: string | undefined
+      if (rawRef === undefined) {
+        ref = undefined
+      } else {
+        const kinded = parseRefKind(rawRef)
+        if (kinded.kind === 'jira') {
+          ref = kinded.jiraId
+        } else {
+          ref = kinded.ref
+        }
+      }
+      if (ref === undefined || !isValidRef(ref)) {
+        ctx.ui.notify(
+          'Usage: /flow-view-replay <jira-id | aven-ref | aven:<ref> | jira:<key>> [right|below|left|above|tab]',
+          'info',
+        )
+        return
+      }
+      let parsedArg: ReturnType<typeof parseViewerPlacement>
+      if (placementArg === undefined) {
+        parsedArg = undefined
+      } else {
+        parsedArg = parseViewerPlacement(placementArg)
+      }
+      if (placementArg !== undefined && parsedArg === undefined) {
+        ctx.ui.notify(
+          `Unknown placement "${placementArg}". Use right|below|left|above|tab.`,
+          'warning',
+        )
+        return
+      }
+      let configured: ReturnType<typeof parseViewerPlacement>
+      try {
+        const config = await loadConfig(ctx.cwd)
+        configured = config.viewerPlacement
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(
+          `/flow-view-replay: failed to load config: ${msg}`,
+          'warning',
+        )
+        return
+      }
+      const decision = decidePlacement(parsedArg, configured)
+      let placement: NonNullable<ReturnType<typeof parseViewerPlacement>>
+      if (decision.kind === 'placement') {
+        placement = decision.placement
+      } else if (ctx.hasUI) {
+        const choice = await ctx.ui.select('Viewer placement:', [
+          'right',
+          'below',
+          'left',
+          'above',
+          'tab',
+        ])
+        if (choice === undefined) {
+          placement = 'right'
+        } else {
+          const picked = parseViewerPlacement(choice)
+          if (picked === undefined) {
+            placement = 'right'
+          } else {
+            placement = picked
+            try {
+              const savedPath = await saveViewerPlacement(getAgentDir(), picked)
+              ctx.ui.notify(`Saved viewer placement to ${savedPath}.`, 'info')
+            } catch (error) {
+              const msg = error instanceof Error ? error.message : String(error)
+              ctx.ui.notify(
+                `/flow-view-replay: could not save viewer placement: ${msg}`,
+                'warning',
+              )
+            }
+          }
+        }
+      } else {
+        placement = 'right'
+      }
+      const viewer = new FlowHerdrViewer(pi.exec)
+      const capability = await viewer.probe()
+      if (!capability.available) {
+        ctx.ui.notify(`/flow-view-replay: ${capability.reason}`, 'warning')
+        return
+      }
+      let expected: string
+      try {
+        expected = (await preflightRepo(resolveRepoRoot())).version
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(
+          `/flow-view-replay: repo preflight failed: ${msg} — run /herdr-sync`,
+          'warning',
+        )
+        return
+      }
+      const installed = await viewer.installedPlugin()
+      const versionStatus = pluginVersionStatus(installed, expected)
+      if (versionStatus.status === 'not-installed') {
+        ctx.ui.notify(
+          '/flow-view-replay: herdr plugin not installed — run /herdr-sync to relink the plugin.',
+          'warning',
+        )
+        return
+      }
+      if (versionStatus.status === 'disabled') {
+        ctx.ui.notify(
+          '/flow-view-replay: herdr plugin is disabled — run /herdr-sync to relink the plugin.',
+          'warning',
+        )
+        return
+      }
+      if (versionStatus.status === 'drift') {
+        ctx.ui.notify(
+          `/flow-view-replay: herdr plugin version ${versionStatus.installed} != expected ${versionStatus.expected} — run /herdr-sync to relink the plugin.`,
+          'warning',
+        )
+        return
+      }
+      const runFile = runStatePath(getAgentDir(), ref)
+      if (runFile === null) {
+        ctx.ui.notify(`/flow-view-replay: invalid ref "${ref}".`, 'warning')
+        return
+      }
+      try {
+        await fs.access(runFile)
+      } catch {
+        ctx.ui.notify(
+          `/flow-view-replay ${ref}: no run state yet — run /flow ${ref} first.`,
+          'warning',
+        )
+        return
+      }
+      try {
+        const opened = await viewer.open(ref, placement, 'replay')
+        let message: string
+        if (opened.reused) {
+          message = `Focused existing flow replay viewer for ${ref}.`
+        } else {
+          message = `Opened flow replay viewer for ${ref} (${placement}).`
+        }
+        ctx.ui.notify(message, 'info')
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        ctx.ui.notify(`/flow-view-replay ${ref}: ${msg}`, 'warning')
       }
     },
   })

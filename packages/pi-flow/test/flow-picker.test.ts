@@ -155,10 +155,9 @@ test('planPickerOutcome: gate picked → choice-menu for that gate', () => {
   assert.equal(plan.kind, 'choice-menu')
   if (plan.kind === 'choice-menu') {
     assert.equal(plan.gateRef, 'PMR-CCC')
-    assert.deepEqual(
-      plan.options,
-      gateChoices(gates.find((g) => g.ref === 'PMR-CCC')!),
-    )
+    const gate = gates.find((g) => g.ref === 'PMR-CCC')
+    assert.ok(gate, 'expected a PMR-CCC gate fixture')
+    assert.deepEqual(plan.options, gateChoices(gate))
   }
 })
 
