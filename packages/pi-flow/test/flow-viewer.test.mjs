@@ -457,3 +457,54 @@ test('replayProject: run-start without a following ref stays isolated', () => {
   assert.deepEqual(state.notes, [])
   assert.equal(state.updatedAt, '2026-11-14T10:00:00Z')
 })
+
+// ── PMR-ZGPY 5.2 replay mode: pure helpers ──
+import {
+  composePaneLabel,
+  nextCursor,
+  replayFooter,
+  shouldEnableKeyloop,
+} from '../../../plugins/herdr/flow-viewer.mjs'
+
+test('composePaneLabel: live label byte-identical to today (ISC-8, ISC-10)', () => {
+  assert.equal(composePaneLabel('PMR-X', 'live'), 'flow · PMR-X')
+  assert.equal(composePaneLabel('PMR-X', undefined), 'flow · PMR-X')
+  assert.equal(composePaneLabel('PMR-X', 'anything-else'), 'flow · PMR-X')
+})
+
+test('composePaneLabel: replay label carries the distinct suffix (herdr dedupe key)', () => {
+  assert.equal(composePaneLabel('PMR-X', 'replay'), 'flow · PMR-X · replay')
+})
+
+test('nextCursor: left at 0 stays 0; right at N stays N (clamped)', () => {
+  assert.equal(nextCursor(0, 5, 'left'), 0)
+  assert.equal(nextCursor(5, 5, 'right'), 5)
+  assert.equal(nextCursor(0, 5, 'right'), 1)
+  assert.equal(nextCursor(5, 5, 'left'), 4)
+})
+
+test('nextCursor: h/l/g/G stepping', () => {
+  assert.equal(nextCursor(2, 5, 'h'), 1)
+  assert.equal(nextCursor(2, 5, 'l'), 3)
+  assert.equal(nextCursor(3, 5, 'g'), 0)
+  assert.equal(nextCursor(3, 5, 'G'), 5)
+})
+
+test('nextCursor: unknown key unchanged; N=0 clamps to 0', () => {
+  assert.equal(nextCursor(2, 5, 'up'), 2)
+  assert.equal(nextCursor(2, 5, undefined), 2)
+  assert.equal(nextCursor(0, 0, 'right'), 0)
+})
+
+test('shouldEnableKeyloop: true only when stdin is a TTY', () => {
+  assert.equal(shouldEnableKeyloop(true), true)
+  assert.equal(shouldEnableKeyloop(false), false)
+  assert.equal(shouldEnableKeyloop(undefined), false)
+})
+
+test('replayFooter: renders event k/N and key hints', () => {
+  const footer = replayFooter(2, 5)
+  assert.match(footer, /event 2\/5/)
+  assert.match(footer, /←\/→/)
+  assert.match(footer, /g\/G/)
+})

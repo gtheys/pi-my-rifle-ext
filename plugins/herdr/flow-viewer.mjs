@@ -10,6 +10,7 @@
 // blank pane.
 import { spawnSync } from 'node:child_process'
 import { readFileSync, watch, watchFile } from 'node:fs'
+import readline from 'node:readline'
 import { EOL } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
@@ -42,6 +43,50 @@ const BOLD = '\x1b[1m'
 const GREEN = '\x1b[32m'
 const YELLOW = '\x1b[33m'
 
+// ── PMR-ZGPY 5.2 replay mode: pure helpers (tested) ──
+// AIDEV-NOTE: LOAD-BEARING distinct suffix — ` · replay` must stay part of the
+// replay pane label: herdr dedupes panes by label, so replay and live panes
+// for the same ref must NOT share one. Live label stays byte-identical to
+// pre-replay output (ISC-8/ISC-10).
+export function composePaneLabel(ref, mode) {
+  if (mode === 'replay') {
+    return `flow · ${ref} · replay`
+  }
+  return `flow · ${ref}`
+}
+
+// AIDEV-NOTE: pure cursor stepper for replay mode. k ∈ 0..n; ←/h step back,
+// →/l step forward, g jumps to first event, G to latest; unknown keys (incl.
+// undefined name) leave k unchanged. ←/→ arrive as key.name 'left'/'right'.
+export function nextCursor(k, n, key) {
+  if (key === 'left' || key === 'h') {
+    return Math.max(0, k - 1)
+  }
+  if (key === 'right' || key === 'l') {
+    return Math.min(n, k + 1)
+  }
+  if (key === 'g') {
+    return 0
+  }
+  if (key === 'G') {
+    return n
+  }
+  return k
+}
+
+// AIDEV-NOTE: pure decision — the keyloop (and therefore setRawMode) must
+// NEVER run without a TTY (piped stdin in tests/CI would hang forever).
+export function shouldEnableKeyloop(stdinIsTty) {
+  return stdinIsTty === true
+}
+
+// AIDEV-NOTE: replay footer. The distinct ` · replay` suffix matters for herdr
+// pane dedupe (see composePaneLabel above), not here — but the event counter
+// and key hints are the user-facing contract tested in the unit tests.
+export function replayFooter(k, n) {
+  return `event ${k}/${n} · ←/→ step · g/G jump`
+}
+
 // ── main-module guard ──
 // AIDEV-NOTE: only the pane process (spawned directly by herdr) runs the
 // execution prelude below; importing this module from tests must execute
@@ -71,14 +116,109 @@ function main() {
 
   // Label the pane BEFORE rendering: the label is the dedupe key the Pi session
   // scans for in `herdr api snapshot`, so it must exist even if rendering dies.
-  renamePane(paneId, `flow · ${ref}`)
+  const mode = process.env.PI_FLOW_VIEWER_MODE === 'replay' ? 'replay' : 'live'
+  renamePane(paneId, composePaneLabel(ref, mode))
 
   // AIDEV-NOTE: PMR-WF74 env plumbing — prefer PI_FLOW_JOURNAL_FILE, fall
   // back to deriving from the run-state file so panes opened by an older
   // viewer.ts (no env var) keep working. journalFileFor stays pure; the env
   // preference lives here only.
   const journalFile = process.env.PI_FLOW_JOURNAL_FILE || journalFileFor(runFile)
+  if (mode === 'replay') {
+    runReplay(ref, journalFile)
+    return
+  }
   renderOnce(ref, runFile, journalFile)
+  // AIDEV-NOTE: PMR-ZGPY 5.2 replay mode — renders the journal projection at a
+// cursor k instead of the live run-state file. Watchers stay installed so
+// journal APPENDS grow events[]; the re-render uses the unchanged k (clamped),
+// so a user who stepped back stays put, and one sitting at the latest event
+// (k === N) follows new appends via the clamp in the render closure. The
+// run-file watch below is a PERMANENT fallback (see the fs.watch note in
+// main()) — in replay mode it simply re-renders, which is harmless because
+// replay renders purely from events[]. Presentation is routed through
+// createDebouncedRender so a burst of appends coalesces into one paint.
+// AIDEV-NOTE: raw mode keeps the pane consuming stdin for its entire lifetime
+// — acceptable because pane lifecycle equals viewer lifecycle; the pane exits
+// with the pane. Non-TTY stdin (tests, CI) never enters the keyloop and never
+// calls setRawMode (guarded by shouldEnableKeyloop).
+function runReplay(ref, journalFile) {
+  let events = []
+  let k = 0
+
+  const renderReplay = () => {
+    k = Math.min(k, events.length)
+    const slice = events.slice(0, k)
+    const state = replayProject(slice)
+    if (state === null) {
+      renderText(composePaneLabel(ref, 'replay'), 'no events yet')
+    } else {
+      let body = renderState(state, ref)
+      const activity = renderActivity(slice)
+      if (activity !== '') {
+        body = `${body}${EOL}${EOL}${activity}`
+      }
+      body = `${body}${EOL}${EOL}${replayFooter(k, events.length)}`
+      renderText(composePaneLabel(ref, 'replay'), body)
+    }
+  }
+
+  const load = () => {
+    let raw = ''
+    try {
+      raw = readFileSync(journalFile, 'utf8')
+    } catch {
+      raw = ''
+    }
+    const previousN = events.length
+    events = parseJournal(raw)
+    if (k === previousN) {
+      k = events.length
+    }
+    k = Math.min(k, events.length)
+  }
+
+  load()
+  renderReplay()
+
+  const render = createDebouncedRender(() => {
+    load()
+    renderReplay()
+  }, DEBOUNCE_MS)
+  if (journalFile !== '') {
+    watchFile(journalFile, { interval: WATCH_INTERVAL_MS }, () => {
+      render()
+    })
+    try {
+      watch(journalFile, () => {
+        render()
+      })
+    } catch {
+      // Degrade silently to interval-only polling; never crash the pane.
+    }
+  }
+
+  if (!shouldEnableKeyloop(process.stdin?.isTTY)) {
+    return
+  }
+  readline.emitKeypressEvents(process.stdin)
+  try {
+    process.stdin.setRawMode(true)
+  } catch {
+    // Some TTY-adjacent environments reject setRawMode; degrade to watching
+    // only rather than killing the pane.
+    return
+  }
+  process.stdin.resume()
+  process.stdin.on('keypress', (_chunk, key) => {
+    const next = nextCursor(k, events.length, key?.name)
+    if (next !== k) {
+      k = next
+      renderReplay()
+    }
+  })
+}
+
   // AIDEV-NOTE: fs.watch is safe here because it lives in the pane process,
   // not Pi's extension process — see pi-interactive-subagents subagent-done.ts
   // ("fs.watch was removed after it wedged child startup ... Do not re-add
