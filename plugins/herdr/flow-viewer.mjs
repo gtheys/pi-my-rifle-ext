@@ -205,6 +205,66 @@ export function parseJournal(raw) {
   return events
 }
 
+// AIDEV-NOTE: display-only duplicate of run-state.ts projection semantics
+// (projectRunState/applyEvent, packages/pi-flow/run-state.ts) — the pane is
+// plain node .mjs and cannot import the TS module. Mirrors ONLY what
+// renderState consumes (ref/mode/startedAt/completedPhases/currentPhase/
+// notes/updatedAt); everything else (gates, receipts, attempts, research-era
+// phase events per ISC-12) is ignored. Keep minimal — do not grow feature
+// parity; if renderState ever needs more fields, port just those. Pure: no
+// fs, no env. Returns null for an empty event list (caller renders the
+// projection-only fallback).
+export function replayProject(events) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return null
+  }
+  let state = null
+  for (const event of events) {
+    if (event === null || typeof event !== 'object') {
+      continue
+    }
+    if (event.kind === 'run-start') {
+      state = {
+        ref: event.ref,
+        mode: event.mode,
+        startedAt: event.at,
+        updatedAt: event.at,
+        completedPhases: [],
+        currentPhase: null,
+        notes: [],
+      }
+      continue
+    }
+    if (state === null || state.ref !== event.ref) {
+      continue
+    }
+    if (event.kind === 'phase-start' && event.phase !== 'research') {
+      if (state.currentPhase !== event.phase) {
+        state = { ...state, currentPhase: event.phase, updatedAt: event.at }
+      }
+    } else if (event.kind === 'phase-complete' && event.phase !== 'research') {
+      const completed = state.completedPhases.includes(event.phase)
+        ? state.completedPhases
+        : [...state.completedPhases, event.phase]
+      const current =
+        state.currentPhase === event.phase ? null : state.currentPhase
+      state = {
+        ...state,
+        completedPhases: completed,
+        currentPhase: current,
+        updatedAt: event.at,
+      }
+    } else if (event.kind === 'note') {
+      state = {
+        ...state,
+        notes: [...state.notes, { at: event.at, text: event.text }],
+        updatedAt: event.at,
+      }
+    }
+  }
+  return state
+}
+
 
 function activityClock(at) {
   if (typeof at !== 'string' || Number.isNaN(Date.parse(at))) {

@@ -350,3 +350,110 @@ async function waitFor(predicate, what) {
   }
   throw new Error(`timed out waiting for ${what}`)
 }
+
+// ── replayProject (PMR-FEM1, subtask 5.1) ──
+// AIDEV-NOTE: display-only duplicate of run-state.ts projection semantics —
+// the pane is plain .mjs and cannot import the TS module. Only the subset
+// renderState consumes is projected (ref/mode/startedAt/completedPhases/
+// currentPhase/notes/updatedAt); research-era events are ignored (ISC-12).
+import { replayProject } from '../../../plugins/herdr/flow-viewer.mjs'
+
+const REF = 'PMR-FEM1'
+const ev = (at, extra) => ({ ref: REF, at, ...extra })
+
+// run-start → phase-start plan → phase-complete plan → phase-start implement
+// → phase-complete implement → phase-start validate → phase-complete validate
+// → phase-start feedback → phase-complete feedback → note
+const happyJournal = [
+  ev('2026-11-14T10:00:00Z', { kind: 'run-start', mode: 'exec' }),
+  ev('2026-11-14T10:01:00Z', { kind: 'phase-start', phase: 'plan' }),
+  ev('2026-11-14T10:02:00Z', { kind: 'phase-complete', phase: 'plan' }),
+  ev('2026-11-14T10:03:00Z', { kind: 'phase-start', phase: 'implement' }),
+  ev('2026-11-14T10:04:00Z', { kind: 'phase-complete', phase: 'implement' }),
+  ev('2026-11-14T10:05:00Z', { kind: 'phase-start', phase: 'validate' }),
+  ev('2026-11-14T10:06:00Z', { kind: 'phase-complete', phase: 'validate' }),
+  ev('2026-11-14T10:07:00Z', { kind: 'phase-start', phase: 'feedback' }),
+  ev('2026-11-14T10:08:00Z', { kind: 'phase-complete', phase: 'feedback' }),
+  ev('2026-11-14T10:09:00Z', { kind: 'note', text: 'shipped' }),
+]
+
+test('replayProject: full happy journal → terminal state', () => {
+  const state = replayProject(happyJournal)
+  assert.deepEqual(state, {
+    ref: REF,
+    mode: 'exec',
+    startedAt: '2026-11-14T10:00:00Z',
+    updatedAt: '2026-11-14T10:09:00Z',
+    completedPhases: ['plan', 'implement', 'validate', 'feedback'],
+    currentPhase: null,
+    notes: [{ at: '2026-11-14T10:09:00Z', text: 'shipped' }],
+  })
+  // The projected state must render through renderState unchanged (that is
+  // the only contract the caller relies on).
+  const out = renderState(state)
+  assert.match(out, /\[x\] feedback\s+\(done\)/)
+  assert.match(out, /notes:\n {2}- 2026-11-14T10:09:00Z shipped/)
+  assert.match(out, /updated: 2026-11-14T10:09:00Z/)
+})
+
+test('replayProject: prefixes at each phase boundary → intermediate states', () => {
+  const at2 = replayProject(happyJournal.slice(0, 2))
+  assert.equal(at2.currentPhase, 'plan')
+  assert.deepEqual(at2.completedPhases, [])
+  assert.equal(at2.updatedAt, '2026-11-14T10:01:00Z')
+
+  const at3 = replayProject(happyJournal.slice(0, 3))
+  assert.equal(at3.currentPhase, null)
+  assert.deepEqual(at3.completedPhases, ['plan'])
+
+  const at4 = replayProject(happyJournal.slice(0, 4))
+  assert.equal(at4.currentPhase, 'implement')
+  assert.deepEqual(at4.completedPhases, ['plan'])
+
+  const at6 = replayProject(happyJournal.slice(0, 6))
+  assert.equal(at6.currentPhase, 'validate')
+  assert.deepEqual(at6.completedPhases, ['plan', 'implement'])
+
+  const at8 = replayProject(happyJournal.slice(0, 8))
+  assert.equal(at8.currentPhase, 'feedback')
+  assert.deepEqual(at8.completedPhases, ['plan', 'implement', 'validate'])
+})
+
+test('replayProject: ignores unknown kinds and research events (ISC-12)', () => {
+  const state = replayProject([
+    ev('2026-11-14T10:00:00Z', { kind: 'run-start', mode: 'exec' }),
+    { kind: 'future-kind', at: '2026-11-14T10:00:30Z', ref: REF },
+    ev('2026-11-14T10:01:00Z', { kind: 'phase-start', phase: 'research' }),
+    ev('2026-11-14T10:02:00Z', { kind: 'phase-complete', phase: 'research' }),
+    ev('2026-11-14T10:03:00Z', { kind: 'phase-start', phase: 'plan' }),
+  ])
+  assert.deepEqual(state.completedPhases, [])
+  assert.equal(state.currentPhase, 'plan')
+  assert.equal(state.updatedAt, '2026-11-14T10:03:00Z')
+  const out = renderState(state)
+  assert.doesNotMatch(out, /research/)
+})
+
+test('replayProject: empty events → null (caller renders fallback)', () => {
+  assert.equal(replayProject([]), null)
+  assert.equal(replayProject(), null)
+})
+
+test('replayProject: run-start without a following ref stays isolated', () => {
+  // AIDEV-NOTE: mirrors applyEvent's ref guard — events for another ref must
+  // not mutate this run's display state.
+  const state = replayProject([
+    ev('2026-11-14T10:00:00Z', { kind: 'run-start', mode: 'plan' }),
+    {
+      kind: 'phase-start',
+      at: '2026-11-14T10:01:00Z',
+      ref: 'OTHER',
+      phase: 'plan',
+    },
+    { kind: 'note', at: '2026-11-14T10:02:00Z', ref: 'OTHER', text: 'foreign' },
+  ])
+  assert.equal(state.ref, REF)
+  assert.deepEqual(state.completedPhases, [])
+  assert.deepEqual(state.notes, [])
+  assert.equal(state.updatedAt, '2026-11-14T10:00:00Z')
+})
