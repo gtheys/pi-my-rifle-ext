@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-// AIDEV-NOTE: unit tests for the herdr flow-viewer pane script. The pane
+// AIDEV-NOTE: unit tests for the herdr flow-viewer pane script.
+// AIDEV-NOTE: PMR-ZGPY / interview note 53KD9C7NMNK3FJGV — the lifecycle no
+// longer includes 'research' (four phases: plan/implement/validate/feedback).
+// Tests asserting a rendered research row were sanctioned for modification;
+// the drift-tolerance case pins that research-era input still renders the
+// four phases without crashing (ISC-12). The pane
 // script must be importable without side effects (main-module guard), so the
 // import below is itself the first test: if the top-level prelude ever runs
 // again, this module fails to load and every test here errors out.
@@ -32,7 +37,6 @@ test('renderState: renders phases, mode, notes, updated timestamp', () => {
   const lines = out.split('\n')
   assert.equal(lines[0], 'RPIV flow · PMR-TEST')
   assert.match(out, /mode: exec/)
-  assert.match(out, /\[x\] research\s+\(researched\)/)
   assert.match(out, /\[x\] plan\s+\(planned\)/)
   assert.match(out, /\[ \] implement\s+\(active\) <- running/)
   assert.match(out, /\[ \] validate\s+\(review-passed\)/)
@@ -41,9 +45,22 @@ test('renderState: renders phases, mode, notes, updated timestamp', () => {
   assert.match(out, /updated: 2026-11-14T10:10:00Z/)
 })
 
+test('renderState: research-era input drift-tolerates to four phases (ISC-12)', () => {
+  // AIDEV-NOTE: pre-PMR-Z2K7 run-state files may still carry research-era
+  // fields; renderState must ignore them and render exactly the four phases.
+  const out = renderState({
+    ...sampleState,
+    completedPhases: ['research', 'plan'],
+    researchSkipNote: 'scouted externally',
+  })
+  const phaseLines = out.split('\n').filter((l) => /^\[[x ]\] /.test(l))
+  assert.equal(phaseLines.length, 4)
+  assert.doesNotMatch(out, /research/)
+})
+
 test('renderState: empty completed phases and no notes', () => {
-  const out = renderState({ completedPhases: [], currentPhase: 'research' })
-  assert.match(out, /\[ \] research/)
+  const out = renderState({ completedPhases: [], currentPhase: 'plan' })
+  assert.match(out, /\[ \] plan[^\n]*<- running/)
   assert.doesNotMatch(out, /notes:/)
   assert.match(out, /updated: \?/)
 })
