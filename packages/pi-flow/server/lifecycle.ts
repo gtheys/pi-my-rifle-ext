@@ -24,6 +24,7 @@ import { SERVER_PROTOCOL_VERSION } from './daemon.ts'
 export const EXPECTED_SERVER_PROTOCOL_VERSION = SERVER_PROTOCOL_VERSION
 
 const PID_FILE_NAME = 'server.pid'
+const SPAWN_LOCK_NAME = 'server.spawn-lock'
 const LOG_FILE_NAME = 'server.log'
 const POLL_INTERVAL_MS = 50
 const SPAWN_READY_BUDGET_MS = 2_000
@@ -40,6 +41,10 @@ const SPAWN_IN_PROGRESS_WAIT_MS = 1_500
 
 export function pidFilePath(agentDir: string): string {
   return path.join(agentDir, 'pi-flow', PID_FILE_NAME)
+}
+
+export function spawnLockPath(agentDir: string): string {
+  return path.join(agentDir, 'pi-flow', SPAWN_LOCK_NAME)
 }
 
 export function logFilePath(agentDir: string): string {
@@ -85,6 +90,16 @@ export interface LifecycleIo {
   /** Wall clock in ms (injectable so the spawn-in-progress wait costs
    * nothing in tests even with instant sleeps). */
   now: () => number
+  // AIDEV-NOTE: PMR-HRGJ — cross-process spawn-claim seam. These are REQUIRED
+  // members (no optional/legacy fallback) so a degraded implementation fails
+  // loudly instead of silently losing the single-daemon guarantee.
+  /** Exclusive create: write `content` at `p` only if it does not exist
+   * (real impl: fs open 'wx'). Returns false on EEXIST or any failure. */
+  tryCreateExclusive: (p: string, content: string) => Promise<boolean>
+  /** Atomic rename of `from` over `to`; false when the rename fails. */
+  renameOver: (from: string, to: string) => Promise<boolean>
+  /** Best-effort unlink; real impl swallows errors (incl. ENOENT). */
+  unlinkFile: (p: string) => Promise<void>
 }
 
 function realIsProcessAlive(pid: number): boolean {
@@ -133,6 +148,36 @@ const realIo: LifecycleIo = {
     }
   },
   now: () => Date.now(),
+  // AIDEV-NOTE: PMR-HRGJ — real claim primitives. 'wx' flag = fail if the
+  // path exists (the O_EXCL lockfile pattern); any error counts as "lost".
+  tryCreateExclusive: async (p, content) => {
+    try {
+      const fh = await fsp.open(p, 'wx')
+      try {
+        await fh.writeFile(content, 'utf8')
+      } finally {
+        await fh.close()
+      }
+      return true
+    } catch {
+      return false
+    }
+  },
+  renameOver: async (from, to) => {
+    try {
+      await fsp.rename(from, to)
+      return true
+    } catch {
+      return false
+    }
+  },
+  unlinkFile: async (p) => {
+    try {
+      await fsp.unlink(p)
+    } catch {
+      // Missing/unlinkable lock — nothing to release.
+    }
+  },
 }
 
 export type ProbeResult =
@@ -192,6 +237,112 @@ export async function probeDaemon(
     }
   }
   return { alive: true, pid: parsed.pid }
+}
+
+// AIDEV-NOTE: PMR-HRGJ — spawn claim. Before spawning, ensureDaemon claims
+// `server.spawn-lock` (JSON {pid, at}) via exclusive create. Concurrent
+// ensureDaemons that lose the claim must NOT spawn (or SIGTERM): they wait
+// and re-probe, exactly like the fresh-dead spawnInProgressStatus window.
+// A claim is STALE when its claimant pid is provably dead OR its age exceeds
+// SPAWN_IN_PROGRESS_MAX_AGE_MS (5s > the 2s spawn budget, so a live spawn can
+// never be stolen); stale/garbage claims are stolen atomically via a
+// temp-then-rename (exclusive temp write, then renameOver onto the lock —
+// losing the rename means someone else claimed first). The winner releases
+// the lock in ALL spawn exit paths (spawned / timeout / failed) via try/finally.
+interface SpawnClaim {
+  pid: number
+  at: number
+}
+
+function parseSpawnClaim(raw: string): SpawnClaim | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const rec = parsed as { pid?: unknown; at?: unknown }
+  if (typeof rec.pid !== 'number' || !Number.isInteger(rec.pid)) return null
+  if (typeof rec.at !== 'number') return null
+  return { pid: rec.pid, at: rec.at }
+}
+
+function claimIsStale(claim: SpawnClaim | null, io: LifecycleIo): boolean {
+  // Unreadable/garbage claim content → treat as stale so a corrupt lock
+  // cannot wedge daemon startup forever.
+  if (claim === null) return true
+  if (!io.isProcessAlive(claim.pid)) return true
+  if (io.now() - claim.at > SPAWN_IN_PROGRESS_MAX_AGE_MS) return true
+  return false
+}
+
+/**
+ * Try to win the spawn claim. Returns true when the caller may spawn (and
+ * owns the lock file, including after a stale-claim steal). Never throws.
+ */
+async function acquireSpawnClaim(
+  agentDir: string,
+  io: LifecycleIo,
+): Promise<boolean> {
+  const lockPath = spawnLockPath(agentDir)
+  const myAt = io.now()
+  const claimJson = JSON.stringify({ pid: process.pid, at: myAt })
+  const won = await io.tryCreateExclusive(lockPath, claimJson)
+  if (won) return true
+
+  // Contended: is the existing claim stale enough to steal?
+  let raw: string | null = null
+  try {
+    raw = await io.readFile(lockPath)
+  } catch {
+    raw = null
+  }
+  const existing = parseSpawnClaim(raw ?? '')
+  if (!claimIsStale(existing, io)) return false
+
+  // Atomic steal: exclusive temp claim, then rename over the lock. Losing
+  // the rename means another contender claimed/refreshed first.
+  const tmpPath = `${lockPath}.${process.pid}.${io.now()}.tmp`
+  const tmpCreated = await io.tryCreateExclusive(tmpPath, claimJson)
+  if (!tmpCreated) return false
+  const stolen = await io.renameOver(tmpPath, lockPath)
+  if (stolen) {
+    // PMR-HRGJ — rename replaces UNCONDITIONALLY, so a faster contender's
+    // steal can land between our stale-claim read and our rename; both
+    // renames then "succeed" but only the last claim on the lock is real.
+    // Read the lock back and spawn only if it still holds OUR claim —
+    // otherwise we lost the steal race and must contend, never spawn twice.
+    const verifyRaw = await io.readFile(lockPath)
+    const verified = parseSpawnClaim(verifyRaw ?? '')
+    if (
+      verified !== null &&
+      verified.pid === process.pid &&
+      verified.at === myAt
+    ) {
+      return true
+    }
+    return false
+  }
+  await io.unlinkFile(tmpPath)
+  return false
+}
+
+/**
+ * Wait-and-reprobe when another session owns a live spawn claim. Mirrors
+ * spawnInProgressStatus's bounded wait (statuses reused, enum unchanged).
+ */
+async function contendedStatus(
+  agentDir: string,
+  io: LifecycleIo,
+): Promise<EnsureDaemonResult> {
+  const deadline = io.now() + SPAWN_IN_PROGRESS_WAIT_MS
+  while (io.now() < deadline) {
+    await io.sleep(POLL_INTERVAL_MS)
+    const check = await probeDaemon(agentDir, io)
+    if (check.alive) return { status: 'already-running', pid: check.pid }
+  }
+  return { status: 'spawn-in-progress' }
 }
 
 export type EnsureDaemonResult =
@@ -257,36 +408,47 @@ export async function ensureDaemon(
       if (inProgress !== null) return inProgress
     }
 
-    // Best-effort SIGTERM of a stale/mismatched daemon; the dead-process
-    // case carries a pid too but killing it is pointless — kill() swallows
-    // ESRCH either way, so a single unguarded call is fine.
-    if (probe.pid !== undefined) {
-      io.kill(probe.pid, 'SIGTERM')
-    }
-
-    await io.mkdir(path.join(agentDir, 'pi-flow'))
-    const logFd = io.openLogFd(logFilePath(agentDir))
-    let child: SpawnedProcess
+    // PMR-HRGJ: cross-process claim before any SIGTERM/spawn — with NO
+    // pidfile the fresh-dead window below cannot fire, so this lock is the
+    // only guard against two concurrent ensureDaemons double-spawning.
+    const claimed = await acquireSpawnClaim(agentDir, io)
+    if (!claimed) return await contendedStatus(agentDir, io)
     try {
-      child = io.spawn(process.execPath, [daemonEntryPath()], {
-        detached: true,
-        stdio: ['ignore', logFd, logFd],
-        env: { ...process.env, PI_FLOW_AGENT_DIR: agentDir },
-      })
-    } finally {
-      io.closeFd(logFd)
-    }
-    child.unref()
+      // Best-effort SIGTERM of a stale/mismatched daemon; the dead-process
+      // case carries a pid too but killing it is pointless — kill() swallows
+      // ESRCH either way, so a single unguarded call is fine.
+      if (probe.pid !== undefined) {
+        io.kill(probe.pid, 'SIGTERM')
+      }
 
-    // Bounded readiness poll: the real daemon writes its pidfile right after
-    // startup; sleep is injectable so this loop costs nothing in tests.
-    const maxPolls = SPAWN_READY_BUDGET_MS / POLL_INTERVAL_MS
-    for (let i = 0; i < maxPolls; i += 1) {
-      await io.sleep(POLL_INTERVAL_MS)
-      const check = await probeDaemon(agentDir, io)
-      if (check.alive) return { status: 'spawned', pid: check.pid }
+      await io.mkdir(path.join(agentDir, 'pi-flow'))
+      const logFd = io.openLogFd(logFilePath(agentDir))
+      let child: SpawnedProcess
+      try {
+        child = io.spawn(process.execPath, [daemonEntryPath()], {
+          detached: true,
+          stdio: ['ignore', logFd, logFd],
+          env: { ...process.env, PI_FLOW_AGENT_DIR: agentDir },
+        })
+      } finally {
+        io.closeFd(logFd)
+      }
+      child.unref()
+
+      // Bounded readiness poll: the real daemon writes its pidfile right after
+      // startup; sleep is injectable so this loop costs nothing in tests.
+      const maxPolls = SPAWN_READY_BUDGET_MS / POLL_INTERVAL_MS
+      for (let i = 0; i < maxPolls; i += 1) {
+        await io.sleep(POLL_INTERVAL_MS)
+        const check = await probeDaemon(agentDir, io)
+        if (check.alive) return { status: 'spawned', pid: check.pid }
+      }
+      return { status: 'spawn-timeout' }
+    } finally {
+      // Release in ALL spawn exit paths (spawned / timeout / failed); the
+      // thrown-error case still lands in the outer catch as spawn-failed.
+      await io.unlinkFile(spawnLockPath(agentDir))
     }
-    return { status: 'spawn-timeout' }
   } catch (err) {
     return { status: 'spawn-failed', reason: String(err) }
   }

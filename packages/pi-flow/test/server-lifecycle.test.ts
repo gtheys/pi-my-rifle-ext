@@ -9,6 +9,7 @@ import {
   type LifecycleIo,
   type ProbeResult,
   probeDaemon,
+  spawnLockPath,
 } from '../server/lifecycle.ts'
 
 const AGENT_DIR = '/tmp/fake-agent'
@@ -26,7 +27,14 @@ function makeIo(pidfile: string | null): LifecycleIo & {
   }>
   spawnThrows: string | null
   logFdsOpened: string[]
+  /** PMR-HRGJ fake filesystem for the spawn-lock seam (path → contents). */
+  files: Map<string, string>
+  renames: Array<{ from: string; to: string }>
+  unlinks: string[]
 } {
+  const files = new Map<string, string>()
+  const renames: Array<{ from: string; to: string }> = []
+  const unlinks: string[] = []
   const state = {
     pidfile,
     killed: [] as number[],
@@ -45,8 +53,19 @@ function makeIo(pidfile: string | null): LifecycleIo & {
     spawns: state.spawns,
     spawnThrows: state.spawnThrows,
     logFdsOpened: state.logFdsOpened,
-    readFile: async (_p: string) => {
-      return io.pidfile
+    files,
+    renames,
+    unlinks,
+    readFile: async (p: string) => {
+      // PMR-HRGJ: the pidfile is served from io.pidfile; anything else
+      // (spawn-lock / temp claim) comes from the fake files map.
+      if (p.endsWith('.pid')) {
+        return io.pidfile
+      } else {
+        const contents = files.get(p)
+        if (contents === undefined) return null
+        return contents
+      }
     },
     isProcessAlive: (_pid: number) => true,
     kill: (pid: number) => {
@@ -84,6 +103,24 @@ function makeIo(pidfile: string | null): LifecycleIo & {
     // (keeps the pre-spawn-in-progress behavior for existing tests).
     statMtimeMs: async () => null,
     now: () => Date.now(),
+    // PMR-HRGJ fake lock primitives over the in-memory files map.
+    tryCreateExclusive: async (p: string, content: string) => {
+      if (files.has(p)) return false
+      files.set(p, content)
+      return true
+    },
+    renameOver: async (from: string, to: string) => {
+      const contents = files.get(from)
+      if (contents === undefined) return false
+      files.set(to, contents)
+      files.delete(from)
+      renames.push({ from, to })
+      return true
+    },
+    unlinkFile: async (p: string) => {
+      files.delete(p)
+      unlinks.push(p)
+    },
   }
   return io as LifecycleIo & {
     pidfile: string | null
@@ -96,6 +133,9 @@ function makeIo(pidfile: string | null): LifecycleIo & {
     }>
     spawnThrows: string | null
     logFdsOpened: string[]
+    files: Map<string, string>
+    renames: Array<{ from: string; to: string }>
+    unlinks: string[]
   }
 }
 
@@ -297,4 +337,142 @@ test('ensure: statMtimeMs rejection degrades to respawn decision (never throws)'
 
 test('EXPECTED_SERVER_PROTOCOL_VERSION matches the daemon pin', () => {
   assert.equal(EXPECTED_SERVER_PROTOCOL_VERSION, '1')
+})
+
+// --- PMR-HRGJ spawn lock (cross-process claim) ---
+
+const LOCK_PATH = spawnLockPath(AGENT_DIR)
+
+function lockClaim(
+  io: ReturnType<typeof makeIo>,
+  pid: number,
+  at: number,
+): void {
+  io.files.set(LOCK_PATH, JSON.stringify({ pid, at }))
+}
+
+// AIDEV-NOTE: PMR-HRGJ done-when regression — two concurrent ensureDaemon
+// calls sharing one fake IO with a genuinely exclusive tryCreateExclusive
+// must produce exactly one spawn: the loser waits on the winner's claim.
+test('ensure: two concurrent sessions → exactly one spawn, loser waits', async () => {
+  const io = makeIo(null)
+  makeFakeClock(io, 1_000_000)
+  const [a, b] = await Promise.all([
+    ensureDaemon(AGENT_DIR, io),
+    ensureDaemon(AGENT_DIR, io),
+  ])
+  assert.deepEqual(a, { status: 'spawned', pid: 4242 })
+  assert.equal(b.status, 'already-running')
+  assert.equal(
+    io.spawns.length,
+    1,
+    'duplicate spawn must be prevented by the claim',
+  )
+  assert.equal(
+    io.files.has(LOCK_PATH),
+    false,
+    'claim must be released after spawn',
+  )
+})
+
+test('ensure: stale claim (dead claimant) → stolen via rename, spawn proceeds', async () => {
+  const io = makeIo(null)
+  makeFakeClock(io, 1_000_000)
+  lockClaim(io, 555, 999_000)
+  io.isProcessAlive = deadUntil(555)
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+  assert.equal(io.spawns.length, 1)
+  assert.equal(io.renames.length, 1)
+  assert.ok(
+    io.renames[0].from.startsWith(LOCK_PATH),
+    'steal renames a temp claim',
+  )
+  assert.ok(io.renames[0].from.endsWith('.tmp'))
+  assert.equal(io.renames[0].to, LOCK_PATH)
+  assert.equal(io.files.has(LOCK_PATH), false, 'claim released after spawn')
+})
+
+test('ensure: steal race — a contender whose rename landed second must not spawn', async () => {
+  // A holds a stale claim (dead claimant). Two sessions steal it
+  // concurrently: the faster contender's rename lands last, so the lock no
+  // longer holds OUR claim when we check. Emulated by a renameOver that
+  // reports success but leaves the stale claim content in place — exactly
+  // what the lock looks like from the loser's side. The stealer must verify
+  // its claim actually landed before spawning; without the read-back check
+  // both contenders spawn (the exact double-spawn this ticket forbids).
+  const io = makeIo(null)
+  makeFakeClock(io, 1_000_000)
+  lockClaim(io, 555, 999_000)
+  io.isProcessAlive = deadUntil(555)
+  const realRename = io.renameOver
+  let renameLands = false
+  io.renameOver = async (from: string, to: string) => {
+    if (!renameLands) return true // "won" the rename, but C's claim replaced ours
+    return realRename(from, to)
+  }
+  const lost = await ensureDaemon(AGENT_DIR, io)
+  assert.equal(lost.status, 'spawn-in-progress')
+  assert.equal(io.spawns.length, 0, 'lost stealer must not spawn')
+
+  // A later session steals for real (the rename lands) and spawns normally.
+  renameLands = true
+  const won = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(won, { status: 'spawned', pid: 4242 })
+  assert.equal(io.spawns.length, 1)
+})
+
+test('ensure: expired claim (live claimant, age > max) → stolen, spawn proceeds', async () => {
+  const io = makeIo(null)
+  makeFakeClock(io, 1_000_000)
+  lockClaim(io, 777, 1_000_000 - 6_000) // 6s old > 5s bound, claimant alive
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+  assert.equal(io.spawns.length, 1)
+  assert.equal(io.renames.length, 1)
+})
+
+test('ensure: live fresh claim → no spawn, no SIGTERM, spawn-in-progress', async () => {
+  const io = makeIo(null)
+  makeFakeClock(io, 1_000_000)
+  lockClaim(io, 777, 999_500) // alive + fresh (500ms old)
+  const res = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { status: 'spawn-in-progress' })
+  assert.equal(io.spawns.length, 0)
+  assert.equal(io.killed.length, 0, 'loser must not SIGTERM under a live claim')
+})
+
+test('ensure: claim released on spawned, spawn-timeout, and spawn-failed', async () => {
+  // spawned
+  const ok = makeIo(null)
+  await ensureDaemon(AGENT_DIR, ok)
+  assert.equal(ok.files.has(LOCK_PATH), false)
+
+  // spawn-timeout (spawn never writes a pidfile)
+  const timeout = makeIo(null)
+  makeFakeClock(timeout, 2_000_000)
+  timeout.spawn = () => ({ pid: 4242, unref: () => undefined })
+  const timeoutRes = await ensureDaemon(AGENT_DIR, timeout)
+  assert.equal(timeoutRes.status, 'spawn-timeout')
+  assert.equal(timeout.files.has(LOCK_PATH), false)
+
+  // spawn-failed (spawn throws; release still happens via finally)
+  const failed = makeIo(null)
+  failed.spawn = () => {
+    throw new Error('ENOENT')
+  }
+  const failedRes = await ensureDaemon(AGENT_DIR, failed)
+  assert.equal(failedRes.status, 'spawn-failed')
+  assert.equal(failed.files.has(LOCK_PATH), false)
+})
+
+test('ensure: released claim → a later ensureDaemon can spawn again', async () => {
+  const io = makeIo(null)
+  makeFakeClock(io, 3_000_000)
+  const first = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(first, { status: 'spawned', pid: 4242 })
+  io.pidfile = null
+  const second = await ensureDaemon(AGENT_DIR, io)
+  assert.deepEqual(second, { status: 'spawned', pid: 4242 })
+  assert.equal(io.spawns.length, 2)
 })
