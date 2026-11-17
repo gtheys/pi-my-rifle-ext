@@ -58,6 +58,7 @@ import {
   type FlowCostDeps,
   registerFlowCostCommand,
 } from './flow/cost-command.ts'
+import type { OpenGate } from './flow/gates.ts'
 import { collectOpenGates, createGateDeps } from './flow/gates.ts'
 import { resolveJiraEpic } from './flow/jira-ref.ts'
 import {
@@ -71,6 +72,7 @@ import {
   commandPhaseInput,
   registerPhaseCommands,
 } from './flow/phase-command.ts'
+import { planPickerOutcome } from './flow/picker.ts'
 import {
   parseRefKind,
   registerAvenPrefixes,
@@ -789,10 +791,99 @@ export default function (pi: ExtensionAPI) {
       }
       const parsed = parseFlowArgs(args)
       if (parsed.kind === 'help') {
-        ctx.ui.notify(
-          'Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>>. Brainstorm topics go through /brainstorm.',
-          'info',
-        )
+        // AIDEV-NOTE (PMR-ZGPY 4.2, PMR-XQA1): zero-arg /flow → two-step
+        // picker (gate select → choice select). The picker ANSWERS gates via
+        // executeFlowAnswer with the SAME deps the /flow answer subcommand
+        // uses (makeAnswerDeps) — it never resumes runs, never spawns, and
+        // never calls sendUserMessage (PMR-W60H, ISC-A-1). It is fully
+        // independent of T6 (D10). All decision logic is pure
+        // (planPickerOutcome); this handler only performs ctx.ui.select IO
+        // and acts on the plan. collectOpenGates failure is fail-closed:
+        // warn once, never throw (ISC-13). ctx.ui.select returns the option
+        // STRING or undefined on cancel (Pi types.d.ts) — labels map back to
+        // values through the option lists.
+        let gates: OpenGate[] = []
+        let gatesFailed = false
+        try {
+          gates = await collectOpenGates(createGateDeps(getAgentDir()))
+        } catch {
+          gatesFailed = true
+        }
+        if (gatesFailed) {
+          ctx.ui.notify(
+            'pi-flow: could not read open gates (runs dir / aven list failed) — run /flow answer <ref> <choice> manually',
+            'warning',
+          )
+          return
+        }
+        let plan = planPickerOutcome(ctx.hasUI, gates)
+        if (plan.kind === 'menu') {
+          const labelToValue = new Map(
+            plan.options.map((o) => [o.label, o.value]),
+          )
+          const picked = await ctx.ui.select(
+            'Open gate — pick one:',
+            plan.options.map((o) => o.label),
+          )
+          if (picked === undefined) {
+            plan = planPickerOutcome(ctx.hasUI, gates, {
+              stage: 'gate-cancelled',
+            })
+          } else {
+            plan = planPickerOutcome(ctx.hasUI, gates, {
+              stage: 'gate-picked',
+              gateRef: labelToValue.get(picked) ?? '',
+            })
+          }
+        }
+        if (plan.kind === 'choice-menu') {
+          const labelToValue = new Map(
+            plan.options.map((o) => [o.label, o.value]),
+          )
+          const chosen = await ctx.ui.select(
+            `${plan.gateRef} — answer with:`,
+            plan.options.map((o) => o.label),
+          )
+          if (chosen === undefined) {
+            plan = planPickerOutcome(ctx.hasUI, gates, {
+              stage: 'choice-cancelled',
+              gateRef: plan.gateRef,
+            })
+          } else {
+            plan = planPickerOutcome(ctx.hasUI, gates, {
+              stage: 'answered',
+              gateRef: plan.gateRef,
+              choice: labelToValue.get(chosen) ?? '',
+            })
+          }
+        }
+        if (plan.kind === 'fallback') {
+          for (const line of plan.lines) {
+            ctx.ui.notify(line, 'info')
+          }
+          return
+        }
+        if (plan.kind === 'empty') {
+          // Distinguish "nothing open" from "user cancelled / unknown ref":
+          // the former notifies once, the latter notifies nothing.
+          if (gates.length === 0) {
+            ctx.ui.notify('No open gates.', 'info')
+          }
+          return
+        }
+        if (plan.kind === 'print-command') {
+          ctx.ui.notify(
+            `/flow answer ${plan.ref} ${plan.choices.join('|')}`,
+            'info',
+          )
+          return
+        }
+        if (plan.kind === 'answer') {
+          await executeFlowAnswer(
+            { ref: plan.ref, choice: plan.choice },
+            makeAnswerDeps(ctx),
+          )
+        }
         return
       }
       const mode = await resolveMode(pi, ctx.cwd)

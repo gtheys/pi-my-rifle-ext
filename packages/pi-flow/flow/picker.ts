@@ -5,7 +5,19 @@
 // explicitly NOT this module's job (independent of T6). No IO here; the
 // ctx.ui.select dispatch wiring lives in 4.2.
 
+import type { AnswerChoice } from '../aven/client.ts'
 import type { OpenGate } from './gates.ts'
+
+const ANSWER_CHOICES: readonly AnswerChoice[] = [
+  'approve',
+  'reject',
+  'pass',
+  'fail',
+]
+
+function isAnswerChoice(value: string): value is AnswerChoice {
+  return (ANSWER_CHOICES as readonly string[]).includes(value)
+}
 
 export interface PickerOption {
   label: string
@@ -62,4 +74,80 @@ export function buildGateFallbackLines(gates: readonly OpenGate[]): string[] {
     lines.push(`   answer with: /flow answer ${gate.ref} ${values}`)
   }
   return lines
+}
+
+// ---------------------------------------------------------------------------
+// PMR-ZGPY 4.2 (PMR-XQA1): pure dispatch table for the zero-arg /flow picker.
+// index.ts stays thin: collect gates → planPickerOutcome → act on the plan.
+// ---------------------------------------------------------------------------
+
+/** Which step of the two-select interaction produced this state. */
+export type PickerSelection =
+  | { stage: 'gate-cancelled' }
+  | { stage: 'gate-picked'; gateRef: string }
+  | { stage: 'choice-cancelled'; gateRef: string }
+  | { stage: 'answered'; gateRef: string; choice: string }
+
+/**
+ * The action the /flow handler should take. Pure — tests drive the full
+ * matrix without any UI. 'answer' ref/choice feed executeFlowAnswer
+ * directly (D10); 'print-command' is the cancel/escape escape hatch that
+ * hands the user the exact /flow answer command instead.
+ */
+export type PickerPlan =
+  | { kind: 'fallback'; lines: string[] }
+  | { kind: 'empty' }
+  | { kind: 'menu'; options: PickerOption[] }
+  | { kind: 'choice-menu'; gateRef: string; options: PickerOption[] }
+  | { kind: 'answer'; ref: string; choice: AnswerChoice }
+  | { kind: 'print-command'; ref: string; choices: string[] }
+
+export function planPickerOutcome(
+  hasUI: boolean,
+  gates: readonly OpenGate[],
+  selection?: PickerSelection,
+): PickerPlan {
+  if (!hasUI) {
+    return { kind: 'fallback', lines: buildGateFallbackLines(gates) }
+  }
+  if (selection === undefined) {
+    if (gates.length === 0) {
+      return { kind: 'empty' }
+    }
+    return { kind: 'menu', options: buildGateMenuOptions(gates) }
+  }
+  if (selection.stage === 'gate-cancelled') {
+    // Cancel at the first select: notify nothing.
+    return { kind: 'empty' }
+  }
+  const gate = gates.find((g) => g.ref === selection.gateRef)
+  if (gate === undefined) {
+    return { kind: 'empty' }
+  }
+  if (selection.stage === 'gate-picked') {
+    return {
+      kind: 'choice-menu',
+      gateRef: gate.ref,
+      options: gateChoices(gate),
+    }
+  }
+  if (selection.stage === 'choice-cancelled') {
+    // Cancel at the second select: print the exact command instead.
+    return {
+      kind: 'print-command',
+      ref: gate.ref,
+      choices: choiceValuesForKind(gate.kind),
+    }
+  }
+  if (
+    selection.choice === COMMAND_ESCAPE_VALUE ||
+    !isAnswerChoice(selection.choice)
+  ) {
+    return {
+      kind: 'print-command',
+      ref: gate.ref,
+      choices: choiceValuesForKind(gate.kind),
+    }
+  }
+  return { kind: 'answer', ref: gate.ref, choice: selection.choice }
 }
