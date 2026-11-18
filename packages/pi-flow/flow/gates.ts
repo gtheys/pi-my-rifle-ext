@@ -39,7 +39,9 @@ export interface GateDeps {
   /** Refs of plan-state=review tickets (aven list; --all-projects). */
   listPlansAtReview(): Promise<string[]>
   /** Refs with a live (nonterminal) aven ticket, all projects; null = aven
-   *  failed. Fail-closed per ISC-13: unverifiable status suppresses nothing. */
+   *  failed or its output was unclassifiable (error text / non-JSON /
+   *  schema drift). Fail-closed per ISC-13: unverifiable status suppresses
+   *  nothing. */
   listOpenRefs(): Promise<string[] | null>
   /** Validated FlowRunState projections from the local runs dir. */
   readRuns(): Promise<FlowRunState[]>
@@ -215,8 +217,13 @@ export async function collectOpenGates(deps: GateDeps): Promise<OpenGate[]> {
     })
   }
   if (openRefs !== null) {
-    const open = new Set(openRefs)
-    return gates.filter((g) => open.has(g.ref))
+    // PMR-384R fix round (review blocker 2): aven resolves refs
+    // case-insensitively ("a case variant is the same ticket" —
+    // ticketSnapshotFor/showFullGuarded) while journal refs keep user-typed
+    // casing (parseRefKind journals raw input). Normalize BOTH sides or a
+    // case-variant journal ref loses its live gate.
+    const open = new Set(openRefs.map((r) => r.toUpperCase()))
+    return gates.filter((g) => open.has(g.ref.toUpperCase()))
   }
   return gates
 }

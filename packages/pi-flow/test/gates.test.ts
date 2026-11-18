@@ -455,6 +455,27 @@ test('empty universe (zero open tickets) suppresses every gate', async () => {
   assert.deepEqual(await collectOpenGates(deps), [])
 })
 
+test('case-variant journal/review refs still match the universe (fix round)', async () => {
+  // Fix-round blocker 2: aven resolves refs case-insensitively (a case
+  // variant is the same ticket — ticketSnapshotFor/showFullGuarded) while
+  // journal refs keep user-typed casing (parseRefKind journals the raw
+  // input). '/flow pmr-084c' + universe 'PMR-084C' must KEEP the live
+  // gate, not silently suppress it.
+  const deps = fakeDeps(
+    [baseState({ ref: 'pmr-084c', currentPhase: 'validate' })],
+    ['PMR-N0W6'],
+    ['PMR-084C', 'pmr-n0w6'],
+  )
+  const gates = await collectOpenGates(deps)
+  assert.deepEqual(
+    gates.map((g) => [g.ref, g.kind]),
+    [
+      ['pmr-084c', 'code-review'],
+      ['PMR-N0W6', 'plan-review'],
+    ],
+  )
+})
+
 // --- readRunsFromDisk (fake io) ---
 
 function fakeIo(

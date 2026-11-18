@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { classifyOpenTicketRefs } from '../aven/client.ts'
+
+// PMR-384R fix round (review blocker 1): listOpenTicketRefs must classify
+// aven-side anomalies as null — ISC-13: collectOpenGates suppresses NOTHING
+// when it cannot verify ticket status — and reserve [] for a successfully
+// parsed empty array. aven exits 0 on errors, so classification is by TEXT
+// (avenErrorText), never by exit code.
+
+test('valid JSON array parses to refs; [] is a real zero-open answer', () => {
+  assert.deepEqual(
+    classifyOpenTicketRefs('[{"ref":"PMR-1"},{"ref":"pmr-2"}]', ''),
+    ['PMR-1', 'pmr-2'],
+  )
+  assert.deepEqual(classifyOpenTicketRefs('[]', ''), [])
+})
+
+test('aven error text on stdout or stderr classifies as null (exit-0 failure)', () => {
+  assert.equal(
+    classifyOpenTicketRefs("error: unknown option '--open'", ''),
+    null,
+  )
+  assert.equal(classifyOpenTicketRefs('Error: boom\n[]', ''), null)
+  assert.equal(classifyOpenTicketRefs('[]', 'error: aven unavailable'), null)
+})
+
+test('non-JSON stdout classifies as null, not []', () => {
+  assert.equal(classifyOpenTicketRefs('{not json', ''), null)
+})
+
+test('non-array JSON (schema drift) classifies as null', () => {
+  assert.equal(classifyOpenTicketRefs('{"a":1}', ''), null)
+})
+
+test('array entries without a ref are skipped; the array itself still parses', () => {
+  assert.deepEqual(classifyOpenTicketRefs('[{"x":1},"s",{"ref":"A"}]', ''), [
+    'A',
+  ])
+})

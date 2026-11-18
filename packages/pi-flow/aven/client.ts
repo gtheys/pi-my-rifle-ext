@@ -410,7 +410,7 @@ export async function readPlanState(ref: string): Promise<string | null> {
 // flow-status widget keeps showing run-derived gates only. Only
 // aven/client.ts shells out to aven (boundary rule); flow/gates.ts
 // consumes this via the GateDeps seam. Generic aven-list ref extractor —
-// PMR-384R adds a second consumer (listOpenTicketRefs below).
+// the shared tail lives in extractListRefs below.
 export function parsePlanReviewRefs(stdout: string): string[] {
   let parsed: unknown
   try {
@@ -419,6 +419,12 @@ export function parsePlanReviewRefs(stdout: string): string[] {
     return []
   }
   if (!Array.isArray(parsed)) return []
+  return extractListRefs(parsed)
+}
+
+// Shared tail of the aven-list ref extractors: entries without a string
+// ref are skipped (same rule for both consumers).
+function extractListRefs(parsed: unknown[]): string[] {
   const refs: string[] = []
   for (const entry of parsed) {
     if (typeof entry !== 'object' || entry === null) continue
@@ -426,6 +432,34 @@ export function parsePlanReviewRefs(stdout: string): string[] {
     if (typeof ref === 'string' && ref.length > 0) refs.push(ref)
   }
   return refs
+}
+
+// AIDEV-NOTE (PMR-384R fix round, review blocker 1): pure classifier for
+// `aven list --open` output. aven exits 0 on errors — never trust exit
+// codes, classify by text via avenErrorText (the listPlansAtReviewRefs
+// guard pattern) — so anything unclassifiable (error text on stdout or
+// stderr, non-JSON, non-array schema drift) returns null: ISC-13, gates
+// suppress NOTHING when status cannot be verified. [] is reserved for a
+// successfully parsed empty array (a real zero-open answer). Exported for
+// tests; listOpenTicketRefs is the production consumer.
+export function classifyOpenTicketRefs(
+  stdout: string,
+  stderr: string,
+): string[] | null {
+  if (avenErrorText(stdout, stderr) !== null) return null
+  // aven's own CLI errors print lowercase `error: …` on stderr (observed:
+  // `error: unexpected argument … found`); avenErrorText's regex only
+  // knows `Error:`/`error `. An error line on stderr means the run's
+  // status is unverifiable — fail closed to null, never to [] (ISC-13).
+  if (/^error\b/im.test(stderr)) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed)) return null
+  return extractListRefs(parsed)
 }
 
 export async function listPlansAtReviewRefs(): Promise<string[]> {
@@ -449,18 +483,20 @@ export async function listPlansAtReviewRefs(): Promise<string[]> {
  * Refs with a live (nonterminal, non-deleted) aven ticket, across ALL
  * projects (PMR-384R; --all-projects per DP-252 — the shared runsDir holds
  * other projects' flows, so gate refs can belong to any project). One
- * batched `aven list --open --all-projects --json` call. Returns null ONLY
- * when aven itself failed (spawn/timeout) — the ISC-13 signal for gates.ts
- * to suppress NOTHING; an empty array is a real "zero open tickets"
- * answer and DOES suppress. A ref absent from the universe is either
- * terminal (done/canceled — --open excludes it) or has no record at all
- * (deleted tickets are excluded too) — both must suppress: aven ticket
- * status is the truth, a stale journal gate record cannot override it.
+ * batched `aven list --open --all-projects --json` call. Returns null when
+ * aven failed in ANY way — spawn/timeout, or (fix round, review blocker 1)
+ * exit-0 domain errors, non-JSON output, or schema drift, per
+ * classifyOpenTicketRefs — the ISC-13 signal for gates.ts to suppress
+ * NOTHING. [] only from a successfully parsed empty array and DOES
+ * suppress. A ref absent from the universe is either terminal (done/
+ * canceled — --open excludes it) or has no record at all (deleted tickets
+ * are excluded too) — both must suppress: aven ticket status is the truth,
+ * a stale journal gate record cannot override it.
  */
 export async function listOpenTicketRefs(): Promise<string[] | null> {
   try {
     const out = await avenExec(['list', '--open', '--all-projects', '--json'])
-    return parsePlanReviewRefs(out.stdout)
+    return classifyOpenTicketRefs(out.stdout, out.stderr)
   } catch (error: unknown) {
     recordAvenFailure(error)
     return null
