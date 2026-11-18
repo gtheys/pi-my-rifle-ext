@@ -58,6 +58,35 @@ export function composePaneLabel(ref, mode) {
 // AIDEV-NOTE: pure cursor stepper for replay mode. k ∈ 0..n; ←/h step back,
 // →/l step forward, g jumps to first event, G to latest; unknown keys (incl.
 // undefined name) leave k unchanged. ←/→ arrive as key.name 'left'/'right'.
+// PMR-ZGPY deviation round 3 (note 1WJYXZ1MXAPAREDC): readline maps a
+// capital-G keystroke to {name:'g', shift:true} — a name-only mapping
+// collapsed g/G into jump-to-first, leaving 'G' unreachable while the footer
+// advertised it. Honor name + shift; unknown/absent keys → null.
+export function mapKeypress(key) {
+  if (key === undefined || key === null || typeof key.name !== 'string') {
+    return null
+  }
+  if (key.name === 'left') {
+    return 'left'
+  }
+  if (key.name === 'right') {
+    return 'right'
+  }
+  if (key.name === 'h') {
+    return 'h'
+  }
+  if (key.name === 'l') {
+    return 'l'
+  }
+  if (key.name === 'g') {
+    if (key.shift === true) {
+      return 'G'
+    }
+    return 'g'
+  }
+  return null
+}
+
 export function nextCursor(k, n, key) {
   if (key === 'left' || key === 'h') {
     return Math.max(0, k - 1)
@@ -224,7 +253,11 @@ function runReplay(ref, journalFile) {
   }
   process.stdin.resume()
   process.stdin.on('keypress', (_chunk, key) => {
-    const next = nextCursor(k, events.length, key?.name)
+    const action = mapKeypress(key)
+    if (action === null) {
+      return
+    }
+    const next = nextCursor(k, events.length, action)
     if (next !== k) {
       k = next
       renderReplay()

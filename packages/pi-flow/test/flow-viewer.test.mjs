@@ -11,6 +11,7 @@ import { test } from 'node:test'
 // again, this module fails to load and every test here errors out.
 import {
   journalFileFor,
+  mapKeypress,
   parseJournal,
   renderActivity,
   renderState,
@@ -522,4 +523,24 @@ test('replayBodyText: footer renders at k=0 with events; absent only for empty j
   const empty = replayBodyText([], 0, REF)
   assert.match(empty, /no events yet/)
   assert.doesNotMatch(empty, /event /)
+})
+
+// PMR-ZGPY deviation round 3 (note 1WJYXZ1MXAPAREDC): Shift+G must reach the
+// jump-to-latest action. Node readline maps a capital-G keystroke to
+// {name:'g', shift:true} — the name-only wiring collapsed g/G into the same
+// action. mapKeypress honors name + shift.
+test('mapKeypress: shift+g maps to G (jump-to-latest); plain g to g (jump-to-first)', () => {
+  assert.equal(mapKeypress({ name: 'g', shift: true }), 'G')
+  assert.equal(mapKeypress({ name: 'g', shift: false }), 'g')
+  assert.equal(mapKeypress({ name: 'g' }), 'g')
+})
+test('mapKeypress: arrows and h/l unaffected by shift; unknown → null', () => {
+  assert.equal(mapKeypress({ name: 'left' }), 'left')
+  assert.equal(mapKeypress({ name: 'right' }), 'right')
+  assert.equal(mapKeypress({ name: 'h' }), 'h')
+  assert.equal(mapKeypress({ name: 'l' }), 'l')
+  assert.equal(mapKeypress({ name: 'l', shift: true }), 'l')
+  assert.equal(mapKeypress({ name: 'x', shift: true }), null)
+  assert.equal(mapKeypress(undefined), null)
+  assert.equal(mapKeypress({}), null)
 })
