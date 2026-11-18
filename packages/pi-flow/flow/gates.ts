@@ -17,7 +17,7 @@
 // aven knowledge in this module.
 
 import { readdir, readFile } from 'node:fs/promises'
-import { listPlansAtReviewRefs } from '../aven/client.ts'
+import { listOpenTicketRefs, listPlansAtReviewRefs } from '../aven/client.ts'
 import type { FlowRunState } from '../run-state.ts'
 import { isFlowRunState, runsDir } from '../run-state.ts'
 
@@ -31,10 +31,16 @@ export interface OpenGate {
   answerCommand?: string
 }
 
-// AIDEV-NOTE: IO seam only — implemented and wired by collectOpenGates in 2.2.
+// AIDEV-NOTE: IO seam only — implemented and wired by collectOpenGates in
+// 2.2. listOpenRefs (PMR-384R) is the aven-status truth source: null means
+// aven FAILED (suppress nothing, ISC-13); an array is the live-ref universe
+// (absent ref = terminal or no record = suppress).
 export interface GateDeps {
   /** Refs of plan-state=review tickets (aven list; --all-projects). */
   listPlansAtReview(): Promise<string[]>
+  /** Refs with a live (nonterminal) aven ticket, all projects; null = aven
+   *  failed. Fail-closed per ISC-13: unverifiable status suppresses nothing. */
+  listOpenRefs(): Promise<string[] | null>
   /** Validated FlowRunState projections from the local runs dir. */
   readRuns(): Promise<FlowRunState[]>
 }
@@ -165,22 +171,36 @@ export async function readRunsFromDisk(
 export function createGateDeps(agentDir: string): GateDeps {
   return {
     listPlansAtReview: () => listPlansAtReviewRefs(),
+    listOpenRefs: () => listOpenTicketRefs(),
     readRuns: () => readRunsFromDisk(agentDir),
   }
 }
 
-// AIDEV-NOTE (PMR-ZGPY 2.2, D5, ISC-13): merges run-derived gates with the
-// aven plan-state=review list. Each source fails closed INDEPENDENTLY — an
-// aven failure keeps run-derived gates, a runs-scan failure keeps
-// plan-review gates — so one broken source never blanks the other's signal.
-// Dedupe per D5: a ref that already has ANY run-derived gate (in practice
-// the flow-paused gate, whose title already mentions the pause) appears
-// exactly once; only review refs with no run-derived gate get a fresh
-// plan-review row.
+// AIDEV-NOTE (PMR-ZGPY 2.2, D5, ISC-13; PMR-384R): merges run-derived gates
+// with the aven plan-state=review list. Each source fails closed
+// INDEPENDENTLY — an aven failure keeps run-derived gates, a runs-scan
+// failure keeps plan-review gates, and (PMR-384R) an aven-status failure
+// (listOpenRefs → null) suppresses NOTHING — so one broken source never
+// blanks the other's signal. Dedupe per D5: a ref that already has ANY
+// run-derived gate (in practice the flow-paused gate, whose title already
+// mentions the pause) appears exactly once; only review refs with no
+// run-derived gate get a fresh plan-review row.
+// PMR-384R suppression: aven ticket status is the truth (user invariant — a
+// stale journal gate record cannot override it). When the open-ref universe
+// is available (non-null), gates whose ref is absent from it are dropped:
+// the ticket is terminal (done/canceled) or has no aven record at all
+// (ungrounded projection — an unanswerable gate). [] is a REAL "zero open
+// tickets" answer and suppresses everything; only null keeps gates.
+// Cross-project scope note: the universe is deliberately --all-projects so
+// other projects' terminal tickets (e.g. TP-85GY) suppress gates that leak
+// in via the shared runsDir; the runsDir scan itself is left unfiltered —
+// scoping accepted per the PMR-384R acceptance criteria (raw journal
+// display in flow-viewer renders immutable history, not derived gates).
 export async function collectOpenGates(deps: GateDeps): Promise<OpenGate[]> {
-  const [runs, reviewRefs] = await Promise.all([
+  const [runs, reviewRefs, openRefs] = await Promise.all([
     deps.readRuns().catch(() => [] as FlowRunState[]),
     deps.listPlansAtReview().catch(() => [] as string[]),
+    deps.listOpenRefs().catch(() => null),
   ])
   const runGates = deriveRunGates(runs)
   const gatedRefs = new Set(runGates.map((g) => g.ref))
@@ -193,6 +213,10 @@ export async function collectOpenGates(deps: GateDeps): Promise<OpenGate[]> {
       title: `${ref} · plan awaiting approval`,
       answerCommand: `/flow answer ${ref}`,
     })
+  }
+  if (openRefs !== null) {
+    const open = new Set(openRefs)
+    return gates.filter((g) => open.has(g.ref))
   }
   return gates
 }

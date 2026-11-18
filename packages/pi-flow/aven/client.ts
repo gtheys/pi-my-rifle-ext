@@ -401,14 +401,16 @@ export async function readPlanState(ref: string): Promise<string | null> {
   }
 }
 
-// AIDEV-NOTE (PMR-ZGPY 2.2, D5): refs of tickets with plan-state=review,
-// across ALL projects (--all-projects required per DP-252 — aven >=0.1.51
-// scopes a plain `list` to the cwd-inferred project). Aven prints
-// unknown-metadata-field with exit 0 when no ticket in the workspace ever
-// registered plan-state — same as an empty list, NOT a failure. Fail-closed:
-// any spawn/parse problem returns [] so the flow-status widget keeps showing
-// run-derived gates only. Only aven/client.ts shells out to aven (boundary
-// rule); flow/gates.ts consumes this via the GateDeps seam.
+// AIDEV-NOTE (PMR-ZGPY 2.2, D5; PMR-384R): refs of tickets with
+// plan-state=review, across ALL projects (--all-projects required per
+// DP-252 — aven >=0.1.51 scopes a plain `list` to the cwd-inferred
+// project). Aven prints unknown-metadata-field with exit 0 when no ticket
+// in the workspace ever registered plan-state — same as an empty list, NOT
+// a failure. Fail-closed: any spawn/parse problem returns [] so the
+// flow-status widget keeps showing run-derived gates only. Only
+// aven/client.ts shells out to aven (boundary rule); flow/gates.ts
+// consumes this via the GateDeps seam. Generic aven-list ref extractor —
+// PMR-384R adds a second consumer (listOpenTicketRefs below).
 export function parsePlanReviewRefs(stdout: string): string[] {
   let parsed: unknown
   try {
@@ -440,6 +442,28 @@ export async function listPlansAtReviewRefs(): Promise<string[]> {
   } catch (error: unknown) {
     recordAvenFailure(error)
     return []
+  }
+}
+
+/**
+ * Refs with a live (nonterminal, non-deleted) aven ticket, across ALL
+ * projects (PMR-384R; --all-projects per DP-252 — the shared runsDir holds
+ * other projects' flows, so gate refs can belong to any project). One
+ * batched `aven list --open --all-projects --json` call. Returns null ONLY
+ * when aven itself failed (spawn/timeout) — the ISC-13 signal for gates.ts
+ * to suppress NOTHING; an empty array is a real "zero open tickets"
+ * answer and DOES suppress. A ref absent from the universe is either
+ * terminal (done/canceled — --open excludes it) or has no record at all
+ * (deleted tickets are excluded too) — both must suppress: aven ticket
+ * status is the truth, a stale journal gate record cannot override it.
+ */
+export async function listOpenTicketRefs(): Promise<string[] | null> {
+  try {
+    const out = await avenExec(['list', '--open', '--all-projects', '--json'])
+    return parsePlanReviewRefs(out.stdout)
+  } catch (error: unknown) {
+    recordAvenFailure(error)
+    return null
   }
 }
 

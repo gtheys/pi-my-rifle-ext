@@ -301,6 +301,10 @@ test('empty input yields no gates', () => {
 function fakeDeps(
   runs: FlowRunState[] | Error,
   reviewRefs: string[] | Error,
+  // PMR-384R: open-ref universe from aven. Default null = aven truth
+  // unavailable = no suppression, so pre-PMR-384R tests keep their exact
+  // old behavior.
+  openRefs: string[] | Error | null = null,
 ): GateDeps {
   const readRuns = (): Promise<FlowRunState[]> =>
     runs instanceof Error ? Promise.reject(runs) : Promise.resolve(runs)
@@ -308,7 +312,11 @@ function fakeDeps(
     reviewRefs instanceof Error
       ? Promise.reject(reviewRefs)
       : Promise.resolve(reviewRefs)
-  return { readRuns, listPlansAtReview }
+  const listOpenRefs = (): Promise<string[] | null> =>
+    openRefs instanceof Error
+      ? Promise.reject(openRefs)
+      : Promise.resolve(openRefs)
+  return { readRuns, listPlansAtReview, listOpenRefs }
 }
 
 test('collectOpenGates happy merge: paused run + different review ref -> both gates', async () => {
@@ -367,6 +375,84 @@ test('collectOpenGates both sources empty/failing -> []', async () => {
     fakeDeps(new Error('a'), new Error('b')),
   )
   assert.deepEqual(failing, [])
+})
+
+// --- PMR-384R — aven-status truth: suppress stale/false-open gates ---
+// The 2026-11-18 live report: seven refs showed "validate phase awaiting
+// code review" while six were done/canceled in aven and one had no aven
+// record at all. Journals are immutable history — aven ticket status is the
+// truth (user invariant), so collectOpenGates must suppress gates whose ref
+// is terminal or ungrounded in aven. Fail-closed per ISC-13: aven
+// unavailability suppresses nothing (a false-open gate is noise; a
+// false-suppressed gate hides live work).
+
+test('suppresses gates for refs whose aven status is terminal (done/canceled)', async () => {
+  // Symptom refs: PMR-084C/5D1B/G68P/MR36/Z0M2 = done; TP-85GY = canceled
+  // (other project). None appear in the --open universe.
+  const deps = fakeDeps(
+    [
+      baseState({ ref: 'PMR-084C', currentPhase: 'validate' }),
+      baseState({ ref: 'PMR-5D1B', currentPhase: 'validate' }),
+      baseState({ ref: 'TP-85GY', loop: loopState('paused') }),
+    ],
+    [],
+    [],
+  )
+  assert.deepEqual(await collectOpenGates(deps), [])
+})
+
+test('suppresses gates for refs with no aven record at all', async () => {
+  // AA-QJZ3: ungrounded projection — an unanswerable gate must not render.
+  // GONE-99 rides along to prove the plan-review source is filtered too.
+  const deps = fakeDeps(
+    [baseState({ ref: 'AA-QJZ3', currentPhase: 'validate' })],
+    ['GONE-99'],
+    ['PMR-384R'],
+  )
+  assert.deepEqual(await collectOpenGates(deps), [])
+})
+
+test('keeps gates for refs with a live (nonterminal) aven ticket', async () => {
+  const deps = fakeDeps(
+    [
+      baseState({ ref: 'PMR-384R', currentPhase: 'validate' }),
+      baseState({ ref: 'PMR-YQPW', loop: loopState('paused') }),
+    ],
+    ['PMR-N0W6'],
+    ['PMR-384R', 'PMR-YQPW', 'PMR-N0W6'],
+  )
+  const gates = await collectOpenGates(deps)
+  assert.deepEqual(
+    gates.map((g) => [g.ref, g.kind]),
+    [
+      ['PMR-384R', 'code-review'],
+      ['PMR-YQPW', 'flow-paused'],
+      ['PMR-N0W6', 'plan-review'],
+    ],
+  )
+})
+
+test('aven truth unavailable (null) suppresses nothing (ISC-13 fail-closed)', async () => {
+  const deps = fakeDeps(
+    [baseState({ ref: 'PMR-084C', currentPhase: 'validate' })],
+    [],
+    new Error('aven down'),
+  )
+  const gates = await collectOpenGates(deps)
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0]?.ref, 'PMR-084C')
+  assert.equal(gates[0]?.kind, 'code-review')
+})
+
+test('empty universe (zero open tickets) suppresses every gate', async () => {
+  // [] is a REAL aven answer ("nothing is open"), unlike null — it must
+  // suppress. This pins the null-vs-[] distinction.
+  const deps = fakeDeps(
+    [baseState({ ref: 'PMR-084C', currentPhase: 'validate' })],
+    [],
+    [],
+  )
+  assert.deepEqual(await collectOpenGates(deps), [])
 })
 
 // --- readRunsFromDisk (fake io) ---
