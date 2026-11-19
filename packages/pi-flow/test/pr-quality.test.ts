@@ -299,7 +299,7 @@ test('/pr-watch stops polling and notifies on poll error (PMR-4B5A)', async () =
   globalThis.setInterval = (() => {
     intervalCreated = true
     return fakeTimer
-  }) as typeof setInterval
+  }) as unknown as typeof setInterval
   globalThis.clearInterval = ((timer: unknown) => {
     if (timer === fakeTimer) intervalCleared = true
   }) as typeof clearInterval
