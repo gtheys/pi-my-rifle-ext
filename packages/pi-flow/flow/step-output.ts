@@ -14,31 +14,63 @@ import { isFullSha } from '../validate/gate-target.ts'
 /**
  * Per-phase fact schemas, discriminated on `phase`. Every fact is optional so
  * a bare step boundary (phase + step label, no facts) is a valid submission.
+ * Field descriptions are part of the contract: tools/flow-submit.ts uses this
+ * schema directly as its `output` param (single source, never inlined).
  */
-export const StepOutputSchema = Type.Union([
-  Type.Object({
-    phase: Type.Literal('plan'),
-    planPath: Type.Optional(Type.String()),
-    subtaskRefs: Type.Optional(Type.Array(Type.String())),
-  }),
-  Type.Object({
-    phase: Type.Literal('implement'),
-    command: Type.Optional(Type.String()),
-    passed: Type.Optional(Type.Boolean()),
-    headSha: Type.Optional(Type.String()),
-  }),
-  Type.Object({
-    phase: Type.Literal('validate'),
-    prNumber: Type.Optional(Type.Number()),
-    prUrl: Type.Optional(Type.String()),
-    gateTargetIds: Type.Optional(Type.Array(Type.String())),
-  }),
-  Type.Object({
-    phase: Type.Literal('feedback'),
-    prUrl: Type.Optional(Type.String()),
-    prMerged: Type.Optional(Type.Boolean()),
-  }),
-])
+export const StepOutputSchema = Type.Union(
+  [
+    Type.Object({
+      phase: Type.Literal('plan'),
+      planPath: Type.Optional(
+        Type.String({ description: 'Path of the written plan' }),
+      ),
+      subtaskRefs: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'Subtask refs covered by the plan',
+        }),
+      ),
+    }),
+    Type.Object({
+      phase: Type.Literal('implement'),
+      command: Type.Optional(
+        Type.String({ description: 'Verification command that ran' }),
+      ),
+      passed: Type.Optional(
+        Type.Boolean({ description: 'Whether the command passed' }),
+      ),
+      headSha: Type.Optional(
+        Type.String({ description: 'Full 40-char HEAD SHA the evidence pins' }),
+      ),
+    }),
+    Type.Object({
+      phase: Type.Literal('validate'),
+      prNumber: Type.Optional(
+        Type.Number({ description: 'PR number under validation' }),
+      ),
+      prUrl: Type.Optional(
+        Type.String({ description: 'PR URL under validation' }),
+      ),
+      gateTargetIds: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'Ids of gate-target events this evidence covers',
+        }),
+      ),
+    }),
+    Type.Object({
+      phase: Type.Literal('feedback'),
+      prUrl: Type.Optional(
+        Type.String({ description: 'PR URL the feedback is about' }),
+      ),
+      prMerged: Type.Optional(
+        Type.Boolean({ description: 'Whether the PR merged' }),
+      ),
+    }),
+  ],
+  {
+    description:
+      'Phase-discriminated step output; phase is the discriminator and no separate phase param exists',
+  },
+)
 
 export type StepOutputFacts = Static<typeof StepOutputSchema>
 
@@ -69,13 +101,27 @@ export interface StepOutputEventPayload {
 }
 
 /** Union of every optional per-phase fact field, all optional. */
-type StepOutputFactFields = Omit<
-  Extract<StepOutputFacts, { phase: 'plan' }> &
-    Extract<StepOutputFacts, { phase: 'implement' }> &
-    Extract<StepOutputFacts, { phase: 'validate' }> &
-    Extract<StepOutputFacts, { phase: 'feedback' }>,
-  'phase'
->
+/**
+ * AIDEV-NOTE: PMR-C998 — flat mirror of every optional fact field across the
+ * four StepOutputSchema branches. Kept in sync with the schema BY HAND:
+ * StepOutputSchema remains the authoritative tool-boundary contract (TypeBox
+ * validates the `output` param per phase in tools/flow-submit.ts), and
+ * validateFactTypes below is the runtime cross-check of phase/fact
+ * consistency. Not derived from the schema union: intersecting optional
+ * props from different union branches resolves them to never, which would
+ * make every facts-carrying caller untypeable without casts.
+ */
+type StepOutputFactFields = {
+  planPath?: string
+  subtaskRefs?: string[]
+  command?: string
+  passed?: boolean
+  headSha?: string
+  prNumber?: number
+  prUrl?: string
+  gateTargetIds?: string[]
+  prMerged?: boolean
+}
 
 export type StepOutputInput = StepOutputFactFields & {
   ref: string
