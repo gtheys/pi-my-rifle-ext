@@ -578,11 +578,7 @@ export function registerLandTool(
       // effects BEFORE setting `authorized`: declarations are fail-closed,
       // receipts stay best-effort — the deliberate split (plan Key decision
       // 3). On a failed declaration the landing is NOT authorized (any suite
-      // cost already spent is accepted; correctness first).
-      // AIDEV-NOTE: PMR-VDVJ — route=pr declares the push effects BEFORE
-      // setting `authorized`: declarations are fail-closed, receipts stay
-      // best-effort — the deliberate split (plan Key decision 3). On a failed
-      // declaration the landing is NOT authorized. PMR-VDVJ phase 4:
+      // cost already spent is accepted; correctness first). Phase 4:
       // route=merge-main runs the exact-command contract (authorizeMergeMain)
       // instead — declare the pinned merge command, then set mergeAuthorized.
       if (params.route === 'merge-main') {
