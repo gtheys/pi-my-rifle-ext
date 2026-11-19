@@ -59,8 +59,11 @@ test('prompt: file mode asks for the proof without leaking the count', () => {
 })
 
 test('countDiffLines: detection matrix — trailing newline, none, single line, empty', () => {
-  // PMR-Q23K: git diffs end with a newline; the expected count must match
-  // what the read tool shows the reviewer (and wc -l), not split('\n').length.
+  // PMR-Q23K: git diffs end with a newline; countDiffLines reports the
+  // wc -l count by design, not split('\n').length. Read tools show the
+  // split convention (expected + 1) instead (PMR-Z2RA), which is why
+  // checkDiffLinesRead accepts both counts — this matrix pins the wc -l
+  // side of that contract.
   assert.equal(countDiffLines('a\nb\n'), 2)
   assert.equal(countDiffLines('a\nb\nc'), 3)
   assert.equal(countDiffLines('a\n'), 1)
