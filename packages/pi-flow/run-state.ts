@@ -1074,6 +1074,7 @@ export function createEffectJournal(
   io?: {
     readFile: (p: string) => Promise<string>
     appendFile: (p: string, data: string) => Promise<void>
+    mkdir: (dir: string, recursive: true) => Promise<void>
   },
 ): EffectJournal {
   const readFile = io?.readFile ?? ((p: string) => fs.readFile(p, 'utf8'))
@@ -1081,6 +1082,11 @@ export function createEffectJournal(
     io?.appendFile ??
     (async (p: string, data: string) => {
       await fs.appendFile(p, data, 'utf8')
+    })
+  const mkdir =
+    io?.mkdir ??
+    (async (dir: string, recursive: true) => {
+      await fs.mkdir(dir, { recursive })
     })
 
   const declare = async (
@@ -1098,6 +1104,19 @@ export function createEffectJournal(
       }
     }
     const journalPath = journalPathFor(statePath)
+    // AIDEV-NOTE: PMR-VDVJ fix round — mkdir BEFORE the append, same as
+    // recordRunEvent/recordRunEventJournalOnly. Without it a fresh agent dir
+    // (no pi-flow/runs/ yet) fails with ENOENT, the fail-closed conversion
+    // turns that into {ok:false}, and the gate permanently refuses declared
+    // effects until some other writer happens to create the directory.
+    try {
+      await mkdir(path.dirname(journalPath), true)
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `effect declaration could not be recorded in the run journal (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
     const effectId = effectDeclarationId(input)
     // Idempotent: an identical declaration already journaled — do not append.
     const existing = await find({

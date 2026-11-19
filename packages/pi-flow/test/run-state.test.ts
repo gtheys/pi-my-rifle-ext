@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { test } from 'node:test'
 import {
   applyEvent,
@@ -1226,4 +1229,41 @@ test('createEffectJournal: find returns null on missing journal', async () => {
   const files: MemFiles = new Map()
   const effects = createEffectJournal('/agent', fakeIo(files))
   assert.equal(await effects.find({ ref: 'PMR-1', effect: 'git-push' }), null)
+})
+
+// AIDEV-NOTE: PMR-VDVJ fix round — real-fs regression test for the
+// declare-must-mkdir bug. The fake-io tests above cannot catch a missing
+// mkdir because their in-memory appendFile never needs the directory to
+// exist; only the real fs does.
+test('createEffectJournal: declare creates pi-flow/runs on real fs (fresh agent dir)', async (t) => {
+  const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-flow-declare-'))
+  t.after(async () => {
+    await fs.rm(agentDir, { recursive: true, force: true })
+  })
+  // Deliberately do NOT create pi-flow/runs — that is the bug scenario.
+  const effects = createEffectJournal(agentDir)
+  const result = await effects.declare({
+    ref: 'worktree-ops',
+    effect: 'worktree-create',
+    command: 'herdr worktree create',
+    recipe: ['undo'],
+  })
+  if (!result.ok) {
+    assert.fail(`declare should succeed, got fail-closed: ${result.reason}`)
+  }
+  const journalPath = path.join(
+    agentDir,
+    'pi-flow',
+    'runs',
+    'worktree-ops.journal.jsonl',
+  )
+  const raw = await fs.readFile(journalPath, 'utf8')
+  const lines = raw.split('\n').filter((line) => line.trim().length > 0)
+  assert.equal(lines.length, 1)
+  const parsed = JSON.parse(lines[0] ?? '{}') as {
+    kind?: string
+    effectId?: string
+  }
+  assert.equal(parsed.kind, 'effect-declaration')
+  assert.equal(parsed.effectId, result.effectId)
 })
