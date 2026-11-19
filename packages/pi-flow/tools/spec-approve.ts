@@ -107,6 +107,10 @@ export function registerSpecApproveTool(
       // PMR-3VWM: the read threads the explicit workspace param exactly
       // like the receipt read above — the exemption and the gate must
       // resolve the same ticket when a workspace is passed explicitly.
+      // AIDEV-NOTE: PMR-ZWX8 — the oneshot exemption is a prompt-level
+      // checkpoint by accepted design; see the full anchor on the plan-gate
+      // check in tools/phase-complete.ts for why `--label oneshot`
+      // interception was considered and rejected.
       const labels = await readAvenLabels(params.ref, params.workspace)
       const isOneshot = labels?.includes('oneshot') === true
       if (!isOneshot) {

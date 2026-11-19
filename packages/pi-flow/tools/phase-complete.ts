@@ -145,6 +145,20 @@ export function registerPhaseCompleteTool(
       // The already-complete fast path below stays receipt-free (PMR-4S6V
       // idempotency), and implement/validate/feedback remain
       // label-order-only.
+      // AIDEV-NOTE: PMR-ZWX8 — the oneshot exemption is a PROMPT-LEVEL
+      // checkpoint by accepted design: the `oneshot` label is agent-writable
+      // (type labels are deliberately outside lifecycleLabelMutation), and
+      // the human's explicit oneshot route invocation IS the size
+      // confirmation — adding the label by hand is that same decision.
+      // Interception of `--label oneshot` bash edits was considered and
+      // REJECTED: a ref-scoped matcher duplicates fragile CLI parsing (the
+      // PMR-5RFR/PMR-SB3H matcher-evasion treadmill) and cannot cover
+      // `aven add --label oneshot`, the legitimate human-directed oneshot
+      // setup path, without blocking unrelated filings whenever any flow is
+      // active. Residual risk is bounded: this exemption only fires in
+      // personal mode where the human drives the session, and aven's ticket
+      // history makes a rogue self-label auditable after the fact. Revisit
+      // this seam if the trust model ever needs enforced label provenance.
       if (params.phase === 'plan' && !labels.includes('oneshot')) {
         const answer = await readGateAnswer(params.ref, 'spec')
         if (answer !== 'approve') {
