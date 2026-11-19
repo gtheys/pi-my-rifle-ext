@@ -19,8 +19,10 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
+  Theme,
 } from '@earendil-works/pi-coding-agent'
 import type { FlowRunState } from '../run-state.ts'
+import { frameFlowStatusLines } from './frame.ts'
 import type { OpenGate } from './gates.ts'
 import {
   type AssignmentSummary,
@@ -55,6 +57,12 @@ let deps: FlowWidgetDeps | null = null
 let widgetTui: { requestRender: () => void } | null = null
 let widgetRegistered = false
 let cachedLines: string[] = []
+// AIDEV-NOTE (PMR-MGWP): minimal phase slice cached alongside cachedLines so
+// render() picks the frame accent without re-reading state (render stays IO-free).
+let cachedPhase: string | null = null
+// Captured at setWidget-factory time; render() falls back to the plain clamp
+// when absent (test harnesses invoke the factory with tui only).
+let widgetTheme: Theme | null = null
 
 interface WidgetData {
   state: FlowRunState | null
@@ -124,6 +132,7 @@ async function updateWidgetUnsafe(): Promise<void> {
   if (!shouldShowWidget(input)) {
     // Unregister only on genuinely-empty content, never on a data error.
     cachedLines = []
+    cachedPhase = null
     if (widgetRegistered) {
       widgetRegistered = false
       widgetTui = null
@@ -132,6 +141,7 @@ async function updateWidgetUnsafe(): Promise<void> {
     return
   }
   cachedLines = renderFlowStatusLines(input)
+  cachedPhase = collected.state?.currentPhase ?? null
   if (widgetRegistered) {
     // Cheap path (subagents :1115): don't re-register — that would reset the
     // 2s tick. Refresh the cache and ask for a redraw.
@@ -142,49 +152,68 @@ async function updateWidgetUnsafe(): Promise<void> {
   }
   widgetRegistered = true
   const timing = localDeps.timing
-  ctx.ui.setWidget(WIDGET_NAME, (tui: { requestRender: () => void }) => {
-    widgetTui = tui
-    // Presentation tick ONLY — no data IO here (ISC-A-3 complement). The
-    // stop action is captured per-branch so dispose() needs no casts.
-    let stopTick: () => void
-    if (timing === undefined) {
-      const t = setInterval(() => {
-        try {
-          tui.requestRender()
-        } catch {}
-      }, TICK_MS)
-      stopTick = () => {
-        clearInterval(t)
+  ctx.ui.setWidget(
+    WIDGET_NAME,
+    (tui: { requestRender: () => void }, theme?: Theme) => {
+      widgetTui = tui
+      // AIDEV-NOTE (PMR-MGWP): theme is captured once per registration; render
+      // must never reach back into ctx (it can go stale mid-session).
+      if (theme !== undefined) {
+        widgetTheme = theme
       }
-    } else {
-      const t = timing.setInterval(() => {
-        try {
-          tui.requestRender()
-        } catch {}
-      }, TICK_MS)
-      stopTick = () => {
-        timing.clearInterval(t)
-      }
-    }
-    return {
-      invalidate() {},
-      dispose() {
-        stopTick()
-        // PMR-ZGPY fix round 2 (mirrors subagents index.ts dispose): the
-        // registration flag MUST reset, or after a session reload tears the
-        // component down every refresh takes the cheap requestRender no-op
-        // path and the widget never returns. Guarded by the same identity
-        // check the precedent uses, BEFORE nulling.
-        if (widgetTui === tui) {
-          widgetTui = null
-          widgetRegistered = false
+      // Presentation tick ONLY — no data IO here (ISC-A-3 complement). The
+      // stop action is captured per-branch so dispose() needs no casts.
+      let stopTick: () => void
+      if (timing === undefined) {
+        const t = setInterval(() => {
+          try {
+            tui.requestRender()
+          } catch {}
+        }, TICK_MS)
+        stopTick = () => {
+          clearInterval(t)
         }
-      },
-      render(width: number): string[] {
-        return cachedLines.map((line) => line.slice(0, Math.max(0, width)))
-      },
-    }
-  })
+      } else {
+        const t = timing.setInterval(() => {
+          try {
+            tui.requestRender()
+          } catch {}
+        }, TICK_MS)
+        stopTick = () => {
+          timing.clearInterval(t)
+        }
+      }
+      return {
+        invalidate() {},
+        dispose() {
+          stopTick()
+          // PMR-ZGPY fix round 2 (mirrors subagents index.ts dispose): the
+          // registration flag MUST reset, or after a session reload tears the
+          // component down every refresh takes the cheap requestRender no-op
+          // path and the widget never returns. Guarded by the same identity
+          // check the precedent uses, BEFORE nulling.
+          if (widgetTui === tui) {
+            widgetTui = null
+            widgetRegistered = false
+          }
+        },
+        render(width: number): string[] {
+          // AIDEV-NOTE (PMR-MGWP): ANSI-aware framing replaces the old
+          // String.slice clamp; without a theme (harness) we keep the plain clamp.
+          const localTheme = widgetTheme
+          if (localTheme === null) {
+            return cachedLines.map((line) => line.slice(0, Math.max(0, width)))
+          }
+          return frameFlowStatusLines(
+            cachedLines,
+            width,
+            localTheme,
+            cachedPhase,
+          )
+        },
+      }
+    },
+  )
 }
 
 /** Pull-based refresh — index.ts calls this from agent_settled and the
@@ -206,6 +235,8 @@ export function initFlowWidget(
   widgetRegistered = false
   widgetTui = null
   cachedLines = []
+  cachedPhase = null
+  widgetTheme = null
   pi.on('session_start', (_event, ctx) => {
     latestCtx = ctx
     void refreshFlowWidget()
