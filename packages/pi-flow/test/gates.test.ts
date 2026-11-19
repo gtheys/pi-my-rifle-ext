@@ -349,6 +349,19 @@ test('collectOpenGates dedupe: paused run with same ref in review list -> exactl
   assert.match(gates[0]?.title ?? '', /paused/)
 })
 
+test('collectOpenGates dedupe: case-variant review ref dedupes against its run-derived gate (PMR-JJ2J)', async () => {
+  // Journal refs keep user-typed casing (parseRefKind journals raw input)
+  // while aven resolves refs case-insensitively — a case variant in the
+  // review list is the SAME ticket and must not produce a second row.
+  const deps = fakeDeps(
+    [baseState({ ref: 'pmr-1', loop: loopState('paused') })],
+    ['PMR-1'],
+  )
+  const gates = await collectOpenGates(deps)
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0]?.kind, 'flow-paused')
+})
+
 test('collectOpenGates aven failure -> runs-only gates', async () => {
   const deps = fakeDeps(
     [baseState({ ref: 'PMR-1', loop: loopState('paused') })],

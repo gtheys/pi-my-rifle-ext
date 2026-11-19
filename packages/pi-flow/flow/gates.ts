@@ -205,10 +205,15 @@ export async function collectOpenGates(deps: GateDeps): Promise<OpenGate[]> {
     deps.listOpenRefs().catch(() => null),
   ])
   const runGates = deriveRunGates(runs)
-  const gatedRefs = new Set(runGates.map((g) => g.ref))
+  // PMR-JJ2J: the dedupe must match the suppression filter's case handling —
+  // journal refs keep user-typed casing (parseRefKind journals raw input)
+  // while aven resolves refs case-insensitively, so a case-variant review
+  // ref has to dedupe against its run-derived gate or the widget shows the
+  // same ticket twice (run-derived gate + plan-review row).
+  const gatedRefs = new Set(runGates.map((g) => g.ref.toUpperCase()))
   const gates = [...runGates]
   for (const ref of reviewRefs) {
-    if (gatedRefs.has(ref)) continue
+    if (gatedRefs.has(ref.toUpperCase())) continue
     gates.push({
       ref,
       kind: 'plan-review',
