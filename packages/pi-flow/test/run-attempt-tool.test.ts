@@ -179,6 +179,62 @@ test('ledger io failure degrades to in-memory behavior', async () => {
   })
 })
 
+test('seed picks the true latest attempt-record by timestamp, not file order (PMR-5HTN)', async () => {
+  // Concurrent-append interleaving: a nested worker and the main session
+  // append to the same journal with O_APPEND, so file order can differ from
+  // timestamp order. Here the NEWER snapshot (attempt 2) landed FIRST and
+  // the main session's older snapshot (attempt 1) landed last — file-order
+  // last-wins would seed the budget from the stale count and regress it.
+  const adversarial = [
+    JSON.stringify({
+      kind: 'attempt-record',
+      at: '2026-11-19T09:00:02.000Z',
+      ref: 'PMR-1',
+      tool: 'flow_run_attempt',
+      outcome: 'failed',
+      attempts: 2,
+    }),
+    JSON.stringify({
+      kind: 'attempt-record',
+      at: '2026-11-19T09:00:01.000Z',
+      ref: 'PMR-1',
+      tool: 'flow_run_attempt',
+      outcome: 'failed',
+      attempts: 1,
+    }),
+  ].join('\n')
+  const ledger = createAttemptLedger('/agent', {
+    readFile: async () => adversarial,
+  })
+  assert.equal(await ledger.seed('PMR-1'), 2)
+
+  // Same ordering hazard for the pass reset: the NEWER 'passed' (reset to 0)
+  // landed first, an older failed snapshot with a HIGHER count landed last —
+  // the reset must win because it is the true latest.
+  const resetLatest = [
+    JSON.stringify({
+      kind: 'attempt-record',
+      at: '2026-11-19T09:01:02.000Z',
+      ref: 'PMR-2',
+      tool: 'flow_run_attempt',
+      outcome: 'passed',
+      attempts: 0,
+    }),
+    JSON.stringify({
+      kind: 'attempt-record',
+      at: '2026-11-19T09:01:01.000Z',
+      ref: 'PMR-2',
+      tool: 'flow_run_attempt',
+      outcome: 'failed',
+      attempts: 2,
+    }),
+  ].join('\n')
+  const resetLedger = createAttemptLedger('/agent', {
+    readFile: async () => resetLatest,
+  })
+  assert.equal(await resetLedger.seed('PMR-2'), 0)
+})
+
 test('exhausted budget refuses further attempts without a second note', async () => {
   let execute: Execute | undefined
   // AIDEV-NOTE: PMR-XTQQ 4.2 — fresh temp agentDir ledger: empty journal →

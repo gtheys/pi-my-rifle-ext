@@ -67,15 +67,22 @@ export function createAttemptLedger(
     seed: async (ref) => {
       const events = await readRunEvents(agentDir, ref, { readFile })
       if (events === null) return null
+      // AIDEV-NOTE: PMR-5HTN — pick the TRUE latest by timestamp, not file
+      // order: a nested worker and the main session append to the same
+      // journal with O_APPEND, and file order can interleave an older
+      // snapshot after a newer one, which would seed the budget from a stale
+      // count and REGRESS it (fail-open). ISO timestamps from one host sort
+      // lexicographically; equal timestamps fall back to file order (>=).
       let latest: number | null = null
+      let latestAt: string | null = null
       for (const event of events) {
         if (event.kind !== 'attempt-record') continue
         if (event.ref !== ref) continue
-        if (event.outcome === 'passed') {
-          latest = 0
-          continue
+        const value = event.outcome === 'passed' ? 0 : event.attempts
+        if (latestAt === null || event.at >= latestAt) {
+          latestAt = event.at
+          latest = value
         }
-        latest = event.attempts
       }
       return latest
     },
