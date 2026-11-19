@@ -49,7 +49,8 @@ export function landDecision(
 // global options (-C <dir>, -c k=v, --git-dir[=]..., --no-pager, ...) and env
 // assignments may sit between the command words. Known limit (guardrail, not
 // a privilege boundary): aliases, `sh -c '...'`, and variable-built commands
-// are not detected.
+// are not detected. The same limits apply to the merge matcher (MERGE_RE) in
+// flow/effect-gate.ts, which is built from this grammar (PMR-VDVJ).
 // AIDEV-NOTE: exported (PMR-VDVJ phase 2) so flow/effect-gate.ts can build
 // MERGE_RE from the same command-position and git-option grammar. Export-only
 // change — no behavior change.

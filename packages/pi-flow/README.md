@@ -65,7 +65,7 @@ Agent-callable tools registered by pi-flow:
 | Tool | What it does |
 | --- | --- |
 | `flow_phase_complete` | The ONLY way to write lifecycle labels — re-checks the phase gates before exec'ing aven; direct `aven edit --label` mutations are blocked at the bash tool_call boundary. |
-| `flow_land` | Gates landing behind the `review-passed` label (+ optional `blockers_count` artifact); authorizes `git push` / `gh pr create` for the ref, which are otherwise blocked while a flow is active. |
+| `flow_land` | Gates landing behind the `review-passed` label (+ optional `blockers_count` artifact); authorizes `git push` / `gh pr create` for the ref, which are otherwise blocked while a flow is active. Also declares the run's side effects (see [Effect contracts](#effect-contracts) below). |
 | `flow_run_attempt` | Owns the implement-phase retry budget: 3 total attempts, the 3rd failure escalates and further attempts are refused. |
 | `spec_approve` | Only path from plan-state `review` → `approved` (pins the `plan` label, moves the ticket to todo). |
 | `resolve_spec_path` / `resolve_feature_path` | Canonical spec/plan.md path resolution for a Jira ticket or personal feature (absorbed from pi-planning). |
@@ -75,6 +75,25 @@ Agent-callable tools registered by pi-flow:
 | `sonarqube` | Fetches SonarCloud coverage gaps + quality issues for a PR as an actionable report (absorbed from pi-review). |
 | `pr_quality` | Gathers unresolved PR review threads + SonarCloud issues into a triage prompt (absorbed from pi-review). |
 | `worktree` | Creates, lists, and removes Herdr-managed git worktree workspaces (absorbed from pi-worktree). |
+
+## Effect contracts
+
+Before a risky action runs, the agent declares it in the run journal. Five
+actions are declared: push to remote, create PR via `gh`, the personal
+merge-main (`git merge --ff-only` into your main checkout), worktree create,
+and worktree remove. Each declaration carries a plain-language undo recipe.
+
+How it holds:
+
+- **Fail-closed**: if the journal write fails, the action is refused. No
+  journal, no effect.
+- **Worktree gating**: the create/remove actions are gated inside the
+  `worktree` tool itself — the command must match exactly, not via regex.
+- **Honest limit**: bash detection (push, PR create, merge) catches literal
+  commands at command position only. Aliases, `sh -c '...'`, and
+  variable-built commands are **not** detected. This is a guardrail against
+  accidental effects, not a privilege boundary. Humans typing in their own
+  terminal are out of scope.
 
 ## Configuration
 
