@@ -34,9 +34,11 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
 1. **Plan** — work: `feature-plan-aven` skill (epic/dep tree, plan-state
    approval gate — answer-first: the human runs `/flow answer <ref> approve`,
    then the receipt-gated `spec_approve` goes through); personal: now also delegates to the `feature-plan-aven`
-   skill (the old split-gate module was removed); a personal oneshot skips
-   the spec-approval gate but still needs the human's `/flow answer <ref>
-   approve` receipt before `flow_phase_complete(plan)` applies `planned`.
+   skill (the old split-gate module was removed); a personal oneshot skips the
+   spec-approval gate AND the receipt requirement — tickets carrying the `oneshot`
+   label are exempt at both check sites (commit d9cff0b), so `flow_phase_complete(plan)`
+   applies `planned` receipt-free; the plan route (non-oneshot) still needs the human's
+   `/flow answer <ref> approve` receipt before `flow_phase_complete(plan)` applies `planned`.
 2. **Implement** — gate: `planned` required; worktree isolation; routes
    bug / plan / oneshot; retry budget **3 total attempts** (the 3rd failure
    escalates and refuses further attempts) → blocked + escalate →
