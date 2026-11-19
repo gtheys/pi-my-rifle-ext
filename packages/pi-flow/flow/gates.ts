@@ -69,6 +69,18 @@ function hasCodeReviewReceipt(state: FlowRunState): boolean {
 // the code-review kind — a code_review command receipt, a gate-answer
 // ('code-review', from /flow answer pass|fail), or a gate-decision. Receipt
 // alone was the round-1 shape; the OR matches isAnswered's D6 semantics.
+// AIDEV-NOTE: PMR-YQPW — closure is deliberately PER-REF and PERMANENT for
+// the run's lifetime (single-closure semantics): a run that re-enters
+// validate (retryAfterBlockers after a blocked landing) never re-shows this
+// gate. Decision: re-entry rounds should NOT re-open it. (1) The common
+// blocked-landing cause is a red/flaky suite, not a changed diff — a forced
+// fresh human review after every retry is noise. (2) Integrity does not
+// depend on this gate re-firing: flow_land re-runs the suite and the
+// deviation gate re-checks the diff on every validate round. (3) The human
+// can always request a fresh round explicitly via the durable /flow answer
+// route, which writes a new record and re-closes the gate on the human's
+// terms. If a stale pass hiding changed code ever bites, re-open and key
+// closure on the pinned range sha (per-round gate identity, PMR-YQPW).
 function isCodeReviewGateClosed(state: FlowRunState): boolean {
   const answers = state.gateAnswers ?? []
   const decisions = state.gateDecisions ?? []
