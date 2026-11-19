@@ -78,8 +78,10 @@ export function registerCodeReviewTool(
   // receipt; same worktree-scoped shape as flow_land's adoption pin.
   // AIDEV-NOTE: PMR-1TCN — the seam is now worktree-scoped: callers pass the
   // RESOLVED REVIEW WORKTREE path (the tree the tuicr run saw), so the
-  // receipt pins that tree's HEAD even when landingSuiteCwd() resolves
-  // elsewhere (no-binding path falls back to process.cwd()).
+  // receipt pins that tree's HEAD. Historical only (pre-PMR-1TCN behavior,
+  // no longer true): the old zero-arg default resolved landingSuiteCwd(),
+  // whose no-binding fallback was process.cwd() — a tree the tuicr run may
+  // never have seen.
   resolveHead: (cwd: string) => Promise<string | null> = defaultResolveHead,
   // AIDEV-NOTE: PMR-XTQQ — mode-aware writer (server/writer.ts). Present =
   // receipt writes route through it (journal-only while the daemon owns the
