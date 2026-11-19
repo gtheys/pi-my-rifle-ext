@@ -4343,6 +4343,322 @@ describe('pollForExit crash inference (PMR-TABUX)', () => {
   })
 })
 
+describe('stall watchdog escalation wiring (PMR-YFRB phase 3)', () => {
+  const testApi = (subagentsModule as any).__test__ as {
+    getWatchdogThresholds: () => StallThresholds
+    setWatchdogThresholdsForTest: (value: StallThresholds | undefined) => void
+  }
+  const SHRUNK: StallThresholds = {
+    enabled: true,
+    streamStallAfterMs: 30,
+    quietStallAfterMs: 30,
+  }
+
+  after(() => {
+    testApi.setWatchdogThresholdsForTest(undefined)
+  })
+
+  // Real activity snapshot on disk — the observe → classify → escalate chain
+  // reads THIS file, not a synthetic statusState.
+  function writeActivitySnapshot(
+    dir: string,
+    id: string,
+    updatedAt: number,
+  ): string {
+    const activityFile = getSubagentActivityFile(dir, id)
+    mkdirSync(dirname(activityFile), { recursive: true })
+    writeFileSync(
+      activityFile,
+      JSON.stringify({
+        version: 1,
+        runningChildId: id,
+        createdAt: updatedAt - 60_000,
+        updatedAt,
+        sequence: 1,
+        latestEvent: 'before_provider_request',
+        phase: 'active',
+        agentActive: true,
+        turnActive: true,
+        providerActive: true,
+        toolActive: false,
+        activeScope: 'streaming',
+        activeSince: updatedAt - 60_000,
+      }),
+      'utf8',
+    )
+    return activityFile
+  }
+
+  function fakeRunner(
+    activityFile: string | undefined,
+    overrides: { interactive?: boolean; cli?: string } = {},
+  ) {
+    return {
+      id: 'child-stall',
+      name: 'Worker',
+      task: '',
+      surface: 'w1:p1',
+      paneId: 'w1:p1',
+      startTime: Date.now() - 60_000,
+      sessionFile: '',
+      activityFile,
+      interactive: overrides.interactive === true,
+      ...(overrides.cli !== undefined ? { cli: overrides.cli } : {}),
+      statusState: createStatusState({
+        source:
+          overrides.cli === 'claude' ? ('claude' as const) : ('pi' as const),
+        startTimeMs: Date.now() - 60_000,
+      }),
+    } as any
+  }
+
+  it('maps absent watchdog config to defaults and disabled to legacy', () => {
+    const { watchdogThresholdsFromConfig } = subagentsModule
+    assert.deepEqual(watchdogThresholdsFromConfig(undefined), {
+      enabled: true,
+      streamStallAfterMs: STREAM_STALL_AFTER_MS,
+      quietStallAfterMs: QUIET_STALL_AFTER_MS,
+    })
+    assert.deepEqual(watchdogThresholdsFromConfig({}), {
+      enabled: true,
+      streamStallAfterMs: STREAM_STALL_AFTER_MS,
+      quietStallAfterMs: QUIET_STALL_AFTER_MS,
+    })
+    assert.deepEqual(watchdogThresholdsFromConfig({ enabled: false }), {
+      enabled: false,
+      streamStallAfterMs: STREAM_STALL_AFTER_MS,
+      quietStallAfterMs: QUIET_STALL_AFTER_MS,
+    })
+    assert.deepEqual(watchdogThresholdsFromConfig({ streamStallAfterMs: 42 }), {
+      enabled: true,
+      streamStallAfterMs: 42,
+      quietStallAfterMs: QUIET_STALL_AFTER_MS,
+    })
+  })
+
+  it('caches thresholds on globalThis with a default fallback', () => {
+    testApi.setWatchdogThresholdsForTest(SHRUNK)
+    assert.deepEqual(testApi.getWatchdogThresholds(), SHRUNK)
+    testApi.setWatchdogThresholdsForTest(undefined)
+    assert.equal(testApi.getWatchdogThresholds().enabled, true)
+    assert.equal(
+      testApi.getWatchdogThresholds().streamStallAfterMs,
+      STREAM_STALL_AFTER_MS,
+    )
+  })
+
+  it('carve-outs: interactive and claude children get no escalation', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stall-carve-'))
+    try {
+      testApi.setWatchdogThresholdsForTest(SHRUNK)
+      const activityFile = writeActivitySnapshot(
+        dir,
+        'child-stall',
+        Date.now() - 60_000,
+      )
+      const interactive = subagentsModule.makeCheckStall(
+        fakeRunner(activityFile, { interactive: true }),
+      )
+      assert.equal(interactive(), null)
+      const claude = subagentsModule.makeCheckStall(
+        fakeRunner(activityFile, { cli: 'claude' }),
+      )
+      assert.equal(claude(), null)
+    } finally {
+      testApi.setWatchdogThresholdsForTest(undefined)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('error precedence: stall message wins over a partial assistant message', () => {
+    const { resolvePiResultSummary } = subagentsModule
+    withTempDir((dir) => {
+      const sessionFile = join(dir, 's.jsonl')
+      // Dead turn: a partial thinking-only assistant entry is the LAST entry.
+      writeFileSync(
+        sessionFile,
+        `${JSON.stringify({
+          type: 'message',
+          message: {
+            role: 'assistant',
+            content: [],
+          },
+        })}\n`,
+        'utf8',
+      )
+      const stall = {
+        reason: 'error',
+        exitCode: 1,
+        errorMessage: 'Subagent turn stalled: streaming inactive for 1s.',
+      } as any
+      assert.equal(
+        resolvePiResultSummary(stall, sessionFile),
+        'Subagent error: Subagent turn stalled: streaming inactive for 1s.',
+      )
+      // Non-error results keep the assistant-message-first behavior.
+      const doneWithAssistant = {
+        reason: 'done',
+        exitCode: 0,
+      } as any
+      writeFileSync(
+        sessionFile,
+        `${JSON.stringify({
+          type: 'message',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Real summary content.' }],
+          },
+        })}\n`,
+        'utf8',
+      )
+      assert.equal(
+        resolvePiResultSummary(doneWithAssistant, sessionFile),
+        'Real summary content.',
+      )
+    })
+  })
+
+  it('(a) dead-turn repro: frozen streaming snapshot + live pane escalates', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const dir = mkdtempSync(join(tmpdir(), 'stall-dead-turn-'))
+    try {
+      testApi.setWatchdogThresholdsForTest(SHRUNK)
+      const activityFile = writeActivitySnapshot(
+        dir,
+        'child-stall',
+        Date.now() - 1_000,
+      )
+      const running = fakeRunner(activityFile)
+      const result = await pollForExit('w1:p1', AbortSignal.timeout(2000), {
+        interval: 5,
+        sessionFile: join(dir, 's.jsonl'),
+        isAlive: () => true,
+        checkStall: subagentsModule.makeCheckStall(running),
+      } as any)
+      assert.equal(result.reason, 'error')
+      assert.equal(result.exitCode, 1)
+      assert.match(
+        result.errorMessage ?? '',
+        /Subagent turn stalled: streaming inactive/,
+      )
+    } finally {
+      testApi.setWatchdogThresholdsForTest(undefined)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('(b) vanished-pane repro: throwing probe + missing snapshot escalates', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const dir = mkdtempSync(join(tmpdir(), 'stall-vanished-'))
+    try {
+      testApi.setWatchdogThresholdsForTest({
+        enabled: true,
+        streamStallAfterMs: 30,
+        quietStallAfterMs: 20,
+      })
+      // No activity file ever written; probe fails open (throws → alive).
+      const running = fakeRunner(getSubagentActivityFile(dir, 'child-stall'))
+      const started = Date.now()
+      const result = await pollForExit('w1:p1', AbortSignal.timeout(2000), {
+        interval: 5,
+        sessionFile: join(dir, 's.jsonl'),
+        isAlive: () => {
+          throw new Error('herdr unreachable')
+        },
+        checkStall: subagentsModule.makeCheckStall(running),
+      } as any)
+      assert.equal(result.reason, 'error')
+      assert.equal(result.exitCode, 1)
+      assert.match(
+        result.errorMessage ?? '',
+        /Subagent turn stalled: no activity snapshot/,
+      )
+      assert.ok(Date.now() - started < 1_500)
+    } finally {
+      testApi.setWatchdogThresholdsForTest(undefined)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('(c) no-false-positive: advancing streaming activity never escalates', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const dir = mkdtempSync(join(tmpdir(), 'stall-advancing-'))
+    const activityFile = getSubagentActivityFile(dir, 'child-stall')
+    const writer = setInterval(() => {
+      try {
+        writeActivitySnapshot(dir, 'child-stall', Date.now())
+      } catch {}
+    }, 10)
+    try {
+      testApi.setWatchdogThresholdsForTest({
+        enabled: true,
+        streamStallAfterMs: 60,
+        quietStallAfterMs: 60,
+      })
+      writeActivitySnapshot(dir, 'child-stall', Date.now())
+      const running = fakeRunner(activityFile)
+      // ~90+ ticks at interval 5; the abort (not a stall) must end the poll.
+      await assert.rejects(
+        pollForExit('w1:p1', AbortSignal.timeout(500), {
+          interval: 5,
+          sessionFile: join(dir, 's.jsonl'),
+          isAlive: () => true,
+          checkStall: subagentsModule.makeCheckStall(running),
+        } as any),
+        /Aborted/,
+      )
+    } finally {
+      clearInterval(writer)
+      testApi.setWatchdogThresholdsForTest(undefined)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('(d) widget: dead-turn snapshot renders stalled marker + dead turn detail', () => {
+    const { renderSupervisionRows, statusKindOf, markerFor } = subagentsModule
+    const dir = mkdtempSync(join(tmpdir(), 'stall-widget-'))
+    try {
+      testApi.setWatchdogThresholdsForTest(SHRUNK)
+      const now = Date.now()
+      let state = createStatusState({ source: 'pi', startTimeMs: now - 60_000 })
+      state = observeStatus(
+        state,
+        {
+          snapshot: 'present',
+          updatedAt: now - 1_000,
+          sequence: 1,
+          phase: 'active',
+          active: true,
+          activeScope: 'streaming',
+          activeSince: now - 1_000,
+          latestEvent: 'before_provider_request',
+        },
+        now,
+      )
+      const running = {
+        id: 'child-stall',
+        name: 'Worker',
+        task: '',
+        surface: 'pane-child-stall',
+        paneId: 'w1:pchild-stall',
+        startTime: now - 60_000,
+        sessionFile: 'sess-1',
+        interactive: false,
+        statusState: state,
+      } as any
+      assert.equal(statusKindOf(running, now), 'stalled')
+      assert.equal(markerFor('stalled'), '?')
+      const rendered = renderSupervisionRows([running], now)
+      assert.match(rendered.lines[1], /^\? Worker · stalled /)
+      const snapshot = classifyStatus(running.statusState, now, SHRUNK)
+      assert.match(formatStatusLine(running.name, snapshot), /dead turn/)
+    } finally {
+      testApi.setWatchdogThresholdsForTest(undefined)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('blocked activity phase (PMR-WXG0)', () => {
   it('keeps phase blocked across agent_end until the answer starts a run', () => {
     withTempDir((dir) => {

@@ -47,7 +47,11 @@ import {
   updateAssignmentStatus,
   writeAssignment,
 } from './assignments.ts'
-import { loadSubagentsConfig, type SubagentsConfig } from './config.ts'
+import {
+  DEFAULT_WATCHDOG_CONFIG,
+  loadSubagentsConfig,
+  type SubagentsConfig,
+} from './config.ts'
 import {
   ackMatches,
   type ControlAck,
@@ -89,6 +93,7 @@ import {
   applyPendingAck,
   capStatusLines,
   classifyStatus,
+  classifyTurnStall,
   createStatusState,
   DEFAULT_STATUS_LINE_LIMIT,
   expirePendingRequest,
@@ -99,9 +104,11 @@ import {
   INTERRUPT_ACK_TIMEOUT_MS,
   markPendingRequest,
   observeStatus,
+  type StallThresholds,
   type StatusConfig,
   type StatusSnapshot,
   type SubagentStatusState,
+  stallErrorMessage,
 } from './status.ts'
 import {
   allocateSemanticRef,
@@ -112,6 +119,7 @@ import {
   closeSurface,
   isMuxAvailable,
   muxSetupHint,
+  type PollResult,
   pollForExit,
   readScreen,
   sendEscape,
@@ -702,7 +710,75 @@ function loadAndCacheStatusConfig(cwd: string | undefined): StatusConfig {
   ;(globalThis as Record<symbol, unknown>)[STATUS_CONFIG_KEY] = config
   ;(globalThis as Record<symbol, unknown>)[RETIREMENT_ENABLED_KEY] =
     loaded.config.contextRetirement?.enabled === true
+  ;(globalThis as Record<symbol, unknown>)[WATCHDOG_THRESHOLDS_KEY] =
+    watchdogThresholdsFromConfig(loaded.config.watchdog)
   return config
+}
+
+// AIDEV-NOTE (PMR-YFRB): watchdog thresholds ride the status-config cache —
+// same globalThis Symbol pattern so an extension /reload keeps the values
+// (new module instance, same session). Cleared by nothing; re-armed by the
+// next loadAndCacheStatusConfig (startup, config reload).
+const WATCHDOG_THRESHOLDS_KEY = Symbol.for('pi-subagents/watchdog-thresholds')
+
+function getWatchdogThresholds(): StallThresholds {
+  const stored = (globalThis as Record<symbol, unknown>)[
+    WATCHDOG_THRESHOLDS_KEY
+  ]
+  if (stored !== undefined) return stored as StallThresholds
+  return watchdogThresholdsFromConfig(undefined)
+}
+
+/**
+ * Map the cached (possibly absent/partial) `watchdog` config object to the
+ * status layer's StallThresholds. Absent config ⇒ defaults (watchdog ON);
+ * `enabled: false` ⇒ legacy never-age semantics.
+ */
+export function watchdogThresholdsFromConfig(
+  watchdog: SubagentsConfig['watchdog'],
+): StallThresholds {
+  const source = watchdog ?? DEFAULT_WATCHDOG_CONFIG
+  let enabled = true
+  if (source.enabled === false) enabled = false
+  return {
+    enabled,
+    streamStallAfterMs:
+      source.streamStallAfterMs ?? DEFAULT_WATCHDOG_CONFIG.streamStallAfterMs,
+    quietStallAfterMs:
+      source.quietStallAfterMs ?? DEFAULT_WATCHDOG_CONFIG.quietStallAfterMs,
+  }
+}
+
+/**
+ * AIDEV-NOTE (PMR-YFRB): pollForExit checkStall hook for the stall watchdog.
+ * Carve-outs: interactive children (widget-only display, no failed result,
+ * pane untouched) and claude children (no activity file) NEVER escalate —
+ * the closure returns null for them every tick. Otherwise it observes fresh
+ * activity (cheap + idempotent), classifies with the cached thresholds, and
+ * resolves the poll with an error PollResult on a stalled verdict — riding
+ * the existing crash-inference-shaped error path (settleAssignment 'lost',
+ * failed subagent_result steer) with no new message type and NO new timers:
+ * it runs inside pollForExit's existing loop/AbortSignal, so RELOAD_SENTINEL
+ * abort semantics are unchanged.
+ */
+export function makeCheckStall(
+  running: RunningSubagent,
+): () => PollResult | null {
+  return () => {
+    if (running.interactive || running.cli === 'claude') return null
+    observeRunningSubagent(running)
+    const verdict = classifyTurnStall(
+      running.statusState,
+      Date.now(),
+      getWatchdogThresholds(),
+    )
+    if (!verdict.stalled) return null
+    return {
+      reason: 'error',
+      exitCode: 1,
+      errorMessage: stallErrorMessage(verdict),
+    }
+  }
 }
 
 function resolveResultPresentation(
@@ -861,7 +937,13 @@ export function statusKindOf(
   now: number,
 ): WidgetStateKind {
   if (running.starting) return 'starting'
-  const kind = classifyStatus(running.statusState, now).kind
+  // PMR-YFRB: feed the cached watchdog thresholds so widget classification
+  // flips on the same clock the poll-loop watchdog escalates.
+  const kind = classifyStatus(
+    running.statusState,
+    now,
+    getWatchdogThresholds(),
+  ).kind
   if (kind === 'blocked') return 'blocked'
   if (kind === 'stalled') return 'stalled'
   if (kind === 'waiting') return 'waiting'
@@ -1561,6 +1643,7 @@ function startStatusRefresh(pi: ExtensionAPI) {
       const { nextState, snapshot, transition } = advanceStatusState(
         running.statusState,
         now,
+        getWatchdogThresholds(),
       )
       if (nextState.currentKind !== running.statusState.currentKind) {
         shouldRefreshWidget = true
@@ -1858,6 +1941,17 @@ export const __test__ = {
   defaultInterruptControlIo,
   resolveResultPresentation,
   resolveResumeLaunchBehavior,
+  makeCheckStall,
+  getWatchdogThresholds,
+  setWatchdogThresholdsForTest(value: StallThresholds | undefined) {
+    const store = globalThis as Record<symbol, unknown>
+    const key = Symbol.for('pi-subagents/watchdog-thresholds')
+    if (value === undefined) {
+      delete store[key]
+    } else {
+      store[key] = value
+    }
+  },
   runningSubagents,
   formatElapsed,
   // AIDEV-NOTE (PMR-AD0H): widget lifecycle test seam. The registration
@@ -2539,6 +2633,7 @@ async function watchSubagent(
         onVerifiedExit() {
           verifiedExit = true
         },
+        checkStall: makeCheckStall(running),
       },
     )
 
@@ -2593,24 +2688,8 @@ async function watchSubagent(
       }
     }
 
-    // Pi subagent result extraction
-    let summary: string
-    if (existsSync(sessionFile)) {
-      const allEntries = getNewEntries(sessionFile, 0)
-      summary =
-        findLastAssistantMessage(allEntries) ??
-        (result.errorMessage
-          ? `Subagent error: ${result.errorMessage}`
-          : result.exitCode !== 0
-            ? `Sub-agent exited with code ${result.exitCode}`
-            : 'Sub-agent exited without output')
-    } else {
-      summary = result.errorMessage
-        ? `Subagent error: ${result.errorMessage}`
-        : result.exitCode !== 0
-          ? `Sub-agent exited with code ${result.exitCode}`
-          : 'Sub-agent exited without output'
-    }
+    // Pi subagent result extraction.
+    const summary = resolvePiResultSummary(result, sessionFile)
 
     // PMR-874G: settle-time accounting — full-file read (the incremental
     // tracker may lag the final writes). Recorded onto the durable
@@ -2684,6 +2763,39 @@ async function watchSubagent(
       error: err?.message ?? String(err),
     }
   }
+}
+
+/**
+ * Pi subagent summary extraction from a settled PollResult.
+ *
+ * AIDEV-NOTE (PMR-YFRB): for error results with an explicit errorMessage
+ * (stall watchdog escalation, crash inference) the error message WINS over
+ * findLastAssistantMessage — a dead turn's last assistant entry is a partial
+ * thinking-only message that reads like a misleading success summary.
+ * Non-error results keep the assistant-message-first behavior.
+ */
+export function resolvePiResultSummary(
+  result: PollResult,
+  sessionFile: string,
+): string {
+  if (result.reason === 'error' && result.errorMessage) {
+    return `Subagent error: ${result.errorMessage}`
+  }
+  if (existsSync(sessionFile)) {
+    const allEntries = getNewEntries(sessionFile, 0)
+    const assistant = findLastAssistantMessage(allEntries)
+    if (assistant !== null) return assistant
+    if (result.errorMessage) return `Subagent error: ${result.errorMessage}`
+    if (result.exitCode !== 0) {
+      return `Sub-agent exited with code ${result.exitCode}`
+    }
+    return 'Sub-agent exited without output'
+  }
+  if (result.errorMessage) return `Subagent error: ${result.errorMessage}`
+  if (result.exitCode !== 0) {
+    return `Sub-agent exited with code ${result.exitCode}`
+  }
+  return 'Sub-agent exited without output'
 }
 
 /**
