@@ -116,10 +116,15 @@ export function herdrAgentStart(options: {
  * Liveness probe: `pane get <id>`. True when the pane still exists. Errors
  * (herdr unreachable) fail OPEN — the caller must not misclassify a live
  * child as crashed just because a probe failed.
+ *
+ * AIDEV-NOTE (PMR-YFRB): the default timeoutMs bounds a hung `herdr` CLI.
+ * An execFileSync timeout throw fails OPEN by design — polarity is
+ * unchanged (probe errors are treated alive); the stall watchdog is the
+ * independent backstop for a child that is genuinely gone.
  */
-export function herdrPaneAlive(paneId: string): boolean {
+export function herdrPaneAlive(paneId: string, timeoutMs = 10_000): boolean {
   try {
-    runHerdr(['pane', 'get', paneId])
+    runHerdr(['pane', 'get', paneId], timeoutMs)
     return true
   } catch (err) {
     if (err instanceof HerdrError && err.exitCode === 1) return false

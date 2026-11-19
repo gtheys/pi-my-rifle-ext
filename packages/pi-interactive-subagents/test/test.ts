@@ -4187,10 +4187,12 @@ describe('rollback bookkeeping (PMR-TABUX)', () => {
 })
 
 describe('pollForExit check order (PMR-TABUX)', () => {
-  it('observes .exit first, .ask before the liveness probe; scrape/.code gone', () => {
+  it('observes .exit first, .ask before the liveness probe; stall last (PMR-YFRB)', () => {
     const order = POLL_CHECK_ORDER
     assert.ok(order.indexOf('exit') < order.indexOf('ask'))
     assert.ok(order.indexOf('ask') < order.indexOf('liveness'))
+    assert.ok(order.indexOf('liveness') < order.indexOf('stall'))
+    assert.equal(order[order.length - 1], 'stall')
     const names = order as readonly string[]
     assert.equal(names.includes('screen'), false)
     assert.equal(names.includes('code'), false)
@@ -4255,6 +4257,89 @@ describe('pollForExit crash inference (PMR-TABUX)', () => {
     // No error thrown for the probe failure; abort to end the poll.
     setTimeout(() => controller.abort(), 50)
     await assert.rejects(p, /Aborted/)
+  })
+
+  // AIDEV-NOTE (PMR-YFRB): checkStall precedence — the watchdog hook is the
+  // LAST check of the tick, so verified exits, the blocked-`.ask` carve-out,
+  // and definitive crash inference always win over a stall escalation.
+  const stalledResult = {
+    reason: 'error',
+    exitCode: 1,
+    errorMessage: 'Subagent turn stalled: no activity for too long.',
+  } as const
+
+  it('checkStall non-null result resolves the poll (stall fires)', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const result = await pollForExit(
+      'w1:p1',
+      AbortSignal.timeout(1000),
+      opts({ checkStall: () => ({ ...stalledResult }) }),
+    )
+    assert.equal(result.reason, 'error')
+    assert.match(result.errorMessage ?? '', /turn stalled/)
+  })
+
+  it('.exit sidecar beats a would-fire checkStall', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const dir = mkdtempSync(join(tmpdir(), 'poll-exit-'))
+    const sessionFile = join(dir, 's.jsonl')
+    writeFileSync(
+      `${sessionFile}.exit`,
+      JSON.stringify({ type: 'done' }),
+      'utf8',
+    )
+    const result = await pollForExit(
+      'w1:p1',
+      AbortSignal.timeout(1000),
+      opts({ sessionFile, checkStall: () => ({ ...stalledResult }) }),
+    )
+    assert.equal(result.reason, 'done')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('.ask present + would-fire checkStall keeps polling (blocked carve-out wins)', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const dir = mkdtempSync(join(tmpdir(), 'poll-ask-'))
+    const sessionFile = join(dir, 's.jsonl')
+    writeFileSync(`${sessionFile}.ask`, JSON.stringify({ askId: 'a1' }), 'utf8')
+    const controller = new AbortController()
+    let stallCalls = 0
+    const p = pollForExit(
+      'w1:p1',
+      controller.signal,
+      opts({
+        sessionFile,
+        checkStall: () => {
+          stallCalls++
+          return { ...stalledResult }
+        },
+      }),
+    )
+    // Give the loop a few ticks; stall never resolves because `.ask`
+    // short-circuits each tick before the watchdog ever runs.
+    setTimeout(() => controller.abort(), 50)
+    await assert.rejects(p, /Aborted/)
+    // The watchdog hook was never reached while the `.ask` sidecar persisted.
+    assert.equal(stallCalls, 0)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('isAlive false + would-fire checkStall: crash-inference message wins', async () => {
+    const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
+    const result = await pollForExit(
+      'w1:pGONE',
+      AbortSignal.timeout(1000),
+      opts({
+        isAlive: () => false,
+        checkStall: () => ({ ...stalledResult }),
+      }),
+    )
+    assert.equal(result.reason, 'error')
+    assert.equal(result.exitCode, 1)
+    assert.match(
+      result.errorMessage ?? '',
+      /disappeared without an exit sidecar/,
+    )
   })
 })
 

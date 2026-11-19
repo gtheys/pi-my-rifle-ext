@@ -197,13 +197,27 @@ export const __pollForExitTest__ = { interpretExitSidecar }
  * herdr liveness: pane definitively gone + no `.exit` ⇒ crashed, fail-closed
  * (surfaced as an error result, never guessed success). Probe errors fail OPEN
  * (treated alive) so a herdr hiccup can't kill a live watcher.
+ *
+ * `stall` is last by design (PMR-YFRB): a verified `.exit`/sentinel and
+ * definitive crash inference always win over a would-be stall escalation —
+ * we never report "turn stalled" for a child that demonstrably exited or
+ * crashed, and the blocked-`.ask` carve-out (PMR-WXG0) likewise outranks
+ * the watchdog.
  */
-export type PollCheckPhase = 'exit' | 'ask' | 'liveness'
+export type PollCheckPhase = 'exit' | 'ask' | 'liveness' | 'stall'
 export const POLL_CHECK_ORDER: readonly PollCheckPhase[] = [
   'exit',
   'ask',
   'liveness',
+  'stall',
 ]
+
+/**
+ * Timeout bound for the default herdr liveness probe (PMR-YFRB): a hung
+ * `herdr pane get` must not block the poll tick indefinitely; execFileSync
+ * kills it after this budget and the probe fails OPEN (treated alive).
+ */
+export const LIVENESS_PROBE_TIMEOUT_MS = 10_000
 
 /** Wait one poll interval; rejects on abort. */
 function waitPollInterval(signal: AbortSignal, ms: number): Promise<void> {
@@ -258,10 +272,22 @@ export async function pollForExit(
     onVerifiedExit?: () => void
     /** Liveness probe; defaults to herdr pane liveness. Injectable for tests. */
     isAlive?: (paneId: string) => boolean
+    /**
+     * Stall watchdog hook (PMR-YFRB), checked each tick AFTER onTick and
+     * BEFORE the wait — and after `.ask` and liveness, so verified exits,
+     * definitive crash inference, and the blocked carve-out always win.
+     * Return a PollResult to resolve the poll with it; return null to keep
+     * polling.
+     */
+    checkStall?: () => PollResult | null
   },
 ): Promise<PollResult> {
   const start = Date.now()
-  const isAlive = options.isAlive ?? herdrPaneAlive
+  // Default probe bounded by LIVENESS_PROBE_TIMEOUT_MS so a hung herdr CLI
+  // fails OPEN promptly instead of blocking the tick loop (PMR-YFRB).
+  const isAlive =
+    options.isAlive ??
+    ((paneId: string) => herdrPaneAlive(paneId, LIVENESS_PROBE_TIMEOUT_MS))
 
   for (;;) {
     if (signal.aborted) {
@@ -298,7 +324,11 @@ export async function pollForExit(
           await waitPollInterval(signal, options.interval)
           continue
         }
-      } catch {}
+      } catch (err) {
+        // Abort must propagate — swallowing it here would let the loop fall
+        // through to the stall watchdog and resolve on a blocked child.
+        if (signal.aborted) throw err
+      }
     }
 
     // Crash inference (PMR-TABUX): pane gone + no `.exit` ⇒ crashed or killed.
@@ -322,6 +352,13 @@ export async function pollForExit(
 
     const elapsed = Math.floor((Date.now() - start) / 1000)
     options.onTick?.(elapsed)
+
+    // Stall watchdog (PMR-YFRB): last check of the tick. A non-null verdict
+    // resolves the poll; verified exits and crash inference above outrank it.
+    const stall = options.checkStall?.()
+    if (stall) {
+      return stall
+    }
 
     await waitPollInterval(signal, options.interval)
   }

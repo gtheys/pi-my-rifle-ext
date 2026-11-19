@@ -71,6 +71,41 @@ describe('mock-herdr shim', () => {
     assert.equal(herdrPaneAlive('w99:t99:p99'), false)
   })
 
+  // AIDEV-NOTE (PMR-YFRB): bounded liveness probe. A hanging `pane get` must
+  // fail OPEN within the timeout budget instead of blocking indefinitely —
+  // the stall watchdog is the independent backstop for a genuinely dead
+  // child; probe timeouts are deliberately not treated as death.
+  it('hanging pane get fails OPEN within the timeout (PMR-YFRB)', () => {
+    const created = JSON.parse(
+      mock.run([
+        'tab',
+        'create',
+        '--workspace',
+        'w1',
+        '--cwd',
+        '/tmp',
+        '--label',
+        'hang-tab',
+        '--no-focus',
+      ]),
+    ) as { result: { root_pane: { pane_id: string } } }
+    const paneId = created.result.root_pane.pane_id
+
+    process.env.HERDR_MOCK_HANG_PANE_GET_MS = '10_000'
+    const started = Date.now()
+    let alive = false
+    try {
+      // timeoutMs well below the shim's hang budget: execFileSync must kill
+      // the shim, herdrPaneAlive catches the timeout and fails open.
+      alive = herdrPaneAlive(paneId, 500)
+    } finally {
+      delete process.env.HERDR_MOCK_HANG_PANE_GET_MS
+    }
+    const elapsed = Date.now() - started
+    assert.equal(alive, true)
+    assert.ok(elapsed < 5000, `probe returned in ${elapsed}ms, not unbounded`)
+  })
+
   it('pane run appends output to the pane log and pane read returns it', () => {
     const created = JSON.parse(
       mock.run([

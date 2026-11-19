@@ -214,6 +214,17 @@ if (verb0 === 'pane' && verb1 === 'list') {
   out({ panes: Object.values(state.panes) })
   process.exit(0)
 }
+// AIDEV-NOTE (PMR-YFRB): hang mode for liveness-probe timeout tests. When
+// HERDR_MOCK_HANG_PANE_GET_MS is set, 'pane get' busy-waits that long before
+// answering, so runHerdr's execFileSync timeout kills the shim — proving the
+// bounded probe fails open promptly.
+const hangMs = parseInt(process.env.HERDR_MOCK_HANG_PANE_GET_MS ?? '', 10)
+if (verb0 === 'pane' && verb1 === 'get' && hangMs > 0) {
+  const end = Date.now() + hangMs
+  while (Date.now() < end) {}
+  out({ pane: { pane_id: positional[2] } })
+  process.exit(0)
+}
 if (verb0 === 'pane' && verb1 === 'get') {
   const paneId = positional[2]
   if (!state.panes[paneId]) {
