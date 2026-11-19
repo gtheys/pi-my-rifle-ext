@@ -217,8 +217,9 @@ test('short headSha is refused without journaling', async () => {
 test('wrong-type fact on the phase branch is refused without journaling', async () => {
   const { writer, captured } = memoryWriter()
   const execute = captureTool({ writer })
-  // planPath on an implement submission is a phase/fact mismatch caught by
-  // buildStepOutputEvent's runtime cross-check.
+  // command must be a string on the implement branch; this wrong-typed fact
+  // is caught by buildStepOutputEvent's validateFactTypes runtime check,
+  // NOT by the TypeBox schema (unions allow additional properties).
   const mismatch = await execute('t2', {
     ref: 'PMR-TEST6',
     step: 'wrong-fact-type',
@@ -230,6 +231,41 @@ test('wrong-type fact on the phase branch is refused without journaling', async 
   })
   assert.equal(mismatch.isError, true)
   assert.match(mismatch.content[0].text, /Invalid implement fact/)
+  assert.equal(captured.length, 0)
+})
+
+test('wrong-typed foreign-phase fact is refused without journaling', async () => {
+  const { writer, captured } = memoryWriter()
+  const execute = captureTool({ writer })
+  // TypeBox unions allow additional properties, so a wrong-typed fact on a
+  // foreign phase branch reaches buildStepOutputEvent — which must reject it
+  // before anything is journaled.
+  const result = await execute('t1', {
+    ref: 'PMR-TEST6A',
+    step: 'foreign-wrong-type',
+    output: { phase: 'plan', command: 42 as unknown as string },
+  })
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /Invalid plan fact "command"/)
+  assert.match(result.content[0].text, /belongs to the implement phase/)
+  assert.equal(result.details?.journaled, false)
+  assert.equal(captured.length, 0)
+})
+
+test('correctly-typed foreign-phase fact is refused without journaling', async () => {
+  const { writer, captured } = memoryWriter()
+  const execute = captureTool({ writer })
+  // Even a correctly-typed fact from another phase is cross-phase evidence
+  // and must be rejected, not silently journaled.
+  const result = await execute('t1', {
+    ref: 'PMR-TEST6B',
+    step: 'foreign-typed',
+    output: { phase: 'implement', planPath: '/plan.md' },
+  })
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /Invalid implement fact "planPath"/)
+  assert.match(result.content[0].text, /belongs to the plan phase/)
+  assert.equal(result.details?.journaled, false)
   assert.equal(captured.length, 0)
 })
 

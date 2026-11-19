@@ -107,7 +107,10 @@ export interface StepOutputEventPayload {
  * StepOutputSchema remains the authoritative tool-boundary contract (TypeBox
  * validates the `output` param per phase in tools/flow-submit.ts), and
  * validateFactTypes below is the runtime cross-check of phase/fact
- * consistency. Not derived from the schema union: intersecting optional
+ * consistency, including cross-phase rejection: any fact key from a foreign
+ * phase branch (even correctly typed) is refused, because TypeBox unions
+ * allow additional properties and would otherwise let a spread journal
+ * wrong-phase evidence. Not derived from the schema union: intersecting optional
  * props from different union branches resolves them to never, which would
  * make every facts-carrying caller untypeable without casts.
  */
@@ -141,6 +144,59 @@ function buildTypeMismatchReason(
   expected: string,
 ): string {
   return `Invalid ${phase} fact "${field}": expected ${expected}.`
+}
+
+const FACT_KEYS_BY_PHASE: Record<StepOutputFacts['phase'], string[]> = {
+  plan: ['planPath', 'subtaskRefs'],
+  implement: ['command', 'passed', 'headSha'],
+  validate: ['prNumber', 'prUrl', 'gateTargetIds'],
+  feedback: ['prUrl', 'prMerged'],
+}
+
+function buildCrossPhaseReason(
+  field: string,
+  phase: StepOutputFacts['phase'],
+): string {
+  const phases = FACT_KEY_PHASES[field].join(' or ')
+  let plural = ''
+  if (FACT_KEY_PHASES[field].length > 1) {
+    plural = 's'
+  }
+  return `Invalid ${phase} fact "${field}": not a ${phase} fact — ${field} belongs to the ${phases} phase${plural}.`
+}
+
+// AIDEV-NOTE (PMR-C998): reverse index of fact key -> owning phases. prUrl is
+// legitimately shared by validate and feedback, so values are arrays and a key
+// is only foreign when the input's phase is absent from the list.
+const FACT_KEY_PHASES: Record<string, StepOutputFacts['phase'][]> = {}
+for (const phase of Object.keys(FACT_KEYS_BY_PHASE) as Array<
+  StepOutputFacts['phase']
+>) {
+  for (const key of FACT_KEYS_BY_PHASE[phase]) {
+    const owners = FACT_KEY_PHASES[key]
+    if (owners === undefined) {
+      FACT_KEY_PHASES[key] = [phase]
+    } else {
+      owners.push(phase)
+    }
+  }
+}
+
+/**
+ * Rejects fact keys that belong only to phases other than the input's phase.
+ * Returns null when no foreign keys are present.
+ */
+function validateCrossPhaseFacts(input: StepOutputInput): string | null {
+  for (const field of Object.keys(FACT_KEY_PHASES)) {
+    if (FACT_KEY_PHASES[field].includes(input.phase)) {
+      continue
+    }
+    const value = input[field as keyof StepOutputFactFields]
+    if (value !== undefined) {
+      return buildCrossPhaseReason(field, input.phase)
+    }
+  }
+  return null
 }
 
 export function buildStepOutputEvent(input: StepOutputInput): StepOutputResult {
@@ -212,6 +268,10 @@ export function buildStepOutputEvent(input: StepOutputInput): StepOutputResult {
  * a caller skips that layer. Returns null when everything checks out.
  */
 function validateFactTypes(input: StepOutputInput): string | null {
+  const crossPhase = validateCrossPhaseFacts(input)
+  if (crossPhase !== null) {
+    return crossPhase
+  }
   if (input.phase === 'plan') {
     if (input.planPath !== undefined && typeof input.planPath !== 'string') {
       return buildTypeMismatchReason('planPath', input.phase, 'a string path')

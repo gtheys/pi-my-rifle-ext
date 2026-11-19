@@ -221,7 +221,12 @@ export function registerFlowSubmitTool(
       // reason carries re-run guidance; nothing else ever returns isError.
       // Phase flows from the output union's discriminator — there is no
       // top-level phase param.
-      // AIDEV-NOTE: build the input explicitly per phase — the
+      // AIDEV-NOTE (PMR-C998): the input is built by spreading the output
+      // union — phase rides the discriminator, and TypeBox unions allow
+      // additional properties, so a wrong-typed or cross-phase fact passes
+      // the tool-layer schema. buildStepOutputEvent's validator rejects both
+      // (fact type checks + cross-phase rejection in flow/step-output.ts)
+      // before anything is journaled. Do not restructure the spread.
       const input: StepOutputInput = {
         ...params.output,
         ref: params.ref,
