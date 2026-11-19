@@ -52,7 +52,7 @@ export const DIFF_LINES_PREFIX = 'diff_lines_read:'
  * AIDEV-NOTE: PMR-Q23K — count lines with `wc -l` semantics on purpose: a
  * trailing newline TERMINATES the last line, it does not open a phantom
  * one. The old split('\n').length counted one line too many on every git
- * diff (they all end in a newline), so the gate demanded a 1143th line
+ * diff (they all end in a newline), so the gate demanded a 1143rd line
  * that did not exist and no verdict could ever pass. A final unterminated
  * segment still counts as a line.
  * AIDEV-NOTE: PMR-Z2RA — this wc -l count is deliberately NOT what the
