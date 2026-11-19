@@ -434,19 +434,30 @@ function extractListRefs(parsed: unknown[]): string[] {
   return refs
 }
 
-// AIDEV-NOTE (PMR-384R fix round, review blocker 1): pure classifier for
+// AIDEV-NOTE (PMR-384R fix round, review blocker 1): classifier for
 // `aven list --open` output. aven exits 0 on errors — never trust exit
 // codes, classify by text via avenErrorText (the listPlansAtReviewRefs
 // guard pattern) — so anything unclassifiable (error text on stdout or
 // stderr, non-JSON, non-array schema drift) returns null: ISC-13, gates
 // suppress NOTHING when status cannot be verified. [] is reserved for a
-// successfully parsed empty array (a real zero-open answer). Exported for
-// tests; listOpenTicketRefs is the production consumer.
+// successfully parsed empty array (a real zero-open answer). PMR-710A:
+// every null path records its reason via recordAvenFailure, so
+// lastAvenResolutionFailure() can explain why gates were kept after a
+// silent aven-side failure (the spawn catch alone misses classify-level
+// anomalies). Exported for tests; listOpenTicketRefs is the production
+// consumer.
 export function classifyOpenTicketRefs(
   stdout: string,
   stderr: string,
 ): string[] | null {
-  if (avenErrorText(stdout, stderr) !== null) return null
+  const errorText = avenErrorText(stdout, stderr)
+  if (errorText !== null) {
+    // Bound the recorded reason: aven output can be arbitrarily large.
+    recordAvenFailure(
+      `aven list output contains error text: ${errorText.trim().split('\n')[0]?.slice(0, 200) ?? '(empty)'}`,
+    )
+    return null
+  }
   // aven's own CLI errors print lowercase `error: …` on stderr (observed:
   // `error: unexpected argument … found`); avenErrorText's regex only
   // knows `Error:`/`error `. An error line on stderr means the run's
@@ -457,14 +468,27 @@ export function classifyOpenTicketRefs(
   const stderrErrorLine = stderr
     .split('\n')
     .find((line) => /^error\b/.test(line.trim()))
-  if (stderrErrorLine !== undefined) return null
+  if (stderrErrorLine !== undefined) {
+    recordAvenFailure(
+      `aven list stderr reported an error: ${stderrErrorLine.trim().slice(0, 200)}`,
+    )
+    return null
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(stdout)
   } catch {
+    recordAvenFailure(
+      'aven list stdout was not valid JSON — ticket-status universe unverifiable',
+    )
     return null
   }
-  if (!Array.isArray(parsed)) return null
+  if (!Array.isArray(parsed)) {
+    recordAvenFailure(
+      'aven list stdout JSON is not an array (schema drift) — ticket-status universe unverifiable',
+    )
+    return null
+  }
   return extractListRefs(parsed)
 }
 
