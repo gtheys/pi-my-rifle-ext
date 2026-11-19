@@ -414,7 +414,9 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   (`checkActionsComplete`, via `statusCheckRollup`, ignoring `SKIPPED` checks) using a
   plain `setInterval` loop — replaced an earlier detached-bash+sentinel-file+`fs.watch`
   approach (`202b3de7`) that was flaky. When checks complete, it triggers `/pr-quality`
-  automatically. Cleans up its interval on `session_shutdown`.
+  automatically. Cleans up its interval on `session_shutdown`, and since PMR-4B5A it
+  also stops polling on any poll error (clear interval + one error notification —
+  no retry/backoff).
 
 ### worktree/ (absorbed from pi-worktree)
 

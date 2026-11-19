@@ -113,8 +113,11 @@ Polls `gh pr view --json statusCheckRollup` on a `setInterval` (not a blocking
 `gh pr checks --watch`, replaced in `a30502f6`/`a3fcdae7`/`202b3de7` after a flaky
 detached-bash+sentinel-file+`fs.watch` approach) — treats `SKIPPED` checks as
 non-blocking. When all relevant checks complete, it automatically triggers
-`/pr-quality`. Interval is cleaned up on `session_shutdown` (`index.ts:499`) so it
-doesn't leak across sessions.
+`/pr-quality`. Interval is cleaned up on `session_shutdown`
+(`pr-quality/index.ts`), so it doesn't leak across sessions. Since PMR-4B5A, the
+watcher also stops fully on ANY poll error: it clears the interval, removes the
+poller, and sends one error notification naming what failed — no retry, no
+backoff; the user re-runs `/pr-watch` to resume watching.
 
 ## PIV integration: review gates validate
 

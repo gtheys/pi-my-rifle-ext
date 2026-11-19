@@ -248,3 +248,95 @@ test('gatherPrQualityData classifies CI-pending distinctly from hard failures', 
     rmSync(shimDir, { recursive: true, force: true })
   }
 })
+
+// Failing `gh` shim: `gh pr view` exits non-zero with a recognizable stderr.
+function makeFailingGhShim(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'gh-fail-shim-'))
+  writeFileSync(
+    path.join(dir, 'gh'),
+    '#!/bin/sh\necho "token expired" >&2\nexit 1\n',
+    { mode: 0o755 },
+  )
+  return dir
+}
+
+test('/pr-watch stops polling and notifies on poll error (PMR-4B5A)', async () => {
+  const dir = makeProjectDir()
+  const shimDir = makeFailingGhShim()
+  const prevPath = process.env.PATH
+  process.env.PATH = `${shimDir}:${prevPath}`
+
+  const commands: Record<
+    string,
+    (args: string, ctx: unknown) => Promise<void>
+  > = {}
+  const notifications: { text: string; level: string }[] = []
+  const sentMessages: string[] = []
+  let intervalCreated = false
+  let intervalCleared = false
+
+  const mockPi = {
+    registerCommand: (
+      name: string,
+      options: { handler: (args: string, ctx: unknown) => Promise<void> },
+    ) => {
+      commands[name] = options.handler
+    },
+    registerTool: () => {},
+    on: () => () => {},
+    sendUserMessage: async (msg: string) => {
+      sentMessages.push(msg)
+    },
+  } as unknown as ExtensionAPI
+  prQuality(mockPi)
+
+  // Capture interval creation/clearing so we can assert full stop.
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  const fakeTimer = { unref: () => {} } as unknown as ReturnType<
+    typeof setInterval
+  >
+  globalThis.setInterval = (() => {
+    intervalCreated = true
+    return fakeTimer
+  }) as typeof setInterval
+  globalThis.clearInterval = ((timer: unknown) => {
+    if (timer === fakeTimer) intervalCleared = true
+  }) as typeof clearInterval
+
+  const ctx = {
+    cwd: dir,
+    ui: {
+      notify: (text: string, level: string) => {
+        notifications.push({ text, level })
+      },
+    },
+  }
+
+  try {
+    await commands['pr-watch']('42', ctx)
+    // The immediate poll() runs asynchronously — wait until the error
+    // notification lands (the "Watching..." info notify fires first).
+    for (
+      let i = 0;
+      i < 50 && !notifications.some((n) => n.level === 'error');
+      i++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assert.equal(intervalCreated, true)
+    assert.equal(intervalCleared, true)
+    assert.deepEqual(sentMessages, [])
+    const errNotifications = notifications.filter((n) => n.level === 'error')
+    assert.equal(errNotifications.length, 1)
+    assert.match(errNotifications[0].text, /PR #42/)
+    assert.match(errNotifications[0].text, /polling stopped/)
+    assert.match(errNotifications[0].text, /token expired/)
+  } finally {
+    globalThis.setInterval = realSetInterval
+    globalThis.clearInterval = realClearInterval
+    process.env.PATH = prevPath
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(shimDir, { recursive: true, force: true })
+  }
+})

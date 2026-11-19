@@ -691,6 +691,8 @@ export async function gatherPrQualityData(
 // Uses setInterval + checkActionsComplete (same gh API call as /pr-quality guard)
 // instead of a detached bash process + sentinel files, which had PATH and
 // fs.watch reliability issues.
+// Since PMR-4B5A the poller also fully stops (interval cleared, poller
+// removed, one error notification) on ANY poll error — it does not retry.
 const activePollers = new Map<string, ReturnType<typeof setInterval>>()
 
 export default function prQuality(pi: ExtensionAPI) {
@@ -745,8 +747,17 @@ export default function prQuality(pi: ExtensionAPI) {
             }
             // else still pending — keep polling
           }
-        } catch {
-          // transient error — keep polling
+        } catch (err) {
+          // PMR-4B5A: stop polling on ANY error — notify once and wait for
+          // the human to re-run /pr-watch. No backoff, no retry by design.
+          clearInterval(activePollers.get(prNumber))
+          activePollers.delete(prNumber)
+          ctx.ui.notify(
+            `PR #${prNumber} ✖ watch error — polling stopped: ${
+              (err as Error).message
+            }`,
+            'error',
+          )
         }
       }
 
