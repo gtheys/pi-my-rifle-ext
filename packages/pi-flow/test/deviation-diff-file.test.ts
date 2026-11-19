@@ -137,6 +137,14 @@ test('gate contract: anti-skim holds under either-convention acceptance (PMR-Z2R
     expected: 3294,
     got: 100,
   })
+  // Acceptance set is exactly {expected, expected+1} (PMR-6AE0): an echo
+  // ABOVE the split-convention total is rejected — a reviewer cannot claim
+  // to have read more lines than the diff can produce.
+  assert.deepEqual(checkDiffLinesRead(diff, 'diff_lines_read: 3296'), {
+    ok: false,
+    expected: 3294,
+    got: 3296,
+  })
   // No trailing newline: conventions agree, so expected+1 must NOT pass —
   // the final segment is a real line, not a phantom one.
   assert.deepEqual(checkDiffLinesRead('a\nb\nc', 'diff_lines_read: 4'), {
