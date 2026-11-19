@@ -20,7 +20,12 @@
 // because a prior human-gated approval succeeded, so adoption short-circuits
 // even if the spec-answer metadata was later cleared. Missing/corrupt
 // receipts fall forward to the gate + fresh edit exactly as before; journal
-// failures never block an approval.
+// failures never block an approval. PMR-FA3D — the dedup is FLOW-RUN-ONLY:
+// recordRunEvent's projection gate drops receipt events for refs without run
+// state, so outside a flow run (standalone /spec-review usage) the receipt is
+// never journaled and every duplicate call re-checks the human gate — a
+// deliberate fail-safe degradation (worst case: the human answers approve
+// again), pinned by a test in test/run-state.test.ts.
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -69,6 +74,7 @@ export function registerSpecApproveTool(
     promptGuidelines: [
       'Only call spec_approve when the user explicitly said "approve <REF>" — never without that explicit word, and only for the ref they named — and only after the human ran `/flow answer <ref> approve` (the tool refuses without that receipt; tickets carrying the `oneshot` label skip this receipt).',
       'After spec_approve returns ok, call the spec_publish tool with that ref (never the /spec-publish slash command — agents cannot run slash commands). On a tool error, report the reason to the user — do not retry with raw aven commands. If spec_approve refuses with "no human approval receipt", tell the human to run `/flow answer <ref> approve`, then re-call spec_approve once the receipt exists.',
+      'Dedup is flow-run-only (PMR-FA3D): outside an active flow run the approval receipt is not journaled, so a repeated spec_approve re-checks the human gate instead of adopting a stored receipt. That is expected fail-safe behavior, not an error — the human gate simply applies again.',
     ],
     parameters: Type.Object({
       ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),

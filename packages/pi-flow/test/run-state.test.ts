@@ -457,6 +457,36 @@ test('createReceiptJournal: record appends journal line and mutates projection',
   assert.equal(projection.receipts?.length, 1)
 })
 
+test('createReceiptJournal: receipts for refs without run state never dedupe (PMR-FA3D degradation, fail-safe)', async () => {
+  const files: MemFiles = new Map()
+  const receipts = createReceiptJournal('/agent', fakeIo(files))
+  // No run-start exists for the ref: recordRunEvent's projection gate drops
+  // the command-receipt event (applyEvent returns state unchanged for a ref
+  // with no run state), so NOTHING is journaled and find stays null. This is
+  // the deliberate spec_approve degradation outside flow runs (PMR-FA3D):
+  // standalone usage re-checks the human gate on every duplicate call —
+  // fail-SAFE (worst case is the human answers approve again), never
+  // fail-open. Documented on the tool surface; re-open the standalone
+  // receipt-journal idea only if the repeated gate becomes a real annoyance.
+  await receipts.record({
+    ref: 'PMR-NORUN',
+    command: 'spec_approve',
+    target: 'plan',
+  })
+  assert.equal(
+    files.get('/agent/pi-flow/runs/PMR-NORUN.journal.jsonl'),
+    undefined,
+  )
+  assert.equal(
+    await receipts.find({
+      ref: 'PMR-NORUN',
+      command: 'spec_approve',
+      target: 'plan',
+    }),
+    null,
+  )
+})
+
 test('createReceiptJournal: find returns stored receipt, null on missing journal', async () => {
   const files: MemFiles = new Map()
   const receipts = createReceiptJournal('/agent', fakeIo(files))
