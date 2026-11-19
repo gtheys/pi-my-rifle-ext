@@ -49,9 +49,19 @@ export function runHerdr(args: readonly string[], timeoutMs?: number): string {
   // {"error":{"code":"tab_not_found"...}} JSON into the parent TUI, and
   // HerdrError.stderr stayed empty. Observed 2026-10-22, 8 tab.close + 8
   // pane.get expected failures per day.
-  const opts: { encoding: BufferEncoding; timeout?: number; stdio: 'pipe' } = {
+  const opts: {
+    encoding: BufferEncoding
+    timeout?: number
+    stdio: 'pipe'
+    env: NodeJS.ProcessEnv
+  } = {
     encoding: 'utf8',
     stdio: 'pipe',
+    // AIDEV-NOTE: env must be explicit. Bun resolves bare command names from
+    // the STARTUP environ snapshot, ignoring process.env.PATH mutations, so
+    // test PATH shims never served the spawn; explicit env: process.env keeps
+    // Node semantics identical and makes PATH mutations effective.
+    env: process.env,
   }
   if (timeoutMs !== undefined) {
     opts.timeout = timeoutMs
