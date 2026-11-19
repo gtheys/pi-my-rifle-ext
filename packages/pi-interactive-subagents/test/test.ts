@@ -4657,6 +4657,55 @@ describe('stall watchdog escalation wiring (PMR-YFRB phase 3)', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('(e) widget: formatAgentRow renders stalled row for a dead-turn snapshot (PMR-YFRB)', () => {
+    const { formatAgentRow } = subagentsModule.__test__
+    const { statusKindOf, markerFor } = subagentsModule
+    const dir = mkdtempSync(join(tmpdir(), 'stall-row-'))
+    try {
+      testApi.setWatchdogThresholdsForTest(SHRUNK)
+      const now = Date.now()
+      let state = createStatusState({ source: 'pi', startTimeMs: now - 60_000 })
+      state = observeStatus(
+        state,
+        {
+          snapshot: 'present',
+          updatedAt: now - 1_000,
+          sequence: 1,
+          phase: 'active',
+          active: true,
+          activeScope: 'streaming',
+          activeSince: now - 1_000,
+          latestEvent: 'before_provider_request',
+        },
+        now,
+      )
+      const running = {
+        id: 'child-row',
+        name: 'RowWorker',
+        task: '',
+        surface: 'pane-child-row',
+        paneId: 'w1:pchild-row',
+        startTime: now - 60_000,
+        sessionFile: 'sess-1',
+        interactive: false,
+        statusState: state,
+      } as any
+      assert.equal(statusKindOf(running, now), 'stalled')
+      // The detail label lives at classification level: formatAgentRow renders
+      // the kind ('stalled'), not statusLabel, so assert 'dead turn' at its
+      // actual source (the row-level label rendering is covered by the
+      // formatStatusLine/renderSupervisionRows tests above).
+      const snapshot = classifyStatus(running.statusState, now, SHRUNK)
+      assert.equal(snapshot.statusLabel, 'dead turn')
+      const row = formatAgentRow(running, now)
+      assert.match(row.line, /^\? RowWorker · stalled /)
+      assert.equal(markerFor('stalled'), '?')
+    } finally {
+      testApi.setWatchdogThresholdsForTest(undefined)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('blocked activity phase (PMR-WXG0)', () => {

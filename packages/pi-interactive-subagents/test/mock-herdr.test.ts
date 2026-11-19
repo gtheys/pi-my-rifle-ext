@@ -75,7 +75,10 @@ describe('mock-herdr shim', () => {
   // fail OPEN within the timeout budget instead of blocking indefinitely —
   // the stall watchdog is the independent backstop for a genuinely dead
   // child; probe timeouts are deliberately not treated as death.
-  it('hanging pane get fails OPEN within the timeout (PMR-YFRB)', () => {
+  // Hang budget of 10s, far above the 500ms probe timeout below: execFileSync
+  // must kill the shim at the budget, herdrPaneAlive catches the timeout and
+  // fails open.
+  it('hanging pane get is killed by the probe timeout and fails OPEN (PMR-YFRB)', () => {
     const created = JSON.parse(
       mock.run([
         'tab',
@@ -91,7 +94,7 @@ describe('mock-herdr shim', () => {
     ) as { result: { root_pane: { pane_id: string } } }
     const paneId = created.result.root_pane.pane_id
 
-    process.env.HERDR_MOCK_HANG_PANE_GET_MS = '10_000'
+    process.env.HERDR_MOCK_HANG_PANE_GET_MS = '10000'
     const started = Date.now()
     let alive = false
     try {
@@ -103,6 +106,11 @@ describe('mock-herdr shim', () => {
     }
     const elapsed = Date.now() - started
     assert.equal(alive, true)
+    // The kill must have fired at the probe budget, not earlier/below it.
+    assert.ok(
+      elapsed >= 500,
+      `probe killed at ${elapsed}ms, below the 500ms budget`,
+    )
     assert.ok(elapsed < 5000, `probe returned in ${elapsed}ms, not unbounded`)
   })
 

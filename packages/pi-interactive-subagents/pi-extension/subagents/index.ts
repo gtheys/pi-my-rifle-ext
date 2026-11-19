@@ -1954,6 +1954,9 @@ export const __test__ = {
   },
   runningSubagents,
   formatElapsed,
+  // AIDEV-NOTE (PMR-YFRB deviation fix): module-private widget row formatter,
+  // exposed test-only so tests can exercise the row seam directly.
+  formatAgentRow,
   // AIDEV-NOTE (PMR-AD0H): widget lifecycle test seam. The registration
   // state is globalThis-backed; these helpers let tests drive updateWidget
   // against a mock UI ctx and inspect/reset that state without reaching
