@@ -33,6 +33,16 @@ test('non-array JSON (schema drift) classifies as null', () => {
   assert.equal(classifyOpenTicketRefs('{"a":1}', ''), null)
 })
 
+test('indented stderr error line classifies as null (PMR-NPFR)', () => {
+  // avenErrorText trims lines but only knows Error:/error-space; the
+  // classify-level /^error\b/ check must trim too, or an indented
+  // lowercase `error: ...` line slips past when stdout is valid JSON.
+  assert.equal(classifyOpenTicketRefs('[]', '  error: indented boom'), null)
+  assert.equal(classifyOpenTicketRefs('[]', '\terror: tabbed boom'), null)
+  // A line that merely indents other text is not an error.
+  assert.deepEqual(classifyOpenTicketRefs('[]', '  warning: fine'), [])
+})
+
 test('array entries without a ref are skipped; the array itself still parses', () => {
   assert.deepEqual(classifyOpenTicketRefs('[{"x":1},"s",{"ref":"A"}]', ''), [
     'A',

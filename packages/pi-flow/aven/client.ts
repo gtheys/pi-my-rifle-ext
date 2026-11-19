@@ -451,7 +451,13 @@ export function classifyOpenTicketRefs(
   // `error: unexpected argument … found`); avenErrorText's regex only
   // knows `Error:`/`error `. An error line on stderr means the run's
   // status is unverifiable — fail closed to null, never to [] (ISC-13).
-  if (/^error\b/im.test(stderr)) return null
+  // PMR-NPFR: trim each line before the prefix test — avenErrorText trims
+  // but doesn't match `error:`, this check matches `error:` but didn't
+  // trim, so an indented line evaded both when stdout was valid JSON.
+  const stderrErrorLine = stderr
+    .split('\n')
+    .find((line) => /^error\b/.test(line.trim()))
+  if (stderrErrorLine !== undefined) return null
   let parsed: unknown
   try {
     parsed = JSON.parse(stdout)
