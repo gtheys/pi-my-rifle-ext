@@ -121,6 +121,7 @@ import prQualityExtension from './pr-quality/index.ts'
 import reviewExtension from './review/review.ts'
 import {
   createEffectJournal,
+  type FlowRunEvent,
   projectRunState,
   readRunEvents,
   runStatePath,
@@ -312,38 +313,45 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
-  // AIDEV-NOTE: PMR-HFK1 — spawn attribution journaling. The subagents
-  // extension emits spawn/resume/reattach events; while a flow run is
-  // active we journal them as `note` events so the later flow-cost rollup
-  // can reconstruct child->subtask attribution even if env stamps are lost
-  // (reassignments/takeovers included — cost follows whoever actually did
-  // the work). No active run = nothing to attribute, ignore. Best-effort:
-  // journal failures are already swallowed by the journal() wrapper.
+  // AIDEV-NOTE: PMR-HFK1 — spawn attribution journaling (PMR-C998). The
+  // subagents extension emits spawn/resume/reattach events; while a flow run
+  // is active we journal them as structured `spawn-record` events (no more
+  // note text — note-text emission is retired by PMR-C998) so the later
+  // flow-cost rollup can reconstruct child->subtask attribution even if env
+  // stamps are lost (reassignments/takeovers included — cost follows whoever
+  // actually did the work). No active run = nothing to attribute, ignore.
+  // Best-effort: journal failures are already swallowed by the journal()
+  // wrapper.
   onFlowSpawn((info) => {
     // AIDEV-NOTE: nested spawns — in a flow WORKER (scouts spawned by a plan
     // agent, ...) the loop is not running, but the worker inherited
-    // PI_FLOW_REF, so its spawns still belong to that flow. Those notes go to
-    // the journal only (recordJournalOnly); the main process routes through
+    // PI_FLOW_REF, so its spawns still belong to that flow. Those records go
+    // to the journal only (recordJournalOnly); the main process routes through
     // the mode-aware writer (journal-only while the daemon owns the
     // projection, full writer otherwise).
     const target = spawnJournalTarget(loop.activeRef(), process.env)
     if (target === null) return
     const { ref, nested } = target
-    let text = `subagent ${info.childId} ("${info.name}") ${info.kind} — attribution env stamped`
-    if (info.subtask !== undefined) {
-      text = `subagent ${info.childId} ("${info.name}") ${info.kind} for subtask ${info.subtask} — attribution env stamped`
-    }
-    // AIDEV-NOTE (PMR-EA8X): append the session path so /flow-cost can
-    // resolve child sessions from the journal alone (older notes without
-    // it fall back to the durable assignment records).
-    if (info.sessionFile !== undefined) {
-      text = `${text}, session="${info.sessionFile}"`
-    }
-    const event = {
-      kind: 'note' as const,
+    // AIDEV-NOTE: PMR-C998 — structured spawn-record instead of note text.
+    // subtask / sessionFile are carried only when present (never empty
+    // strings) so the reader can distinguish "unknown" from "known empty".
+    const event: Extract<FlowRunEvent, { kind: 'spawn-record' }> = {
+      kind: 'spawn-record',
       at: new Date().toISOString(),
       ref,
-      text,
+      childId: info.childId,
+      name: info.name,
+      spawnKind: info.kind,
+    }
+    if (info.subtask !== undefined) {
+      event.subtask = info.subtask
+    }
+    // AIDEV-NOTE (PMR-EA8X): sessionFile lets /flow-cost resolve child
+    // sessions from the journal alone (PMR-C998: now a structured field on
+    // the spawn-record instead of a note-text suffix; older notes without it
+    // still fall back to the durable assignment records).
+    if (info.sessionFile !== undefined) {
+      event.sessionFile = info.sessionFile
     }
     if (nested) {
       void journalOnly(event)
