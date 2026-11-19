@@ -8,7 +8,7 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { AnswerChoice } from './aven/client.ts'
-import { sha256Hex } from './validate/gate-target.ts'
+import { isFullSha, sha256Hex } from './validate/gate-target.ts'
 
 // AIDEV-NOTE: PMR-Z2K7 — 'research' left the flow lifecycle (PIV); old
 // journals containing research phases fail isFlowRunState and are rebuilt
@@ -1048,6 +1048,63 @@ export interface EffectDeclareInput {
   headSha?: string
 }
 
+export type EffectDeclarationResult =
+  | { ok: true; record: EffectDeclarationRecord }
+  | { ok: false; reason: string }
+
+// AIDEV-NOTE: PMR-VDVJ — THE single validation seam for effect declarations.
+// PMR-5ME4: it now lives next to the journal and createEffectJournal().declare()
+// runs it on the PRODUCTION write path (it used to be test-only in
+// flow/effect-gate.ts, which merely re-exports it now). Validates the ref
+// against the runFileName charset (it lands in the runs dir as a filename),
+// the effect against the known kinds, command and recipe as non-empty, and
+// headSha as a full 40-hex SHA (echo-compare requires exact commits). `now`
+// is injected so tests can pin the timestamp.
+export function buildEffectDeclaration(
+  input: EffectDeclareInput,
+  now: () => string = () => new Date().toISOString(),
+): EffectDeclarationResult {
+  if (runFileName(input.ref) === null) {
+    return {
+      ok: false,
+      reason: `invalid ref "${input.ref}" — must be a safe ticket id (runFileName charset)`,
+    }
+  }
+  if (!EFFECT_KINDS.includes(input.effect)) {
+    return {
+      ok: false,
+      reason: `unknown effect "${String(input.effect)}" — must be one of ${EFFECT_KINDS.join(', ')}`,
+    }
+  }
+  if (input.command.trim().length === 0) {
+    return { ok: false, reason: 'command must be a non-empty string' }
+  }
+  if (!Array.isArray(input.recipe) || input.recipe.length === 0) {
+    return { ok: false, reason: 'recipe must have at least 1 step' }
+  }
+  if (input.recipe.some((step) => step.trim().length === 0)) {
+    return { ok: false, reason: 'recipe steps must all be non-empty' }
+  }
+  if (input.headSha !== undefined && !isFullSha(input.headSha)) {
+    return {
+      ok: false,
+      reason: `headSha "${input.headSha}" must be a full 40-hex SHA`,
+    }
+  }
+  const effectId = effectDeclarationId(input)
+  return {
+    ok: true,
+    record: {
+      effect: input.effect,
+      effectId,
+      command: input.command,
+      recipe: input.recipe,
+      headSha: input.headSha,
+      at: now(),
+    },
+  }
+}
+
 /**
  * AIDEV-NOTE: PMR-VDVJ — STRICT effect journal access, the fail-closed twin
  * of the best-effort ReceiptJournal. declare() must succeed before a
@@ -1094,9 +1151,18 @@ export function createEffectJournal(
   ): Promise<
     { ok: true; effectId: string } | { ok: false; reason: string }
   > => {
+    // AIDEV-NOTE: PMR-5ME4 — validate through buildEffectDeclaration (the
+    // single seam) BEFORE any journal work: unknown effect, empty command or
+    // recipe, and a non-40-hex headSha are refused here on the production
+    // write path, with no journal line appended.
+    const built = buildEffectDeclaration(input)
+    if (!built.ok) return built
     const statePath = runStatePath(agentDir, input.ref)
     // AIDEV-NOTE: PMR-VDVJ — invalid ref must fail here: the journal-only
     // append would silently no-op and the effect would run undeclared.
+    // buildEffectDeclaration normally rejects the same inputs first; this
+    // check stays as defense-in-depth against a future runStatePath change
+    // silently re-opening that fail-open hole.
     if (statePath === null) {
       return {
         ok: false,
@@ -1117,7 +1183,7 @@ export function createEffectJournal(
         reason: `effect declaration could not be recorded in the run journal (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
       }
     }
-    const effectId = effectDeclarationId(input)
+    const effectId = built.record.effectId
     // Idempotent: an identical declaration already journaled — do not append.
     const existing = await find({
       ref: input.ref,
@@ -1129,7 +1195,7 @@ export function createEffectJournal(
     }
     const event: FlowRunEvent = {
       kind: 'effect-declaration',
-      at: new Date().toISOString(),
+      at: built.record.at,
       ref: input.ref,
       effect: input.effect,
       effectId,

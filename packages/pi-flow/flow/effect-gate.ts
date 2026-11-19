@@ -1,18 +1,13 @@
-// AIDEV-NOTE: PMR-VDVJ phase 2 — pure effect gate. buildEffectDeclaration is
-// the single validation seam for declared side-effects (the effect journal
-// itself, in run-state.ts, trusts the journal file); DEFAULT_RECIPES carries
-// the plain-language undo steps shown to the agent on declaration; MERGE_RE +
-// mergeIntercept are the merge-main twin of land-gate's landing matcher and
-// one-shot interceptor (PMR-VZEV). All pure — no fs, no git, no clock
-// (timestamp is injected via the `now` parameter for testability).
+// AIDEV-NOTE: PMR-VDVJ phase 2 — pure effect gate. The validation seam
+// (buildEffectDeclaration) lives in run-state.ts since PMR-5ME4 so the
+// journal's declare() can enforce it on the production write path without an
+// import cycle; this module re-exports it and carries DEFAULT_RECIPES (the
+// plain-language undo steps shown to the agent on declaration, ISC-4) and
+// MERGE_RE + mergeIntercept — the merge-main twin of land-gate's landing
+// matcher and one-shot interceptor (PMR-VZEV). All pure — no fs, no git, no
+// clock (timestamp is injected via the `now` parameter for testability).
 
-import type {
-  EffectDeclarationRecord,
-  EffectDeclareInput,
-  EffectKind,
-} from '../run-state.ts'
-import { EFFECT_KINDS, effectDeclarationId, runFileName } from '../run-state.ts'
-import { isFullSha } from '../validate/gate-target.ts'
+import type { EffectKind } from '../run-state.ts'
 import {
   CMD_START,
   GIT_OPTS,
@@ -86,55 +81,13 @@ export function mergeIntercept(
   return { action: 'block', reason }
 }
 
-export type EffectDeclarationResult =
-  | { ok: true; record: EffectDeclarationRecord }
-  | { ok: false; reason: string }
-
-// Validates an effect declaration input and builds the journal record. The
-// ref must pass the runFileName charset (it lands in the runs dir as a
-// filename); headSha must be a full 40-hex SHA (echo-compare requires exact
-// commits). `now` is injected so tests can pin the timestamp.
-export function buildEffectDeclaration(
-  input: EffectDeclareInput,
-  now: () => string = () => new Date().toISOString(),
-): EffectDeclarationResult {
-  if (runFileName(input.ref) === null) {
-    return {
-      ok: false,
-      reason: `invalid ref "${input.ref}" — must be a safe ticket id (runFileName charset)`,
-    }
-  }
-  if (!EFFECT_KINDS.includes(input.effect)) {
-    return {
-      ok: false,
-      reason: `unknown effect "${String(input.effect)}" — must be one of ${EFFECT_KINDS.join(', ')}`,
-    }
-  }
-  if (input.command.trim().length === 0) {
-    return { ok: false, reason: 'command must be a non-empty string' }
-  }
-  if (!Array.isArray(input.recipe) || input.recipe.length === 0) {
-    return { ok: false, reason: 'recipe must have at least 1 step' }
-  }
-  if (input.recipe.some((step) => step.trim().length === 0)) {
-    return { ok: false, reason: 'recipe steps must all be non-empty' }
-  }
-  if (input.headSha !== undefined && !isFullSha(input.headSha)) {
-    return {
-      ok: false,
-      reason: `headSha "${input.headSha}" must be a full 40-hex SHA`,
-    }
-  }
-  const effectId = effectDeclarationId(input)
-  return {
-    ok: true,
-    record: {
-      effect: input.effect,
-      effectId,
-      command: input.command,
-      recipe: input.recipe,
-      headSha: input.headSha,
-      at: now(),
-    },
-  }
-}
+// AIDEV-NOTE: PMR-5ME4 — buildEffectDeclaration moved to run-state.ts (its
+// dependencies — EFFECT_KINDS, effectDeclarationId, runFileName,
+// EffectDeclarationRecord, isFullSha — live there or alongside, and the
+// journal's declare() must run it on the production write path without an
+// import cycle). Re-exported here so the single validation seam stays
+// importable from the gate module for tests and future consumers.
+export {
+  buildEffectDeclaration,
+  type EffectDeclarationResult,
+} from '../run-state.ts'

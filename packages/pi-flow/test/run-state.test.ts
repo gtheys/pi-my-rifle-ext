@@ -7,6 +7,7 @@ import {
   applyEvent,
   createEffectJournal,
   createReceiptJournal,
+  type EffectKind,
   effectDeclarationId,
   type FlowRunEvent,
   isFlowRunState,
@@ -1193,6 +1194,70 @@ test('createEffectJournal: declare rejects invalid ref', async () => {
   })
   assert.ok(!result.ok)
   assert.equal(files.get('/agent/pi-flow/runs/bad.journal.jsonl'), undefined)
+})
+
+test('createEffectJournal: declare refuses unknown effect at the production seam (PMR-5ME4)', async () => {
+  const files: MemFiles = new Map()
+  const effects = createEffectJournal('/agent', fakeIo(files))
+  const result = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'no-such-effect' as EffectKind,
+    command: 'do a thing',
+    recipe: ['undo the thing'],
+  })
+  assert.ok(!result.ok)
+  assert.match(result.ok ? '' : result.reason, /unknown effect/)
+  assert.equal(files.get('/agent/pi-flow/runs/PMR-1.journal.jsonl'), undefined)
+})
+
+test('createEffectJournal: declare refuses empty command and recipe at the production seam (PMR-5ME4)', async () => {
+  const files: MemFiles = new Map()
+  const effects = createEffectJournal('/agent', fakeIo(files))
+  const emptyCommand = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: '   ',
+    recipe: ['revert the push'],
+  })
+  assert.ok(!emptyCommand.ok)
+  const emptyRecipe = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: [],
+  })
+  assert.ok(!emptyRecipe.ok)
+  const blankStep = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: ['revert the push', '   '],
+  })
+  assert.ok(!blankStep.ok)
+  assert.equal(files.get('/agent/pi-flow/runs/PMR-1.journal.jsonl'), undefined)
+})
+
+test('createEffectJournal: declare refuses non-40-hex headSha at the production seam (PMR-5ME4)', async () => {
+  const files: MemFiles = new Map()
+  const effects = createEffectJournal('/agent', fakeIo(files))
+  const short = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: ['revert the push'],
+    headSha: 'abc123',
+  })
+  assert.ok(!short.ok)
+  assert.match(short.ok ? '' : short.reason, /full 40-hex SHA/)
+  const notHex = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: ['revert the push'],
+    headSha: 'z'.repeat(40),
+  })
+  assert.ok(!notHex.ok)
+  assert.equal(files.get('/agent/pi-flow/runs/PMR-1.journal.jsonl'), undefined)
 })
 
 test('createEffectJournal: find returns the record with its recipe; headSha exact match', async () => {
