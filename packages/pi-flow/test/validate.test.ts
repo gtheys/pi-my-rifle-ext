@@ -364,6 +364,10 @@ or reorder any of them. Every step must succeed before the next one starts.
 6. Jira evidence comment: via acli, post a comment on DP-71 describing
    HOW the change was validated — what was deployed, which tests ran, and the
    evidence from steps 1-5.
+   Advisory: report gate evidence via the flow_submit tool (step="validate",
+   command/gateTargetIds for the checks that ran) after the gate steps
+   complete — it journals evidence only and never replaces step 6 or the
+   phase-completion label.
 
 Completion rule: the phase passes ONLY after the Jira comment from step 6 has
 landed. Track progress against the ordered gate steps

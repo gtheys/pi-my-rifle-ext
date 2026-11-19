@@ -141,6 +141,7 @@ import { registerTelemetry } from './telemetry/index.ts'
 import { registerCodeReviewTool } from './tools/code-review.ts'
 import { buildCodeReviewGatePrompt } from './tools/code-review-parse.ts'
 import { registerDeviationReviewTool } from './tools/deviation.ts'
+import { registerFlowSubmitTool } from './tools/flow-submit.ts'
 import {
   createLandingState,
   defaultSuiteRunner,
@@ -588,6 +589,9 @@ export default function (pi: ExtensionAPI) {
   // writes route journal-only while the daemon owns the projection
   // (mirrors registerPhaseCompleteTool above).
   registerSpecApproveTool(pi, undefined, writer)
+  // AIDEV-NOTE: PMR-C998 — advisory step-output journaling via flow_submit;
+  // shares the mode-aware writer so journal writes stay daemon-safe.
+  registerFlowSubmitTool(pi, { writer })
   // AIDEV-NOTE: PMR-XCA9 — plan-tools absorbed from the retired pi-planning
   // package (resolve_spec_path, resolve_feature_path, open_in_pane,
   // jira_create_branch; /review-spec lives in spec-review/commands.ts).

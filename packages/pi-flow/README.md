@@ -67,6 +67,7 @@ Agent-callable tools registered by pi-flow:
 | `flow_phase_complete` | The ONLY way to write lifecycle labels — re-checks the phase gates before exec'ing aven; direct `aven edit --label` mutations are blocked at the bash tool_call boundary. |
 | `flow_land` | Gates landing behind the `review-passed` label (+ optional `blockers_count` artifact); authorizes `git push` / `gh pr create` for the ref, which are otherwise blocked while a flow is active. Also declares the run's side effects (see [Effect contracts](#effect-contracts) below). |
 | `flow_run_attempt` | Owns the implement-phase retry budget: 3 total attempts, the 3rd failure escalates and further attempts are refused. |
+| `flow_submit` | Advisory step-output journal: reports step evidence (plan written, test run, PR/gate check, merge outcome) per phase. Never gates completion — a warned submission never blocks a phase. |
 | `spec_approve` | Only path from plan-state `review` → `approved` (pins the `plan` label, moves the ticket to todo). |
 | `resolve_spec_path` / `resolve_feature_path` | Canonical spec/plan.md path resolution for a Jira ticket or personal feature (absorbed from pi-planning). |
 | `open_in_pane` | Opens a file with nvim in a herdr pane for review (absorbed from pi-planning). Call it only after the file write returned; it polls ~1s for the file. Called from a subagent, it opens a durable `spec-review` tab instead so the pane survives subagent cleanup. |

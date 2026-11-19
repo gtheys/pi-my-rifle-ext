@@ -22,6 +22,9 @@ Hard rules for every task in this phase:
   error, and hypothesis, also recorded as an aven note) means STOP and
   escalate to the human — never silently continue past a red test or past an
   escalation.
+- Report step evidence via the flow_submit tool after each meaningful
+  boundary (plan written, test run, gate-relevant check) — advisory
+  journaling only, never a substitute for the phase-completion label.
 - Each task = implement -> run tests -> commit. A task is done only when its test run is green AND the commit landed in the worktree.
 - Follow the repo's commit discipline; use conventional commit subjects.
 - PHASE COMPLETION LABEL: when ALL work for this phase is green and committed, call the flow_phase_complete tool with ref=${ref} and phase="implement" — it applies the "active" label after re-checking the gates, and its result confirms the label landed. NEVER set the ticket status to "done" in this phase; later phases own that. Direct aven label edits on lifecycle labels are blocked.
