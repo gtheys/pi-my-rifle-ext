@@ -185,14 +185,16 @@ function main() {
   }
   renderOnce(ref, runFile, journalFile)
   // AIDEV-NOTE: PMR-ZGPY 5.2 replay mode — renders the journal projection at a
-// cursor k instead of the live run-state file. Watchers stay installed so
-// journal APPENDS grow events[]; the re-render uses the unchanged k (clamped),
-// so a user who stepped back stays put, and one sitting at the latest event
-// (k === N) follows new appends via the clamp in the render closure. The
-// run-file watch below is a PERMANENT fallback (see the fs.watch note in
-// main()) — in replay mode it simply re-renders, which is harmless because
-// replay renders purely from events[]. Presentation is routed through
-// createDebouncedRender so a burst of appends coalesces into one paint.
+// cursor k instead of the live run-state file. Tail-follow is load()-based
+// (PMR-MT39): every render re-reads the journal, advances k when it sat at
+// the previous latest event (k === previousN), and clamps k to events.length,
+// so a user who stepped back stays put and one sitting at the latest event
+// follows new appends. The display-side clamp lives in replayBodyText
+// (moved there in fix c0af77a). The run-file watch below is a PERMANENT
+// fallback (see the fs.watch note in main()) — in replay mode it simply
+// re-renders, which is harmless because replay renders purely from
+// events[]. Presentation is routed through createDebouncedRender so a burst
+// of appends coalesces into one paint.
 // AIDEV-NOTE: raw mode keeps the pane consuming stdin for its entire lifetime
 // — acceptable because pane lifecycle equals viewer lifecycle; the pane exits
 // with the pane. Non-TTY stdin (tests, CI) never enters the keyloop and never

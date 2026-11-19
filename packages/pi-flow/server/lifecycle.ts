@@ -244,11 +244,12 @@ export async function probeDaemon(
 // ensureDaemons that lose the claim must NOT spawn (or SIGTERM): they wait
 // and re-probe, exactly like the fresh-dead spawnInProgressStatus window.
 // A claim is STALE when its claimant pid is provably dead OR its age exceeds
-// SPAWN_IN_PROGRESS_MAX_AGE_MS (5s > the 2s spawn budget, so a live spawn can
-// never be stolen); stale/garbage claims are stolen atomically via a
-// temp-then-rename (exclusive temp write, then renameOver onto the lock —
-// losing the rename means someone else claimed first). The winner releases
-// the lock in ALL spawn exit paths (spawned / timeout / failed) via try/finally.
+// SPAWN_IN_PROGRESS_MAX_AGE_MS (5s); stale/garbage claims are stolen atomically
+// via a temp-then-rename (exclusive temp write, then renameOver onto the lock —
+// losing the rename means someone else claimed first). The winner releases the
+// lock on every spawn exit path EXCEPT spawn-timeout, which deliberately KEEPS
+// the claim (keepClaim, PMR-9NA0) so late writers cannot start a second
+// daemon; the 5s age bound lets a later contender reclaim it.
 interface SpawnClaim {
   pid: number
   at: number
