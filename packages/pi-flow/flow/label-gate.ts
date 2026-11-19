@@ -95,16 +95,24 @@ export function lifecycleLabelMutation(command: string): string | null {
 // smuggled behind an innocent first flag still blocks. The separator is
 // (?:=|\s+) so `--metadata  key=value` (extra whitespace) cannot evade; the
 // key is captured followed by `=` — any remainder (including embedded `=`)
-// is the value.
+// is the value. PMR-SB3H — whitespace is ALSO allowed between the key and
+// the `=` (\s*=, and \s*=\s* in the plan-state variant): aven accepts
+// `--metadata 'spec-answer =approve'` verbatim (live-verified 2026-11-19:
+// stored key spec-answer, clean value approve), which both evaded the old
+// key-then-'=' match and produced a gate-passing value.
 export function receiptMetadataMutation(command: string): string | null {
   if (!command.includes('aven')) return null
   if (!/\baven\s+(edit|add|bulk-update)\b/.test(command)) return null
   const keys = new Set<string>(['spec-answer', 'review-answer'])
-  for (const flag of command.matchAll(/--metadata(?:=|\s+)["']?([\w-]+)=/g)) {
+  for (const flag of command.matchAll(
+    /--metadata(?:=|\s+)["']?([\w-]+)\s*=/g,
+  )) {
     if (keys.has(flag[1])) return flag[1]
   }
   if (
-    /--metadata(?:=|\s+)["']?plan-state(?:=|\s+)["']?approved\b/.test(command)
+    /--metadata(?:=|\s+)["']?plan-state(?:\s*=\s*|\s+)["']?approved\b/.test(
+      command,
+    )
   ) {
     return 'plan-state=approved'
   }

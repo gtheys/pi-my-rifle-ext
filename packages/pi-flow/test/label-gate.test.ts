@@ -256,6 +256,52 @@ describe('receiptMetadataMutation', () => {
     )
   })
 
+  it('blocks space-before-equals receipt metadata (PMR-SB3H, live-verified aven syntax)', () => {
+    // aven accepts `--metadata 'spec-answer =approve'` verbatim (verified
+    // live 2026-11-19: stored key spec-answer with a CLEAN value approve;
+    // the strict list filter matches the same syntax) — a working forge
+    // that evaded the key-immediately-followed-by-'=' match.
+    assert.equal(
+      receiptMetadataMutation(
+        "aven edit PMR-1 --metadata 'spec-answer =approve'",
+      ),
+      'spec-answer',
+    )
+    assert.equal(
+      receiptMetadataMutation(
+        "aven edit PMR-1 --metadata 'spec-answer = approve'",
+      ),
+      'spec-answer',
+    )
+    assert.equal(
+      receiptMetadataMutation(
+        'aven edit PMR-1 --metadata spec-answer =approve',
+      ),
+      'spec-answer',
+    )
+    // plan-state variant with the same evasion shape.
+    assert.equal(
+      receiptMetadataMutation(
+        "aven edit PMR-1 --metadata 'plan-state = approved'",
+      ),
+      'plan-state=approved',
+    )
+    // Non-gated keys with the same shape must still pass, and plan-state
+    // values other than approved stay allowed.
+    assert.equal(
+      receiptMetadataMutation(
+        "aven edit PMR-1 --metadata 'other-key = whatever'",
+      ),
+      null,
+    )
+    assert.equal(
+      receiptMetadataMutation(
+        "aven edit PMR-1 --metadata 'plan-state = review'",
+      ),
+      null,
+    )
+  })
+
   it('blocks plan-state=approved but allows draft and review', () => {
     assert.equal(
       receiptMetadataMutation('aven edit PMR-1 --metadata plan-state=approved'),
