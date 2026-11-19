@@ -7,6 +7,10 @@
 // path is gated on a human answer receipt: readGateAnswer must return
 // 'approve' before any aven edit. The receipt is read-only here — it is
 // never consumed or cleared (single-use dedup is PMR-CD46).
+// PMR-J6TW: tickets carrying the `oneshot` label skip the receipt gate
+// entirely — the oneshot route (PMR-3HMZ) never produces a receipt by
+// design. A failed labels read is NOT a new failure mode: it falls through
+// to the legacy gate, mirroring approveSpec's own oneshot check.
 // AIDEV-NOTE: PMR-CD46 — single-use dedup realized via receipt adoption:
 // a stored {ref, command:'spec_approve', target:'plan'} receipt (recorded
 // best-effort after a prior successful approval, PMR-4S6V machinery) is
@@ -21,7 +25,7 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { readGateAnswer, specApprove } from '../aven/client.ts'
+import { readAvenLabels, readGateAnswer, specApprove } from '../aven/client.ts'
 import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
 import { toolResult } from './result.ts'
@@ -57,11 +61,11 @@ export function registerSpecApproveTool(
     name: 'spec_approve',
     label: 'spec approve',
     description:
-      'Approve a spec under review: pins it to the plan label, sets plan-state=approved, moves it to todo. This is the ONLY way to approve a spec — never run `aven edit <ref> --metadata plan-state=approved` yourself. After this returns ok, call the spec_publish tool with the same ref.',
+      'Approve a spec under review: pins it to the plan label, sets plan-state=approved, moves it to todo. This is the ONLY way to approve a spec — never run `aven edit <ref> --metadata plan-state=approved` yourself. Tickets carrying the oneshot label skip the receipt gate. After this returns ok, call the spec_publish tool with the same ref.',
     promptSnippet:
       'Approval transition for specs in plan-state=review — call instead of raw aven edits.',
     promptGuidelines: [
-      'Only call spec_approve when the user explicitly said "approve <REF>" — never without that explicit word, and only for the ref they named — and only after the human ran `/flow answer <ref> approve` (the tool refuses without that receipt).',
+      'Only call spec_approve when the user explicitly said "approve <REF>" — never without that explicit word, and only for the ref they named — and only after the human ran `/flow answer <ref> approve` (the tool refuses without that receipt; tickets carrying the `oneshot` label skip this receipt).',
       'After spec_approve returns ok, call the spec_publish tool with that ref (never the /spec-publish slash command — agents cannot run slash commands). On a tool error, report the reason to the user — do not retry with raw aven commands. If spec_approve refuses with "no human approval receipt", tell the human to run `/flow answer <ref> approve`, then re-call spec_approve once the receipt exists.',
     ],
     parameters: Type.Object({
@@ -93,22 +97,35 @@ export function registerSpecApproveTool(
       // spec-answer metadata block and an aven read failure; 'reject' and
       // any non-'approve' choice refuse too. Workspace threading matches
       // specApprove/approveSpec.
-      const answer = await readGateAnswer(params.ref, 'spec', params.workspace)
-      if (answer !== 'approve') {
-        let found: string
-        if (answer === null) {
-          found = 'none/unreadable'
-        } else {
-          found = answer
-        }
-        const text = `spec_approve refused: no human approval receipt for ${params.ref} — the human must run /flow answer ${params.ref} approve (human-only slash command; the receipt is the exact-ref-guarded aven spec-answer metadata). Found: ${found}. After the human answers, re-call spec_approve.`
-        return toolResult(
-          text,
-          { ok: false, reason: text },
-          {
-            isError: true,
-          },
+      // AIDEV-NOTE: PMR-J6TW — oneshot exemption: a ticket carrying the
+      // `oneshot` label skips this gate entirely (the oneshot route
+      // PMR-3HMZ never produces a receipt). The labels read is best-effort
+      // here: null (read failure) falls through to the legacy gate, the
+      // same omission-optimization pattern as approveSpec's oneshot check.
+      const labels = await readAvenLabels(params.ref)
+      const isOneshot = labels?.includes('oneshot') === true
+      if (!isOneshot) {
+        const answer = await readGateAnswer(
+          params.ref,
+          'spec',
+          params.workspace,
         )
+        if (answer !== 'approve') {
+          let found: string
+          if (answer === null) {
+            found = 'none/unreadable'
+          } else {
+            found = answer
+          }
+          const text = `spec_approve refused: no human approval receipt for ${params.ref} — the human must run /flow answer ${params.ref} approve (human-only slash command; the receipt is the exact-ref-guarded aven spec-answer metadata). Found: ${found}. After the human answers, re-call spec_approve.`
+          return toolResult(
+            text,
+            { ok: false, reason: text },
+            {
+              isError: true,
+            },
+          )
+        }
       }
       const result = await specApprove(params)
       if (!result.ok) {

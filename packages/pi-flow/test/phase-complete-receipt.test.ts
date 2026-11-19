@@ -9,6 +9,7 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -28,6 +29,10 @@ const EDIT_FAILS = path.join(BIN_DIR, 'edit-fails')
 // answer). READ_FAILS makes the --full read emit an Error line on stderr.
 const ANSWER_FILE = path.join(BIN_DIR, 'spec-answer')
 const READ_FAILS = path.join(BIN_DIR, 'read-fails')
+// PMR-J6TW: LABELS_READ_FAILS makes the labels read (`aven show --json`)
+// exit non-zero so readAvenLabels fails closed — the oneshot exemption must
+// NOT bypass a failed labels read.
+const LABELS_READ_FAILS = path.join(BIN_DIR, 'labels-read-fails')
 // `aven edit <ref> --label <label>` appends the label to LABEL_STATE (or
 // exits non-zero when EDIT_FAILS exists, to simulate a write failure);
 // `aven show <ref> --json` prints the ticket with the stored labels.
@@ -51,6 +56,9 @@ const SHIM = [
   '    echo "EOF"',
   '  fi',
   '  exit 0',
+  'fi',
+  `if [ "$1" = "show" ] && [ -f "${LABELS_READ_FAILS}" ]; then`,
+  '  exit 1',
   'fi',
   'if [ "$1" = "edit" ]; then',
   `  printf '%s\\n' "$4" >> "${LABEL_STATE}"`,
@@ -323,6 +331,60 @@ test('plan already path: stays receipt-free (idempotency preserved)', async () =
     const result = await execute('g5', { ref: 'PMR-TEST', phase: 'plan' })
     assert.equal(result.isError, undefined)
     assert.match(result.content[0].text, /already recorded/)
+  })
+})
+
+// AIDEV-NOTE: PMR-J6TW — oneshot exemption. Tickets carrying the `oneshot`
+// label complete the fresh plan write WITHOUT any approval receipt: the
+// oneshot route (PMR-3HMZ) never produces one by design. The labels read
+// itself stays fail-closed — a read failure refuses even for oneshots —
+// and the plan route without the label keeps the full gate.
+test('plan fresh path: oneshot label skips the receipt gate', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  writeFileSync(LABEL_STATE, 'oneshot\n')
+  rmSync(ANSWER_FILE, { force: true })
+  const receipts = memReceipts({ requireLabelWritten: true })
+  const execute = phaseCompleteExecute(receipts)
+  await withFakeAven(async () => {
+    const result = await execute('g7', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /planned/)
+    assert.match(readFileSync(LABEL_STATE, 'utf8'), /planned/)
+    assert.equal(receipts.entries.length, 1)
+  })
+})
+
+test('plan fresh path: oneshot label still refuses when the labels read fails', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  writeFileSync(LABEL_STATE, 'oneshot\n')
+  rmSync(ANSWER_FILE, { force: true })
+  writeFileSync(LABELS_READ_FAILS, 'x')
+  try {
+    const receipts = memReceipts()
+    const execute = phaseCompleteExecute(receipts)
+    await withFakeAven(async () => {
+      const result = await execute('g8', { ref: 'PMR-TEST', phase: 'plan' })
+      assert.equal(result.isError, true)
+      assert.match(result.content[0].text, /cannot read aven labels/)
+      assert.equal(receipts.entries.length, 0)
+      assert.doesNotMatch(readFileSync(LABEL_STATE, 'utf8'), /planned/)
+    })
+  } finally {
+    rmSync(LABELS_READ_FAILS, { force: true })
+  }
+})
+
+test('plan fresh path: non-oneshot labels keep the receipt gate', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  writeFileSync(LABEL_STATE, 'bug\n')
+  rmSync(ANSWER_FILE, { force: true })
+  const receipts = memReceipts()
+  const execute = phaseCompleteExecute(receipts)
+  await withFakeAven(async () => {
+    const result = await execute('g9', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /\/flow answer PMR-TEST approve/)
+    assert.doesNotMatch(readFileSync(LABEL_STATE, 'utf8'), /planned/)
   })
 })
 

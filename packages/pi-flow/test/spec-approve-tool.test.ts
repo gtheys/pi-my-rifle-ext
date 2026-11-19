@@ -22,8 +22,12 @@ const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-approve-bin-'))
 const ARGS_FILE = path.join(BIN_DIR, 'last-args.txt')
 const MODE_FILE = path.join(BIN_DIR, 'mode.txt')
 const ANSWER_FILE = path.join(BIN_DIR, 'answer.txt')
+// PMR-J6TW: labels served from a file so tests can carry the `oneshot`
+// label (the default stays empty, preserving every existing case).
+const LABELS_FILE = path.join(BIN_DIR, 'labels.json')
 writeFileSync(MODE_FILE, 'ok')
 writeFileSync(ANSWER_FILE, '')
+writeFileSync(LABELS_FILE, '[]')
 writeFileSync(
   path.join(BIN_DIR, 'aven'),
   `#!/bin/sh
@@ -50,7 +54,11 @@ if [ "$1" = "show" ]; then
       exit 0
       ;;
     *)
-      echo "{\\"ref\\":\\"$2\\",\\"labels\\":[]}" ; exit 0
+      LABELS="[]"
+      if [ -s ${LABELS_FILE} ]; then
+        LABELS="$(cat ${LABELS_FILE})"
+      fi
+      echo "{\\"ref\\":\\"$2\\",\\"labels\\":$LABELS}" ; exit 0
       ;;
   esac
 fi
@@ -343,6 +351,34 @@ test('spec_approve tool: missing receipt falls back to edit + record', async () 
       command: 'spec_approve',
       target: 'plan',
     })
+  })
+})
+
+// AIDEV-NOTE: PMR-J6TW — oneshot exemption: a ticket carrying the
+// `oneshot` label skips the receipt gate entirely (the oneshot route
+// PMR-3HMZ never produces one) and approveSpec's own oneshot handling
+// keeps the `plan` label off the edit.
+test('spec_approve tool: oneshot ticket skips the receipt gate', async () => {
+  const receipts = memReceipts()
+  const execute = specApproveExecute(receipts)
+  await withFakeAven(async () => {
+    writeFileSync(ANSWER_FILE, '')
+    writeFileSync(LABELS_FILE, '["oneshot"]')
+    try {
+      const result = await execute('t9', { ref: 'PMR-ONE1' })
+      assert.equal(result.isError, undefined)
+      assert.equal(result.details.ok, true)
+      const args = lastArgs()
+      assert.ok(args.includes('edit'))
+      assert.ok(!args.includes('--label'))
+      assert.deepEqual(receipts.entries[0], {
+        ref: 'PMR-ONE1',
+        command: 'spec_approve',
+        target: 'plan',
+      })
+    } finally {
+      writeFileSync(LABELS_FILE, '[]')
+    }
   })
 })
 
