@@ -1050,12 +1050,12 @@ function boxWidgetLines(lines: readonly string[], width: number): string[] {
   return boxed
 }
 
-// AIDEV-NOTE (PMR-AD0H): widget registration state lives on globalThis (not
-// module-level lets) so an extension /reload keeps it in sync with pi's UI.
-// pi keeps the previously registered widget component rendering across a
-// /reload; if the new module instance saw fresh `false` flags, its removal
-// path no-oped and the stale component rendered "Subagents · 0 running"
-// forever. Mirrors the RUNNING_KEY / runningSubagents pattern above.
+// AIDEV-NOTE (PMR-AD0H, reworded PMR-00MC): widget registration state lives
+// on globalThis (not module-level lets) so it survives an extension /reload
+// and keeps mirroring the RUNNING_KEY / runningSubagents pattern above.
+// Guaranteed invariant: registration state and pi's widget UI converge on
+// session_start (the reconcile) and on every empty-map update — regardless
+// of what /reload does with the previously registered component.
 const WIDGET_REGISTERED_KEY = Symbol.for('pi-subagents/widget-registered')
 const WIDGET_TUI_KEY = Symbol.for('pi-subagents/widget-tui')
 
