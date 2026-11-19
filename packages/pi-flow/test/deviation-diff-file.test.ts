@@ -101,3 +101,44 @@ test('gate contract: a verdict echoing every line passes; a skipped line fails (
     ok: true,
   })
 })
+
+test('gate contract: read-tool split-convention echo (expected+1) is accepted on newline-terminated diffs (PMR-Z2RA)', () => {
+  // PMR-ZGPY incident shape, miniaturized: a 3294-line diff ending in a
+  // newline; the reviewer's read tool numbers the phantom final segment and
+  // echoes 3295. The gate (wc-l convention) demanded 3294 and hard-failed.
+  const lines = Array.from({ length: 3294 }, (_, i) => `+line ${i + 1}`)
+  const diff = `${lines.join('\n')}\n`
+  assert.equal(countDiffLines(diff), 3294)
+  // The read tool's split-convention total: 3294 real lines + phantom 3295th.
+  assert.deepEqual(checkDiffLinesRead(diff, 'diff_lines_read: 3295'), {
+    ok: true,
+  })
+})
+
+test('gate contract: anti-skim holds under either-convention acceptance (PMR-Z2RA)', () => {
+  const lines = Array.from({ length: 3294 }, (_, i) => `+line ${i + 1}`)
+  const diff = `${lines.join('\n')}\n`
+  // wc-l convention echo still accepted (PMR-Q23K contract unchanged).
+  assert.deepEqual(checkDiffLinesRead(diff, 'diff_lines_read: 3294'), {
+    ok: true,
+  })
+  // Skipped the last line → rejected under BOTH conventions.
+  assert.deepEqual(checkDiffLinesRead(diff, 'diff_lines_read: 3293'), {
+    ok: false,
+    expected: 3294,
+    got: 3293,
+  })
+  // Arbitrary skim count → rejected.
+  assert.deepEqual(checkDiffLinesRead(diff, 'diff_lines_read: 100'), {
+    ok: false,
+    expected: 3294,
+    got: 100,
+  })
+  // No trailing newline: conventions agree, so expected+1 must NOT pass —
+  // the final segment is a real line, not a phantom one.
+  assert.deepEqual(checkDiffLinesRead('a\nb\nc', 'diff_lines_read: 4'), {
+    ok: false,
+    expected: 3,
+    got: 4,
+  })
+})

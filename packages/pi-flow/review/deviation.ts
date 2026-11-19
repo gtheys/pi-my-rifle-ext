@@ -83,6 +83,17 @@ export type DiffLinesReadCheck =
  * verdict passes only when the echoed `diff_lines_read` equals the real
  * line count of the pinned diff. Extracted from the tool executor so the
  * accept/reject contract is testable at this seam (PMR-Q23K).
+ * AIDEV-NOTE: PMR-Z2RA — readers count lines by convention, and two
+ * conventions are in circulation: wc -l (a trailing newline TERMINATES the
+ * last line, what countDiffLines reports) and split-on-newline (a trailing
+ * newline OPENS a phantom final segment, what many read tools report as the
+ * total). Every git diff ends in a newline, so a reviewer faithfully
+ * echoing its read tool's line total sends expected + 1 — that exact
+ * mismatch hard-blocked the PMR-ZGPY validate range. Accept precisely the
+ * two convention counts (and the split one ONLY for newline-terminated
+ * diffs, where the extra segment is phantom rather than real); a skipped
+ * line or an arbitrary skim count still fails, so the anti-skim guarantee
+ * is intact.
  */
 export function checkDiffLinesRead(
   diff: string,
@@ -90,10 +101,13 @@ export function checkDiffLinesRead(
 ): DiffLinesReadCheck {
   const expected = countDiffLines(diff)
   const got = extractDiffLinesRead(artifact)
-  if (got !== expected) {
-    return { ok: false, expected, got }
+  if (got === expected) {
+    return { ok: true }
   }
-  return { ok: true }
+  if (diff.endsWith('\n') && got === expected + 1) {
+    return { ok: true }
+  }
+  return { ok: false, expected, got }
 }
 
 /** Fence text with a backtick run longer than any run inside it. */
