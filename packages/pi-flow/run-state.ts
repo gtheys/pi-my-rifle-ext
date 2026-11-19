@@ -193,6 +193,26 @@ export type FlowRunEvent =
       sessionFile: string
     }
   | {
+      /**
+       * AIDEV-NOTE: PMR-C998 — journal-only spawn evidence. Carries the
+       * SpawnRecord fields needed by /flow-cost and the flow viewer to
+       * attribute child-worker cost. The field is named `spawnKind` (not
+       * `kind`) so it does not clash with the event-kind discriminant.
+       * Deliberately NO `phase` field: phase annotation stays read-time
+       * (derived from journal timestamps by the single derivation path shared
+       * by both sources), never write-time. Journal-only like 'main-session'
+       * — see isJournalOnlyEvent.
+       */
+      kind: 'spawn-record'
+      at: string
+      ref: string
+      childId: string
+      name: string
+      spawnKind: 'spawn' | 'resume' | 'reattach'
+      subtask?: string
+      sessionFile?: string
+    }
+  | {
       kind: 'note'
       at: string
       ref: string
@@ -252,6 +272,18 @@ export type FlowRunEvent =
       headSha?: string
     }
 
+/**
+ * AIDEV-NOTE: PMR-C998 — event kinds that are journaled but never projected.
+ * recordRunEvent appends these without a read-modify-write of the projection
+ * (see the shipped 'main-session' drop bug noted there). Extend this union
+ * only; isJournalOnlyEvent is the single membership check.
+ */
+type JournalOnlyKind = 'main-session' | 'spawn-record'
+
+export function isJournalOnlyEvent(event: FlowRunEvent): boolean {
+  const kinds: JournalOnlyKind[] = ['main-session', 'spawn-record']
+  return kinds.some((k) => k === event.kind)
+}
 export interface RunInputRecord {
   mode: 'work' | 'personal'
   gitRoot: string
@@ -850,12 +882,16 @@ export async function recordRunEvent(
     }
     state = projectRunState(events)
   }
-  // AIDEV-NOTE: 'main-session' is journal-only evidence for /flow-cost — it
-  // never changes the projection, so the "unchanged state = nothing to write"
-  // shortcut below would silently DROP it (that bug shipped once: no run had a
-  // main-session event, so no main-session cost was ever rolled up). Append it
-  // to the journal and leave the projection file alone.
-  if (event.kind === 'main-session') {
+  // AIDEV-NOTE: PMR-C998 — journal-only kinds append to the journal without
+  // touching the projection. 'main-session' is journal-only evidence for
+  // /flow-cost — it never changes the projection, so the "unchanged state =
+  // nothing to write" shortcut below would silently DROP it (that bug shipped
+  // once: no run had a main-session event, so no main-session cost was ever
+  // rolled up). Append it to the journal and leave the projection file alone.
+  // 'spawn-record' joined in PMR-C998 for the same reason (worker spawn
+  // evidence; the projection never models child runs). Keep this as a
+  // membership check over JournalOnlyKind — extend the union only.
+  if (isJournalOnlyEvent(event)) {
     await io.appendFile(journalPath, `${JSON.stringify(event)}\n`)
     return
   }
