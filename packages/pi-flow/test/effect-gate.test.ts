@@ -8,6 +8,7 @@ import {
   mergeBashBlock,
   mergeIntercept,
 } from '../flow/effect-gate.ts'
+import { landingIntercept } from '../flow/land-gate.ts'
 import { EFFECT_KINDS } from '../run-state.ts'
 
 describe('mergeBashBlock regex matrix', () => {
@@ -201,5 +202,79 @@ describe('effectDeclarationId determinism', () => {
     assert.equal(a.ok, true)
     assert.equal(b.ok, true)
     if (a.ok && b.ok) assert.notEqual(a.record.effectId, b.record.effectId)
+  })
+})
+
+// --- PMR-VDVJ phase 4 additions ---
+
+describe('mergeIntercept extra cases', () => {
+  const command = 'git -C /main merge --ff-only PMR-VDVJ'
+  const ref = 'PMR-VDVJ'
+  const authorized = { ref, command }
+
+  it('blocks a merge with extra flags', () => {
+    const d = mergeIntercept(`${command} --no-edit`, ref, authorized)
+    assert.equal(d.action, 'block')
+  })
+  it('never triggers on git merge-base', () => {
+    const d = mergeIntercept('git merge-base HEAD main', ref, null)
+    assert.deepEqual(d, { action: 'allow', clear: false })
+  })
+})
+
+// PMR-VZEV regression, shared state shape: a push allow clears authorized +
+// humanReviewPassed (the push one-shot) and does NOT clear mergeAuthorized;
+// a merge allow clears ONLY mergeAuthorized (authorized stays cleared).
+describe('PMR-VZEV: push and merge one-shots are independent', () => {
+  const ref = 'PMR-ABC1'
+  const mergeCommand = "git -C '/repo' merge --ff-only flow-branch"
+
+  it('a push allow clears authorized + humanReviewPassed but keeps mergeAuthorized', () => {
+    const state = {
+      authorized: ref as string | null,
+      humanReviewPassed: ref as string | null,
+      mergeAuthorized: { ref, command: mergeCommand } as {
+        ref: string
+        command: string
+      } | null,
+    }
+    const push = landingIntercept(
+      'git push origin flow-branch',
+      ref,
+      state.authorized,
+    )
+    assert.deepEqual(push, { action: 'allow', clear: true })
+    if (push.action === 'allow' && push.clear) {
+      state.authorized = null
+      state.humanReviewPassed = null
+    }
+    assert.equal(state.authorized, null)
+    assert.equal(state.humanReviewPassed, null)
+    assert.deepEqual(state.mergeAuthorized, { ref, command: mergeCommand })
+    // The merge authorization survives and still allows the exact command.
+    const merge = mergeIntercept(mergeCommand, ref, state.mergeAuthorized)
+    assert.deepEqual(merge, { action: 'allow', clear: true })
+  })
+
+  it('a merge allow clears only mergeAuthorized — authorized stays as-is', () => {
+    const state = {
+      authorized: ref as string | null,
+      humanReviewPassed: ref as string | null,
+      mergeAuthorized: { ref, command: mergeCommand } as {
+        ref: string
+        command: string
+      } | null,
+    }
+    const merge = mergeIntercept(mergeCommand, ref, state.mergeAuthorized)
+    assert.deepEqual(merge, { action: 'allow', clear: true })
+    if (merge.action === 'allow' && merge.clear) {
+      state.mergeAuthorized = null
+    }
+    assert.equal(state.mergeAuthorized, null)
+    assert.equal(state.authorized, ref)
+    assert.equal(state.humanReviewPassed, ref)
+    // One-shot: the second identical merge re-blocks.
+    const second = mergeIntercept(mergeCommand, ref, state.mergeAuthorized)
+    assert.equal(second.action, 'block')
   })
 })

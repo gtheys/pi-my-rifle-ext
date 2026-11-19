@@ -40,6 +40,10 @@ type ReadReviewAnswer = (ref: string) => Promise<'pass' | 'fail' | null>
 function landExecute(
   runSuite: SuiteRunner = greenSuite,
   readReviewAnswer: ReadReviewAnswer = async () => null,
+  resolvers?: {
+    resolveMainRepo?: () => Promise<string | null>
+    resolveLandingBranch?: () => Promise<string | null>
+  },
 ): LandExecute {
   let execute: LandExecute | undefined
   const mockPi = {
@@ -57,6 +61,8 @@ function landExecute(
     undefined,
     undefined,
     memEffects(),
+    resolvers?.resolveMainRepo ?? (async () => '/repo'),
+    resolvers?.resolveLandingBranch ?? (async () => 'flow-branch'),
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return execute
@@ -234,14 +240,23 @@ function memEffects(options?: { declareFailing?: boolean }): EffectJournal & {
   declared: EffectDeclareInput[]
 } {
   const declared: EffectDeclareInput[] = []
+  const seenEffectIds = new Set<string>()
   return {
     declared,
     async declare(input: EffectDeclareInput) {
       if (options?.declareFailing === true) {
         return { ok: false, reason: 'journal append failed' }
       }
+      // AIDEV-NOTE: PMR-VDVJ phase 4 — mirrors the real journal's
+      // effectId idempotency (run-state.ts): a re-declared identical effect
+      // is a no-op, not a duplicate journal line.
+      const effectId = effectDeclarationId(input)
+      if (seenEffectIds.has(effectId)) {
+        return { ok: true, effectId }
+      }
+      seenEffectIds.add(effectId)
       declared.push(input)
-      return { ok: true, effectId: `eff-${input.effect}` }
+      return { ok: true, effectId }
     },
     async find() {
       return null
@@ -383,6 +398,7 @@ import type {
   ReceiptJournal,
   ReceiptQuery,
 } from '../run-state.ts'
+import { effectDeclarationId } from '../run-state.ts'
 
 type LandExecuteFull = (
   toolCallId: string,
@@ -442,6 +458,8 @@ function landHarness(options?: {
   resolveHead?: () => Promise<string | null>
   landing?: ReturnType<typeof createLandingState>
   effects?: EffectJournal
+  resolveMainRepo?: () => Promise<string | null>
+  resolveLandingBranch?: () => Promise<string | null>
 }): LandHarness {
   let suiteRunCount = 0
   const countingSuite: SuiteRunner =
@@ -468,6 +486,8 @@ function landHarness(options?: {
     options?.resolveHead ?? (async () => 'aaa111'),
     undefined,
     options?.effects ?? memEffects(),
+    options?.resolveMainRepo ?? (async () => '/repo'),
+    options?.resolveLandingBranch ?? (async () => 'flow-branch'),
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return { execute, suiteRuns: () => suiteRunCount, receipts }
@@ -776,4 +796,230 @@ test('human gate: route=pr is unaffected by the merge-main gate and code_review 
     assert.match(result.content[0].text, /authorized via pr/)
     assert.equal(harness.suiteRuns(), 1)
   })
+})
+
+// ---------------------------------------------------------------------------
+// PMR-VDVJ phase 4 — merge-main exact-command contract: both success paths
+// (receipt adoption + fresh suite) resolve the main checkout / landing
+// branch, pin command = git -C '<mainRepo>' merge --ff-only <branch>,
+// declare the merge-main effect, and only then set mergeAuthorized.
+// ---------------------------------------------------------------------------
+
+const MERGE_MAIN_COMMAND = "git -C '/repo' merge --ff-only flow-branch"
+
+test('merge-main ok (adoption path) pins the exact command and sets mergeAuthorized', async () => {
+  const effects = memEffects()
+  const landing = createLandingState()
+  const receipts = memReceipts()
+  receipts.entries.push(
+    {
+      ref: 'PMR-ABC1',
+      command: 'flow_land',
+      target: 'merge-main',
+      headSha: 'aaa111',
+    },
+    {
+      ref: 'PMR-ABC1',
+      command: 'code_review',
+      target: 'PMR-ABC1',
+      headSha: 'aaa111',
+    },
+  )
+  const harness = landHarness({ landing, effects, receipts })
+  await withFakeAven(async () => {
+    const result = await harness.execute('m1', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, undefined)
+    assert.match(
+      result.content[0].text,
+      /git -C '\/repo' merge --ff-only flow-branch/,
+    )
+    assert.match(result.content[0].text, /reset --hard ORIG_HEAD/)
+    assert.match(result.content[0].text, /blocked while the flow is active/)
+    assert.deepEqual(landing.mergeAuthorized, {
+      ref: 'PMR-ABC1',
+      command: MERGE_MAIN_COMMAND,
+    })
+    assert.equal(harness.suiteRuns(), 0, 'suite NOT re-run on adoption')
+    assert.equal(effects.declared.length, 1)
+    assert.equal(effects.declared[0].effect, 'merge-main')
+  })
+})
+
+test('merge-main ok (adoption path, human marker) pins the exact command, declares, authorizes', async () => {
+  const effects = memEffects()
+  const landing = createLandingState()
+  landing.humanReviewPassed = 'PMR-ABC1'
+  const harness = landHarness({ landing, effects })
+  await withFakeAven(async () => {
+    const result = await harness.execute('m2', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /merge --ff-only/)
+    assert.deepEqual(effects.declared[0], {
+      ref: 'PMR-ABC1',
+      effect: 'merge-main',
+      command: MERGE_MAIN_COMMAND,
+      recipe: DEFAULT_RECIPES['merge-main'],
+      headSha: 'aaa111',
+    })
+    assert.deepEqual(landing.mergeAuthorized, {
+      ref: 'PMR-ABC1',
+      command: MERGE_MAIN_COMMAND,
+    })
+    // PMR-HYZA: the merge-main ok must NOT touch the push authorization.
+    assert.equal(landing.authorized, null)
+  })
+})
+
+test('merge-main ok (fresh suite path) pins the exact command and sets mergeAuthorized', async () => {
+  const effects = memEffects()
+  const landing = createLandingState()
+  const harness = landHarness({
+    landing,
+    effects,
+    resolveHead: async () => null, // no head -> no receipt adoption
+  })
+  await withFakeAven(async () => {
+    landing.humanReviewPassed = 'PMR-ABC1'
+    const result = await harness.execute('m3', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, undefined)
+    assert.equal(harness.suiteRuns(), 1)
+    assert.match(result.content[0].text, /suite ran green just now/)
+    assert.match(result.content[0].text, /merge --ff-only/)
+    assert.deepEqual(landing.mergeAuthorized, {
+      ref: 'PMR-ABC1',
+      command: MERGE_MAIN_COMMAND,
+    })
+    assert.equal(effects.declared.length, 1)
+    assert.equal(effects.declared[0].effect, 'merge-main')
+    assert.equal(landing.authorized, null)
+  })
+})
+
+test('merge-main with unresolvable main repo is refused; mergeAuthorized stays null', async () => {
+  const landing = createLandingState()
+  const harness = landHarness({
+    landing,
+    resolveMainRepo: async () => null,
+  })
+  await withFakeAven(async () => {
+    landing.humanReviewPassed = 'PMR-ABC1'
+    const result = await harness.execute('m4', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /cannot resolve the main checkout/)
+    assert.equal(landing.mergeAuthorized, null)
+  })
+})
+
+test('merge-main with unresolvable landing branch is refused; mergeAuthorized stays null', async () => {
+  const landing = createLandingState()
+  const harness = landHarness({
+    landing,
+    resolveLandingBranch: async () => null,
+  })
+  await withFakeAven(async () => {
+    landing.humanReviewPassed = 'PMR-ABC1'
+    const result = await harness.execute('m5', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /cannot resolve the landing branch/)
+    assert.equal(landing.mergeAuthorized, null)
+  })
+})
+
+test('merge-main with a failing declaration is refused; mergeAuthorized stays null', async () => {
+  const effects = memEffects({ declareFailing: true })
+  const landing = createLandingState()
+  const harness = landHarness({ landing, effects })
+  await withFakeAven(async () => {
+    landing.humanReviewPassed = 'PMR-ABC1'
+    const result = await harness.execute('m6', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /NOT authorized/)
+    assert.equal(landing.mergeAuthorized, null)
+  })
+})
+
+test('adoption path re-declares idempotently — no duplicate journal line', async () => {
+  const effects = memEffects()
+  const landing = createLandingState()
+  const harness = landHarness({ landing, effects })
+  await withFakeAven(async () => {
+    landing.humanReviewPassed = 'PMR-ABC1'
+    const first = await harness.execute('m7', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(first.isError, undefined)
+    assert.equal(effects.declared.length, 1)
+    const second = await harness.execute('m8', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(second.isError, undefined)
+    assert.match(second.content[0].text, /adopted/)
+    assert.equal(harness.suiteRuns(), 1, 'suite NOT re-run on duplicate')
+    assert.equal(effects.declared.length, 1, 'no duplicate journal line')
+    assert.deepEqual(landing.mergeAuthorized, {
+      ref: 'PMR-ABC1',
+      command: MERGE_MAIN_COMMAND,
+    })
+  })
+})
+
+test('PMR-HYZA regression: after a merge-main ok, landingIntercept still blocks git push', async () => {
+  const landing = createLandingState()
+  const harness = landHarness({ landing })
+  await withFakeAven(async () => {
+    landing.humanReviewPassed = 'PMR-ABC1'
+    const result = await harness.execute('m9', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(landing.mergeAuthorized, {
+      ref: 'PMR-ABC1',
+      command: MERGE_MAIN_COMMAND,
+    })
+    const { landingIntercept } = await import('../flow/land-gate.ts')
+    const push = landingIntercept(
+      'git push origin flow-branch',
+      'PMR-ABC1',
+      landing.authorized,
+    )
+    assert.equal(push.action, 'block')
+  })
+})
+
+test('merge-main default resolvers are exec-backed (defaults wired)', () => {
+  let registered = false
+  const mockPi = {
+    registerTool: () => {
+      registered = true
+    },
+  }
+  registerLandTool(
+    mockPi as unknown as Parameters<typeof registerLandTool>[0],
+    createLandingState(),
+    () => null,
+    greenSuite,
+    async () => null,
+  )
+  assert.equal(registered, true)
 })

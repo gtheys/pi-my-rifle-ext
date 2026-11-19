@@ -58,6 +58,7 @@ import {
   type FlowCostDeps,
   registerFlowCostCommand,
 } from './flow/cost-command.ts'
+import { mergeIntercept } from './flow/effect-gate.ts'
 import type { OpenGate } from './flow/gates.ts'
 import { collectOpenGates, createGateDeps } from './flow/gates.ts'
 import { resolveJiraEpic } from './flow/jira-ref.ts'
@@ -304,6 +305,7 @@ export default function (pi: ExtensionAPI) {
     resetLandingState: () => {
       landingState.authorized = null
       landingState.humanReviewPassed = null
+      landingState.mergeAuthorized = null
     },
     sendPrompt: (prompt) => {
       pi.sendUserMessage(prompt)
@@ -467,6 +469,13 @@ export default function (pi: ExtensionAPI) {
   // landing command; the next push re-blocks. No flow active → normal git
   // use outside pi-flow is never touched. A human running git by hand is
   // out of scope (humans own the run).
+  // AIDEV-NOTE: PMR-VDVJ phase 4 — merge-main interceptor (mergeIntercept):
+  // the same matcher pair for the personal route. A merge-main ok pins
+  // landingState.mergeAuthorized to the EXACT command flow_land returned;
+  // only that exact command is allowed once (clear:true clears ONLY
+  // mergeAuthorized — never authorized/humanReviewPassed, which belong to
+  // the push one-shot), and any other merge form (different branch, -C
+  // path, or extra flags) stays blocked while the flow is active.
   const landingState = createLandingState()
   pi.on('tool_call', (event) => {
     if (!isToolCallEventType('bash', event)) return undefined
@@ -509,6 +518,17 @@ export default function (pi: ExtensionAPI) {
     if (decision.clear) {
       landingState.authorized = null
       landingState.humanReviewPassed = null
+    }
+    const mergeDecision = mergeIntercept(
+      event.input.command,
+      loop.activeRef(),
+      landingState.mergeAuthorized,
+    )
+    if (mergeDecision.action === 'block') {
+      return { block: true, reason: mergeDecision.reason }
+    }
+    if (mergeDecision.clear) {
+      landingState.mergeAuthorized = null
     }
     return undefined
   })

@@ -65,6 +65,60 @@ async function declarePushEffects(
   return { ok: true }
 }
 
+// AIDEV-NOTE: PMR-VDVJ phase 4 — the merge-main exact-command contract.
+// Resolve main checkout + landing branch (either null -> fail-closed
+// refusal), pin command = git -C '<mainRepo>' merge --ff-only <branch>
+// (single-quoted path so the agent copies it verbatim), declare the
+// merge-main effect with that exact command, and only then set
+// mergeAuthorized. Shared by BOTH success paths (receipt adoption and fresh
+// suite) so neither can authorize an unpinned or undeclared merge.
+async function authorizeMergeMain(
+  state: LandingState,
+  effects: EffectJournal,
+  ref: string,
+  head: string | null,
+  resolveMainRepo: MainRepoResolver,
+  resolveLandingBranch: LandingBranchResolver,
+): Promise<{ ok: true; command: string } | { ok: false; reason: string }> {
+  const mainRepo = await resolveMainRepo()
+  if (mainRepo === null) {
+    return {
+      ok: false,
+      reason:
+        'cannot resolve the main checkout — the merge command cannot be pinned, landing refused',
+    }
+  }
+  const branch = await resolveLandingBranch()
+  if (branch === null) {
+    return {
+      ok: false,
+      reason:
+        'cannot resolve the landing branch — the merge command cannot be pinned, landing refused',
+    }
+  }
+  const command = `git -C '${mainRepo}' merge --ff-only ${branch}`
+  const declared = await effects.declare({
+    ref,
+    effect: 'merge-main',
+    command,
+    recipe: DEFAULT_RECIPES['merge-main'],
+    headSha: head ?? undefined,
+  })
+  if (!declared.ok) {
+    return { ok: false, reason: declared.reason }
+  }
+  state.mergeAuthorized = { ref, command }
+  return { ok: true, command }
+}
+
+// AIDEV-NOTE: PMR-VDVJ phase 4 — the ok result text for merge-main must name
+// the EXACT pinned command, the recovery recipe (ISC-4), and that any other
+// merge form is blocked while the flow is active.
+function mergeOkNote(command: string): string {
+  const recovery = DEFAULT_RECIPES['merge-main'].join('; ')
+  return ` Run EXACTLY this command in the main checkout: ${command} — any other merge form is blocked while the flow is active. Recovery if the merge goes wrong: ${recovery}. Do not push.`
+}
+
 // AIDEV-NOTE: shared with the bash tool_call interceptor in index.ts — the
 // interceptor refuses git push / gh pr create for the active flow ref until
 // this state names it.
@@ -82,10 +136,18 @@ async function declarePushEffects(
 export interface LandingState {
   authorized: string | null
   humanReviewPassed: string | null
+  // AIDEV-NOTE: PMR-HYZA — deliberately separate from `authorized`: a
+  // merge-main ok sets ONLY mergeAuthorized (the pinned exact merge command);
+  // it must never unblock `git push`, which stays gated by `authorized`.
+  mergeAuthorized: { ref: string; command: string } | null
 }
 
 export function createLandingState(): LandingState {
-  return { authorized: null, humanReviewPassed: null }
+  return {
+    authorized: null,
+    humanReviewPassed: null,
+    mergeAuthorized: null,
+  }
 }
 
 // AIDEV-NOTE: PMR-05HX — the landing gate never trusts a claimed-green
@@ -241,6 +303,53 @@ export async function defaultResolveHead(cwd?: string): Promise<string | null> {
   }
 }
 
+// PMR-VDVJ phase 4 — main-checkout / landing-branch resolvers for the
+// merge-main exact-command contract. Injected so tests never run real git.
+export type MainRepoResolver = () => Promise<string | null>
+export type LandingBranchResolver = () => Promise<string | null>
+
+// AIDEV-NOTE: same parsing as worktree/index.ts mainCheckout — first
+// `worktree <path>` line of `git worktree list --porcelain`. Run in the
+// landing suite cwd (flow worktree when bound, else cwd). Fail-closed: any
+// error or empty output returns null, which refuses the landing.
+export async function defaultResolveMainRepo(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['worktree', 'list', '--porcelain'],
+      { cwd: landingSuiteCwd() },
+    )
+    for (const line of stdout.split('\n')) {
+      if (line.startsWith('worktree ')) {
+        const repoPath = line.slice('worktree '.length).trim()
+        if (repoPath.length > 0) return repoPath
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+// AIDEV-NOTE: the bound flow worktree's branch wins (flow/worktree-context.ts);
+// fallback is `git rev-parse --abbrev-ref HEAD` in the landing suite cwd.
+export async function defaultResolveLandingBranch(): Promise<string | null> {
+  const bound = getFlowWorktree()?.branch
+  if (bound !== undefined) return bound
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd: landingSuiteCwd() },
+    )
+    const branch = stdout.trim()
+    if (branch.length === 0) return null
+    return branch
+  } catch {
+    return null
+  }
+}
+
 export function registerLandTool(
   pi: ExtensionAPI,
   state: LandingState,
@@ -265,6 +374,12 @@ export function registerLandTool(
   // declares git-push + gh-pr-create through it BEFORE setting `authorized`;
   // a failed declaration refuses the landing (fail-closed).
   effects: EffectJournal = createEffectJournal(getAgentDir()),
+  // AIDEV-NOTE: PMR-VDVJ phase 4 — merge-main pins the EXACT merge command:
+  // resolve the main checkout + landing branch, declare the merge-main
+  // effect with that command, then set mergeAuthorized. Injected so tests
+  // never run real git.
+  resolveMainRepo: MainRepoResolver = defaultResolveMainRepo,
+  resolveLandingBranch: LandingBranchResolver = defaultResolveLandingBranch,
 ): void {
   let effectiveReceipts = receipts
   if (writer !== undefined) {
@@ -283,7 +398,7 @@ export function registerLandTool(
       'Gated landing for PIV flow runs — call before pushing the branch or creating the PR.',
     promptGuidelines: [
       'Call flow_land AFTER flow_phase_complete(phase="validate") and BEFORE git push / gh pr create — direct landing commands are blocked until it returns ok.',
-      'For route=merge-main (personal), collect the human pass first — via the code_review tool (in-session) or the human-only /flow answer <ref> pass (durable, accepted cross-session) — flow_land refuses until one of them has passed for the ref. After ok, merge locally: git -C <main repo> merge --ff-only <branch> (find the main repo via `git worktree list` first entry). NEVER push.',
+      'For route=merge-main (personal), collect the human pass first — via the code_review tool (in-session) or the human-only /flow answer <ref> pass (durable, accepted cross-session) — flow_land refuses until one of them has passed for the ref. After ok, flow_land resolves the main checkout and landing branch itself and returns the EXACT pinned merge command — run that command verbatim. NEVER push.',
       'flow_land runs the test suite itself before authorizing (landTestCommand config, default bun run test) — a red suite refuses the landing with the failing output. Never claim tests are green to skip it; the gate does not read claims.',
       'A refusal carries the gate reason (missing review-passed label, blockers in the artifact, missing human code-review pass, red test suite); fix the cause, do not retry the call.',
     ],
@@ -291,7 +406,7 @@ export function registerLandTool(
       ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
       route: Type.Union([Type.Literal('pr'), Type.Literal('merge-main')], {
         description:
-          'pr: create a PR via gh (work mode). merge-main: merge the branch into main LOCALLY in the main checkout with git -C <main repo> merge --ff-only <branch> — never a push (personal mode).',
+          'pr: create a PR via gh (work mode). merge-main: flow_land resolves and pins the exact git -C <main repo> merge --ff-only <branch> command — run the pinned command verbatim; never a push (personal mode).',
       }),
       artifact: Type.Optional(
         Type.String({
@@ -409,8 +524,23 @@ export function registerLandTool(
               { ok: true, reason: '' },
             )
           }
+          const merge = await authorizeMergeMain(
+            state,
+            effects,
+            params.ref,
+            head,
+            resolveMainRepo,
+            resolveLandingBranch,
+          )
+          if (!merge.ok) {
+            return toolResult(
+              `flow_land refused landing ${params.ref} via merge-main: ${merge.reason} — the landing is NOT authorized`,
+              { ok: false, reason: 'merge-main authorization failed' },
+              { isError: true },
+            )
+          }
           return toolResult(
-            `flow_land: landing for ${params.ref} gated ok via merge-main — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run.${humanGateNote} Merge the branch into main LOCALLY in the main checkout with git -C <main repo> merge --ff-only <branch> (find the main repo path via \`git worktree list\`, first entry). Do not push.`,
+            `flow_land: landing for ${params.ref} gated ok via merge-main — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run.${humanGateNote}${mergeOkNote(merge.command)}`,
             { ok: true, reason: '' },
           )
         }
@@ -449,6 +579,33 @@ export function registerLandTool(
       // receipts stay best-effort — the deliberate split (plan Key decision
       // 3). On a failed declaration the landing is NOT authorized (any suite
       // cost already spent is accepted; correctness first).
+      // AIDEV-NOTE: PMR-VDVJ — route=pr declares the push effects BEFORE
+      // setting `authorized`: declarations are fail-closed, receipts stay
+      // best-effort — the deliberate split (plan Key decision 3). On a failed
+      // declaration the landing is NOT authorized. PMR-VDVJ phase 4:
+      // route=merge-main runs the exact-command contract (authorizeMergeMain)
+      // instead — declare the pinned merge command, then set mergeAuthorized.
+      if (params.route === 'merge-main') {
+        const merge = await authorizeMergeMain(
+          state,
+          effects,
+          params.ref,
+          head,
+          resolveMainRepo,
+          resolveLandingBranch,
+        )
+        if (!merge.ok) {
+          return toolResult(
+            `flow_land refused landing ${params.ref} via merge-main: ${merge.reason} — the landing is NOT authorized`,
+            { ok: false, reason: 'merge-main authorization failed' },
+            { isError: true },
+          )
+        }
+        return toolResult(
+          `flow_land: landing for ${params.ref} gated ok via merge-main${humanGateNote} — the suite ran green just now.${mergeOkNote(merge.command)}`,
+          { ok: true, reason: '' },
+        )
+      }
       const declared = await declarePushEffects(effects, params.ref, head)
       if (!declared.ok) {
         return toolResult(
@@ -457,15 +614,9 @@ export function registerLandTool(
           { isError: true },
         )
       }
-      if (params.route === 'pr') {
-        state.authorized = params.ref
-        return toolResult(
-          `flow_land: landing for ${params.ref} authorized via pr — run the git push / gh pr create step now`,
-          { ok: true, reason: '' },
-        )
-      }
+      state.authorized = params.ref
       return toolResult(
-        `flow_land: landing for ${params.ref} gated ok via merge-main${humanGateNote} — the suite ran green just now. Merge the branch into main LOCALLY in the main checkout with git -C <main repo> merge --ff-only <branch> (find the main repo path via \`git worktree list\`, first entry). Do not push.`,
+        `flow_land: landing for ${params.ref} authorized via pr — run the git push / gh pr create step now`,
         { ok: true, reason: '' },
       )
     },
