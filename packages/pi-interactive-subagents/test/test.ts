@@ -162,16 +162,25 @@ function createMockExtensionApi() {
   const registeredTools: Array<any> = []
   const registeredCommands: Array<any> = []
   const registeredMessageRenderers: Array<any> = []
+  // AIDEV-NOTE (PMR-AD0H): additive event capture so tests can fire
+  // lifecycle handlers (e.g. session_start widget reconcile) against the
+  // mock api. Pure bookkeeping — existing registrations are unaffected.
+  const eventHandlers = new Map<string, Array<(event: any, ctx: any) => void>>()
   const sentUserMessages: string[] = []
   const sentMessages: Array<any> = []
   return {
     registeredTools,
     registeredCommands,
     registeredMessageRenderers,
+    eventHandlers,
     sentUserMessages,
     sentMessages,
     api: {
-      on() {},
+      on(event: string, handler: (event: any, ctx: any) => void) {
+        const handlers = eventHandlers.get(event) ?? []
+        handlers.push(handler)
+        eventHandlers.set(event, handlers)
+      },
       registerTool(tool: any) {
         registeredTools.push(tool)
       },
@@ -2751,6 +2760,29 @@ describe('config.ts', () => {
     )
   })
 
+  it('accepts status.hideWhenIdle and defaults it on (PMR-AD0H)', () => {
+    assert.equal(DEFAULT_SUBAGENTS_CONFIG.status.hideWhenIdle, true)
+    assert.deepEqual(
+      validateSubagentsConfig(
+        { status: { enabled: true, hideWhenIdle: false } },
+        't',
+      ),
+      { status: { enabled: true, hideWhenIdle: false } },
+    )
+    // Absent in a pre-existing config ⇒ stays absent; the consumer treats
+    // anything but explicit false as hide-when-idle on.
+    const absent = validateSubagentsConfig({ status: { enabled: true } }, 't')
+    assert.equal(absent.status.hideWhenIdle, undefined)
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          { status: { enabled: true, hideWhenIdle: 'no' } },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+  })
+
   it('scaffolds the global config only when missing and never overwrites', () => {
     const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
     const path = globalSubagentsConfigPath(agentDir)
@@ -3556,6 +3588,128 @@ describe('status widget rows (PMR-TABUX)', () => {
     assert.equal(matchHitRegion(regions, { x: 4, y: 2, width: 80 }, 80), null)
     assert.equal(matchHitRegion(regions, { x: 1, y: 1, width: 80 }, 80), null)
     assert.equal(matchHitRegion(regions, { x: 8, y: 1, width: 80 }, 80), null)
+  })
+})
+
+describe('subagents widget lifecycle (PMR-AD0H)', () => {
+  const testApi = (subagentsModule as any).__test__ as {
+    updateWidgetForTest: (ctx: unknown) => void
+    isWidgetRegisteredForTest: () => boolean
+    setWidgetRegisteredForTest: (value: boolean) => void
+    setWidgetTuiForTest: (tui: { requestRender: () => void } | null) => void
+    setHideWhenIdleForTest: (value: boolean | undefined) => void
+    runningSubagents: Map<string, unknown>
+  }
+
+  function recordingWidgetCtx() {
+    const widgets: Array<[string, unknown]> = []
+    const ctx = {
+      hasUI: true,
+      ui: {
+        setWidget(key: string, content: unknown) {
+          widgets.push([key, content])
+        },
+      },
+    }
+    return { ctx, widgets }
+  }
+
+  function resetWidgetState() {
+    testApi.setWidgetRegisteredForTest(false)
+    testApi.setWidgetTuiForTest(null)
+    testApi.setHideWhenIdleForTest(undefined)
+  }
+
+  it('unregisters a registered widget when the map is empty', () => {
+    testApi.setWidgetRegisteredForTest(true)
+    testApi.setWidgetTuiForTest({ requestRender() {} })
+    const { ctx, widgets } = recordingWidgetCtx()
+    try {
+      testApi.updateWidgetForTest(ctx)
+
+      assert.deepEqual(widgets, [['subagent-status', undefined]])
+      assert.equal(testApi.isWidgetRegisteredForTest(), false)
+    } finally {
+      resetWidgetState()
+    }
+  })
+
+  it('unregisters defensively even when the module flags say unregistered', () => {
+    // /reload orphan: pi's UI kept the old component, but this module
+    // instance has no registration state — removal must not be flag-gated.
+    testApi.setWidgetRegisteredForTest(false)
+    testApi.setWidgetTuiForTest(null)
+    const { ctx, widgets } = recordingWidgetCtx()
+    try {
+      testApi.updateWidgetForTest(ctx)
+
+      assert.deepEqual(widgets, [['subagent-status', undefined]])
+      assert.equal(testApi.isWidgetRegisteredForTest(), false)
+    } finally {
+      resetWidgetState()
+    }
+  })
+
+  it('keeps a registered widget visible at zero when hideWhenIdle=false', () => {
+    testApi.setWidgetRegisteredForTest(true)
+    testApi.setWidgetTuiForTest({ requestRender() {} })
+    testApi.setHideWhenIdleForTest(false)
+    const { ctx, widgets } = recordingWidgetCtx()
+    try {
+      testApi.updateWidgetForTest(ctx)
+
+      assert.deepEqual(widgets, [])
+      assert.equal(testApi.isWidgetRegisteredForTest(), true)
+    } finally {
+      resetWidgetState()
+    }
+  })
+
+  it('takes the cheap requestRender path when registered and non-empty', () => {
+    let renders = 0
+    testApi.setWidgetRegisteredForTest(true)
+    testApi.setWidgetTuiForTest({
+      requestRender() {
+        renders++
+      },
+    })
+    const { ctx, widgets } = recordingWidgetCtx()
+    testApi.runningSubagents.set('widget-lifecycle-fixture', {
+      id: 'widget-lifecycle-fixture',
+    })
+    try {
+      testApi.updateWidgetForTest(ctx)
+
+      assert.equal(renders, 1)
+      assert.deepEqual(widgets, [])
+      assert.equal(testApi.isWidgetRegisteredForTest(), true)
+    } finally {
+      testApi.runningSubagents.delete('widget-lifecycle-fixture')
+      resetWidgetState()
+    }
+  })
+
+  it('reconciles registration on session_start after a session switch', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir }) => {
+      resetWidgetState()
+      const { api, eventHandlers } = createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+
+      const handlers = eventHandlers.get('session_start') ?? []
+      assert.equal(handlers.length, 1)
+      const { ctx, widgets } = recordingWidgetCtx()
+      handlers[0](
+        {},
+        {
+          ...ctx,
+          cwd: projectDir,
+          sessionManager: { getSessionId: () => 'widget-lifecycle-session' },
+        },
+      )
+
+      assert.deepEqual(widgets, [['subagent-status', undefined]])
+      assert.equal(testApi.isWidgetRegisteredForTest(), false)
+    })
   })
 })
 

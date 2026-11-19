@@ -665,6 +665,7 @@ const STATUS_CONFIG_KEY = Symbol.for('pi-subagents/status-config')
 const DEFAULT_STATUS_CONFIG: StatusConfig = {
   enabled: true,
   lineLimit: DEFAULT_STATUS_LINE_LIMIT,
+  hideWhenIdle: true,
 }
 
 function getStatusConfig(): StatusConfig {
@@ -695,6 +696,8 @@ function loadAndCacheStatusConfig(cwd: string | undefined): StatusConfig {
   const config: StatusConfig = {
     enabled: loaded.config.status.enabled,
     lineLimit: DEFAULT_STATUS_LINE_LIMIT,
+    // Absent in a pre-existing user config ⇒ default-on (hide).
+    hideWhenIdle: loaded.config.status.hideWhenIdle !== false,
   }
   ;(globalThis as Record<symbol, unknown>)[STATUS_CONFIG_KEY] = config
   ;(globalThis as Record<symbol, unknown>)[RETIREMENT_ENABLED_KEY] =
@@ -1047,11 +1050,34 @@ function boxWidgetLines(lines: readonly string[], width: number): string[] {
   return boxed
 }
 
-/** The tui object from the active widget component (for tick re-renders). */
-let widgetTui: { requestRender: () => void } | null = null
+// AIDEV-NOTE (PMR-AD0H): widget registration state lives on globalThis (not
+// module-level lets) so an extension /reload keeps it in sync with pi's UI.
+// pi keeps the previously registered widget component rendering across a
+// /reload; if the new module instance saw fresh `false` flags, its removal
+// path no-oped and the stale component rendered "Subagents · 0 running"
+// forever. Mirrors the RUNNING_KEY / runningSubagents pattern above.
+const WIDGET_REGISTERED_KEY = Symbol.for('pi-subagents/widget-registered')
+const WIDGET_TUI_KEY = Symbol.for('pi-subagents/widget-tui')
 
-/** Whether the widget is currently registered with pi's UI. */
-let widgetRegistered = false
+function getWidgetRegistered(): boolean {
+  return (globalThis as Record<symbol, unknown>)[WIDGET_REGISTERED_KEY] === true
+}
+
+function setWidgetRegistered(value: boolean): void {
+  ;(globalThis as Record<symbol, unknown>)[WIDGET_REGISTERED_KEY] = value
+}
+
+function getWidgetTui(): { requestRender: () => void } | null {
+  return (
+    ((globalThis as Record<symbol, unknown>)[WIDGET_TUI_KEY] as
+      | { requestRender: () => void }
+      | undefined) ?? null
+  )
+}
+
+function setWidgetTui(tui: { requestRender: () => void } | null): void {
+  ;(globalThis as Record<symbol, unknown>)[WIDGET_TUI_KEY] = tui
+}
 
 function focusClickMessage(): string {
   return 'Agent changed; reopen the agent list.'
@@ -1122,33 +1148,48 @@ function updateWidget() {
 
 function updateWidgetUnsafe() {
   const has = runningSubagents.size > 0
-  if (has && widgetRegistered) {
+  if (has && getWidgetRegistered()) {
     // Cheap path: don't re-register the component (that would reset the 2s
     // tick) — just ask for a redraw with the fresh snapshot data.
     try {
-      widgetTui?.requestRender()
+      getWidgetTui()?.requestRender()
     } catch {}
     return
   }
   renderWidget()
 }
 
+/** True unless the user opted out via status.hideWhenIdle (absent ⇒ hide). */
+function hideWhenIdleEnabled(): boolean {
+  return getStatusConfig().hideWhenIdle !== false
+}
+
 function renderWidget() {
   if (!latestCtx) return
   if (runningSubagents.size === 0) {
-    if (widgetRegistered) {
-      latestCtx.ui.setWidget('subagent-status', undefined)
-      widgetRegistered = false
-      widgetTui = null
+    if (hideWhenIdleEnabled()) {
+      // AIDEV-NOTE (PMR-AD0H): defensive, NOT flag-gated. pi's setWidget(key,
+      // undefined) is a harmless no-op when nothing is registered, so always
+      // remove here — this is what actually clears a widget orphaned by a
+      // /reload or session switch even if this module instance never
+      // registered it.
+      try {
+        latestCtx.ui.setWidget('subagent-status', undefined)
+      } catch {}
+      setWidgetRegistered(false)
+      setWidgetTui(null)
     }
+    // hideWhenIdle=false: leave any registered widget alone — the persistent
+    // "0 running" box is the intentional opt-out. Never proactively register
+    // at zero; the box only appears after the first spawn, as before.
     return
   }
 
-  widgetRegistered = true
+  setWidgetRegistered(true)
   latestCtx.ui.setWidget(
     'subagent-status',
     (tui: any, _theme: any) => {
-      widgetTui = tui
+      setWidgetTui(tui)
       // Presentation tick (herdsman pattern): elapsed time moves every 2s
       // without new activity snapshots.
       const tick = setInterval(() => {
@@ -1160,9 +1201,9 @@ function renderWidget() {
         invalidate() {},
         dispose() {
           clearInterval(tick)
-          if (widgetTui === tui) {
-            widgetTui = null
-            widgetRegistered = false
+          if (getWidgetTui() === tui) {
+            setWidgetTui(null)
+            setWidgetRegistered(false)
           }
         },
         render(width: number) {
@@ -1819,6 +1860,31 @@ export const __test__ = {
   resolveResumeLaunchBehavior,
   runningSubagents,
   formatElapsed,
+  // AIDEV-NOTE (PMR-AD0H): widget lifecycle test seam. The registration
+  // state is globalThis-backed; these helpers let tests drive updateWidget
+  // against a mock UI ctx and inspect/reset that state without reaching
+  // into Symbol.for keys by hand.
+  updateWidgetForTest(ctx: unknown) {
+    latestCtx = ctx as typeof latestCtx
+    updateWidget()
+  },
+  isWidgetRegisteredForTest: getWidgetRegistered,
+  setWidgetRegisteredForTest: setWidgetRegistered,
+  setWidgetTuiForTest: setWidgetTui,
+  setHideWhenIdleForTest(value: boolean | undefined) {
+    const base = getStatusConfig()
+    if (value === undefined) {
+      // Restore the default-on cache entry.
+      ;(globalThis as Record<symbol, unknown>)[STATUS_CONFIG_KEY] = {
+        ...DEFAULT_STATUS_CONFIG,
+      }
+      return
+    }
+    ;(globalThis as Record<symbol, unknown>)[STATUS_CONFIG_KEY] = {
+      ...base,
+      hideWhenIdle: value,
+    }
+  },
 }
 
 function startWidgetRefresh() {
@@ -2838,6 +2904,10 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     // AIDEV-NOTE: load per session so a project override written mid-run is
     // honored on the next session. Throws on invalid config — fail fast.
     loadAndCacheStatusConfig(ctx.cwd)
+    // AIDEV-NOTE (PMR-AD0H): reconcile widget registration with the actual
+    // map after a session switch/reload — nothing else fires while idle, so
+    // a stale "Subagents · 0 running" box would otherwise persist.
+    updateWidget()
   })
 
   // AIDEV-NOTE (PMR-1EC3): context retirement. session_before_compact is the

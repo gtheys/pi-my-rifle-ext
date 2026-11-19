@@ -246,13 +246,15 @@ Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `status.enabled` | boolean | `true` | Live status widget and refresh loop |
+| `status.hideWhenIdle` | boolean | `true` | Hide the "Subagents · N running" widget completely while no subagent exists; set `false` to keep the box visible at zero |
 | `contextRetirement.enabled` | boolean | `false` | Retire settled subagent payloads to durable refs when compaction pressure hits |
 
 ```json
 {
   "$schema": "https://json-schema.org/schema",
   "status": {
-    "enabled": true
+    "enabled": true,
+    "hideWhenIdle": true
   },
   "contextRetirement": {
     "enabled": false

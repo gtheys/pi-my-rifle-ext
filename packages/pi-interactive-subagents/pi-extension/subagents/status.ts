@@ -49,6 +49,8 @@ export const INTERRUPT_ACK_TIMEOUT_MS = 5_000
 export interface StatusConfig {
   enabled: boolean
   lineLimit: number
+  /** AIDEV-NOTE (PMR-AD0H): optional — absent ⇒ hide-when-idle is on. */
+  hideWhenIdle?: boolean
 }
 
 export type StatusObservation =

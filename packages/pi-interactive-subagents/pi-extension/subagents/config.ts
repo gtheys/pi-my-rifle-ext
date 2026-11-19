@@ -14,7 +14,13 @@ const SubagentsConfigSchema = Type.Object(
   {
     $schema: Type.Optional(Type.String()),
     status: Type.Object(
-      { enabled: Type.Boolean() },
+      {
+        enabled: Type.Boolean(),
+        // AIDEV-NOTE (PMR-AD0H): hide the "Subagents · N running" widget
+        // completely while no subagent exists. Default on — the persistent
+        // idle box is an opt-out (false keeps it visible at zero).
+        hideWhenIdle: Type.Optional(Type.Boolean()),
+      },
       { additionalProperties: false },
     ),
     // AIDEV-NOTE (PMR-1EC3): off by default — context retirement changes what
@@ -47,7 +53,7 @@ const SubagentsConfigSchema = Type.Object(
 export type SubagentsConfig = Static<typeof SubagentsConfigSchema>
 
 export const DEFAULT_SUBAGENTS_CONFIG: SubagentsConfig = {
-  status: { enabled: true },
+  status: { enabled: true, hideWhenIdle: true },
   contextRetirement: { enabled: false },
 }
 

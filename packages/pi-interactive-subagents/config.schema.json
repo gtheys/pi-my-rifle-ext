@@ -14,6 +14,10 @@
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "hideWhenIdle": {
+          "type": "boolean",
+          "description": "Hide the \"Subagents · N running\" widget completely while no subagent exists (default true). Set false to keep the box visible at zero."
         }
       }
     },
