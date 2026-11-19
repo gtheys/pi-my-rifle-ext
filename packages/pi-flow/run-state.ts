@@ -213,6 +213,33 @@ export type FlowRunEvent =
       sessionFile?: string
     }
   | {
+      /**
+       * AIDEV-NOTE: PMR-C998 — journal-only append-only step evidence
+       * (submissions), flattened StepOutputEventPayload fields. Never
+       * deduped (each submission is evidence) and never projected
+       * (advisory-only; old readers ignore unknown kinds — PMR-Z2K7).
+       * `headShaVerified` is journaled verification state: surfaced to
+       * consumers, never silently accepted as truth.
+       */
+      kind: 'step-output'
+      at: string
+      ref: string
+      phase: FlowPhase
+      step: string
+      ok?: boolean
+      detail?: string
+      planPath?: string
+      subtaskRefs?: string[]
+      command?: string
+      passed?: boolean
+      headSha?: string
+      headShaVerified?: boolean
+      prNumber?: number
+      prUrl?: string
+      gateTargetIds?: string[]
+      prMerged?: boolean
+    }
+  | {
       kind: 'note'
       at: string
       ref: string
@@ -276,12 +303,17 @@ export type FlowRunEvent =
  * AIDEV-NOTE: PMR-C998 — event kinds that are journaled but never projected.
  * recordRunEvent appends these without a read-modify-write of the projection
  * (see the shipped 'main-session' drop bug noted there). Extend this union
- * only; isJournalOnlyEvent is the single membership check.
+ * only; isJournalOnlyEvent is the single membership check. 'step-output'
+ * joined via PMR-C998 phase 2 (step submissions are append-only evidence).
  */
-type JournalOnlyKind = 'main-session' | 'spawn-record'
+type JournalOnlyKind = 'main-session' | 'spawn-record' | 'step-output'
 
 export function isJournalOnlyEvent(event: FlowRunEvent): boolean {
-  const kinds: JournalOnlyKind[] = ['main-session', 'spawn-record']
+  const kinds: JournalOnlyKind[] = [
+    'main-session',
+    'spawn-record',
+    'step-output',
+  ]
   return kinds.some((k) => k === event.kind)
 }
 export interface RunInputRecord {
