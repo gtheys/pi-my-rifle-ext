@@ -16,9 +16,11 @@ import {
   collectSpawnNotes,
   formatCostReport,
   type PhaseDuration,
+  type PhaseStepSummary,
   type PushResult,
   parseSessionEntries,
   phaseDurations,
+  summarizeStepOutputs,
   type WorkerRow,
 } from './cost.ts'
 
@@ -70,6 +72,8 @@ export type CostRollup =
       kind: 'ok'
       rows: WorkerRow[]
       durations: PhaseDuration[]
+      /** Per-phase step-output submission counts (advisory evidence). */
+      steps?: PhaseStepSummary[]
       /** ref the run is tracked by (Jira key in work mode); the metric `ref` label */
       trackRef: string
       mode: 'work' | 'personal'
@@ -135,13 +139,19 @@ export async function computeCostRollup(
       trackRef = ref
     }
   }
-  return {
-    kind: 'ok',
+  // AIDEV-NOTE (PMR-C998): steps are advisory evidence from journal
+  // 'step-output' submissions; optional on the rollup for back-compat and
+  // omitted (not empty) so report consumers skip the section cleanly.
+  const steps = summarizeStepOutputs(events)
+  const okRollup: CostRollup & { steps?: PhaseStepSummary[] } = {
+    kind: 'ok' as const,
     rows,
     durations: phaseDurations(events),
     trackRef,
     mode,
   }
+  if (steps.length > 0) okRollup.steps = steps
+  return okRollup
 }
 
 export function registerFlowCostCommand(
@@ -182,8 +192,11 @@ export function registerFlowCostCommand(
         )
         return
       }
-      const { rows, durations, trackRef, mode } = rollup
-      ctx.ui.notify(formatCostReport(parsed.ref, rows, durations), 'info')
+      const { rows, durations, trackRef, mode, steps } = rollup
+      ctx.ui.notify(
+        formatCostReport(parsed.ref, rows, durations, steps ?? []),
+        'info',
+      )
       if (parsed.push) {
         const result = await deps.push(
           trackRef,

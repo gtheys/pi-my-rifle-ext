@@ -446,6 +446,50 @@ export function phaseDurations(
   return durations
 }
 
+/** Per-phase step-output submission counts (advisory evidence only). */
+export interface PhaseStepSummary {
+  phase: FlowPhase
+  /** All step-output events for the phase (submissions are never deduped). */
+  total: number
+  /** Submissions with ok === true. */
+  ok: number
+  /** Submissions with ok === false. */
+  failed: number
+}
+
+// AIDEV-NOTE (PMR-C998): sums journal 'step-output' submissions per phase.
+// Counting is order-insensitive per PMR-5HTN (single pass, unknown kinds are
+// ignored by the event union itself). Advisory evidence only — a failed step
+// never blocks anything and submissions without `ok` count only in `total`.
+export function summarizeStepOutputs(
+  events: readonly FlowRunEvent[],
+): PhaseStepSummary[] {
+  const totals = new Map<FlowPhase, PhaseStepSummary>()
+  for (const event of events) {
+    if (event.kind !== 'step-output') continue
+    const summary = totals.get(event.phase) ?? {
+      phase: event.phase,
+      total: 0,
+      ok: 0,
+      failed: 0,
+    }
+    summary.total += 1
+    if (event.ok === true) summary.ok += 1
+    if (event.ok === false) summary.failed += 1
+    totals.set(event.phase, summary)
+  }
+  const out: PhaseStepSummary[] = []
+  for (const summary of totals.values()) {
+    out.push(summary)
+  }
+  // AIDEV-NOTE (PMR-C998): canonical FlowPhase order (plan, implement,
+  // validate, feedback) — NOT alphabetical, so the report reads like the
+  // run actually progressed.
+  const phaseOrder: FlowPhase[] = ['plan', 'implement', 'validate', 'feedback']
+  out.sort((a, b) => phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase))
+  return out
+}
+
 function groupThousands(value: number): string {
   const rounded = Math.round(value)
   const digits = `${Math.abs(rounded)}`
@@ -473,6 +517,7 @@ export function formatCostReport(
   ref: string,
   rows: readonly WorkerRow[],
   durations: readonly PhaseDuration[],
+  steps: readonly PhaseStepSummary[] = [],
 ): string {
   const header = ['worker', 'subtask', 'phase', 'tokens', 'cost', 'coverage']
   const table: string[][] = []
@@ -544,6 +589,14 @@ export function formatCostReport(
     lines.push('phase durations (journal wall-clock):')
     for (const duration of durations) {
       lines.push(`  ${duration.phase}: ${duration.seconds.toFixed(0)}s`)
+    }
+  }
+  if (steps.length > 0) {
+    lines.push('step outputs (advisory, never blocking):')
+    for (const step of steps) {
+      lines.push(
+        `  ${step.phase}: ${step.total} step output(s) (${step.ok} ok, ${step.failed} failed)`,
+      )
     }
   }
   return lines.join('\n')
