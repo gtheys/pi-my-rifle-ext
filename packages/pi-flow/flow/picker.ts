@@ -155,9 +155,9 @@ export function planPickerOutcome(
     return { kind: 'fallback', lines: buildGateFallbackLines(gates) }
   }
   if (selection === undefined) {
-    if (gates.length === 0) {
-      return { kind: 'empty' }
-    }
+    // Zero gates cannot reach here: the hoisted guard above returns 'empty'
+    // before any selection branch, and a selection can never coexist with
+    // zero gates (the menu requires gates to render).
     return { kind: 'menu', options: buildGateMenuOptions(gates) }
   }
   if (selection.stage === 'gate-cancelled') {
