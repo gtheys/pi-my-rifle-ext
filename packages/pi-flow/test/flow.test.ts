@@ -42,6 +42,15 @@ test('parseFlowArgs: extra positional args are help', () => {
   assert.equal(parseFlowArgs('a b').kind, 'help')
 })
 
+test('parseFlowArgs: bare help token is usage, not an aven ref (PMR-N0W6)', () => {
+  assert.equal(parseFlowArgs('help').kind, 'help')
+  assert.equal(parseFlowArgs('HELP').kind, 'help')
+  assert.equal(parseFlowArgs('Help').kind, 'help')
+  // Only the exact token is reserved — similar strings still parse as refs.
+  assert.deepEqual(parseFlowArgs('helpme'), { kind: 'aven', ref: 'helpme' })
+  assert.deepEqual(parseFlowArgs('PMR-help'), { kind: 'aven', ref: 'PMR-help' })
+})
+
 // --- nextPhase (pure resolver, mapping table; PIV lifecycle, PMR-Z2K7) ---
 
 test('nextPhase: no labels -> plan', () => {

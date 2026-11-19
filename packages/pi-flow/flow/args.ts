@@ -11,7 +11,13 @@ export type FlowArgs =
 export function parseFlowArgs(raw: string): FlowArgs {
   const parts = raw.trim().split(/\s+/)
   if (parts.length !== 1 || parts[0] === '') return { kind: 'help' }
-  const parsed = parseRefKind(parts[0] ?? '')
+  const token = parts[0] ?? ''
+  // PMR-N0W6: a literal '/flow help' is a usage request, not a run for a
+  // ticket named 'help' — reserve the exact token (case-insensitive) for the
+  // single-token shape. Multi-arg shapes ('/flow help X') already return
+  // help above; similar-but-different tokens ('helpme') still parse as refs.
+  if (token.toLowerCase() === 'help') return { kind: 'help' }
+  const parsed = parseRefKind(token)
   if (parsed.kind === 'jira') {
     return { kind: 'jira', jiraId: parsed.jiraId }
   }
