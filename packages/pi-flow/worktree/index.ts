@@ -11,13 +11,16 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+import { DEFAULT_RECIPES } from '../flow/effect-gate.ts'
 import {
   getActiveFlowRef,
   getFlowWorktree,
   NO_ACTIVE_FLOW_WARNING,
   setFlowWorktree,
 } from '../flow/worktree-context.ts'
+import { createEffectJournal, type EffectJournal } from '../run-state.ts'
 import {
   clearFlowBase,
   currentBranch,
@@ -70,6 +73,37 @@ function errorResult(text: string): ToolResult {
   return textResult(text)
 }
 
+// AIDEV-NOTE: PMR-VDVJ phase 5 — declare-before-act for worktree
+// create/remove. The journal is resolved LAZILY: list/bind (and tests that
+// don't opt in) never construct it, so no filesystem access happens on those
+// paths. Fail-closed: a failed declaration refuses the action — for create
+// the pre-recorded flow base is cleared (the existing create-failure revert),
+// for remove the worktree is simply left intact (nothing to revert).
+function resolveEffects(deps?: { effects?: EffectJournal }): EffectJournal {
+  if (deps?.effects) {
+    return deps.effects
+  }
+  return createEffectJournal(getAgentDir())
+}
+
+async function declareWorktreeEffect(
+  effects: EffectJournal,
+  effect: 'worktree-create' | 'worktree-remove',
+  command: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const ref = getActiveFlowRef() ?? 'worktree-ops'
+  const declared = await effects.declare({
+    ref,
+    effect,
+    command,
+    recipe: DEFAULT_RECIPES[effect],
+  })
+  if (!declared.ok) {
+    return { ok: false, reason: declared.reason }
+  }
+  return { ok: true }
+}
+
 /** First `worktree <path>` entry of `git worktree list --porcelain`. */
 async function mainCheckout(pi: ExtensionAPI, cwd: string): Promise<string> {
   const result = await pi.exec('git', ['worktree', 'list', '--porcelain'], {
@@ -90,6 +124,7 @@ async function mainCheckout(pi: ExtensionAPI, cwd: string): Promise<string> {
 
 async function createFlow(
   pi: ExtensionAPI,
+  effects: EffectJournal,
   cwd: string,
   params: {
     jira_id?: string
@@ -178,6 +213,23 @@ async function createFlow(
   )
   if (!preRecorded.ok) {
     return errorResult(`Cannot record flow base: ${preRecorded.reason}`)
+  }
+
+  // AIDEV-NOTE: PMR-VDVJ — declare the exact herdr argv BEFORE creating the
+  // worktree (fail-closed): on declare failure the pre-recorded flow base is
+  // cleared via the same revert the create-failure path uses, and no herdr
+  // create call is made.
+  const command = `herdr worktree create --cwd ${cwd} --branch ${derived.branch} --label ${label} --base ${baseSha}`
+  const declared = await declareWorktreeEffect(
+    effects,
+    'worktree-create',
+    command,
+  )
+  if (!declared.ok) {
+    await clearFlowBase(execFn, mainPath, derived.branch)
+    return errorResult(
+      `worktree create refused: effect declaration failed (${declared.reason}) — fail-closed: the worktree was NOT created and the pre-recorded flow base was cleared`,
+    )
   }
 
   report(
@@ -429,6 +481,7 @@ async function ghPrState(
 
 async function removeFlow(
   pi: ExtensionAPI,
+  effects: EffectJournal,
   cwd: string,
   params: {
     cwd?: string
@@ -513,6 +566,24 @@ async function removeFlow(
     }
   }
 
+  // AIDEV-NOTE: PMR-VDVJ — declare the exact herdr argv BEFORE removing
+  // (fail-closed): on declare failure the worktree is left intact — nothing
+  // to revert, the PR-state guard already ran before this point.
+  let removeCommand = `herdr worktree remove --workspace ${target.workspaceId}`
+  if (force) {
+    removeCommand = `${removeCommand} --force`
+  }
+  const declared = await declareWorktreeEffect(
+    effects,
+    'worktree-remove',
+    removeCommand,
+  )
+  if (!declared.ok) {
+    return errorResult(
+      `worktree remove refused: effect declaration failed (${declared.reason}) — fail-closed: the worktree was left intact`,
+    )
+  }
+
   try {
     await worktreeRemove(pi, cwd, target.workspaceId, force)
   } catch (error) {
@@ -556,7 +627,7 @@ async function removeFlow(
   })
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, deps?: { effects?: EffectJournal }) {
   pi.registerTool({
     name: 'worktree',
     label: 'Worktree',
@@ -656,7 +727,14 @@ export default function (pi: ExtensionAPI) {
       const cwd = ctx?.cwd ?? process.cwd()
       void _toolCallId
       if (params.action === 'create') {
-        return createFlow(pi, cwd, params, signal, onUpdate)
+        return createFlow(
+          pi,
+          resolveEffects(deps),
+          cwd,
+          params,
+          signal,
+          onUpdate,
+        )
       }
       if (params.action === 'list') {
         return listFlow(pi, cwd)
@@ -664,7 +742,7 @@ export default function (pi: ExtensionAPI) {
       if (params.action === 'bind') {
         return bindFlow(pi, cwd, params)
       }
-      return removeFlow(pi, cwd, params)
+      return removeFlow(pi, resolveEffects(deps), cwd, params)
     },
   })
 }

@@ -709,7 +709,13 @@ import worktreeExtension from '../worktree/index.ts'
 
 type BindExecute = (
   toolCallId: string,
-  params: { action: string; path?: string; branch?: string },
+  params: {
+    action: string
+    path?: string
+    branch?: string
+    cwd?: string
+    force?: boolean
+  },
   signal: AbortSignal,
   onUpdate: unknown,
   ctx: Record<string, unknown>,
@@ -719,26 +725,39 @@ type BindExecute = (
 // the mock exec serves the given worktrees as that command's JSON.
 function makeWorktreeTool(
   herdrWorktrees: { path: string; branch: string }[] = [],
+  opts?: {
+    exec?: (
+      command: string,
+      args: string[],
+      options?: { cwd?: string },
+    ) => Promise<{ code: number; stdout: string; stderr: string }>
+    deps?: { effects?: unknown }
+  },
 ): BindExecute {
   const tools: { name: string; execute: BindExecute }[] = []
-  const mockPi = {
-    exec: async () => ({
-      code: 0,
-      stderr: '',
-      stdout: JSON.stringify({
-        result: {
-          worktrees: herdrWorktrees.map((w) => ({
-            ...w,
-            is_linked: true,
-          })),
-        },
-      }),
+  const defaultExec = async () => ({
+    code: 0,
+    stderr: '',
+    stdout: JSON.stringify({
+      result: {
+        worktrees: herdrWorktrees.map((w) => ({
+          ...w,
+          is_linked: true,
+        })),
+      },
     }),
+  })
+  const mockPi = {
+    exec: opts?.exec ?? defaultExec,
     registerTool: (options: unknown) => {
       tools.push(options as { name: string; execute: BindExecute })
     },
   } as unknown as ExtensionAPI
-  worktreeExtension(mockPi)
+  const ext = worktreeExtension as unknown as (
+    pi: ExtensionAPI,
+    deps?: unknown,
+  ) => void
+  ext(mockPi, opts?.deps)
   const tool = tools.find((t) => t.name === 'worktree')
   assert.ok(tool, 'worktree tool registered')
   return tool.execute
@@ -891,5 +910,320 @@ test('worktree bind: reports a replaced binding', async () => {
   assert.match(
     result.content[0]?.text ?? '',
     /replacing previous binding \/tmp\/old-binding/,
+  )
+})
+
+// --- worktree tool: effect declarations (PMR-VDVJ phase 5) ---
+
+import type { EffectDeclarationRecord, EffectJournal } from '../run-state.ts'
+
+const BASE_SHA = `${'a'.repeat(39)}b`
+
+interface CapturedDeclaration {
+  ref: string
+  effect: string
+  command: string
+  recipe: string[]
+  headSha?: string
+}
+
+// AIDEV-NOTE: fake journal — records declarations in memory, never touches
+// the real journal file; `declareOk` flips the fail-closed gate per test.
+function makeFakeEffects(declareOk: boolean): EffectJournal & {
+  declarations: CapturedDeclaration[]
+} {
+  const declarations: CapturedDeclaration[] = []
+  const journal = {
+    declarations,
+    declare: async (input: {
+      ref: string
+      effect: string
+      command: string
+      recipe: string[]
+      headSha?: string
+    }) => {
+      declarations.push({
+        ref: input.ref,
+        effect: input.effect,
+        command: input.command,
+        recipe: input.recipe,
+        headSha: input.headSha,
+      })
+      if (!declareOk) {
+        return { ok: false as const, reason: 'journal offline' }
+      }
+      return { ok: true as const, effectId: 'deadbeef1234' }
+    },
+    find: async (_query: {
+      ref: string
+      effect: string
+      headSha?: string
+    }): Promise<EffectDeclarationRecord | null> => null,
+  }
+  return journal as EffectJournal & { declarations: CapturedDeclaration[] }
+}
+
+// AIDEV-NOTE: routed exec fake for the create path — serves the exact
+// commands createFlow issues (git introspection, herdr preflight/list,
+// herdr worktree create) and records every herdr call so tests can assert
+// create was or was not invoked.
+function makeCreateExec(): {
+  exec: (
+    command: string,
+    args: string[],
+    options?: { cwd?: string },
+  ) => Promise<{ code: number; stdout: string; stderr: string }>
+  herdrCalls: string[]
+} {
+  const herdrCalls: string[] = []
+  const exec = async (
+    command: string,
+    args: string[],
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    if (command === 'herdr') {
+      herdrCalls.push(`herdr ${args.join(' ')}`)
+      if (args[1] === 'create') {
+        return {
+          code: 0,
+          stderr: '',
+          stdout: JSON.stringify({
+            result: {
+              worktree: {
+                open_workspace_id: 'w27',
+                path: '/tmp/herdr-wt/feat-x',
+              },
+            },
+          }),
+        }
+      }
+      return {
+        code: 0,
+        stderr: '',
+        stdout: JSON.stringify({ result: { worktrees: [] } }),
+      }
+    }
+    if (command === 'git' && args[0] === 'worktree') {
+      return {
+        code: 0,
+        stderr: '',
+        stdout: `worktree /tmp/main-checkout\nHEAD ${BASE_SHA}\nbranch refs/heads/main\n`,
+      }
+    }
+    if (command === 'git' && args[0] === 'rev-parse') {
+      if (args[1] === '--abbrev-ref') {
+        return { code: 0, stderr: '', stdout: 'main\n' }
+      }
+      return { code: 0, stderr: '', stdout: `${BASE_SHA}\n` }
+    }
+    return { code: 0, stderr: '', stdout: '' }
+  }
+  return { exec, herdrCalls }
+}
+
+function makeRemoveExec(workspaceId: string): {
+  exec: (
+    command: string,
+    args: string[],
+    options?: { cwd?: string },
+  ) => Promise<{ code: number; stdout: string; stderr: string }>
+  herdrCalls: string[]
+} {
+  const herdrCalls: string[] = []
+  const exec = async (
+    command: string,
+    args: string[],
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    if (command === 'herdr') {
+      herdrCalls.push(`herdr ${args.join(' ')}`)
+      if (args[1] === 'list') {
+        return {
+          code: 0,
+          stderr: '',
+          stdout: JSON.stringify({
+            result: {
+              worktrees: [
+                {
+                  path: '/tmp/herdr-wt/feat-x',
+                  branch: 'feat/x',
+                  workspace_id: workspaceId,
+                  is_linked_worktree: true,
+                },
+              ],
+            },
+          }),
+        }
+      }
+      return { code: 0, stderr: '', stdout: '' }
+    }
+    if (command === 'git' && args[0] === 'worktree') {
+      return {
+        code: 0,
+        stderr: '',
+        stdout: 'worktree /tmp/main-checkout\nbranch refs/heads/main\n',
+      }
+    }
+    if (
+      command === 'git' &&
+      args[0] === 'rev-parse' &&
+      args[1] === '--abbrev-ref'
+    ) {
+      return { code: 0, stderr: '', stdout: 'feat/x\n' }
+    }
+    return { code: 0, stderr: '', stdout: '' }
+  }
+  return { exec, herdrCalls }
+}
+
+test('worktree create: failing declare refuses before herdr create and clears flow base', async () => {
+  const { exec, herdrCalls } = makeCreateExec()
+  const configCalls: string[] = []
+  const routedExec = async (
+    command: string,
+    args: string[],
+    options?: { cwd?: string },
+  ) => {
+    if (command === 'git' && args[0] === 'config') {
+      configCalls.push(args.join(' '))
+    }
+    return exec(command, args, options)
+  }
+  const effects = makeFakeEffects(false)
+  const execute = makeWorktreeTool([], { exec: routedExec, deps: { effects } })
+  const result = await execute(
+    'call-e1',
+    { action: 'create', branch: 'feat/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /refus/i)
+  assert.match(result.content[0]?.text ?? '', /journal offline/)
+  assert.match(result.content[0]?.text ?? '', /fail-closed/i)
+  assert.equal(
+    herdrCalls.some((c) => c.startsWith('herdr worktree create')),
+    false,
+    'herdr worktree create must NOT run when declare fails',
+  )
+  assert.ok(
+    configCalls.some((c) => c.includes('--unset branch.feat/x.flowbase')),
+    'flow base must be cleared (git config --unset) after refused create',
+  )
+})
+
+test('worktree create: succeeding declare mirrors herdr argv and behaves as today', async () => {
+  const { exec, herdrCalls } = makeCreateExec()
+  const effects = makeFakeEffects(true)
+  const execute = makeWorktreeTool([], { exec, deps: { effects } })
+  const result = await execute(
+    'call-e2',
+    { action: 'create', branch: 'feat/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /Worktree ready: feat\/x/)
+  assert.ok(
+    herdrCalls.some((c) => c.startsWith('herdr worktree create')),
+    'herdr worktree create runs when declare succeeds',
+  )
+  assert.equal(effects.declarations.length, 1)
+  const decl = effects.declarations[0]
+  assert.equal(decl.effect, 'worktree-create')
+  assert.equal(decl.headSha, undefined)
+  assert.ok(decl.recipe.length > 0)
+  assert.equal(
+    decl.command,
+    `herdr worktree create --cwd ${bindCtx.cwd} --branch feat/x --label featx --base ${BASE_SHA}`,
+  )
+})
+
+test('worktree create: declaration lands under the active flow ref, else worktree-ops', async () => {
+  const active = makeCreateExec()
+  const activeEffects = makeFakeEffects(true)
+  const executeActive = makeWorktreeTool([], {
+    exec: active.exec,
+    deps: { effects: activeEffects },
+  })
+  setActiveFlowRef('PMR-FLOWREF')
+  await executeActive(
+    'call-e3',
+    { action: 'create', branch: 'feat/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.equal(activeEffects.declarations[0]?.ref, 'PMR-FLOWREF')
+
+  const idle = makeCreateExec()
+  const idleEffects = makeFakeEffects(true)
+  const executeIdle = makeWorktreeTool([], {
+    exec: idle.exec,
+    deps: { effects: idleEffects },
+  })
+  setActiveFlowRef(null)
+  await executeIdle(
+    'call-e4',
+    { action: 'create', branch: 'feat/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.equal(idleEffects.declarations[0]?.ref, 'worktree-ops')
+})
+
+test('worktree remove: failing declare leaves worktree intact (no herdr remove)', async () => {
+  const { exec, herdrCalls } = makeRemoveExec('w27')
+  const effects = makeFakeEffects(false)
+  const execute = makeWorktreeTool([], { exec, deps: { effects } })
+  const result = await execute(
+    'call-e5',
+    { action: 'remove', cwd: '/tmp/herdr-wt/feat-x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /refus/i)
+  assert.match(result.content[0]?.text ?? '', /journal offline/)
+  assert.equal(
+    herdrCalls.some((c) => c.startsWith('herdr worktree remove')),
+    false,
+    'herdr worktree remove must NOT run when declare fails',
+  )
+})
+
+test('worktree remove: succeeding declare mirrors herdr argv and removes as today', async () => {
+  const { exec, herdrCalls } = makeRemoveExec('w27')
+  const effects = makeFakeEffects(true)
+  const execute = makeWorktreeTool([], { exec, deps: { effects } })
+  const result = await execute(
+    'call-e6',
+    { action: 'remove', cwd: '/tmp/herdr-wt/feat-x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /Removed worktree at/)
+  assert.ok(herdrCalls.includes('herdr worktree remove --workspace w27'))
+  assert.equal(effects.declarations.length, 1)
+  const decl = effects.declarations[0]
+  assert.equal(decl.effect, 'worktree-remove')
+  assert.equal(decl.command, 'herdr worktree remove --workspace w27')
+  assert.ok(decl.recipe.length > 0)
+})
+
+test('worktree remove: force appends --force to the declared command', async () => {
+  const { exec } = makeRemoveExec('w27')
+  const effects = makeFakeEffects(true)
+  const execute = makeWorktreeTool([], { exec, deps: { effects } })
+  await execute(
+    'call-e7',
+    { action: 'remove', cwd: '/tmp/herdr-wt/feat-x', force: true },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.equal(
+    effects.declarations[0]?.command,
+    'herdr worktree remove --workspace w27 --force',
   )
 })
