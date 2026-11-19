@@ -254,7 +254,10 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   `code_review` (human review gate: resolves the ref's worktree incl. external
   ones, opens `tuicr` in a herdr tab, asks pass/fail; pass records the
   human-review marker, fail records findings as an aven note; agent-attested
-  `outcome="pass"` is refused when the blocking ask exists).
+  `outcome="pass"` is refused when the blocking ask exists),
+  `flow_submit` (advisory step-output journal: subtasks report step evidence
+  per phase — journaled as `step-output` events; warned submissions never
+  block a phase and `/flow-cost` summarizes them).
   `flow_land` authorization is **single-use and ref-scoped**; personal
   `merge-main` additionally requires the human code-review pass marker, and
   every route requires a **green test suite the gate ran itself**
