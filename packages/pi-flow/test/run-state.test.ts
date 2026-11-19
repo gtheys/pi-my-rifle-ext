@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   applyEvent,
+  createEffectJournal,
   createReceiptJournal,
+  effectDeclarationId,
   type FlowRunEvent,
   isFlowRunState,
   projectRunState,
@@ -992,4 +994,236 @@ test('gate-answer: rebuild over a journal mixing known and unknown kinds stays s
     { gate: 'spec-review', choice: 'approve', at: 't2' },
   ])
   assert.deepEqual(state.notes, [{ at: 't3', text: 'hello' }])
+})
+
+// --- effect-declaration event kind (PMR-VDVJ phase 1) ---
+
+function declarationEvent(
+  at: string,
+  effectId: string,
+  overrides: Partial<{
+    effect: 'git-push'
+    command: string
+    recipe: string[]
+    headSha: string
+  }> = {},
+) {
+  return {
+    kind: 'effect-declaration' as const,
+    at,
+    ref: 'PMR-1',
+    effect: overrides.effect ?? ('git-push' as const),
+    effectId,
+    command: overrides.command ?? 'git push origin feat',
+    recipe: overrides.recipe ?? ['revert the push'],
+    headSha: overrides.headSha,
+  }
+}
+
+test('applyEvent: effect-declaration appends to effectDeclarations', () => {
+  let state = applyEvent(null, receiptRun)
+  assert.equal(state.effectDeclarations, undefined)
+  state = applyEvent(state, declarationEvent('t1', 'eff1'))
+  assert.equal(state.effectDeclarations?.length, 1)
+  assert.deepEqual(state.effectDeclarations?.[0], {
+    effect: 'git-push',
+    effectId: 'eff1',
+    command: 'git push origin feat',
+    recipe: ['revert the push'],
+    headSha: undefined,
+    at: 't1',
+  })
+})
+
+test('applyEvent: effect-declaration is idempotent by effectId', () => {
+  let state = applyEvent(null, receiptRun)
+  state = applyEvent(state, declarationEvent('t1', 'eff1'))
+  const same = applyEvent(state, declarationEvent('t2', 'eff1'))
+  assert.equal(same, state)
+  const different = applyEvent(state, declarationEvent('t3', 'eff2'))
+  assert.equal(different.effectDeclarations?.length, 2)
+})
+
+test('isFlowRunState: absent effectDeclarations stays valid, malformed rejected', () => {
+  const legacy = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+    mode: 'work',
+    startedAt: 't0',
+    updatedAt: 't0',
+    completedPhases: [],
+    currentPhase: null,
+    notes: [],
+  }
+  assert.ok(isFlowRunState(legacy))
+  const good = [
+    {
+      effect: 'git-push',
+      effectId: 'eff1',
+      command: 'git push origin feat',
+      recipe: ['revert'],
+      at: 't1',
+    },
+  ]
+  assert.ok(isFlowRunState({ ...legacy, effectDeclarations: good }))
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      effectDeclarations: [{ ...good[0], effect: 'nuke-everything' }],
+    }),
+  )
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      effectDeclarations: [{ ...good[0], recipe: [] }],
+    }),
+  )
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      effectDeclarations: [{ ...good[0], recipe: ['ok', ''] }],
+    }),
+  )
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      effectDeclarations: [{ ...good[0], headSha: 42 }],
+    }),
+  )
+})
+
+test('effectDeclarationId: deterministic, first 12 hex, includes headSha', () => {
+  const a = effectDeclarationId({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+  })
+  const b = effectDeclarationId({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+  })
+  const c = effectDeclarationId({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    headSha: 'a'.repeat(40),
+  })
+  assert.equal(a, b)
+  assert.equal(a.length, 12)
+  assert.notEqual(a, c)
+})
+
+test('createEffectJournal: declare appends journal line (journal-only, strict)', async () => {
+  const files: MemFiles = new Map()
+  const effects = createEffectJournal('/agent', fakeIo(files))
+  const result = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: ['revert the push'],
+  })
+  assert.ok(result.ok)
+  const journal = files.get('/agent/pi-flow/runs/PMR-1.journal.jsonl')
+  assert.ok(journal)
+  const lines = journal.split('\n').filter(Boolean)
+  assert.equal(lines.length, 1)
+  const parsed = JSON.parse(lines[0] ?? '{}')
+  assert.equal(parsed.kind, 'effect-declaration')
+  assert.equal(parsed.effectId, result.effectId)
+  assert.deepEqual(parsed.recipe, ['revert the push'])
+})
+
+test('createEffectJournal: declare is idempotent — no second line for identical input', async () => {
+  const files: MemFiles = new Map()
+  const effects = createEffectJournal('/agent', fakeIo(files))
+  const first = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: ['revert the push'],
+  })
+  const second = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: ['revert the push'],
+  })
+  assert.ok(first.ok && second.ok)
+  assert.equal(first.effectId, second.effectId)
+  const journal = files.get('/agent/pi-flow/runs/PMR-1.journal.jsonl') ?? ''
+  assert.equal(journal.split('\n').filter(Boolean).length, 1)
+})
+
+test('createEffectJournal: declare fails closed when append throws', async () => {
+  const boomIo = {
+    readFile: async () => {
+      throw new Error('boom')
+    },
+    appendFile: async () => {
+      throw new Error('boom')
+    },
+    writeFile: async () => {
+      throw new Error('boom')
+    },
+    mkdir: async () => {},
+  }
+  const effects = createEffectJournal('/agent', boomIo)
+  const result = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: ['revert the push'],
+  })
+  assert.ok(!result.ok)
+  assert.ok(result.ok ? '' : result.reason.includes('fail-closed'))
+})
+
+test('createEffectJournal: declare rejects invalid ref', async () => {
+  const files: MemFiles = new Map()
+  const effects = createEffectJournal('/agent', fakeIo(files))
+  const result = await effects.declare({
+    ref: 'bad/ref',
+    effect: 'git-push',
+    command: 'git push origin feat',
+    recipe: ['revert the push'],
+  })
+  assert.ok(!result.ok)
+  assert.equal(files.get('/agent/pi-flow/runs/bad.journal.jsonl'), undefined)
+})
+
+test('createEffectJournal: find returns the record with its recipe; headSha exact match', async () => {
+  const files: MemFiles = new Map()
+  const effects = createEffectJournal('/agent', fakeIo(files))
+  const declared = await effects.declare({
+    ref: 'PMR-1',
+    effect: 'merge-main',
+    command: 'git -C /main merge --ff-only feat',
+    recipe: ['git -C /main reset --hard ORIG_HEAD'],
+    headSha: 'b'.repeat(40),
+  })
+  assert.ok(declared.ok)
+  const found = await effects.find({
+    ref: 'PMR-1',
+    effect: 'merge-main',
+    headSha: 'b'.repeat(40),
+  })
+  assert.ok(found)
+  assert.deepEqual(found.recipe, ['git -C /main reset --hard ORIG_HEAD'])
+  assert.equal(found.command, 'git -C /main merge --ff-only feat')
+  assert.equal(
+    await effects.find({
+      ref: 'PMR-1',
+      effect: 'merge-main',
+      headSha: 'c'.repeat(40),
+    }),
+    null,
+  )
+  assert.equal(await effects.find({ ref: 'PMR-1', effect: 'git-push' }), null)
+})
+
+test('createEffectJournal: find returns null on missing journal', async () => {
+  const files: MemFiles = new Map()
+  const effects = createEffectJournal('/agent', fakeIo(files))
+  assert.equal(await effects.find({ ref: 'PMR-1', effect: 'git-push' }), null)
 })

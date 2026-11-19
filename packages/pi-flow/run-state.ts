@@ -8,6 +8,7 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { AnswerChoice } from './aven/client.ts'
+import { sha256Hex } from './validate/gate-target.ts'
 
 // AIDEV-NOTE: PMR-Z2K7 — 'research' left the flow lifecycle (PIV); old
 // journals containing research phases fail isFlowRunState and are rebuilt
@@ -60,11 +61,40 @@ const RECEIPT_COMMANDS: readonly ReceiptCommand[] = [
   'spec_approve',
 ]
 
+// AIDEV-NOTE: PMR-VDVJ — kinds of side-effecting actions that must declare
+// themselves in the run journal BEFORE they may run (see effect-declaration).
+export type EffectKind =
+  | 'merge-main'
+  | 'git-push'
+  | 'gh-pr-create'
+  | 'worktree-create'
+  | 'worktree-remove'
+
+// Exported for flow/effect-gate.ts (PMR-VDVJ phase 2) to mirror the union.
+export const EFFECT_KINDS: readonly EffectKind[] = [
+  'merge-main',
+  'git-push',
+  'gh-pr-create',
+  'worktree-create',
+  'worktree-remove',
+]
+
 export interface CommandReceiptRecord {
   command: ReceiptCommand
   target: string
   headSha?: string
   status: 'ok'
+  at: string
+}
+
+// AIDEV-NOTE: PMR-VDVJ — one per declared side-effecting action, idempotent
+// by effectId (deterministic hash of ref|effect|command|headSha).
+export interface EffectDeclarationRecord {
+  effect: EffectKind
+  effectId: string
+  command: string
+  recipe: string[]
+  headSha?: string
   at: string
 }
 
@@ -203,6 +233,24 @@ export type FlowRunEvent =
       outcome: 'passed' | 'retry' | 'escalate'
       attempts: number
     }
+  | {
+      /**
+       * AIDEV-NOTE: PMR-VDVJ — effect declaration: journaled BEFORE a
+       * side-effecting action may run (push / pr create / merge-main /
+       * worktree create / remove). Carries the recovery recipe so undo
+       * steps are journal-readable. Journal-only + STRICT: unlike receipts,
+       * a failed declaration write refuses the effect (fail-closed by
+       * design — this gate never degrades to prompt).
+       */
+      kind: 'effect-declaration'
+      at: string
+      ref: string
+      effect: EffectKind
+      effectId: string
+      command: string
+      recipe: string[]
+      headSha?: string
+    }
 
 export interface RunInputRecord {
   mode: 'work' | 'personal'
@@ -253,6 +301,9 @@ export type FlowRunState = {
   // AIDEV-NOTE: PMR-4S6V — optional so pre-receipt projections (and old
   // journals rebuilt without command-receipt events) stay valid.
   receipts?: CommandReceiptRecord[]
+  // AIDEV-NOTE: PMR-VDVJ — optional so pre-effect-declaration projections
+  // (and old journals rebuilt without effect-declaration events) stay valid.
+  effectDeclarations?: EffectDeclarationRecord[]
   // AIDEV-NOTE: durable run server — optional so pre-input/loop projections
   // (and old journals rebuilt without these events) stay valid.
   input?: RunInputRecord
@@ -430,6 +481,30 @@ export function applyEvent(
             target: event.target,
             headSha: event.headSha,
             status: event.status,
+            at: event.at,
+          },
+        ],
+        updatedAt: event.at,
+      }
+    }
+    case 'effect-declaration': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      const effectDeclarations = state.effectDeclarations ?? []
+      // AIDEV-NOTE: PMR-VDVJ — idempotent by effectId: re-declaring the
+      // same effect (same deterministic id) returns the same state.
+      if (effectDeclarations.some((d) => d.effectId === event.effectId))
+        return state
+      return {
+        ...state,
+        effectDeclarations: [
+          ...effectDeclarations,
+          {
+            effect: event.effect,
+            effectId: event.effectId,
+            command: event.command,
+            recipe: event.recipe,
+            headSha: event.headSha,
             at: event.at,
           },
         ],
@@ -655,6 +730,31 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
           typeof (r as Record<string, unknown>).headSha === 'string'),
     )
     if (!receiptsOk) return false
+  }
+  // AIDEV-NOTE: PMR-VDVJ — effect declarations validated only when present
+  // (old journals). STRICT consumers depend on this block keeping the same
+  // discipline as the receipts block above.
+  if (v.effectDeclarations !== undefined) {
+    if (!Array.isArray(v.effectDeclarations)) return false
+    const declarationsOk = v.effectDeclarations.every(
+      (d) =>
+        typeof d === 'object' &&
+        d !== null &&
+        EFFECT_KINDS.includes(
+          (d as Record<string, unknown>).effect as EffectKind,
+        ) &&
+        typeof (d as Record<string, unknown>).effectId === 'string' &&
+        typeof (d as Record<string, unknown>).command === 'string' &&
+        Array.isArray((d as Record<string, unknown>).recipe) &&
+        ((d as Record<string, unknown>).recipe as unknown[]).length > 0 &&
+        ((d as Record<string, unknown>).recipe as unknown[]).every(
+          (step) => typeof step === 'string' && step.length > 0,
+        ) &&
+        typeof (d as Record<string, unknown>).at === 'string' &&
+        ((d as Record<string, unknown>).headSha === undefined ||
+          typeof (d as Record<string, unknown>).headSha === 'string'),
+    )
+    if (!declarationsOk) return false
   }
   // AIDEV-NOTE: durable run server — input/loop validated only when present
   // (old journals/projections lack them).
@@ -923,4 +1023,137 @@ export function createReceiptJournal(
     }
   }
   return { find, record: recordEvent }
+}
+
+// AIDEV-NOTE: PMR-VDVJ — deterministic effect id: first 12 hex of sha256
+// over 'ref|effect|command|headSha' (headSha absent = empty segment). Same
+// input always maps to the same id, which is what makes declare() idempotent.
+export function effectDeclarationId(input: {
+  ref: string
+  effect: EffectKind
+  command: string
+  headSha?: string
+}): string {
+  const headSha = input.headSha ?? ''
+  return sha256Hex(
+    `${input.ref}|${input.effect}|${input.command}|${headSha}`,
+  ).slice(0, 12)
+}
+
+export interface EffectDeclareInput {
+  ref: string
+  effect: EffectKind
+  command: string
+  recipe: string[]
+  headSha?: string
+}
+
+/**
+ * AIDEV-NOTE: PMR-VDVJ — STRICT effect journal access, the fail-closed twin
+ * of the best-effort ReceiptJournal. declare() must succeed before a
+ * side-effecting action may run: an invalid ref is rejected (recordRunEvent
+ * JournalOnly would silently no-op, which is fail-open), an append failure is
+ * converted to {ok:false} so the caller refuses the effect, and identical
+ * re-declarations are idempotent (no second journal line). Journal-only on
+ * purpose: O_APPEND is daemon-safe and the projection folds in on the next
+ * full write — readers use the journal.
+ */
+export interface EffectJournal {
+  declare(
+    input: EffectDeclareInput,
+  ): Promise<{ ok: true; effectId: string } | { ok: false; reason: string }>
+  find(query: {
+    ref: string
+    effect: EffectKind
+    headSha?: string
+  }): Promise<EffectDeclarationRecord | null>
+}
+
+export function createEffectJournal(
+  agentDir: string,
+  io?: {
+    readFile: (p: string) => Promise<string>
+    appendFile: (p: string, data: string) => Promise<void>
+  },
+): EffectJournal {
+  const readFile = io?.readFile ?? ((p: string) => fs.readFile(p, 'utf8'))
+  const appendFile =
+    io?.appendFile ??
+    (async (p: string, data: string) => {
+      await fs.appendFile(p, data, 'utf8')
+    })
+
+  const declare = async (
+    input: EffectDeclareInput,
+  ): Promise<
+    { ok: true; effectId: string } | { ok: false; reason: string }
+  > => {
+    const statePath = runStatePath(agentDir, input.ref)
+    // AIDEV-NOTE: PMR-VDVJ — invalid ref must fail here: the journal-only
+    // append would silently no-op and the effect would run undeclared.
+    if (statePath === null) {
+      return {
+        ok: false,
+        reason: `invalid run ref, effect declaration refused (fail-closed): ${input.ref}`,
+      }
+    }
+    const journalPath = journalPathFor(statePath)
+    const effectId = effectDeclarationId(input)
+    // Idempotent: an identical declaration already journaled — do not append.
+    const existing = await find({
+      ref: input.ref,
+      effect: input.effect,
+      headSha: input.headSha,
+    })
+    if (existing !== null && existing.effectId === effectId) {
+      return { ok: true, effectId }
+    }
+    const event: FlowRunEvent = {
+      kind: 'effect-declaration',
+      at: new Date().toISOString(),
+      ref: input.ref,
+      effect: input.effect,
+      effectId,
+      command: input.command,
+      recipe: input.recipe,
+    }
+    if (input.headSha !== undefined) event.headSha = input.headSha
+    try {
+      await appendFile(journalPath, `${JSON.stringify(event)}\n`)
+    } catch (err) {
+      return {
+        ok: false,
+        reason: `effect declaration could not be recorded in the run journal (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
+    return { ok: true, effectId }
+  }
+
+  const find = async (query: {
+    ref: string
+    effect: EffectKind
+    headSha?: string
+  }): Promise<EffectDeclarationRecord | null> => {
+    const events = await readRunEvents(agentDir, query.ref, { readFile })
+    if (events === null) return null
+    for (const event of events) {
+      if (event.kind !== 'effect-declaration') continue
+      if (event.ref !== query.ref) continue
+      if (event.effect !== query.effect) continue
+      if (query.headSha !== undefined && event.headSha !== query.headSha)
+        continue
+      const record: EffectDeclarationRecord = {
+        effect: event.effect,
+        effectId: event.effectId,
+        command: event.command,
+        recipe: event.recipe,
+        at: event.at,
+      }
+      if (event.headSha !== undefined) record.headSha = event.headSha
+      return record
+    }
+    return null
+  }
+
+  return { declare, find }
 }
