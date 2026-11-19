@@ -3,6 +3,36 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const SNAPSHOT_STALLED_AFTER_MS = 60_000
+
+// AIDEV-NOTE (PMR-YFRB): parent-side dead-turn watchdog thresholds. The short
+// bucket covers scopes where silence means the model turn died mid-generation
+// (streaming/provider); the long bucket covers legitimately quiet scopes
+// (tool/turn/unknown) and sustained snapshot loss. Configurable via the
+// `watchdog` object in pi-subagents/config.json; `enabled: false` restores the
+// legacy never-age behavior.
+export const STREAM_STALL_AFTER_MS = 150_000
+export const QUIET_STALL_AFTER_MS = 1_800_000
+
+export interface StallThresholds {
+  enabled: boolean
+  streamStallAfterMs: number
+  quietStallAfterMs: number
+}
+
+export const DEFAULT_STALL_THRESHOLDS: StallThresholds = {
+  enabled: true,
+  streamStallAfterMs: STREAM_STALL_AFTER_MS,
+  quietStallAfterMs: QUIET_STALL_AFTER_MS,
+}
+
+export type TurnStallReason = 'dead-turn' | 'no-activity'
+
+export interface TurnStallVerdict {
+  stalled: boolean
+  reason: TurnStallReason | null
+  activeScope: string | null
+  stalledForMs: number
+}
 export const DEFAULT_STATUS_LINE_LIMIT = 4
 export const MAX_STATUS_NAME_LENGTH = 72
 export const MAX_STATUS_LINE_LENGTH = 120
@@ -501,9 +531,103 @@ function classifyProblemState(
   return { kind: lastHealthyKindOf(state), statusLabel: problemLabel }
 }
 
+// AIDEV-NOTE (PMR-YFRB): pure, now-parameterized dead-turn watchdog verdict.
+// Scope-aware aging of the last recorded activity: streaming/provider get the
+// short bucket (silence there means the model turn died mid-generation);
+// tool/turn/null/unknown scopes get the long bucket (a 20-minute bash is
+// legitimate). A missing/invalid/wrong-id snapshot sustained past the long
+// bucket is 'no-activity' — the poll-loop escalation backstop for vanished
+// panes. Blocked (PMR-WXG0), waiting, and claude sources never stall here.
+export function classifyTurnStall(
+  state: SubagentStatusState,
+  now: number,
+  thresholds: StallThresholds = DEFAULT_STALL_THRESHOLDS,
+): TurnStallVerdict {
+  if (state.source === 'claude' || !thresholds.enabled) {
+    return { stalled: false, reason: null, activeScope: null, stalledForMs: 0 }
+  }
+
+  const snapshotPresent = state.snapshotState === 'present'
+  const isActive = state.phase === 'active' || state.activeNow
+
+  if (snapshotPresent && isActive) {
+    const lastActivityAtMs = state.lastActivityAtMs
+    if (lastActivityAtMs == null) {
+      return {
+        stalled: false,
+        reason: null,
+        activeScope: null,
+        stalledForMs: 0,
+      }
+    }
+    const scope = state.activeScope
+    const shortBucket = scope === 'streaming' || scope === 'provider'
+    let deadline: number
+    if (shortBucket) {
+      deadline = thresholds.streamStallAfterMs
+    } else {
+      deadline = thresholds.quietStallAfterMs
+    }
+    const ageMs = now - lastActivityAtMs
+    if (ageMs < deadline) {
+      return {
+        stalled: false,
+        reason: null,
+        activeScope: scope,
+        stalledForMs: 0,
+      }
+    }
+    return {
+      stalled: true,
+      reason: 'dead-turn',
+      activeScope: scope,
+      stalledForMs: ageMs,
+    }
+  }
+
+  if (!snapshotPresent) {
+    const referenceMs =
+      state.snapshotProblemSinceMs ??
+      state.firstObservationAtMs ??
+      state.startTimeMs
+    const ageMs = now - referenceMs
+    if (ageMs < thresholds.quietStallAfterMs) {
+      return {
+        stalled: false,
+        reason: null,
+        activeScope: null,
+        stalledForMs: 0,
+      }
+    }
+    return {
+      stalled: true,
+      reason: 'no-activity',
+      activeScope: null,
+      stalledForMs: ageMs,
+    }
+  }
+
+  // Present snapshot, but blocked / waiting / done / fresh — never stalled.
+  return { stalled: false, reason: null, activeScope: null, stalledForMs: 0 }
+}
+
+function formatHumanDuration(ms: number): string {
+  return formatElapsedDuration(Math.max(0, ms))
+}
+
+/** Human-readable error message for an escalated stall (PMR-YFRB). */
+export function stallErrorMessage(verdict: TurnStallVerdict): string {
+  if (verdict.reason === 'no-activity') {
+    return `Subagent turn stalled: no activity snapshot for ${formatHumanDuration(verdict.stalledForMs)} (snapshot missing).`
+  }
+  const scope = verdict.activeScope ?? 'unknown'
+  return `Subagent turn stalled: ${scope} inactive for ${formatHumanDuration(verdict.stalledForMs)}.`
+}
+
 export function classifyStatus(
   state: SubagentStatusState,
   now: number,
+  thresholds: StallThresholds = DEFAULT_STALL_THRESHOLDS,
 ): StatusSnapshot {
   const elapsedMs = Math.max(0, now - state.startTimeMs)
   const elapsedText = formatElapsedDuration(elapsedMs)
@@ -534,7 +658,17 @@ export function classifyStatus(
 
   if (state.snapshotState === 'present') {
     if (state.phase === 'active' || state.activeNow) {
-      kind = 'active'
+      // AIDEV-NOTE (PMR-YFRB): a present+active snapshot can now age into a
+      // dead turn via the scope-aware watchdog verdict. With the default
+      // thresholds and fresh activity this is a no-op, so legacy behavior is
+      // unchanged for anything inside its deadline.
+      const verdict = classifyTurnStall(state, now, thresholds)
+      if (verdict.stalled && verdict.reason === 'dead-turn') {
+        kind = 'stalled'
+        statusLabel = 'dead turn'
+      } else {
+        kind = 'active'
+      }
     } else if (state.phase === 'blocked') {
       // AIDEV-NOTE: blocked ≠ stalled (PMR-WXG0) — a blocked-asking child is
       // intentionally waiting for its owner and must never trip the 60s
@@ -600,12 +734,13 @@ export function classifyStatus(
 export function advanceStatusState(
   state: SubagentStatusState,
   now: number,
+  thresholds: StallThresholds = DEFAULT_STALL_THRESHOLDS,
 ): {
   nextState: SubagentStatusState
   snapshot: StatusSnapshot
   transition: SubagentStatusTransition
 } {
-  const snapshot = classifyStatus(state, now)
+  const snapshot = classifyStatus(state, now, thresholds)
   const transition =
     state.currentKind !== 'stalled' && snapshot.kind === 'stalled'
       ? 'stalled'

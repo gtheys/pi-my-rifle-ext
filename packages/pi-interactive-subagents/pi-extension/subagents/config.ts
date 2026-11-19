@@ -46,15 +46,42 @@ const SubagentsConfigSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    // AIDEV-NOTE (PMR-YFRB): dead-turn stall watchdog — opt-OUT, absent
+    // config = watchdog on. `enabled: false` restores the legacy never-age
+    // behavior (present+active snapshots never classify as stalled and the
+    // poll loop never escalates on the stall deadline).
+    watchdog: Type.Optional(
+      Type.Object(
+        {
+          enabled: Type.Optional(Type.Boolean()),
+          streamStallAfterMs: Type.Optional(Type.Number()),
+          quietStallAfterMs: Type.Optional(Type.Number()),
+        },
+        { additionalProperties: false },
+      ),
+    ),
   },
   { additionalProperties: false },
 )
 
 export type SubagentsConfig = Static<typeof SubagentsConfigSchema>
 
+export interface WatchdogConfig {
+  enabled: boolean
+  streamStallAfterMs: number
+  quietStallAfterMs: number
+}
+
+export const DEFAULT_WATCHDOG_CONFIG: WatchdogConfig = {
+  enabled: true,
+  streamStallAfterMs: 150_000,
+  quietStallAfterMs: 1_800_000,
+}
+
 export const DEFAULT_SUBAGENTS_CONFIG: SubagentsConfig = {
   status: { enabled: true, hideWhenIdle: true },
   contextRetirement: { enabled: false },
+  watchdog: DEFAULT_WATCHDOG_CONFIG,
 }
 
 export function globalSubagentsConfigPath(
@@ -84,6 +111,9 @@ export function validateSubagentsConfig(
   const config: SubagentsConfig = { status: raw.status }
   if (raw.contextRetirement !== undefined) {
     config.contextRetirement = raw.contextRetirement
+  }
+  if (raw.watchdog !== undefined) {
+    config.watchdog = raw.watchdog
   }
   return config
 }

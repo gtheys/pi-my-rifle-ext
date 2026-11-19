@@ -248,6 +248,9 @@ Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on
 | `status.enabled` | boolean | `true` | Live status widget and refresh loop |
 | `status.hideWhenIdle` | boolean | `true` | Hide the "Subagents · N running" widget completely while no subagent exists; set `false` to keep the box visible at zero |
 | `contextRetirement.enabled` | boolean | `false` | Retire settled subagent payloads to durable refs when compaction pressure hits |
+| `watchdog.enabled` | boolean | `true` | Dead-turn stall watchdog: age frozen present+active snapshots into `stalled` and escalate dead child turns. `false` restores the legacy never-age behavior |
+| `watchdog.streamStallAfterMs` | number | `150000` | Deadline (ms) for frozen `streaming`/`provider` scopes — silence there means the model turn died mid-generation |
+| `watchdog.quietStallAfterMs` | number | `1800000` | Deadline (ms) for `tool`/`turn`/unknown scopes (legitimately quiet, e.g. a 20-minute bash) and sustained snapshot loss |
 
 ```json
 {
@@ -258,6 +261,11 @@ Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on
   },
   "contextRetirement": {
     "enabled": false
+  },
+  "watchdog": {
+    "enabled": true,
+    "streamStallAfterMs": 150000,
+    "quietStallAfterMs": 1800000
   }
 }
 ```

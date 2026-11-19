@@ -112,7 +112,9 @@ import {
   applyPendingAck,
   capStatusLines,
   classifyStatus,
+  classifyTurnStall,
   createStatusState,
+  DEFAULT_STALL_THRESHOLDS,
   expirePendingRequest,
   forceStatusAfterInterrupt,
   formatStatusAggregate,
@@ -124,6 +126,10 @@ import {
   observeStatus,
   type PendingControlRequest,
   parseStatusConfig,
+  QUIET_STALL_AFTER_MS,
+  STREAM_STALL_AFTER_MS,
+  type StallThresholds,
+  stallErrorMessage,
 } from '../pi-extension/subagents/status.ts'
 import {
   decideReplyDelivery,
@@ -754,6 +760,143 @@ describe('status.ts', () => {
     assert.equal(snapshot.activeDurationText, '3m')
   })
 
+  // PMR-YFRB siblings for the pin above: present+active snapshots DO age
+  // into stalled, scope-aware — streaming/provider use the short bucket,
+  // everything else (tool/turn/null) the long bucket.
+  it('ages a frozen streaming active snapshot into stalled (dead turn)', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: 'active',
+        active: true,
+        activeScope: 'streaming',
+        activeSince: 5_000,
+        latestEvent: 'before_provider_request',
+      },
+      5_000,
+    )
+
+    const justBefore = classifyStatus(state, 154_999)
+    assert.equal(justBefore.kind, 'active')
+
+    const aged = classifyStatus(state, 155_000)
+    assert.equal(aged.kind, 'stalled')
+    assert.equal(aged.statusLabel, 'dead turn')
+  })
+
+  it('keeps an actively streaming snapshot healthy', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 150_000,
+        sequence: 2,
+        phase: 'active',
+        active: true,
+        activeScope: 'streaming',
+        activeSince: 5_000,
+      },
+      150_000,
+    )
+
+    const snapshot = classifyStatus(state, 155_000)
+    assert.equal(snapshot.kind, 'active')
+    assert.equal(snapshot.statusLabel, null)
+  })
+
+  it('never ages active snapshots when the watchdog is disabled', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: 'active',
+        active: true,
+        activeScope: 'streaming',
+        activeSince: 5_000,
+      },
+      5_000,
+    )
+
+    const disabled: StallThresholds = {
+      enabled: false,
+      streamStallAfterMs: STREAM_STALL_AFTER_MS,
+      quietStallAfterMs: QUIET_STALL_AFTER_MS,
+    }
+    const snapshot = classifyStatus(state, 10_000_000, disabled)
+    assert.equal(snapshot.kind, 'active')
+  })
+
+  it('ages a frozen tool active snapshot only at the quiet threshold', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: 'active',
+        active: true,
+        activeScope: 'tool',
+        activeSince: 5_000,
+        activityLabel: 'bash',
+      },
+      5_000,
+    )
+
+    const justBefore = classifyStatus(state, 1_804_999)
+    assert.equal(justBefore.kind, 'active')
+
+    const aged = classifyStatus(state, 1_805_000)
+    assert.equal(aged.kind, 'stalled')
+    assert.equal(aged.statusLabel, 'dead turn')
+  })
+
+  it('recovers a dead-turn stalled state when activity resumes', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: 'active',
+        active: true,
+        activeScope: 'streaming',
+        activeSince: 5_000,
+      },
+      5_000,
+    )
+    let advanced = advanceStatusState(state, 155_000)
+    assert.equal(advanced.snapshot.kind, 'stalled')
+    assert.equal(advanced.transition, 'stalled')
+    state = advanced.nextState
+
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 156_000,
+        sequence: 2,
+        phase: 'active',
+        active: true,
+        activeScope: 'streaming',
+        activeSince: 5_000,
+      },
+      156_000,
+    )
+    advanced = advanceStatusState(state, 157_000)
+    assert.equal(advanced.snapshot.kind, 'active')
+    assert.equal(advanced.transition, 'recovered')
+  })
+
   it('classifies waiting snapshots as healthy idle without becoming stalled', () => {
     let state = createStatusState({ source: 'pi', startTimeMs: 0 })
     state = observeStatus(
@@ -1154,6 +1297,185 @@ describe('status.ts', () => {
     assert.match(aggregate, /^Subagent status:/)
     assert.match(aggregate, /\+2 more running\./)
     assert.doesNotMatch(aggregate, /\/tmp|\.jsonl/)
+  })
+})
+
+describe('classifyTurnStall (PMR-YFRB)', () => {
+  function activeState(scope: string | null, lastActivityAtMs: number) {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: lastActivityAtMs,
+        sequence: 1,
+        phase: 'active',
+        active: true,
+        activeScope: scope ?? undefined,
+        activeSince: lastActivityAtMs,
+      },
+      lastActivityAtMs,
+    )
+    return state
+  }
+
+  it('does not stall a streaming scope just before the threshold', () => {
+    const verdict = classifyTurnStall(activeState('streaming', 0), 149_999)
+    assert.equal(verdict.stalled, false)
+    assert.equal(verdict.reason, null)
+  })
+
+  it('stalls a streaming scope at exactly the threshold (dead turn)', () => {
+    const verdict = classifyTurnStall(activeState('streaming', 0), 150_000)
+    assert.equal(verdict.stalled, true)
+    assert.equal(verdict.reason, 'dead-turn')
+    assert.equal(verdict.activeScope, 'streaming')
+    assert.equal(verdict.stalledForMs, 150_000)
+  })
+
+  it('ages provider scope with the short bucket too', () => {
+    const verdict = classifyTurnStall(activeState('provider', 0), 150_000)
+    assert.equal(verdict.stalled, true)
+    assert.equal(verdict.reason, 'dead-turn')
+  })
+
+  it('keeps tool scope alive until the long bucket', () => {
+    const short = classifyTurnStall(activeState('tool', 0), 1_799_999)
+    assert.equal(short.stalled, false)
+
+    const long = classifyTurnStall(activeState('tool', 0), 1_800_000)
+    assert.equal(long.stalled, true)
+    assert.equal(long.reason, 'dead-turn')
+  })
+
+  it('treats turn and null scopes as long-bucket', () => {
+    const turn = classifyTurnStall(activeState('turn', 0), 200_000)
+    assert.equal(turn.stalled, false)
+
+    const nullScope = classifyTurnStall(activeState(null, 0), 1_800_000)
+    assert.equal(nullScope.stalled, true)
+    assert.equal(nullScope.reason, 'dead-turn')
+  })
+
+  it('reports no-activity for a sustained missing snapshot', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(state, { snapshot: 'missing' }, 1_000)
+
+    const before = classifyTurnStall(state, 1_800_999)
+    assert.equal(before.stalled, false)
+
+    const aged = classifyTurnStall(state, 1_801_000)
+    assert.equal(aged.stalled, true)
+    assert.equal(aged.reason, 'no-activity')
+    assert.equal(aged.activeScope, null)
+  })
+
+  it('reports no-activity for a sustained wrong-id snapshot', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: 'active',
+        active: true,
+        activeScope: 'tool',
+        activeSince: 5_000,
+      },
+      5_000,
+    )
+    state = observeStatus(state, { snapshot: 'wrong-id' }, 10_000)
+
+    const aged = classifyTurnStall(state, 1_809_999)
+    assert.equal(aged.stalled, false)
+
+    const longAfter = classifyTurnStall(state, 1_810_000)
+    assert.equal(longAfter.stalled, true)
+    assert.equal(longAfter.reason, 'no-activity')
+  })
+
+  it('never stalls a blocked phase regardless of age', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: 'blocked',
+        blockedSince: 5_000,
+      },
+      5_000,
+    )
+
+    const verdict = classifyTurnStall(state, 10 * QUIET_STALL_AFTER_MS)
+    assert.equal(verdict.stalled, false)
+  })
+
+  it('never stalls a waiting phase regardless of age', () => {
+    let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+    state = observeStatus(
+      state,
+      {
+        snapshot: 'present',
+        updatedAt: 5_000,
+        sequence: 1,
+        phase: 'waiting',
+        waitingSince: 5_000,
+      },
+      5_000,
+    )
+
+    const verdict = classifyTurnStall(state, 10 * QUIET_STALL_AFTER_MS)
+    assert.equal(verdict.stalled, false)
+  })
+
+  it('never stalls a claude-sourced state', () => {
+    const state = createStatusState({ source: 'claude', startTimeMs: 0 })
+    const verdict = classifyTurnStall(state, 10_000_000)
+    assert.equal(verdict.stalled, false)
+  })
+
+  it('never stalls when the watchdog is disabled', () => {
+    const verdict = classifyTurnStall(activeState('streaming', 0), 10_000_000, {
+      enabled: false,
+      streamStallAfterMs: 150_000,
+      quietStallAfterMs: 1_800_000,
+    })
+    assert.equal(verdict.stalled, false)
+  })
+
+  it('exposes the default thresholds', () => {
+    assert.equal(STREAM_STALL_AFTER_MS, 150_000)
+    assert.equal(QUIET_STALL_AFTER_MS, 1_800_000)
+    assert.deepEqual(DEFAULT_STALL_THRESHOLDS, {
+      enabled: true,
+      streamStallAfterMs: 150_000,
+      quietStallAfterMs: 1_800_000,
+    })
+  })
+
+  it('formats a stall error message with scope and duration', () => {
+    const streaming = stallErrorMessage(
+      classifyTurnStall(activeState('streaming', 0), 200_000),
+    )
+    assert.match(streaming, /^Subagent turn stalled/)
+    assert.match(streaming, /streaming/)
+    assert.match(streaming, /3m/)
+
+    const missing = stallErrorMessage(
+      classifyTurnStall(
+        (() => {
+          let state = createStatusState({ source: 'pi', startTimeMs: 0 })
+          state = observeStatus(state, { snapshot: 'missing' }, 1_000)
+          return state
+        })(),
+        1_900_000,
+      ),
+    )
+    assert.match(missing, /^Subagent turn stalled/)
+    assert.match(missing, /snapshot missing/)
   })
 })
 
@@ -2777,6 +3099,56 @@ describe('config.ts', () => {
       () =>
         validateSubagentsConfig(
           { status: { enabled: true, hideWhenIdle: 'no' } },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+  })
+
+  it('accepts the watchdog object with opt-out semantics (PMR-YFRB)', () => {
+    assert.deepEqual(DEFAULT_SUBAGENTS_CONFIG.watchdog, {
+      enabled: true,
+      streamStallAfterMs: 150_000,
+      quietStallAfterMs: 1_800_000,
+    })
+    // Absent watchdog ⇒ absent in the typed config (consumer defaults on).
+    const absent = validateSubagentsConfig({ status: { enabled: true } }, 't')
+    assert.equal(absent.watchdog, undefined)
+    // Full object passes through.
+    const full = validateSubagentsConfig(
+      {
+        status: { enabled: true },
+        watchdog: {
+          enabled: false,
+          streamStallAfterMs: 60_000,
+          quietStallAfterMs: 600_000,
+        },
+      },
+      't',
+    )
+    assert.deepEqual(full.watchdog, {
+      enabled: false,
+      streamStallAfterMs: 60_000,
+      quietStallAfterMs: 600_000,
+    })
+    // Partial object passes through; reconstruction fills nothing implicitly.
+    const partial = validateSubagentsConfig(
+      { status: { enabled: true }, watchdog: { enabled: false } },
+      't',
+    )
+    assert.deepEqual(partial.watchdog, { enabled: false })
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          { status: { enabled: true }, watchdog: { nope: 1 } },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          { status: { enabled: true }, watchdog: { enabled: 'no' } },
           't',
         ),
       /Invalid subagents config in t/,

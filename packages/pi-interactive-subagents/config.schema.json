@@ -42,6 +42,25 @@
           "description": "RESERVED (unimplemented). Mirrors pi-durable settings.compaction.backgroundTokens: budget for background pre-retirement summarization."
         }
       }
+    },
+    "watchdog": {
+      "additionalProperties": false,
+      "type": "object",
+      "description": "Dead-turn stall watchdog (PMR-YFRB). Opt-out: absent = on. Set enabled:false to restore legacy behavior (active snapshots never age into stalled).",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the stall watchdog (default true). false restores legacy never-age behavior."
+        },
+        "streamStallAfterMs": {
+          "type": "number",
+          "description": "Dead-turn deadline for streaming/provider scopes in ms (default 150000)."
+        },
+        "quietStallAfterMs": {
+          "type": "number",
+          "description": "Dead-turn deadline for tool/turn/unknown scopes and sustained snapshot loss in ms (default 1800000)."
+        }
+      }
     }
   }
 }
