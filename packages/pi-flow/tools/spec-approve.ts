@@ -5,8 +5,10 @@
 // aven/client.ts); failure is a loud tool error, never a silent no-op.
 // PMR-R5VB: prompt guidelines alone were not model-proof, so the model-call
 // path is gated on a human answer receipt: readGateAnswer must return
-// 'approve' before any aven edit. The receipt is read-only here — it is
-// never consumed or cleared (single-use dedup is PMR-CD46).
+// 'approve' before any aven edit. That GATE receipt is read-only here — it
+// is never consumed or cleared; its only use is the gate check itself. The
+// separate JOURNAL receipt is different (PMR-CD46): recorded best-effort
+// after a successful approval and adopted on later runs for dedup.
 // PMR-J6TW: tickets carrying the `oneshot` label skip the receipt gate
 // entirely — the oneshot route (PMR-3HMZ) never produces a receipt by
 // design. A failed labels read is NOT a new failure mode: it falls through
