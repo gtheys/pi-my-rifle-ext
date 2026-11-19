@@ -18,15 +18,52 @@ import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { readAvenLabels } from '../aven/client.ts'
 import { loadConfig } from '../config.ts'
+import { DEFAULT_RECIPES } from '../flow/effect-gate.ts'
 import { landDecision } from '../flow/land-gate.ts'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
-import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
+import {
+  createEffectJournal,
+  createReceiptJournal,
+  type EffectJournal,
+  type ReceiptJournal,
+} from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
 import { toolResult } from './result.ts'
 
 const execFileAsync = promisify(execFile)
 const LAND_SUITE_TIMEOUT_MS = 10 * 60 * 1000
 const LAND_SUITE_TAIL_CHARS = 2000
+
+// AIDEV-NOTE: PMR-VDVJ — declare-before-authorize for route=pr: git-push and
+// gh-pr-create must both be journaled (canonical commands + DEFAULT_RECIPES)
+// before the landing is authorized. Declarations are fail-closed, receipts
+// stay best-effort — the deliberate split. Shared by BOTH success paths
+// (receipt adoption and fresh suite) so neither can authorize undeclared.
+async function declarePushEffects(
+  effects: EffectJournal,
+  ref: string,
+  head: string | null,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  for (const effect of ['git-push', 'gh-pr-create'] as const) {
+    let command: string
+    if (effect === 'git-push') {
+      command = 'git push'
+    } else {
+      command = 'gh pr create'
+    }
+    const result = await effects.declare({
+      ref,
+      effect,
+      command,
+      recipe: DEFAULT_RECIPES[effect],
+      headSha: head ?? undefined,
+    })
+    if (!result.ok) {
+      return { ok: false, reason: result.reason }
+    }
+  }
+  return { ok: true }
+}
 
 // AIDEV-NOTE: shared with the bash tool_call interceptor in index.ts — the
 // interceptor refuses git push / gh pr create for the active flow ref until
@@ -224,6 +261,10 @@ export function registerLandTool(
   // receipt writes route through it (journal-only while the daemon owns the
   // projection); absent = today's exact full-writer behavior.
   writer?: EventWriter,
+  // AIDEV-NOTE: PMR-VDVJ — strict effect journal (run-state.ts). route=pr
+  // declares git-push + gh-pr-create through it BEFORE setting `authorized`;
+  // a failed declaration refuses the landing (fail-closed).
+  effects: EffectJournal = createEffectJournal(getAgentDir()),
 ): void {
   let effectiveReceipts = receipts
   if (writer !== undefined) {
@@ -354,6 +395,14 @@ export function registerLandTool(
         })
         if (stored !== null) {
           if (params.route === 'pr') {
+            const declared = await declarePushEffects(effects, params.ref, head)
+            if (!declared.ok) {
+              return toolResult(
+                `flow_land refused landing ${params.ref} via pr: ${declared.reason} — the landing is NOT authorized`,
+                { ok: false, reason: 'effect declaration failed' },
+                { isError: true },
+              )
+            }
             state.authorized = params.ref
             return toolResult(
               `flow_land: landing for ${params.ref} authorized via pr — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run — run the git push / gh pr create step now`,
@@ -395,6 +444,19 @@ export function registerLandTool(
       // interceptor's git push / gh pr create block. merge-main keeps
       // `authorized` null: the landing is a local ff-only merge, never a
       // push, so a git push after ok must stay blocked.
+      // AIDEV-NOTE: PMR-VDVJ — both route=pr success paths declare the push
+      // effects BEFORE setting `authorized`: declarations are fail-closed,
+      // receipts stay best-effort — the deliberate split (plan Key decision
+      // 3). On a failed declaration the landing is NOT authorized (any suite
+      // cost already spent is accepted; correctness first).
+      const declared = await declarePushEffects(effects, params.ref, head)
+      if (!declared.ok) {
+        return toolResult(
+          `flow_land refused landing ${params.ref} via pr: ${declared.reason} — the landing is NOT authorized`,
+          { ok: false, reason: 'effect declaration failed' },
+          { isError: true },
+        )
+      }
       if (params.route === 'pr') {
         state.authorized = params.ref
         return toolResult(

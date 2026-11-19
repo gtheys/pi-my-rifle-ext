@@ -118,7 +118,12 @@ import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts
 import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import prQualityExtension from './pr-quality/index.ts'
 import reviewExtension from './review/review.ts'
-import { projectRunState, readRunEvents, runStatePath } from './run-state.ts'
+import {
+  createEffectJournal,
+  projectRunState,
+  readRunEvents,
+  runStatePath,
+} from './run-state.ts'
 import { type ResumeConsumerDeps, resumeParkedRun } from './server/consumer.ts'
 import { pendingDirPath } from './server/daemon.ts'
 import { ensureDaemon } from './server/lifecycle.ts'
@@ -528,6 +533,10 @@ export default function (pi: ExtensionAPI) {
     undefined,
     undefined,
     writer,
+    // AIDEV-NOTE: PMR-VDVJ — strict effect journal for route=pr's
+    // declare-before-authorize gate; journal-only O_APPEND writes are
+    // daemon-safe by design (the projection folds in on the next full write).
+    createEffectJournal(getAgentDir()),
   )
   // AIDEV-NOTE: PMR-T8ZG — the human code-review gate (PMR-3ZY1): the
   // code_review tool shares landingState with flow_land so a pass recorded

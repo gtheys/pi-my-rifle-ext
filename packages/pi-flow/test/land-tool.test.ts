@@ -53,6 +53,10 @@ function landExecute(
     () => null,
     runSuite,
     readReviewAnswer,
+    undefined,
+    undefined,
+    undefined,
+    memEffects(),
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return execute
@@ -220,6 +224,92 @@ test('fake aven shim returns review-passed labels', async () => {
   })
 })
 
+// --- PMR-VDVJ phase 3: route=pr declares git-push + gh-pr-create before ---
+// --- authorizing; a failed declaration refuses the landing (fail-closed) ---
+
+// In-memory EffectJournal fake: captures every declare() input so tests can
+// assert the canonical commands + recipes were attempted. declareFailing
+// makes every declare return {ok:false}.
+function memEffects(options?: { declareFailing?: boolean }): EffectJournal & {
+  declared: EffectDeclareInput[]
+} {
+  const declared: EffectDeclareInput[] = []
+  return {
+    declared,
+    async declare(input: EffectDeclareInput) {
+      if (options?.declareFailing === true) {
+        return { ok: false, reason: 'journal append failed' }
+      }
+      declared.push(input)
+      return { ok: true, effectId: `eff-${input.effect}` }
+    },
+    async find() {
+      return null
+    },
+  }
+}
+
+test('route=pr declares git-push and gh-pr-create before authorizing (phase 3)', async () => {
+  const effects = memEffects()
+  const landing = createLandingState()
+  const harness = landHarness({ landing, effects })
+  await withFakeAven(async () => {
+    const result = await harness.execute('e1', { ref: 'PMR-ABC1', route: 'pr' })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /authorized via pr/)
+    assert.equal(landing.authorized, 'PMR-ABC1')
+    assert.equal(effects.declared.length, 2)
+    assert.deepEqual(
+      effects.declared.map((input) => input.effect),
+      ['git-push', 'gh-pr-create'],
+    )
+    for (const input of effects.declared) {
+      assert.equal(input.ref, 'PMR-ABC1')
+      assert.equal(input.headSha, 'aaa111')
+    }
+    assert.equal(effects.declared[0].command, 'git push')
+    assert.equal(effects.declared[1].command, 'gh pr create')
+    assert.deepEqual(effects.declared[0].recipe, DEFAULT_RECIPES['git-push'])
+    assert.deepEqual(
+      effects.declared[1].recipe,
+      DEFAULT_RECIPES['gh-pr-create'],
+    )
+  })
+})
+
+test('route=pr with a failing declaration is refused and authorized stays null (fail-closed)', async () => {
+  const effects = memEffects({ declareFailing: true })
+  const landing = createLandingState()
+  const harness = landHarness({ landing, effects })
+  await withFakeAven(async () => {
+    const result = await harness.execute('e2', { ref: 'PMR-ABC1', route: 'pr' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /NOT authorized/)
+    assert.match(result.content[0].text, /journal append failed/)
+    assert.equal(landing.authorized, null)
+  })
+})
+
+test('receipt-adoption path also declares before authorizing — failing declare refuses (phase 3)', async () => {
+  const effects = memEffects({ declareFailing: true })
+  const receipts = memReceipts()
+  receipts.entries.push({
+    ref: 'PMR-ABC1',
+    command: 'flow_land',
+    target: 'pr',
+    headSha: 'aaa111',
+  })
+  const landing = createLandingState()
+  const harness = landHarness({ landing, effects, receipts })
+  await withFakeAven(async () => {
+    const result = await harness.execute('e3', { ref: 'PMR-ABC1', route: 'pr' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /NOT authorized/)
+    assert.equal(landing.authorized, null)
+    assert.equal(harness.suiteRuns(), 0, 'adoption path skips the suite')
+  })
+})
+
 // --- PMR-05HX: flow_land runs the suite itself; red suite refuses landing ---
 
 test('merge-main refused when the suite the gate ran is red', async () => {
@@ -286,7 +376,13 @@ test('suiteSummary bounds the refusal output', async () => {
 // landingState above is a known cross-test bleed risk, so these tests stay
 // order-independent.
 // ---------------------------------------------------------------------------
-import type { ReceiptJournal, ReceiptQuery } from '../run-state.ts'
+import { DEFAULT_RECIPES } from '../flow/effect-gate.ts'
+import type {
+  EffectDeclareInput,
+  EffectJournal,
+  ReceiptJournal,
+  ReceiptQuery,
+} from '../run-state.ts'
 
 type LandExecuteFull = (
   toolCallId: string,
@@ -345,6 +441,7 @@ function landHarness(options?: {
   receipts?: ReceiptJournal & { entries: ReceiptQuery[] }
   resolveHead?: () => Promise<string | null>
   landing?: ReturnType<typeof createLandingState>
+  effects?: EffectJournal
 }): LandHarness {
   let suiteRunCount = 0
   const countingSuite: SuiteRunner =
@@ -369,6 +466,8 @@ function landHarness(options?: {
     options?.readReviewAnswer ?? (async () => null),
     receipts,
     options?.resolveHead ?? (async () => 'aaa111'),
+    undefined,
+    options?.effects ?? memEffects(),
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return { execute, suiteRuns: () => suiteRunCount, receipts }
