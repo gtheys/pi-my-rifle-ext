@@ -28,6 +28,7 @@
     "feedback/prompt.ts",
     "feedback/triage.ts",
     "flow/answer.ts",
+    "flow/effect-gate.ts",
     "flow/args.ts",
     "flow/agent-role.ts",
     "flow/attribution.ts",

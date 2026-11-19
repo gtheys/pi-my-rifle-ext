@@ -50,8 +50,12 @@ export function landDecision(
 // assignments may sit between the command words. Known limit (guardrail, not
 // a privilege boundary): aliases, `sh -c '...'`, and variable-built commands
 // are not detected.
-const CMD_START = String.raw`(?:^|[;&|(){}\n\x60]|\$\()\s*(?:\w+=\S*\s+)*`
-const GIT_OPTS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path)\s+\S+|--[\w-]+(?:=\S+)?|-[pP]))*`
+// AIDEV-NOTE: exported (PMR-VDVJ phase 2) so flow/effect-gate.ts can build
+// MERGE_RE from the same command-position and git-option grammar. Export-only
+// change — no behavior change.
+export const CMD_START = String.raw`(?:^|[;&|(){}\n\x60]|\$\()\s*(?:\w+=\S*\s+)*`
+// AIDEV-NOTE: exported (PMR-VDVJ phase 2), same rationale as CMD_START.
+export const GIT_OPTS = String.raw`(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path)\s+\S+|--[\w-]+(?:=\S+)?|-[pP]))*`
 const GH_OPTS = String.raw`(?:\s+(?:-R|--repo)\s+\S+)*`
 const LANDING_RE = new RegExp(
   `${CMD_START}(?:git${GIT_OPTS}\\s+push|gh${GH_OPTS}\\s+pr\\s+create)\\b`,
