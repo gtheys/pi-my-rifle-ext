@@ -58,6 +58,8 @@ export interface PhaseDuration {
   seconds: number
 }
 
+// AIDEV-NOTE: legacy reader only — writer retired note emission in PMR-C998;
+// do not re-add. Kept so old note-only journals still parse.
 const SPAWN_NOTE_RE =
   /^subagent (\S+) \("([^"]*)"\) (spawn|resume|reattach)(?: for subtask (\S+))? — attribution env stamped(?:, session="([^"]*)")?$/
 
@@ -104,6 +106,22 @@ export function collectSpawnNotes(
     }
     if (event.kind === 'phase-complete') {
       phase = null
+      continue
+    }
+    if (event.kind === 'spawn-record') {
+      let subtask: string | null = null
+      if (event.subtask !== undefined) subtask = event.subtask
+      let sessionFile: string | null = null
+      if (event.sessionFile !== undefined) sessionFile = event.sessionFile
+      notes.push({
+        childId: event.childId,
+        name: event.name,
+        kind: event.spawnKind,
+        subtask,
+        sessionFile,
+        at: event.at,
+        phase,
+      })
       continue
     }
     if (event.kind === 'note') {
