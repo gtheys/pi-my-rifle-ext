@@ -16,10 +16,8 @@ export interface PromptInput {
 export interface TicketPromptInput {
   jiraId: string
   /** Where the ticket content lives. epic = local epic (jira-ref) — the
-   *  confirmed ticket; synced =
-   *  aven synced ticket (jira-key) — label lands on it and the artifact
-   *  marker lets a later /flow epic inherit the brainstorm. null = not aven-
-   *  managed, acli fallback. */
+   *  confirmed ticket; synced = aven synced ticket (jira-key). null = not
+   *  aven-managed, acli fallback. */
   target: { kind: 'epic' | 'synced'; ref: string } | null
   artifactPath: string
   mode: 'work' | 'personal'
@@ -48,8 +46,8 @@ TICKET CREATION GATE — after the artifact is written:
 5. Link the research artifact on aven tickets (personal mode): run
    \`aven edit <ref> --metadata research-path=<absolute artifact path>\` so a
    later /validate can read the findings from the ticket itself. Jira tickets
-   instead keep the artifact-header marker convention — Jira has no
-   metadata fields to write.
+   instead record provenance in the artifact header — Jira has no metadata
+   fields to write.
 6. If the user declines, create nothing and say so.
 NEVER call acli or aven create before the explicit confirm answer.
 
@@ -136,14 +134,10 @@ Run \`aven show ${input.target.ref} --full\` — the synced description is in
 there (plain --json output has no description field). The content is already
 in aven — no Jira fetch needed.`
     // AIDEV-NOTE: PMR-Z2K7 - no flow_phase_complete call here anymore:
-    // research left the lifecycle, so completion is just the artifact plus
-    // the marker line a later pure-Jira /flow can still discover.
-    const completion = isEpic
-      ? `COMPLETION - the brainstorm phase is done when the artifact is written.`
-      : `COMPLETION - the brainstorm phase is done when the artifact is written. Append
-the line "> brainstormed by pi-flow on <today's date>" to the artifact header.
-A later /flow ${input.jiraId} creates the local epic and can discover the
-artifact via that marker.`
+    // research left the lifecycle, so completion is just the artifact.
+    // AIDEV-NOTE (PMR-85RV): the "> brainstormed by pi-flow" marker
+    // instruction is gone with the dead /flow pull-in rediscovery contract.
+    const completion = `COMPLETION - the brainstorm phase is done when the artifact is written.`
     return `${header}
 ${source}
 
@@ -160,8 +154,5 @@ report the failure — do not guess the contents and do not create any ticket.
 
 ${featureSteps(input.artifactPath)}
 
-COMPLETION — no aven ref exists for this ticket. Append a
-line "> brainstormed by pi-flow on <today's date>" to the artifact header, and
-note under Ticket implications that a later \`/flow ${input.jiraId}\` will
-create the local epic.`
+COMPLETION — the brainstorm phase is done when the artifact is written.`
 }

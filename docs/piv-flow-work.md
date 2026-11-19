@@ -317,11 +317,10 @@ debug flow, `feature` otherwise) and a `> confirmed by user, destination
 <project>` line appended to the artifact header.
 
 **Artifact placement on ticket brainstorms:** when the subject exists as an
-epic or synced ticket, the artifact is written against that ref and marked
-`> brainstormed by pi-flow on <date>` so a later `/flow DP-71` pull-in can
-discover it instead of re-running the brainstorm. Pure-Jira subjects (no
-aven ref at all) get only the artifact marker; it is inherited at pull-in
-time.
+epic or synced ticket, the artifact is written against that ref; pure-Jira
+subjects (no aven ref at all) get a standalone artifact. (The old
+`> brainstormed by pi-flow` marker + `/flow` pull-in rediscovery contract was
+removed — PMR-Z2K7 had already deleted its only reader.)
 
 **Exit:** the artifact is written and the gate is answered — done. Run
 `/flow <ref>` on the ticket to start the lifecycle at plan.

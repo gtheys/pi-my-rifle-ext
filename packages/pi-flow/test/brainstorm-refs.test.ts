@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import { test } from 'node:test'
 import { parseBrainstormArgs } from '../brainstorm/args.ts'
-import { findBrainstormArtifact } from '../brainstorm/artifact.ts'
 import { buildTicketBrainstormPrompt } from '../brainstorm/prompt.ts'
 import { classifyBrainstormTarget } from '../brainstorm/refs.ts'
 import {
@@ -109,7 +105,7 @@ test('ticket prompt: epic branch labels the epic and forbids creation', () => {
   assert.doesNotMatch(p, /TICKET CREATION GATE/)
 })
 
-test('ticket prompt: synced branch targets the aven ticket, no acli, marker for later epic', () => {
+test('ticket prompt: synced branch targets the aven ticket, no acli', () => {
   const p = buildTicketBrainstormPrompt({
     jiraId: 'DP-247',
     target: { kind: 'synced', ref: 'DPX-TFZH' },
@@ -120,8 +116,7 @@ test('ticket prompt: synced branch targets the aven ticket, no acli, marker for 
   assert.match(p, /aven show DPX-TFZH --full/)
   assert.doesNotMatch(p, /acli/)
   assert.doesNotMatch(p, /flow_phase_complete/)
-  assert.match(p, /brainstormed by pi-flow/)
-  assert.match(p, /creates the local epic and can discover/)
+  assert.doesNotMatch(p, /brainstormed by pi-flow/)
   assert.doesNotMatch(p, /TICKET CREATION GATE/)
 })
 
@@ -134,73 +129,8 @@ test('ticket prompt: acli fallback stops on view failure, no label possible', ()
   })
   assert.match(p, /acli jira workitem view DP-257/)
   assert.match(p, /stop and/)
-  assert.match(p, /brainstormed by pi-flow/)
+  assert.doesNotMatch(p, /brainstormed by pi-flow/)
   assert.doesNotMatch(p, /--label brainstormed/)
-})
-
-// --- brainstorm-marker inheritance ---
-
-async function withBrainstormDir(
-  files: Record<string, string>,
-): Promise<string> {
-  const gitRoot = path.join(
-    await mkdtemp(path.join(tmpdir(), 'pi-flow-brainstorm-')),
-    'repo',
-  )
-  const dir = path.join(gitRoot, 'notes', 'brainstorm')
-  await mkdir(dir, { recursive: true })
-  for (const [name, content] of Object.entries(files)) {
-    await writeFile(path.join(dir, name), content)
-  }
-  return gitRoot
-}
-
-test('findBrainstormArtifact: finds the marker in the newest matching file', async () => {
-  const root = await withBrainstormDir({
-    '2026-10-01-dp-257.md': '# Brainstorm: DP-257\n',
-    '2026-10-09-dp-257.md':
-      '# Brainstorm: DP-257\n> brainstormed by pi-flow on 2026-10-09\n',
-    '2026-10-15-dp-257.md': '# Brainstorm: DP-257\nno marker here\n',
-  })
-  try {
-    const found = await findBrainstormArtifact(
-      undefined,
-      'repo',
-      root,
-      'DP-257',
-    )
-    assert.ok(found)
-    assert.match(found, /2026-10-09-dp-257\.md$/)
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
-test('findBrainstormArtifact: slug boundary — dp-257 does not match dp-2570', async () => {
-  const root = await withBrainstormDir({
-    '2026-10-09-dp-2570.md': '> brainstormed by pi-flow\n',
-  })
-  try {
-    const found = await findBrainstormArtifact(
-      undefined,
-      'repo',
-      root,
-      'DP-257',
-    )
-    assert.equal(found, null)
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
-test('findBrainstormArtifact: missing dir → null', async () => {
-  const found = await findBrainstormArtifact(
-    undefined,
-    'no-such-repo',
-    '/nonexistent/root',
-    'DP-257',
-  )
-  assert.equal(found, null)
 })
 
 // --- phase-prompts integration ---
