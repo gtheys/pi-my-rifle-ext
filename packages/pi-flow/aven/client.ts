@@ -152,9 +152,22 @@ export async function specApprove(params: {
 // AIDEV-NOTE: Shared aven helpers (labels are the run state, notes are the
 // halt record). Used by the /implement and /flow command handlers and by the
 // flow loop deps — one parsing path, fail-closed (null/[] on any failure).
-export async function readAvenLabels(ref: string): Promise<string[] | null> {
+export async function readAvenLabels(
+  ref: string,
+  workspace?: string,
+): Promise<string[] | null> {
   try {
-    const args = await avenArgsWithWorkspace(['show', ref, '--json'], ref)
+    // PMR-3VWM: an explicit workspace threads into the labels read exactly
+    // like the receipt read (showFullGuarded) and approveSpec's readLabels —
+    // explicit wins over config/per-ref resolution (the resolveSpecWorkspace
+    // priority), so the spec_approve oneshot exemption cannot resolve a
+    // DIFFERENT ticket than the gate answer and edit when the explicit
+    // workspace diverges from config/per-ref resolution. Omitted = the
+    // unchanged config/per-ref path.
+    const args =
+      workspace !== undefined
+        ? ['show', ref, '--json', '--workspace', workspace]
+        : await avenArgsWithWorkspace(['show', ref, '--json'], ref)
     const { stdout } = await execFileAsync('aven', args, {
       timeout: AVEN_TIMEOUT_MS,
     })

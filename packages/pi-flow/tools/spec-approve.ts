@@ -104,7 +104,10 @@ export function registerSpecApproveTool(
       // PMR-3HMZ never produces a receipt). The labels read is best-effort
       // here: null (read failure) falls through to the legacy gate, the
       // same omission-optimization pattern as approveSpec's oneshot check.
-      const labels = await readAvenLabels(params.ref)
+      // PMR-3VWM: the read threads the explicit workspace param exactly
+      // like the receipt read above — the exemption and the gate must
+      // resolve the same ticket when a workspace is passed explicitly.
+      const labels = await readAvenLabels(params.ref, params.workspace)
       const isOneshot = labels?.includes('oneshot') === true
       if (!isOneshot) {
         const answer = await readGateAnswer(

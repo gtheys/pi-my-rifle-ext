@@ -55,6 +55,28 @@ test('readAvenLabels honors project avenWorkspace from session cwd, not process.
   }
 })
 
+test('readAvenLabels threads an explicit workspace, overriding config resolution (PMR-3VWM)', async () => {
+  setAvenSessionCwd(SESSION_CWD)
+  const previousPath = process.env.PATH ?? ''
+  process.env.PATH = `${BIN_DIR}:${previousPath}`
+  try {
+    const labels = await readAvenLabels('PMR-TEST', 'explicit-ws')
+    assert.deepEqual(labels, [])
+    const args = lastArgs()
+    const wsIndex = args.indexOf('--workspace')
+    assert.ok(wsIndex !== -1, `expected --workspace in args: ${args.join(' ')}`)
+    assert.equal(args[wsIndex + 1], 'explicit-ws')
+    // Explicit wins: the session-cwd config override must NOT also appear.
+    assert.ok(
+      !args.includes(OVERRIDE),
+      `config override ${OVERRIDE} must not appear alongside the explicit workspace: ${args.join(' ')}`,
+    )
+  } finally {
+    process.env.PATH = previousPath
+    setAvenSessionCwd(undefined)
+  }
+})
+
 // Sanity: the fake aven shim actually runs in this environment.
 test('fake aven shim is executable', () => {
   const out = execFileSync(path.join(BIN_DIR, 'aven'), ['show', 'X'], {
