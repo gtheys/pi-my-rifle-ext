@@ -3711,6 +3711,47 @@ describe('subagents widget lifecycle (PMR-AD0H)', () => {
       assert.equal(testApi.isWidgetRegisteredForTest(), false)
     })
   })
+
+  it('session_start reconcile keeps an opted-in widget untouched when hideWhenIdle=false (PMR-6XS4)', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir }) => {
+      // hideWhenIdle=false comes from project config: session_start reloads
+      // config from disk (loadAndCacheStatusConfig) before reconciling, so a
+      // setHideWhenIdleForTest seed would be overwritten.
+      const configDir = join(projectDir, '.pi', 'pi-subagents')
+      mkdirSync(configDir, { recursive: true })
+      writeFileSync(
+        join(configDir, 'config.json'),
+        JSON.stringify({ status: { enabled: true, hideWhenIdle: false } }),
+      )
+
+      resetWidgetState()
+      const { api, eventHandlers } = createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+
+      const handlers = eventHandlers.get('session_start') ?? []
+      assert.equal(handlers.length, 1)
+      // Widget registered before the session switch (the persistent
+      // "0 running" box is the intentional opt-out)...
+      testApi.setWidgetRegisteredForTest(true)
+      testApi.setWidgetTuiForTest({ requestRender() {} })
+      const { ctx, widgets } = recordingWidgetCtx()
+      handlers[0](
+        {},
+        {
+          ...ctx,
+          cwd: projectDir,
+          sessionManager: { getSessionId: () => 'widget-lifecycle-session' },
+        },
+      )
+
+      // ...must leave the box untouched: no removal call, registration stays.
+      assert.deepEqual(widgets, [])
+      assert.equal(testApi.isWidgetRegisteredForTest(), true)
+      // session_start cached hideWhenIdle=false on globalThis — restore the
+      // default-on cache so later suites start from the default.
+      resetWidgetState()
+    })
+  })
 })
 
 describe('focus verification gate (PMR-TABUX)', () => {
