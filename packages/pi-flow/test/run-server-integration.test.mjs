@@ -56,19 +56,23 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
   })
 
   try {
-    // Pidfile appears with our child's pid.
-    await waitFor(() => existsSync(pidFile), 'pidfile')
-    const pidInfo = JSON.parse(readFileSync(pidFile, 'utf8'))
-    assert.equal(pidInfo.pid, child.pid)
+    // Pidfile appears with our child's pid (torn-write tolerant read,
+    // PMR-572Y).
+    let pidInfo = null
+    await waitFor(() => {
+      pidInfo = readJsonTolerant(pidFile)
+      return pidInfo !== null
+    }, 'pidfile')
+    assert.equal(pidInfo?.pid, child.pid)
 
-    // Seeded journal is reprojected.
-    await waitFor(
-      () => existsSync(projectionFile),
-      'projection for seeded journal',
-    )
-    const projected = JSON.parse(readFileSync(projectionFile, 'utf8'))
-    assert.equal(projected.ref, ref)
-    assert.equal(projected.currentPhase, null)
+    // Seeded journal is reprojected (torn-write tolerant read, PMR-572Y).
+    let projected = null
+    await waitFor(() => {
+      projected = readJsonTolerant(projectionFile)
+      return projected !== null
+    }, 'projection for seeded journal')
+    assert.equal(projected?.ref, ref)
+    assert.equal(projected?.currentPhase, null)
 
     // A journal append after spawn is picked up within the poll window.
     const markerPhase = `probe${Math.random().toString(36).slice(2)}`
@@ -82,9 +86,10 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
       })}\n`,
     )
     await waitFor(() => {
-      if (!existsSync(projectionFile)) return false
-      const state = JSON.parse(readFileSync(projectionFile, 'utf8'))
-      return state.currentPhase === markerPhase
+      // Torn-write tolerant read (PMR-572Y): a mid-rewrite projection parses
+      // as "not ready yet", the poll retries.
+      const state = readJsonTolerant(projectionFile)
+      return state?.currentPhase === markerPhase
     }, 'projection reflects appended phase-start')
 
     // The daemon outlives its spawner: still running once the test's own
@@ -195,6 +200,22 @@ async function waitFor(predicate, what) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// AIDEV-NOTE: PMR-572Y — the daemon writes pidfiles and projections with a
+// truncating fs.writeFile, so a poll read (or a read right after existsSync
+// flips) can catch a torn or empty file mid-write; under full-suite load that
+// once crashed this suite's JSON.parse with "Unexpected end of input" and
+// refused a landing. Parse failures are NOT daemon bugs — the daemon's own
+// journal read already skips torn tails (readRunEvents, PMR-EA8X) — so the
+// test treats an unparsable read as "not ready yet" and lets the poll retry.
+const readJsonTolerant = (file) => {
+  try {
+    if (!existsSync(file)) return null
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
 // AIDEV-NOTE: PMR-XTQQ review-blocker regression — the daemon MUST stay alive
 // when runs/ does not exist at startup (the default first-/flow path): the
 // ref'd 1s poll is the keepalive backstop when fs.watch fails with ENOENT.
@@ -223,10 +244,14 @@ test('real daemon: no runs/ dir at startup → stays alive on poll, picks up lat
   })
 
   try {
-    // Pidfile appears even though runs/ never existed.
-    await waitFor(() => existsSync(pidFile), 'pidfile')
-    const pidInfo = JSON.parse(readFileSync(pidFile, 'utf8'))
-    assert.equal(pidInfo.pid, child.pid)
+    // Pidfile appears even though runs/ never existed (torn-write tolerant
+    // read, PMR-572Y).
+    let pidInfo = null
+    await waitFor(() => {
+      pidInfo = readJsonTolerant(pidFile)
+      return pidInfo !== null
+    }, 'pidfile')
+    assert.equal(pidInfo?.pid, child.pid)
 
     // THE BLOCKER: daemon must STILL be alive after 1.5s with no runs/ dir
     // (old code exited code 0 within milliseconds).
@@ -262,9 +287,10 @@ test('real daemon: no runs/ dir at startup → stays alive on poll, picks up lat
       })}\n`,
     )
     await waitFor(() => {
-      if (!existsSync(projectionFile)) return false
-      const state = JSON.parse(readFileSync(projectionFile, 'utf8'))
-      return state.currentPhase === markerPhase
+      // Torn-write tolerant read (PMR-572Y): a mid-rewrite projection parses
+      // as "not ready yet", the poll retries.
+      const state = readJsonTolerant(projectionFile)
+      return state?.currentPhase === markerPhase
     }, 'projection reflects appended phase-start')
 
     assert.equal(child.exitCode, null, 'daemon exited after journal pickup')
