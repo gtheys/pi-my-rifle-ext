@@ -332,6 +332,28 @@ test('/pr-watch stops polling and notifies on poll error (PMR-4B5A)', async () =
     assert.match(errNotifications[0].text, /PR #42/)
     assert.match(errNotifications[0].text, /polling stopped/)
     assert.match(errNotifications[0].text, /token expired/)
+
+    // Stop-on-error must have removed the poller from activePollers —
+    // otherwise re-running /pr-watch in the same session would hit
+    // "Already watching" forever (PMR-B3T1, mutation: skip
+    // activePollers.delete must fail this). The re-watch starts a fresh
+    // poller whose immediate poll errors again against the failing gh shim;
+    // wait for that second error so nothing outlives the PATH restore.
+    await commands['pr-watch']('42', ctx)
+    for (
+      let i = 0;
+      i < 50 && notifications.filter((n) => n.level === 'error').length < 2;
+      i++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assert.equal(
+      notifications.some(
+        (n) => n.level === 'warning' && /Already watching/.test(n.text),
+      ),
+      false,
+      're-watch after poll error should not warn Already watching',
+    )
   } finally {
     globalThis.setInterval = realSetInterval
     globalThis.clearInterval = realClearInterval
