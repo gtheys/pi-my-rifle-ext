@@ -89,6 +89,7 @@ import {
   runInputRecord,
 } from './flow/resume.ts'
 import {
+  type DashboardToggleOutcome,
   initFlowWidget,
   refreshFlowWidget,
   toggleFlowDashboardPin,
@@ -182,6 +183,32 @@ export {
 // AIDEV-NOTE: production wiring for the /flow answer dispatch lives INSIDE
 // the extension closure below (makeAnswerDeps) so the answer path's journal
 // appends route through the mode-aware writer seam.
+
+// Shared by /flow dashboard and the alt+d shortcut — one notify surface so the
+// keyboard path and the command path always stay in parity.
+type DashboardNotifyLevel = 'info' | 'warning' | 'error'
+type DashboardNotifyCtx = {
+  ui: { notify: (message: string, level?: DashboardNotifyLevel) => void }
+}
+
+function notifyDashboardOutcome(
+  ctx: DashboardNotifyCtx,
+  outcome: DashboardToggleOutcome,
+): void {
+  if (outcome === 'no-content') {
+    ctx.ui.notify(
+      'No flow content to show — the dashboard appears when a flow is active.',
+      'info',
+    )
+  } else if (outcome === 'pinned') {
+    ctx.ui.notify(
+      'Flow dashboard pinned — /flow dashboard or alt+d to hide.',
+      'info',
+    )
+  } else {
+    ctx.ui.notify('Flow dashboard hidden.', 'info')
+  }
+}
 
 export default function (pi: ExtensionAPI) {
   // AIDEV-NOTE: PMR-XTQQ — runServer.enabled kill switch (default true).
@@ -799,6 +826,16 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
+  // AIDEV-NOTE: alt+d is the keyboard twin of `/flow dashboard` — both delegate
+  // to toggleFlowDashboardPin. Precedent: pi-prompt-snippets pairs alt+s with
+  // /snippets.
+  pi.registerShortcut('alt+d', {
+    description: 'Toggle the flow dashboard widget',
+    handler: async (ctx) => {
+      notifyDashboardOutcome(ctx, await toggleFlowDashboardPin(ctx))
+    },
+  })
+
   pi.registerCommand('flow', {
     description:
       'PIV run-all (plan -> implement -> validate -> feedback; personal mode stops after validate) or record a protected human decision. Usage: /flow <ref> | /flow answer <ref> <approve|reject|pass|fail> | /flow dashboard. Brainstorm topics go through /brainstorm.',
@@ -842,20 +879,7 @@ export default function (pi: ExtensionAPI) {
       // (same reservation semantics as the 'help' literal in flow/args.ts,
       // PMR-N0W6). Toggle-only: never sendUserMessage, never spawns.
       if (args.trim().toLowerCase() === 'dashboard') {
-        const outcome = await toggleFlowDashboardPin(ctx)
-        if (outcome === 'no-content') {
-          ctx.ui.notify(
-            'No flow content to show — the dashboard appears when a flow is active.',
-            'info',
-          )
-        } else if (outcome === 'pinned') {
-          ctx.ui.notify(
-            'Flow dashboard pinned — /flow dashboard or alt+d to hide.',
-            'info',
-          )
-        } else {
-          ctx.ui.notify('Flow dashboard hidden.', 'info')
-        }
+        notifyDashboardOutcome(ctx, await toggleFlowDashboardPin(ctx))
         return
       }
       const parsed = parseFlowArgs(args)

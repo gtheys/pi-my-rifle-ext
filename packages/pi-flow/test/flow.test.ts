@@ -388,6 +388,10 @@ function withHandlerEnv(fn: () => Promise<void>): Promise<void> {
 interface FlowCallCtx {
   handler: (args: string, ctx: unknown) => Promise<void>
   sent: string[]
+  shortcuts: Map<
+    string,
+    { description: string; handler: (ctx: unknown) => Promise<void> }
+  >
 }
 
 // AIDEV-NOTE: fake ExtensionAPI via Proxy — captures registerCommand('flow')
@@ -398,6 +402,10 @@ function captureFlowCommand(): FlowCallCtx {
     string,
     { handler: (args: string, ctx: unknown) => Promise<void> }
   >()
+  const shortcuts = new Map<
+    string,
+    { description: string; handler: (ctx: unknown) => Promise<void> }
+  >()
   const sent: string[] = []
   const base = {
     registerCommand: (
@@ -405,6 +413,16 @@ function captureFlowCommand(): FlowCallCtx {
       def: { handler: (args: string, ctx: unknown) => Promise<void> },
     ) => {
       commands.set(name, def)
+    },
+    // Captures registerShortcut calls so shortcut/command parity (same toggle
+    // path) can be asserted. Note: the /hotkeys no-collision check (alt+d
+    // verified unused in-repo @ 4da80b1) is a manual check that cannot run
+    // under node --test.
+    registerShortcut: (
+      key: string,
+      def: { description: string; handler: (ctx: unknown) => Promise<void> },
+    ) => {
+      shortcuts.set(key, def)
     },
     sendUserMessage: (message: string) => {
       sent.push(message)
@@ -424,7 +442,7 @@ function captureFlowCommand(): FlowCallCtx {
   if (def === undefined) {
     throw new Error('/flow command was not registered')
   }
-  return { handler: def.handler, sent }
+  return { handler: def.handler, sent, shortcuts }
 }
 
 function flowCtx(
@@ -516,6 +534,25 @@ test('flow handler: dashboard toggles with no content, never sendUserMessage', a
     const notifications: Array<{ message: string; level: string }> = []
     await handler('dashboard', flowCtx(notifications))
     assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /No flow content to show/)
+  })
+})
+
+// alt+d must reach the same no-content notify path as the /flow dashboard
+// command — parity is delegated to toggleFlowDashboardPin. Pinned-path state
+// is covered by the Phase 3 widget toggle unit tests; not duplicated here.
+// Note: /hotkeys no-collision for alt+d (verified unused in-repo @ 4da80b1)
+// is a manual check that cannot run under node --test.
+test('flow shortcut: alt+d toggles dashboard, same no-content path as command', async () => {
+  await withHandlerEnv(async () => {
+    const { shortcuts } = captureFlowCommand()
+    const altD = shortcuts.get('alt+d')
+    assert.ok(altD, 'alt+d shortcut was not registered')
+    assert.equal(altD.description, 'Toggle the flow dashboard widget')
+    const notifications: Array<{ message: string; level: string }> = []
+    await altD.handler(flowCtx(notifications))
     assert.equal(notifications.length, 1)
     assert.equal(notifications[0].level, 'info')
     assert.match(notifications[0].message, /No flow content to show/)
