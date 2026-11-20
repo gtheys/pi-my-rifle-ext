@@ -310,7 +310,10 @@ test('execute refuses with a checkout-mismatch error when the flow worktree cann
   )
   assert.equal(result.isError, true)
   const text = textOf(
-    result as {
+    // AIDEV-NOTE: PMR-0KMQ — the stub's declared return (DeviationArtifact &
+    // isError) doesn't structurally overlap the tool-result shape, so cast
+    // via unknown to keep typecheck honest about the runtime contract.
+    result as unknown as {
       content: { type: string; text?: string }[]
     },
   )

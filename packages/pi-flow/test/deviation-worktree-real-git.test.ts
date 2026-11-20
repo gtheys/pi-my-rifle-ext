@@ -67,7 +67,12 @@ test('real git: deviation resolves the range through the bound external worktree
       getFlowWorktree: () => ({ ref: 'PMR-TEST', path: wt, branch: 'feat/x' }),
       avenShowFull: async () => '',
       herdrWorktreeList: async () => [],
-      exec,
+      // ReviewDeps.exec requires stderr: string; the shared Exec helper's
+      // failure branch leaves stderr optional — normalize here.
+      exec: async (cmd, args, opts) => {
+        const r = await exec(cmd, args, opts)
+        return { code: r.code, stdout: r.stdout, stderr: r.stderr ?? '' }
+      },
       exists: (p: string) => existsSync(p),
       repoRoot: repo,
     }

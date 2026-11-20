@@ -60,7 +60,7 @@ import {
   adhocFinish,
 } from '../adhoc/tracker.ts'
 import { resolveMode } from '../config.ts'
-import { getActiveFlowRef } from '../flow/worktree-context.ts'
+import { getActiveFlowRef, getFlowWorktree } from '../flow/worktree-context.ts'
 import {
   createDaemonAliveProbe,
   createEventWriter,
@@ -2519,7 +2519,7 @@ ${result.summary}`
             content: [
               {
                 type: 'text',
-                text: `Review refused: checkout mismatch — ${commitCwd.reason}. Pinning commit ${p.sha} from ${ctx.cwd} would re-check HEAD against the wrong checkout and report a misleading 'stale' verdict. Fix or re-bind the flow worktree (herdr worktree bind), then re-run the review.`,
+                text: `Review refused: checkout mismatch — ${commitCwd.reason}. Pinning commit ${p.sha} from ${ctx.cwd} would re-check HEAD against the wrong checkout and report a misleading 'stale' verdict. Fix or re-bind the flow worktree (run /flow <ref> to resume so the flow loop session holds the worktree context), then re-run the review.`,
               },
             ],
             // AIDEV-NOTE: isError results omit details — a fabricated
