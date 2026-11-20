@@ -24,12 +24,25 @@ const VENDOR_DIR = join(
 const PINNED_HP_JS_SHA256 =
   'acebfb79e9a8cb6a5d5143f06b181e5ed9904509fdd872420cd7b7b4fbda1532'
 
+// AIDEV-NOTE: view.html is a sanctioned minimal fork of upstream v0.2.2 (adds
+// the flow header band + /*FLOW_HEADER*/null slot, PMR-57HF). Unlike hp.js,
+// this pin does NOT mean byte-identical to upstream — it pins the forked
+// bytes. Any view.html change must go through a re-fork: document the diff in
+// PIN.md's "view.html fork" section and update this constant + the PIN.md row
+// together. hp.js stays byte-identical to upstream (pin above, untouched).
+const PINNED_VIEW_HTML_SHA256 =
+  'b2d6ed896655196546e5f21406a6315462c0b7ce1858aa06a40694c72a487b1b'
+
 function sha256(filePath: string): string {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex')
 }
 
 test('vendored hp.js matches pinned sha256', () => {
   assert.equal(sha256(join(VENDOR_DIR, 'hp.js')), PINNED_HP_JS_SHA256)
+})
+
+test('vendored view.html matches pinned (forked) sha256', () => {
+  assert.equal(sha256(join(VENDOR_DIR, 'view.html')), PINNED_VIEW_HTML_SHA256)
 })
 
 test('vendored LICENSE is the MIT license', () => {

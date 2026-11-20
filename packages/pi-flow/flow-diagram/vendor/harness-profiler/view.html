@@ -35,9 +35,19 @@ svg .spawn rect { stroke:var(--panel); stroke-width:1; }
 .row .gist { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .detail { margin:2px 0 8px; padding:8px 10px; border-left:3px solid var(--line); white-space:pre-wrap; word-break:break-word; }
 .detail b { color:var(--muted); font-weight:500; display:inline-block; min-width:64px; }
-</style></head><body>
+</style>
+<!-- pi-flow fork: ticket header band CSS (PMR-57HF); removed on re-vendor -->
+<style>
+#flow-header { font:12px var(--mono); color:var(--muted); margin:0 0 12px; display:flex; flex-wrap:wrap; gap:2px 18px; }
+#flow-header b { color:var(--fg); font-weight:500; }
+#flow-header a { color:inherit; }
+</style>
+<!-- pi-flow fork: end header CSS --></head><body>
 <h1>Session <span id="sid"></span></h1>
 <div class="sub" id="subline"></div>
+<!-- pi-flow fork: ticket header band (PMR-57HF); filled by renderFlowHeader() below -->
+<div id="flow-header" hidden></div>
+<!-- pi-flow fork: end header band -->
 <details class="intro"><summary>How to read this</summary><p>A sequence diagram of the session. Each vertical bar is one <b>context</b>: a conversation history the model reads. A Skill or Agent call that opens a new context is a message to a new bar, and the dashed message back carries its result. A new context starts with its prompt only and gets a color of its own; one that starts with a copy of its parent's history says so and keeps the parent's color. Rows are in time order, not to scale. To save width, a column holds one context at a time: when a context ends, a later one can reuse its column, so five runs of the same skill one after another sit in one column as five bars. Such a column's header is an outline with one chip per context, in time order and in the color of its bar; a chip without a name repeats the name before it. Next to the top of a context's bar are the tokens it spent over all its model calls, each of which sends the whole history again: new input, input read from the prompt cache (far cheaper), and output. Hover for the exact numbers. Click a message to see the call's arguments and result.</p>
 <div class="symbols" style="margin-top:8px">
   <span><svg width="34" height="12"><line x1="0" x2="26" y1="6" y2="6" stroke="var(--c0)" stroke-width="2"/><path d="M24 1 L34 6 L24 11 z" fill="var(--c0)"/></svg>call that starts a context</span>
@@ -387,4 +397,28 @@ let pending;
 window.addEventListener('resize', () => { clearTimeout(pending); pending = setTimeout(drawSequence, 100); });
 if (D.calls.length) drawSequence(); else document.querySelector('.panel').textContent = 'No calls recorded in this session.';
 drawTree();
+
+// pi-flow fork: FLOW_HEADER data slot + ticket header band render (PMR-57HF).
+// assemble.ts replaces the literal with `<`-escaped JSON (same technique as
+// hp.js's /*DATA*/null slot). Absent fields are skipped, never blank rows.
+const FLOW_HEADER = /*FLOW_HEADER*/null;
+function renderFlowHeader() {
+  if (!FLOW_HEADER) return;
+  const rows = [];
+  const add = (label, value) => { if (value) rows.push(`<div><b>${label}</b> ${value}</div>`); };
+  add('ticket', esc(FLOW_HEADER.ref));
+  add('track', esc(FLOW_HEADER.trackRef ? `${FLOW_HEADER.trackRef} (${FLOW_HEADER.mode})` : FLOW_HEADER.mode));
+  if (FLOW_HEADER.runCount) add('run', `${FLOW_HEADER.runIndex} of ${FLOW_HEADER.runCount}`);
+  if (FLOW_HEADER.phases && FLOW_HEADER.phases.length) add('phases', FLOW_HEADER.phases.map((p) => `${esc(p.phase)} ${dur(Math.round(p.seconds * 1000))}`).join(' · '));
+  if (FLOW_HEADER.commitsBySubtask && FLOW_HEADER.commitsBySubtask.length) add('commits', FLOW_HEADER.commitsBySubtask.map((c) => `${esc(c.subtask)}: ${c.commits.map(esc).join(', ')}`).join(' · '));
+  if (FLOW_HEADER.unattributed && FLOW_HEADER.unattributed.length) add('unattributed', FLOW_HEADER.unattributed.map(esc).join(', '));
+  if (FLOW_HEADER.prUrl) add('pr', `<a href="${esc(FLOW_HEADER.prUrl)}">${esc(FLOW_HEADER.prUrl)}</a>`);
+  if (FLOW_HEADER.generatedAt) add('generated', esc(FLOW_HEADER.generatedAt));
+  if (!rows.length) return;
+  const el = document.getElementById('flow-header');
+  el.innerHTML = rows.join('');
+  el.hidden = false;
+}
+renderFlowHeader();
+// pi-flow fork: end header band script
 </script></body></html>
