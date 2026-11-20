@@ -3984,15 +3984,19 @@ describe('subagents widget lifecycle (PMR-AD0H)', () => {
 
   function recordingWidgetCtx() {
     const widgets: Array<[string, unknown]> = []
+    const statuses: Array<[string, string | undefined]> = []
     const ctx = {
       hasUI: true,
       ui: {
         setWidget(key: string, content: unknown) {
           widgets.push([key, content])
         },
+        setStatus(key: string, text: string | undefined) {
+          statuses.push([key, text])
+        },
       },
     }
-    return { ctx, widgets }
+    return { ctx, widgets, statuses }
   }
 
   function resetWidgetState() {
@@ -4066,6 +4070,102 @@ describe('subagents widget lifecycle (PMR-AD0H)', () => {
       assert.equal(testApi.isWidgetRegisteredForTest(), true)
     } finally {
       testApi.runningSubagents.delete('widget-lifecycle-fixture')
+      resetWidgetState()
+    }
+  })
+
+  it('sets the footer status before the cheap-path early return (PMR-C3B6)', () => {
+    // A running subagent + registered widget takes the cheap path, but the
+    // footer must still be recorded — proving setStatus runs before the
+    // early return, not only on the full render path.
+    testApi.setWidgetRegisteredForTest(true)
+    testApi.setWidgetTuiForTest({ requestRender() {} })
+    const { ctx, widgets, statuses } = recordingWidgetCtx()
+    testApi.runningSubagents.set('widget-lifecycle-fixture', {
+      id: 'widget-lifecycle-fixture',
+    })
+    try {
+      testApi.updateWidgetForTest(ctx)
+
+      assert.deepEqual(statuses, [['subagents', '🤖 1 running']])
+      assert.deepEqual(widgets, [])
+    } finally {
+      testApi.runningSubagents.delete('widget-lifecycle-fixture')
+      resetWidgetState()
+    }
+  })
+
+  it('clears the footer status at zero with the hideWhenIdle default', () => {
+    const { ctx, statuses } = recordingWidgetCtx()
+    try {
+      testApi.updateWidgetForTest(ctx)
+
+      const last = statuses[statuses.length - 1]
+      assert.deepEqual(last, ['subagents', undefined])
+    } finally {
+      resetWidgetState()
+    }
+  })
+
+  it('clears the footer status at zero when hideWhenIdle=false', () => {
+    testApi.setHideWhenIdleForTest(false)
+    const { ctx, statuses } = recordingWidgetCtx()
+    try {
+      testApi.updateWidgetForTest(ctx)
+
+      const last = statuses[statuses.length - 1]
+      assert.deepEqual(last, ['subagents', undefined])
+    } finally {
+      resetWidgetState()
+    }
+  })
+
+  it('re-sets the footer on a fresh ctx during reconcile with running subagents', () => {
+    // After a session switch the new ctx must receive the footer again,
+    // even though the widget itself stays on the cheap path.
+    testApi.setWidgetRegisteredForTest(true)
+    testApi.setWidgetTuiForTest({ requestRender() {} })
+    const first = recordingWidgetCtx()
+    testApi.runningSubagents.set('widget-lifecycle-fixture', {
+      id: 'widget-lifecycle-fixture',
+    })
+    try {
+      testApi.updateWidgetForTest(first.ctx)
+
+      const fresh = recordingWidgetCtx()
+      testApi.updateWidgetForTest(fresh.ctx)
+
+      assert.deepEqual(fresh.statuses, [['subagents', '🤖 1 running']])
+      assert.deepEqual(fresh.widgets, [])
+    } finally {
+      testApi.runningSubagents.delete('widget-lifecycle-fixture')
+      resetWidgetState()
+    }
+  })
+
+  it('swallows setStatus throws from a stale ctx and still handles the widget', () => {
+    // A stale ctx (/reload orphan) may not support setStatus; the throw
+    // must not escape and the widget unregister below must still run.
+    testApi.setWidgetRegisteredForTest(true)
+    testApi.setWidgetTuiForTest({ requestRender() {} })
+    const widgets: Array<[string, unknown]> = []
+    const ctx = {
+      hasUI: true,
+      ui: {
+        setWidget(key: string, content: unknown) {
+          widgets.push([key, content])
+        },
+        setStatus(_key: string, _text: string | undefined) {
+          throw new Error('stale ctx')
+        },
+      },
+    }
+    try {
+      testApi.updateWidgetForTest(ctx)
+
+      assert.deepEqual(widgets, [['subagent-status', undefined]])
+      assert.equal(testApi.isWidgetRegisteredForTest(), false)
+    } finally {
       resetWidgetState()
     }
   })
