@@ -457,12 +457,6 @@ async function listFlow(pi: ExtensionAPI, cwd: string): Promise<ToolResult> {
 // checkout does); PR merge state via gh checked BEFORE herdr removal so a
 // refused branch delete leaves the worktree untouched. `git branch -D`
 // (not -d) because squash merges look unmerged to git's ancestry check.
-// Decision injection (PMR-81SX fix round): opts.branchDecision, when
-// present, replaces the ghPrState + decideBranchDelete re-derivation —
-// manual removeFlow passes no decision (re-derive as always); the auto
-// cleanup path passes its pre-made decideAutoBranchDelete decision, since
-// personal flows never have PRs and the manual NO_PR refusal must not veto
-// an auto delete.
 async function ghPrState(
   pi: ExtensionAPI,
   main: string,
@@ -492,6 +486,12 @@ async function ghPrState(
 // ref for the effect declaration: the auto path clears the active flow ref
 // before cleanup runs, so the caller passes the captured ref; the manual
 // wrapper passes getActiveFlowRef() ?? 'worktree-ops'.
+// Decision injection (PMR-81SX fix round): opts.branchDecision, when
+// present, replaces the ghPrState + decideBranchDelete re-derivation —
+// manual removeFlow passes no decision (re-derive as always); the auto
+// cleanup path passes its pre-made decideAutoBranchDelete decision, since
+// personal flows never have PRs and the manual NO_PR refusal must not veto
+// an auto delete.
 export type RemoveWorktreeOpts = {
   path: string
   force: boolean
