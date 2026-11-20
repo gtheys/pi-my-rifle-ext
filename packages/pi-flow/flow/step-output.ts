@@ -74,6 +74,23 @@ export const StepOutputSchema = Type.Union(
 
 export type StepOutputFacts = Static<typeof StepOutputSchema>
 
+// AIDEV-NOTE (PMR-C998): schema-derived union of every optional fact key.
+// Extract picks each union branch by its literal `phase` discriminator and
+// the mapped type collects the branch's fact keys. Deriving — instead of a
+// third hand-written list — is what makes the drift guards below compile-
+// time enforced rather than wishful.
+type SchemaFactKeys = {
+  [P in StepOutputFacts['phase']]: Exclude<
+    keyof Extract<StepOutputFacts, { phase: P }>,
+    'phase'
+  >
+}[StepOutputFacts['phase']]
+
+// Exhaustiveness idiom: Expect<T extends true> only compiles for `true`, so
+// wrapping IsNever<X> turns "X has leftover members" into a tsc error.
+type IsNever<T> = [T] extends [never] ? true : false
+type Expect<T extends true> = T
+
 /**
  * Payload shape of the `step-output` FlowRunEvent member that subtask 2.2
  * adds to run-state.ts. Kept local here so this pure module compiles
@@ -126,6 +143,16 @@ type StepOutputFactFields = {
   prMerged?: boolean
 }
 
+// AIDEV-NOTE: compile-time drift guard — tsc fails when StepOutputFactFields
+// and the schema union disagree in EITHER direction (a fact added to the
+// schema without mirroring it here, or a stale mirror key after schema
+// removal). Without this, a drifted key would silently skip cross-phase
+// rejection for it.
+export type FactFieldsMirrorGuard = [
+  Expect<IsNever<Exclude<SchemaFactKeys, keyof StepOutputFactFields>>>,
+  Expect<IsNever<Exclude<keyof StepOutputFactFields, SchemaFactKeys>>>,
+]
+
 export type StepOutputInput = StepOutputFactFields & {
   ref: string
   step: string
@@ -146,12 +173,30 @@ function buildTypeMismatchReason(
   return `Invalid ${phase} fact "${field}": expected ${expected}.`
 }
 
-const FACT_KEYS_BY_PHASE: Record<StepOutputFacts['phase'], string[]> = {
+// AIDEV-NOTE: value type is DERIVED per phase from the schema union, so a
+// key from a foreign phase cannot be listed here (element type mismatch) —
+// only the "missing key" direction needs the guard below.
+const FACT_KEYS_BY_PHASE: {
+  [P in StepOutputFacts['phase']]: readonly Exclude<
+    keyof Extract<StepOutputFacts, { phase: P }>,
+    'phase'
+  >[]
+} = {
   plan: ['planPath', 'subtaskRefs'],
   implement: ['command', 'passed', 'headSha'],
   validate: ['prNumber', 'prUrl', 'gateTargetIds'],
   feedback: ['prUrl', 'prMerged'],
 }
+
+// AIDEV-NOTE: compile-time exhaustiveness guard — tsc fails when a schema
+// fact key is missing from FACT_KEYS_BY_PHASE (a missing key would silently
+// skip cross-phase rejection for it). Extra keys are already rejected by the
+// derived per-phase array element types above.
+type MappedFactKeys =
+  (typeof FACT_KEYS_BY_PHASE)[StepOutputFacts['phase']][number]
+export type FactKeysExhaustiveGuard = Expect<
+  IsNever<Exclude<SchemaFactKeys, MappedFactKeys>>
+>
 
 function buildCrossPhaseReason(
   field: string,
