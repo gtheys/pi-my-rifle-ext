@@ -28,8 +28,10 @@ function depsWith(overrides?: {
     exec: async (_cmd, args) => {
       if (args.includes('--git-common-dir')) {
         const probePath = args[1] ?? ''
-        const dir =
-          probePath === REPO_ROOT ? COMMON_GIT_DIR : candidateCommonDir
+        let dir = candidateCommonDir
+        if (probePath === REPO_ROOT) {
+          dir = COMMON_GIT_DIR
+        }
         return { code: 0, stdout: `${dir}\n`, stderr: '' }
       }
       if (args.includes('--abbrev-ref')) {
