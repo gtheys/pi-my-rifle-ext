@@ -217,7 +217,7 @@ test('short headSha is refused without journaling', async () => {
 test('wrong-type fact on the phase branch is refused without journaling', async () => {
   const { writer, captured } = memoryWriter()
   const execute = captureTool({ writer })
-  // command must be a string on the implement branch; this wrong-typed fact
+  // passed must be a boolean on the implement branch; this wrong-typed fact
   // is caught by buildStepOutputEvent's validateFactTypes runtime check,
   // NOT by the TypeBox schema (unions allow additional properties).
   const mismatch = await execute('t2', {
