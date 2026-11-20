@@ -54,11 +54,11 @@
         },
         "streamStallAfterMs": {
           "type": "number",
-          "description": "Dead-turn deadline for streaming/provider scopes in ms (default 150000)."
+          "description": "Dead-turn deadline for the streaming scope in ms (default 150000)."
         },
         "quietStallAfterMs": {
           "type": "number",
-          "description": "Dead-turn deadline for tool/turn/unknown scopes and sustained snapshot loss in ms (default 1800000)."
+          "description": "Dead-turn deadline for provider/tool/turn/unknown scopes and sustained snapshot loss in ms (default 1800000)."
         }
       }
     }

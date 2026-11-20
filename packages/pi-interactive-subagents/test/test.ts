@@ -761,8 +761,9 @@ describe('status.ts', () => {
   })
 
   // PMR-YFRB siblings for the pin above: present+active snapshots DO age
-  // into stalled, scope-aware — streaming/provider use the short bucket,
-  // everything else (tool/turn/null) the long bucket.
+  // into stalled, scope-aware — streaming uses the short bucket (provider
+  // moved to the long bucket, PMR-S1PT), everything else
+  // (provider/tool/turn/null) the long bucket.
   it('ages a frozen streaming active snapshot into stalled (dead turn)', () => {
     let state = createStatusState({ source: 'pi', startTimeMs: 0 })
     state = observeStatus(
@@ -1333,10 +1334,18 @@ describe('classifyTurnStall (PMR-YFRB)', () => {
     assert.equal(verdict.stalledForMs, 150_000)
   })
 
-  it('ages provider scope with the short bucket too', () => {
-    const verdict = classifyTurnStall(activeState('provider', 0), 150_000)
-    assert.equal(verdict.stalled, true)
-    assert.equal(verdict.reason, 'dead-turn')
+  it('keeps provider scope alive until the long bucket (pre-first-token silence is legitimate)', () => {
+    // PMR-S1PT: provider includes before_provider_request → first delta,
+    // which can legitimately stay silent past the short deadline (large
+    // prompt processing, 429/529 retry backoff) — short bucket would
+    // false-kill a healthy child mid-request.
+    const short = classifyTurnStall(activeState('provider', 0), 150_000)
+    assert.equal(short.stalled, false)
+
+    const long = classifyTurnStall(activeState('provider', 0), 1_800_000)
+    assert.equal(long.stalled, true)
+    assert.equal(long.reason, 'dead-turn')
+    assert.equal(long.activeScope, 'provider')
   })
 
   it('keeps tool scope alive until the long bucket', () => {

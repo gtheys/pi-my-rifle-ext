@@ -5,11 +5,14 @@ import { fileURLToPath } from 'node:url'
 export const SNAPSHOT_STALLED_AFTER_MS = 60_000
 
 // AIDEV-NOTE (PMR-YFRB): parent-side dead-turn watchdog thresholds. The short
-// bucket covers scopes where silence means the model turn died mid-generation
-// (streaming/provider); the long bucket covers legitimately quiet scopes
-// (tool/turn/unknown) and sustained snapshot loss. Configurable via the
-// `watchdog` object in pi-subagents/config.json; `enabled: false` restores the
-// legacy never-age behavior.
+// bucket covers the scope where silence means the model turn died
+// mid-generation (streaming); the long bucket covers legitimately quiet
+// scopes (provider/tool/turn/unknown) and sustained snapshot loss. Provider
+// is long-bucket (PMR-S1PT): the provider window includes pre-first-token
+// silence (large-prompt processing, 429/529 retry backoff) that emits no
+// events — a short deadline there false-kills healthy children.
+// Configurable via the `watchdog` object in pi-subagents/config.json;
+// `enabled: false` restores the legacy never-age behavior.
 export const STREAM_STALL_AFTER_MS = 150_000
 export const QUIET_STALL_AFTER_MS = 1_800_000
 
@@ -532,12 +535,15 @@ function classifyProblemState(
 }
 
 // AIDEV-NOTE (PMR-YFRB): pure, now-parameterized dead-turn watchdog verdict.
-// Scope-aware aging of the last recorded activity: streaming/provider get the
-// short bucket (silence there means the model turn died mid-generation);
-// tool/turn/null/unknown scopes get the long bucket (a 20-minute bash is
-// legitimate). A missing/invalid/wrong-id snapshot sustained past the long
-// bucket is 'no-activity' — the poll-loop escalation backstop for vanished
-// panes. Blocked (PMR-WXG0), waiting, and claude sources never stall here.
+// Scope-aware aging of the last recorded activity: streaming gets the short
+// bucket (silence there means the model turn died mid-generation);
+// provider/tool/turn/null/unknown scopes get the long bucket (a 20-minute
+// bash is legitimate, and pre-first-token provider silence — large prompt
+// processing, 429/529 retry-with-backoff loops — emits no events at all, so
+// a short provider deadline false-kills healthy children, PMR-S1PT). A
+// missing/invalid/wrong-id snapshot sustained past the long bucket is
+// 'no-activity' — the poll-loop escalation backstop for vanished panes.
+// Blocked (PMR-WXG0), waiting, and claude sources never stall here.
 export function classifyTurnStall(
   state: SubagentStatusState,
   now: number,
@@ -561,7 +567,13 @@ export function classifyTurnStall(
       }
     }
     const scope = state.activeScope
-    const shortBucket = scope === 'streaming' || scope === 'provider'
+    // Provider rides the long bucket (PMR-S1PT): before_provider_request →
+    // first streamed delta can legitimately stay silent far beyond 150s
+    // (huge contexts, provider-side retry backoff), and a false verdict here
+    // escalates to a failed result and closeSurface kills a healthy child
+    // mid-request. A stream hanging MID-generation is still caught by the
+    // streaming short bucket.
+    const shortBucket = scope === 'streaming'
     let deadline: number
     if (shortBucket) {
       deadline = thresholds.streamStallAfterMs

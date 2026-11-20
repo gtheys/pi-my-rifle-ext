@@ -249,8 +249,8 @@ Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on
 | `status.hideWhenIdle` | boolean | `true` | Hide the "Subagents · N running" widget completely while no subagent exists; set `false` to keep the box visible at zero |
 | `contextRetirement.enabled` | boolean | `false` | Retire settled subagent payloads to durable refs when compaction pressure hits |
 | `watchdog.enabled` | boolean | `true` | Dead-turn stall watchdog: age frozen present+active snapshots into `stalled` and escalate dead child turns. `false` restores the legacy never-age behavior |
-| `watchdog.streamStallAfterMs` | number | `150000` | Deadline (ms) for frozen `streaming`/`provider` scopes — silence there means the model turn died mid-generation |
-| `watchdog.quietStallAfterMs` | number | `1800000` | Deadline (ms) for `tool`/`turn`/unknown scopes (legitimately quiet, e.g. a 20-minute bash) and sustained snapshot loss |
+| `watchdog.streamStallAfterMs` | number | `150000` | Deadline (ms) for the frozen `streaming` scope — silence there means the model turn died mid-generation |
+| `watchdog.quietStallAfterMs` | number | `1800000` | Deadline (ms) for `provider`/`tool`/`turn`/unknown scopes and sustained snapshot loss. `provider` is deliberately long-bucket: pre-first-token silence (large prompt processing, 429/529 retry backoff) emits no events, so a short provider deadline false-kills healthy children mid-request |
 
 ```json
 {
