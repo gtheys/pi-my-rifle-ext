@@ -489,20 +489,22 @@ async function ghPrState(
 // Decision injection (PMR-81SX fix round): opts.branchDecision, when
 // present, replaces the ghPrState + decideBranchDelete re-derivation —
 // manual removeFlow passes no decision (re-derive as always); the auto
-// cleanup path passes its pre-made decideAutoBranchDelete decision, since
-// personal flows never have PRs and the manual NO_PR refusal must not veto
-// an auto delete.
+// cleanup path injects ONLY a 'delete' verdict (its keep verdicts never
+// reach the core — deleteBranch stays false so the default skip note
+// reproduces byte-identically). AutoBranchDeleteDecision has no 'refuse'
+// variant, so the manual path's refuse handling stays where the refuse
+// decisions actually originate: the re-derivation branch.
 export type RemoveWorktreeOpts = {
   path: string
   force: boolean
   deleteBranch: boolean
   ref: string
   // AIDEV-NOTE: PMR-81SX fix round — pre-made branch-delete decision for the
-  // AUTO path. When present, the core skips ghPrState + decideBranchDelete
-  // entirely and uses this decision verbatim ('refuse' still aborts with the
-  // worktree intact). The manual tool passes no decision and keeps the
-  // re-derivation semantics byte-identical.
-  branchDecision?: BranchDeleteDecision
+  // AUTO path. Only the 'delete' verdict is injectable: keep verdicts never
+  // reach the core (cleanupFlowWorktree skips injection for keep-branch/
+  // keep-all), and AutoBranchDeleteDecision has no 'refuse' variant, so a
+  // refuse can only arise on the manual re-derivation path below.
+  branchDecision?: { action: 'delete' }
 }
 
 export type RemoveWorktreeResult = {
@@ -583,12 +585,11 @@ export async function removeWorktreeCore(
   let prState: PrState | undefined
   if (opts.branchDecision !== undefined) {
     // Auto path: caller already decided — never re-derive via gh/decideBranchDelete.
+    // Only a 'delete' verdict is injectable (AutoBranchDeleteDecision has no
+    // 'refuse' variant and keep verdicts never reach the core), so there is
+    // no refuse handling here: a manual-tool 'Pass force: true' suggestion
+    // would be wrong vocabulary on the auto path anyway.
     decision = opts.branchDecision
-    if (decision.action === 'refuse') {
-      return {
-        error: `Refusing to remove: branch ${branch} not deletable — ${decision.reason}.\nPass force: true to remove anyway.`,
-      }
-    }
   } else if (opts.deleteBranch) {
     // Manual path: re-derive PR state and consult the manual guard.
     prState = await ghPrState(pi, main, branch)
@@ -823,7 +824,7 @@ export async function cleanupFlowWorktree(
     // flows never have PRs). For 'keep-branch' no decision is injected:
     // deleteBranch is false, so the core's default skip ('delete_branch not
     // requested') reproduces the previous note byte-identically.
-    let branchDecision: BranchDeleteDecision | undefined
+    let branchDecision: { action: 'delete' } | undefined
     if (decision.action === 'delete') {
       branchDecision = { action: 'delete' }
     }
