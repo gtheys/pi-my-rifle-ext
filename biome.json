@@ -9,8 +9,8 @@
       "!**/dist",
       "!**/coverage",
       "!**/node_modules",
-      "!**/flow-diagram/vendor/hp.js",
-      "!**/flow-diagram/vendor/view.html"
+      "!**/flow-diagram/vendor/harness-profiler/hp.js",
+      "!**/flow-diagram/vendor/harness-profiler/view.html"
     ]
   },
   "formatter": {
