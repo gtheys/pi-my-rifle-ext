@@ -88,10 +88,10 @@ function resolveEffects(deps?: { effects?: EffectJournal }): EffectJournal {
 
 async function declareWorktreeEffect(
   effects: EffectJournal,
+  ref: string,
   effect: 'worktree-create' | 'worktree-remove',
   command: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const ref = getActiveFlowRef() ?? 'worktree-ops'
   const declared = await effects.declare({
     ref,
     effect,
@@ -222,6 +222,7 @@ async function createFlow(
   const command = `herdr worktree create --cwd ${cwd} --branch ${derived.branch} --label ${label} --base ${baseSha}`
   const declared = await declareWorktreeEffect(
     effects,
+    getActiveFlowRef() ?? 'worktree-ops',
     'worktree-create',
     command,
   )
@@ -449,11 +450,11 @@ async function listFlow(pi: ExtensionAPI, cwd: string): Promise<ToolResult> {
   return textResult(lines.join('\n'), { worktrees, agentsDegraded: degraded })
 }
 
-// AIDEV-NOTE: remove guards order per spec — branch captured BEFORE
-// removal (branch ref only exists while the worktree checkout does);
-// PR merge state via gh checked BEFORE herdr removal so a refused branch
-// delete leaves the worktree untouched. `git branch -D` (not -d) because
-// squash merges look unmerged to git's ancestry check.
+// AIDEV-NOTE: remove guards order per spec (now in removeWorktreeCore) —
+// branch captured BEFORE removal (branch ref only exists while the worktree
+// checkout does); PR merge state via gh checked BEFORE herdr removal so a
+// refused branch delete leaves the worktree untouched. `git branch -D`
+// (not -d) because squash merges look unmerged to git's ancestry check.
 async function ghPrState(
   pi: ExtensionAPI,
   main: string,
@@ -479,68 +480,82 @@ async function ghPrState(
   return 'NO_PR'
 }
 
-async function removeFlow(
+// AIDEV-NOTE: PMR-K0ZV/PMR-VDVJ phase 5 — the removal core takes an EXPLICIT
+// ref for the effect declaration: the auto path clears the active flow ref
+// before cleanup runs, so the caller passes the captured ref; the manual
+// wrapper passes getActiveFlowRef() ?? 'worktree-ops'.
+export type RemoveWorktreeOpts = {
+  path: string
+  force: boolean
+  deleteBranch: boolean
+  ref: string
+}
+
+export type RemoveWorktreeResult = {
+  removed: string
+  branch: string
+  branchDeleted: boolean
+  branchNote: string
+  pruneNote: string
+  prState: PrState | undefined
+  force: boolean
+}
+
+export async function removeWorktreeCore(
   pi: ExtensionAPI,
   effects: EffectJournal,
   cwd: string,
-  params: {
-    cwd?: string
-    force?: boolean
-    delete_branch?: boolean
-  },
-): Promise<ToolResult> {
-  if (!params.cwd) {
-    return errorResult("remove requires 'cwd' — the worktree path to remove")
-  }
-
+  opts: RemoveWorktreeOpts,
+): Promise<RemoveWorktreeResult | { error: string }> {
+  const path = opts.path
   // Branch must be captured before removal — after `herdr worktree remove`
   // the checkout (and its HEAD) is gone, but the branch ref remains.
   const branchResult = await pi.exec(
     'git',
     ['rev-parse', '--abbrev-ref', 'HEAD'],
-    { cwd: params.cwd },
+    { cwd: path },
   )
   if (branchResult.code !== 0) {
-    return errorResult(
-      `git rev-parse failed in ${params.cwd}: ${branchResult.stderr || branchResult.stdout}`,
-    )
+    return {
+      error: `git rev-parse failed in ${path}: ${branchResult.stderr || branchResult.stdout}`,
+    }
   }
   const branch = branchResult.stdout.trim()
 
-  const force = params.force === true
+  const force = opts.force
   const status = await pi.exec('git', ['status', '--porcelain'], {
-    cwd: params.cwd,
+    cwd: path,
   })
   if (status.code !== 0) {
-    return errorResult(
-      `git status failed in ${params.cwd}: ${status.stderr || status.stdout}`,
-    )
+    return {
+      error: `git status failed in ${path}: ${status.stderr || status.stdout}`,
+    }
   }
   const dirtyCount = status.stdout
     .split('\n')
     .filter((line) => line.trim() !== '').length
   if (dirtyCount > 0 && !force) {
-    return errorResult(
-      `${params.cwd} is dirty (${dirtyCount} changed files) — pass force: true to remove anyway`,
-    )
+    return {
+      error: `${path} is dirty (${dirtyCount} changed files) — pass force: true to remove anyway`,
+    }
   }
 
   const preflight = await herdrAvailable(pi, cwd)
   if (!preflight.ok) {
-    return errorResult(
-      `${preflight.error}\nThe worktree tool must run inside a Herdr session with herdr on PATH.`,
-    )
+    return {
+      error: `${preflight.error}\nThe worktree tool must run inside a Herdr session with herdr on PATH.`,
+    }
   }
 
   let worktrees: HerdrWorktree[]
   try {
     worktrees = await worktreeList(pi, cwd)
   } catch (error) {
-    return errorResult((error as Error).message)
+    return { error: (error as Error).message }
   }
-  const target = worktrees.find((wt) => wt.path === params.cwd)
+  const target = worktrees.find((wt) => wt.path === path)
   if (!target) {
-    return errorResult(`No Herdr worktree found at path ${params.cwd}`)
+    return { error: `No Herdr worktree found at path ${path}` }
   }
 
   const main = await mainCheckout(pi, cwd)
@@ -552,7 +567,7 @@ async function removeFlow(
     reason: 'delete_branch not requested',
   }
   let prState: PrState | undefined
-  if (params.delete_branch === true) {
+  if (opts.deleteBranch) {
     prState = await ghPrState(pi, main, branch)
     decision = decideBranchDelete({
       deleteBranchRequested: true,
@@ -560,9 +575,9 @@ async function removeFlow(
       force,
     })
     if (decision.action === 'refuse') {
-      return errorResult(
-        `Refusing to remove: branch ${branch} not deletable — ${decision.reason}.\nPass force: true to remove anyway.`,
-      )
+      return {
+        error: `Refusing to remove: branch ${branch} not deletable — ${decision.reason}.\nPass force: true to remove anyway.`,
+      }
     }
   }
 
@@ -575,19 +590,20 @@ async function removeFlow(
   }
   const declared = await declareWorktreeEffect(
     effects,
+    opts.ref,
     'worktree-remove',
     removeCommand,
   )
   if (!declared.ok) {
-    return errorResult(
-      `worktree remove refused: effect declaration failed (${declared.reason}) — fail-closed: the worktree was left intact`,
-    )
+    return {
+      error: `worktree remove refused: effect declaration failed (${declared.reason}) — fail-closed: the worktree was left intact`,
+    }
   }
 
   try {
     await worktreeRemove(pi, cwd, target.workspaceId, force)
   } catch (error) {
-    return errorResult((error as Error).message)
+    return { error: (error as Error).message }
   }
 
   let branchDeleted = false
@@ -613,17 +629,50 @@ async function removeFlow(
     pruneNote = describePruneFailure(prune.stderr || prune.stdout)
   }
 
-  const text = [
-    `Removed worktree at ${params.cwd}.`,
-    branchNote,
-    pruneNote,
-  ].join('\n')
-  return textResult(text, {
-    removed: params.cwd,
+  return {
+    removed: path,
     branch,
     branchDeleted,
+    branchNote,
+    pruneNote,
     prState,
     force,
+  }
+}
+
+async function removeFlow(
+  pi: ExtensionAPI,
+  effects: EffectJournal,
+  cwd: string,
+  params: {
+    cwd?: string
+    force?: boolean
+    delete_branch?: boolean
+  },
+): Promise<ToolResult> {
+  if (!params.cwd) {
+    return errorResult("remove requires 'cwd' — the worktree path to remove")
+  }
+  const result = await removeWorktreeCore(pi, effects, cwd, {
+    path: params.cwd,
+    force: params.force === true,
+    deleteBranch: params.delete_branch === true,
+    ref: getActiveFlowRef() ?? 'worktree-ops',
+  })
+  if ('error' in result) {
+    return errorResult(result.error)
+  }
+  const text = [
+    `Removed worktree at ${result.removed}.`,
+    result.branchNote,
+    result.pruneNote,
+  ].join('\n')
+  return textResult(text, {
+    removed: result.removed,
+    branch: result.branch,
+    branchDeleted: result.branchDeleted,
+    prState: result.prState,
+    force: result.force,
   })
 }
 
