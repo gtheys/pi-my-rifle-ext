@@ -19,7 +19,6 @@ import type {
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import type { SubagentResult } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
-import { getFlowWorktree } from '../flow/worktree-context.ts'
 import {
   buildDeviationReviewPrompt,
   checkDiffLinesRead,
@@ -53,6 +52,8 @@ import {
   gateTargetId,
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
+import { productionReviewDeps } from './code-review.ts'
+import { type ReviewDeps, resolveReviewWorktree } from './code-review-parse.ts'
 import { toolResult } from './result.ts'
 
 export interface DeviationReviewToolParams {
@@ -72,6 +73,32 @@ export interface ResolvedRange {
 export type ResolvedRangeResult =
   | { ok: true; value: ResolvedRange }
   | { ok: false; reason: string }
+
+export type DeviationCwdResolution =
+  | { ok: true; cwd: string }
+  | { ok: false; reason: string }
+
+// AIDEV-NOTE: PMR-0KMQ — deviation gate cwd must be the VERIFIED bound flow
+// worktree, never the raw binding path (PMR-7ZEE) or a silent ctx.cwd fallback:
+// readFlowBase keys branch.<feature>.flowbase and only resolves from the
+// feature-branch checkout. Reuses the code_review resolver (binding → aven
+// note → herdr list; each candidate verified: path exists, common git dir
+// matches the session repo per PMR-9XR0, HEAD branch matches). When no source
+// verifies we fail CLOSED with the mismatch reason — a silent fallback to the
+// session checkout is exactly the "flow worktree is not bound" refusal this
+// ticket removes from the happy path.
+export async function resolveDeviationCwd(
+  ref: string,
+  deps: ReviewDeps,
+): Promise<DeviationCwdResolution> {
+  try {
+    const wt = await resolveReviewWorktree(ref, deps)
+    return { ok: true, cwd: wt.path }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    return { ok: false, reason: msg }
+  }
+}
 
 // AIDEV-NOTE: PMR-R4AP — the tool, not the agent, owns the diff range: base
 // branch recorded at worktree create (shared/flow-base.ts) -> shared
@@ -218,6 +245,7 @@ export function registerDeviationReviewTool(
       'Spec-deviation gate for the validate phase — call after the review gate returned 0 blockers.',
     promptGuidelines: [
       'Call deviation_review with mode, ref, the resolved spec text and the mined aven notes (validate prompt steps D1/D2). Do NOT pass a diff or commit messages: the tool resolves base, diff and commits itself in the flow worktree and reports the base SHA and range in its result.',
+      'A "cannot resolve the flow worktree" refusal names a checkout mismatch: the bound flow worktree could not be verified (missing, foreign repo, branch moved). STOP and tell the human — fix or re-bind the worktree (/flow <ref> to resume so the flow loop session holds the worktree context); never retry from the session checkout.',
       'If the result says the flow base is missing or the range is empty, STOP and tell the human — never retry with a hand-written diff.',
       'An error result means re-run deviation_review — NEVER treat an error or malformed artifact as 0 deviations.',
       'The gate pins its review target at spawn and verifies the reviewer echoed the pinned range (PMR-6EEW). A target_mismatch or stale result invalidates the verdict — re-run the tool; do not hand-wave a verdict around it.',
@@ -240,7 +268,21 @@ export function registerDeviationReviewTool(
       _onUpdate: unknown,
       ctx: ExtensionToolContext,
     ): Promise<AgentToolResult<DeviationReviewDetails>> {
-      const cwd = getFlowWorktree()?.path ?? ctx.cwd
+      // AIDEV-NOTE: PMR-0KMQ — the cwd is the VERIFIED bound flow worktree;
+      // an unresolvable worktree is a fail-closed mismatch refusal (no
+      // reviewer, no doomed "not bound" run from the session checkout).
+      const resolution = await resolveDeviationCwd(
+        params.ref,
+        productionReviewDeps(pi, ctx.cwd),
+      )
+      if (!resolution.ok) {
+        return toolResult(
+          `deviation_review: cannot resolve the flow worktree for ${params.ref} — checkout mismatch: ${resolution.reason}. The flow base is recorded on the feature branch (branch.<feature>.flowbase), so the diff range cannot be resolved from the session checkout (${ctx.cwd}). Fix or re-bind the flow worktree, then re-run. No reviewer was spawned. NEVER treat this as 0 deviations.`,
+          { ok: false as const, reason: resolution.reason },
+          { isError: true },
+        )
+      }
+      const cwd = resolution.cwd
       const exec: Exec = (cmd, args, options) => pi.exec(cmd, args, options)
       const resolved = await resolveDeviationRange(exec, cwd)
       if (!resolved.ok) {

@@ -3,6 +3,8 @@ import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import type { Exec } from '../shared/diff-base.ts'
 import {
+  type DeviationReviewDetails,
+  type DeviationReviewToolParams,
   deviationResultToToolResult,
   deviationReviewPromptFrom,
   registerDeviationReviewTool,
@@ -278,4 +280,42 @@ test('verifyDeviationGateResult fails closed when HEAD cannot be re-resolved', a
   )
   assert.ok(!v.ok)
   assert.equal(v.status, 'fail')
+})
+
+// --- execute: fail-closed checkout-mismatch refusal (PMR-0KMQ) ---
+
+test('execute refuses with a checkout-mismatch error when the flow worktree cannot be resolved', async () => {
+  const { tools, mockPi } = makeMockPi()
+  ;(mockPi as { exec: unknown }).exec = async () => ({
+    code: 1,
+    stdout: '',
+    stderr: 'no exec in test',
+  })
+  registerDeviationReviewTool(mockPi)
+  const options = tools[0] as unknown as {
+    execute: (
+      id: string,
+      params: DeviationReviewToolParams,
+      signal: AbortSignal,
+      onUpdate: unknown,
+      ctx: { cwd: string },
+    ) => Promise<DeviationReviewDetails & { isError?: boolean }>
+  }
+  const result = await options.execute(
+    't1',
+    BASE_PARAMS,
+    new AbortController().signal,
+    undefined,
+    { cwd: '/session' },
+  )
+  assert.equal(result.isError, true)
+  const text = textOf(
+    result as {
+      content: { type: string; text?: string }[]
+    },
+  )
+  assert.match(text, /cannot resolve the flow worktree/)
+  assert.match(text, /checkout mismatch/)
+  assert.match(text, /\/session/)
+  assert.match(text, /NEVER treat this as 0 deviations/)
 })
