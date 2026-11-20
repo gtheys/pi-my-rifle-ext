@@ -3,7 +3,11 @@ import { test } from 'node:test'
 import type { AssignmentRecord } from '@gtheys/pi-interactive-subagents'
 import {
   buildDiagram,
+  type MilestoneMarkerRecord,
+  type PhaseMarkerRecord,
   type SpawnCallRecord,
+  type SpendRecord,
+  type ToolCallRecord,
 } from '../flow-diagram/translate.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 
@@ -113,6 +117,7 @@ test('header carries ref, trackRef, mode from run-start', () => {
       mode: 'work',
       trackRef: 'PMR-AB12',
     },
+    phaseStart('2026-11-07T01:01:00Z', 'plan'),
   ]
   const result = buildDiagram('DP-71', null, events, [], new Map())
   assert.equal(result.kind, 'ok')
@@ -123,7 +128,10 @@ test('header carries ref, trackRef, mode from run-start', () => {
 })
 
 test('absent trackRef is undefined, not fake', () => {
-  const events = [runStart('2026-11-07T01:00:00Z')]
+  const events = [
+    runStart('2026-11-07T01:00:00Z'),
+    phaseStart('2026-11-07T01:01:00Z', 'plan'),
+  ]
   const result = buildDiagram('PMR-TEST', null, events, [], new Map())
   assert.equal(result.kind, 'ok')
   if (result.kind !== 'ok') return
@@ -158,7 +166,10 @@ test('commits per subtask come from subtask-ranges', () => {
 })
 
 test('missing subtask-ranges yields empty commit lists', () => {
-  const events = [runStart('2026-11-07T01:00:00Z')]
+  const events = [
+    runStart('2026-11-07T01:00:00Z'),
+    phaseStart('2026-11-07T01:01:00Z', 'plan'),
+  ]
   const result = buildDiagram('PMR-TEST', null, events, [], new Map())
   assert.equal(result.kind, 'ok')
   if (result.kind !== 'ok') return
@@ -169,6 +180,7 @@ test('missing subtask-ranges yields empty commit lists', () => {
 test('prUrl comes from the last step-output with a prUrl', () => {
   const events: FlowRunEvent[] = [
     runStart('2026-11-07T01:00:00Z'),
+    phaseStart('2026-11-07T01:01:00Z', 'implement'),
     {
       kind: 'step-output',
       at: '2026-11-07T01:05:00Z',
@@ -192,7 +204,10 @@ test('prUrl comes from the last step-output with a prUrl', () => {
 })
 
 test('missing step-output leaves prUrl undefined', () => {
-  const events = [runStart('2026-11-07T01:00:00Z')]
+  const events = [
+    runStart('2026-11-07T01:00:00Z'),
+    phaseStart('2026-11-07T01:01:00Z', 'plan'),
+  ]
   const result = buildDiagram('PMR-TEST', null, events, [], new Map())
   assert.equal(result.kind, 'ok')
   if (result.kind !== 'ok') return
@@ -237,7 +252,7 @@ function assistantEntry(
 function okSpawn(result: ReturnType<typeof buildDiagram>): SpawnCallRecord[] {
   if (result.kind !== 'ok') assert.fail('expected ok')
   return result.records.filter(
-    (record): record is SpawnCallRecord => record.tool === 'Agent',
+    (record): record is SpawnCallRecord => 'child_agent_id' in record,
   )
 }
 
@@ -375,8 +390,12 @@ test('name is clipped to ~60 chars', () => {
   assert.ok(spawn.name.length <= 60)
 })
 
-test('no spawn-record events → no spawn records', () => {
-  const events = twoRunEvents()
+test('no synthesizable records → kind no-records', () => {
+  // a bare run-start with no phases, spawns, sessions or markers
+  const events: FlowRunEvent[] = [
+    runStart('2026-11-07T01:00:00Z'),
+    runStart('2026-11-07T02:00:00Z'),
+  ]
   const result = buildDiagram(
     'PMR-TEST',
     null,
@@ -384,7 +403,342 @@ test('no spawn-record events → no spawn records', () => {
     [assignment({})],
     new Map(),
   )
+  assert.equal(result.kind, 'no-records')
+})
+
+// --- 2.3: tool calls, spend records, markers ----------------------------
+
+function assistantWithToolCall(
+  id: string,
+  timestamp: string,
+  blockId: string,
+  toolName: string,
+  totalTokens?: number,
+  command?: string,
+): unknown {
+  const args: Record<string, unknown> = {}
+  if (command !== undefined) args.command = command
+  const block: Record<string, unknown> = {
+    type: 'toolCall',
+    id: blockId,
+    name: toolName,
+    arguments: args,
+  }
+  const message: Record<string, unknown> = {
+    role: 'assistant',
+    content: [block],
+  }
+  if (totalTokens !== undefined) {
+    message.usage = { totalTokens }
+  }
+  return { type: 'message', id, timestamp, message }
+}
+
+function toolResultEntry(
+  id: string,
+  timestampMs: number,
+  toolCallId: string,
+  text: string,
+  isError = false,
+): unknown {
+  return {
+    type: 'message',
+    id,
+    timestamp: timestampMs,
+    message: {
+      role: 'toolResult',
+      toolCallId,
+      toolName: 'bash',
+      content: [{ type: 'text', text }],
+      isError,
+      timestamp: timestampMs,
+    },
+  }
+}
+
+function mainSessionEvents(sessionFile: string): FlowRunEvent[] {
+  return [
+    runStart('2026-11-07T01:00:00Z'),
+    {
+      kind: 'main-session',
+      at: '2026-11-07T01:00:00Z',
+      ref: 'PMR-TEST',
+      sessionFile,
+    },
+  ]
+}
+
+const CHILD_SESSION = '/sessions/child-1.jsonl'
+const MAIN_SESSION_FILE = '/sessions/main.jsonl'
+
+function spawnForMainChild(): FlowRunEvent {
+  return spawnRecordEvent({
+    at: '2026-11-07T01:02:00Z',
+    sessionFile: CHILD_SESSION,
+  })
+}
+
+test('paired toolCall/toolResult yield a record with duration, ok, context_tokens, labels', () => {
+  const events = mainSessionEvents(MAIN_SESSION_FILE)
+  const entries = [
+    assistantWithToolCall(
+      'a1',
+      '2026-11-07T01:01:00.000Z',
+      'tool_1',
+      'bash',
+      21_017,
+      'npm test -- --watch',
+    ),
+    toolResultEntry(
+      'a2',
+      Date.parse('2026-11-07T01:01:05.500Z'),
+      'tool_1',
+      'all tests passed\nmore output',
+    ),
+  ]
+  const sessions = new Map([[MAIN_SESSION_FILE, entries]])
+  const result = buildDiagram('PMR-TEST', 1, events, [], sessions)
   assert.equal(result.kind, 'ok')
   if (result.kind !== 'ok') return
-  assert.deepEqual(result.records, [])
+  const calls = result.records.filter(
+    (record): record is ToolCallRecord =>
+      'tool' in record && record.tool === 'bash',
+  )
+  assert.equal(calls.length, 1)
+  const call = calls[0]
+  assert.equal(call.session, 'PMR-TEST run 1')
+  assert.equal(call.agent_id, 'main')
+  assert.equal(call.tool_use_id, 'tool_1')
+  assert.equal(call.name, 'npm')
+  assert.equal(call.args, 'npm test -- --watch')
+  assert.equal(call.duration_ms, 5_500)
+  assert.equal(call.ok, true)
+  assert.equal(call.context_tokens, 21_017)
+  assert.equal(call.result, 'all tests passed')
+  assert.equal(call.at, new Date('2026-11-07T01:01:05.500Z').toISOString())
+  assert.equal(call.running, undefined)
+})
+
+test('isError toolResult sets ok: false; unpaired toolCall yields running: true, duration 0', () => {
+  const events = mainSessionEvents(MAIN_SESSION_FILE)
+  const entries = [
+    assistantWithToolCall('a1', '2026-11-07T01:01:00.000Z', 'tool_1', 'edit'),
+    toolResultEntry(
+      'a2',
+      Date.parse('2026-11-07T01:01:02.000Z'),
+      'tool_1',
+      'failed',
+      true,
+    ),
+    assistantWithToolCall('a3', '2026-11-07T01:02:00.000Z', 'tool_2', 'read'),
+  ]
+  const sessions = new Map([[MAIN_SESSION_FILE, entries]])
+  const result = buildDiagram('PMR-TEST', 1, events, [], sessions)
+  assert.equal(result.kind, 'ok')
+  if (result.kind !== 'ok') return
+  const calls = result.records.filter(
+    (record): record is ToolCallRecord =>
+      'tool' in record && record.tool !== 'Skill' && !('event' in record),
+  )
+  assert.equal(calls.length, 2)
+  const failed = calls.find((c) => c.tool_use_id === 'tool_1')
+  assert.equal(failed?.ok, false)
+  assert.equal(failed?.duration_ms, 2_000)
+  const running = calls.find((c) => c.tool_use_id === 'tool_2')
+  assert.equal(running?.running, true)
+  assert.equal(running?.duration_ms, 0)
+  assert.equal(running?.ok, undefined)
+  assert.equal(running?.at, new Date('2026-11-07T01:02:00.000Z').toISOString())
+})
+
+test('long labels are clipped to 60 chars', () => {
+  const events = mainSessionEvents(MAIN_SESSION_FILE)
+  const entries = [
+    assistantWithToolCall(
+      'a1',
+      '2026-11-07T01:01:00.000Z',
+      'tool_1',
+      'bash',
+      undefined,
+      `npm ${'x'.repeat(100)}`,
+    ),
+    toolResultEntry(
+      'a2',
+      Date.parse('2026-11-07T01:01:01.000Z'),
+      'tool_1',
+      'y'.repeat(100),
+    ),
+  ]
+  const sessions = new Map([[MAIN_SESSION_FILE, entries]])
+  const result = buildDiagram('PMR-TEST', 1, events, [], sessions)
+  assert.equal(result.kind, 'ok')
+  if (result.kind !== 'ok') return
+  const call = result.records.find(
+    (record): record is ToolCallRecord =>
+      'tool' in record && record.tool === 'bash',
+  )
+  assert.ok(call)
+  assert.ok((call.args ?? '').length <= 60)
+  assert.ok((call.result ?? '').length <= 60)
+})
+
+test('orchestrator subagent tool calls are skipped', () => {
+  const events = mainSessionEvents(MAIN_SESSION_FILE)
+  const entries = [
+    assistantWithToolCall(
+      'a1',
+      '2026-11-07T01:01:00.000Z',
+      'tool_1',
+      'subagent',
+    ),
+  ]
+  const sessions = new Map([[MAIN_SESSION_FILE, entries]])
+  const result = buildDiagram('PMR-TEST', 1, events, [], sessions)
+  assert.equal(result.kind, 'no-records')
+})
+
+test('one SubagentStop spend record per context, main included, exact mapping', () => {
+  const events = [runStart('2026-11-07T01:00:00Z'), spawnForMainChild()]
+  const mainEntries = [
+    assistantEntry('m1', '2026-11-07T01:01:00Z', {
+      input: 10,
+      cacheWrite: 1,
+      cacheRead: 2,
+      output: 5,
+    }),
+    assistantEntry('m1', '2026-11-07T01:02:00Z', {
+      input: 999,
+      cacheWrite: 999,
+      cacheRead: 999,
+      output: 999,
+    }),
+  ]
+  const childEntries = [
+    assistantEntry('c1', '2026-11-07T01:03:00Z', {
+      input: 100,
+      cacheWrite: 0,
+      cacheRead: 50,
+      output: 10,
+    }),
+  ]
+  const sessions = new Map([
+    [CHILD_SESSION, childEntries],
+    [MAIN_SESSION_FILE, mainEntries],
+  ])
+  const eventsWithMain = [
+    ...events,
+    {
+      kind: 'main-session' as const,
+      at: '2026-11-07T01:00:00Z',
+      ref: 'PMR-TEST',
+      sessionFile: MAIN_SESSION_FILE,
+    },
+  ]
+  const result = buildDiagram('PMR-TEST', 1, eventsWithMain, [], sessions)
+  assert.equal(result.kind, 'ok')
+  if (result.kind !== 'ok') return
+  const spends = result.records.filter(
+    (record): record is SpendRecord =>
+      'event' in record && record.event === 'SubagentStop',
+  )
+  assert.equal(spends.length, 2)
+  const main = spends.find((s) => s.agent_id === 'main')
+  assert.ok(main)
+  // dedup by message id: the duplicate m1 (999s) must be ignored
+  assert.deepEqual(main.spend, { new: 11, cached: 2, out: 5, calls: 1 })
+  assert.equal(main.at, new Date('2026-11-07T01:02:00Z').toISOString())
+  const child = spends.find((s) => s.agent_id === 'child-1')
+  assert.ok(child)
+  assert.deepEqual(child.spend, { new: 100, cached: 50, out: 10, calls: 1 })
+})
+
+test('phase-start events yield PreCompact markers; gate/receipt/commit milestones yield Skill markers', () => {
+  const events: FlowRunEvent[] = [
+    runStart('2026-11-07T01:00:00Z'),
+    phaseStart('2026-11-07T01:01:00Z', 'plan'),
+    phaseStart('2026-11-07T01:02:00Z', 'implement'),
+    {
+      kind: 'gate-decision',
+      at: '2026-11-07T01:03:00Z',
+      ref: 'PMR-TEST',
+      gate: 'code-review',
+      targetId: 't1',
+      status: 'pass',
+    },
+    {
+      kind: 'gate-decision',
+      at: '2026-11-07T01:04:00Z',
+      ref: 'PMR-TEST',
+      gate: 'code-review',
+      targetId: 't1',
+      status: 'fail',
+    },
+    {
+      kind: 'command-receipt',
+      at: '2026-11-07T01:05:00Z',
+      ref: 'PMR-TEST',
+      command: 'flow_phase_complete',
+      target: 'implement',
+      status: 'ok',
+    },
+    {
+      kind: 'subtask-ranges',
+      at: '2026-11-07T01:06:00Z',
+      ref: 'PMR-TEST',
+      gate: 'code-review',
+      baseSha: 'a',
+      headSha: 'b',
+      bySubtask: [{ subtask: '2.1', commits: ['abcdef1234'] }],
+      unattributed: [],
+    },
+  ]
+  const result = buildDiagram('PMR-TEST', 1, events, [], new Map())
+  assert.equal(result.kind, 'ok')
+  if (result.kind !== 'ok') return
+  const markers = result.records.filter(
+    (record): record is MilestoneMarkerRecord =>
+      'tool' in record && record.tool === 'Skill',
+  )
+  const names = markers.map((m) => m.name)
+  // latest gate-decision per gate wins (rejected, not approved)
+  assert.ok(names.includes('gate code-review: fail'))
+  assert.ok(!names.includes('gate code-review: pass'))
+  assert.ok(names.includes('receipt: flow_phase_complete'))
+  assert.ok(names.includes('commit abcdef1 → 2.1'))
+  // sequential mark ids
+  assert.deepEqual(
+    markers.map((m) => m.tool_use_id),
+    ['mark-1', 'mark-2', 'mark-3'],
+  )
+  const phaseMarkers = result.records.filter(
+    (record): record is PhaseMarkerRecord =>
+      'event' in record && record.event === 'PreCompact',
+  )
+  assert.deepEqual(
+    phaseMarkers.map((m) => m.trigger),
+    ['phase plan', 'phase implement'],
+  )
+  for (const marker of [...markers, ...phaseMarkers]) {
+    assert.equal(marker.session, 'PMR-TEST run 1')
+    assert.equal(marker.agent_id, 'main')
+  }
+})
+
+test('records are sorted by at', () => {
+  const events = [runStart('2026-11-07T01:00:00Z'), spawnForMainChild()]
+  const childEntries = [
+    assistantEntry('c1', '2026-11-07T01:03:00Z', {
+      input: 1,
+      cacheWrite: 0,
+      cacheRead: 0,
+      output: 1,
+    }),
+  ]
+  const sessions = new Map([[CHILD_SESSION, childEntries]])
+  const result = buildDiagram('PMR-TEST', 1, events, [], sessions)
+  assert.equal(result.kind, 'ok')
+  if (result.kind !== 'ok') return
+  const ats = result.records.map((r) => r.at)
+  const sorted = [...ats].sort()
+  assert.deepEqual(ats, sorted)
 })

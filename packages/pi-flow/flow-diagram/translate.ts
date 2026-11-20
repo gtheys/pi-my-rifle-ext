@@ -6,6 +6,7 @@
 
 import type { AssignmentRecord } from '@gtheys/pi-interactive-subagents'
 import {
+  collectMainSessionFiles,
   collectSpawnNotes,
   type PhaseDuration,
   phaseDurations,
@@ -72,10 +73,76 @@ export interface SpawnCallRecord {
 }
 
 /**
+ * One paired toolCall/toolResult from any context's session (main or child).
+ * Per Appendix A: never uses PARENT_TOOLS names, so it renders inside the
+ * lane it belongs to.
+ */
+export interface ToolCallRecord {
+  v: 2
+  harness: 'pi'
+  session: string
+  agent_id: string
+  tool_use_id: string
+  tool: string
+  /** Command head (bash) or tool name, clipped. */
+  name: string
+  /** Clipped one-line command, bash calls only. */
+  args?: string
+  /** First line of the toolResult text, clipped. */
+  result?: string
+  duration_ms: number
+  ok?: boolean
+  context_tokens?: number
+  /** Unpaired toolCall (no result yet) stays on the timeline as running. */
+  running?: boolean
+  at: string
+}
+
+/** Per-context token totals; `contextSpend()` in hp.js reads these. */
+export interface SpendRecord {
+  v: 2
+  harness: 'pi'
+  session: string
+  agent_id: string
+  event: 'SubagentStop'
+  spend: Spend
+  at: string
+}
+
+/** Vertical labeled phase marker (one per segmented phase-start). */
+export interface PhaseMarkerRecord {
+  v: 2
+  harness: 'pi'
+  session: string
+  agent_id: 'main'
+  event: 'PreCompact'
+  trigger: string
+  at: string
+}
+
+/** Inline diamond milestone (gate decision / receipt / commit). */
+export interface MilestoneMarkerRecord {
+  v: 2
+  harness: 'pi'
+  session: string
+  agent_id: 'main'
+  tool: 'Skill'
+  tool_use_id: string
+  name: string
+  ok: true
+  at: string
+}
+
+/**
  * AIDEV-NOTE (PMR-V392): 2.2 emits spawn records; 2.3 adds tool-call,
  * spend (SubagentStop) and marker records to this union.
  */
-export type DiagramRecord = SpawnCallRecord
+export type DiagramRecord =
+  | SpawnCallRecord
+  | ToolCallRecord
+  | SpendRecord
+  | PhaseMarkerRecord
+  | MilestoneMarkerRecord
 
 export type DiagramResult =
   | { kind: 'ok'; header: DiagramHeader; records: DiagramRecord[] }
@@ -184,6 +251,340 @@ function computeSpend(entries: readonly unknown[]): Spend | undefined {
   return spend
 }
 
+/**
+ * AIDEV-NOTE (PMR-V392): the orchestrator's main session contains raw
+ * subagent-spawn tool calls (tool name `subagent`, verified in a real pi
+ * session file and docs/extensions.md). They duplicate the journal-derived
+ * spawn arrows from synthesizeSpawns, so they are skipped here. Phase 5
+ * smoke re-verifies against real data.
+ */
+export const SPAWN_TOOL_SKIP: readonly string[] = ['subagent']
+
+/** One session lane we walk for tool calls and spend. */
+interface Lane {
+  agentId: string
+  entries: readonly unknown[]
+  /** Fallback end (assignment.updatedAt / spawn at) when entries lack timestamps. */
+  fallbackEndMs: number | null
+}
+
+interface ResolvedChild {
+  childId: string
+  sessionFile: string | null
+  fallbackEndMs: number | null
+}
+
+/** Mirrors synthesizeSpawns' sessionFile/end fallback for spend records. */
+function resolveChildren(
+  segment: readonly FlowRunEvent[],
+  ctx: DiagramContext,
+): ResolvedChild[] {
+  const byChild = new Map<string, AssignmentRecord>()
+  for (const record of ctx.assignments) {
+    byChild.set(record.childId, record)
+  }
+  const children: ResolvedChild[] = []
+  for (const note of collectSpawnNotes(segment)) {
+    let sessionFile: string | null = note.sessionFile
+    const assignmentRecord = byChild.get(note.childId)
+    if (
+      (sessionFile === null || sessionFile.length === 0) &&
+      assignmentRecord !== undefined
+    ) {
+      sessionFile = assignmentRecord.sessionFile
+    }
+    let fallbackEndMs: number | null = null
+    if (assignmentRecord !== undefined) {
+      const parsed = Date.parse(assignmentRecord.updatedAt)
+      if (Number.isFinite(parsed)) fallbackEndMs = parsed
+    }
+    if (fallbackEndMs === null) {
+      const parsed = Date.parse(note.at)
+      if (Number.isFinite(parsed)) fallbackEndMs = parsed
+    }
+    children.push({ childId: note.childId, sessionFile, fallbackEndMs })
+  }
+  return children
+}
+
+function laneEntries(
+  ctx: DiagramContext,
+  sessionFile: string | null,
+): readonly unknown[] {
+  if (sessionFile === null || sessionFile.length === 0) return []
+  const entries = ctx.sessionEntriesByFile.get(sessionFile)
+  if (entries === undefined) return []
+  return entries
+}
+
+function buildLanes(
+  segment: readonly FlowRunEvent[],
+  ctx: DiagramContext,
+): Lane[] {
+  const lanes: Lane[] = []
+  for (const sessionFile of collectMainSessionFiles(segment)) {
+    lanes.push({
+      agentId: 'main',
+      entries: laneEntries(ctx, sessionFile),
+      fallbackEndMs: null,
+    })
+  }
+  for (const child of resolveChildren(segment, ctx)) {
+    lanes.push({
+      agentId: child.childId,
+      entries: laneEntries(ctx, child.sessionFile),
+      fallbackEndMs: child.fallbackEndMs,
+    })
+  }
+  return lanes
+}
+
+/** AIDEV-NOTE (PMR-V392): duration = toolResult ms-epoch − assistant ISO, clamped ≥ 0. */
+function callDurationMs(resultMs: number, entryMs: number | null): number {
+  if (entryMs === null) return 0
+  const duration = resultMs - entryMs
+  if (duration < 0) return 0
+  return duration
+}
+
+interface ToolCallBlock {
+  id: string
+  name: string
+  command: string | null
+}
+
+interface ToolResultInfo {
+  ms: number
+  isError: boolean
+  text: string | null
+}
+
+function extractToolCallBlock(block: unknown): ToolCallBlock | null {
+  if (block == null || typeof block !== 'object') return null
+  const b = block as Record<string, unknown>
+  if (b.type !== 'toolCall') return null
+  if (typeof b.id !== 'string' || typeof b.name !== 'string') return null
+  let command: string | null = null
+  const args = b.arguments
+  if (b.name === 'bash' && args != null && typeof args === 'object') {
+    const cmd = (args as Record<string, unknown>).command
+    if (typeof cmd === 'string' && cmd.length > 0) {
+      command = cmd.split('\n')[0]
+    }
+  }
+  return { id: b.id, name: b.name, command }
+}
+
+function extractToolResult(entry: unknown): ToolResultInfo | null {
+  if (entry == null || typeof entry !== 'object') return null
+  const e = entry as Record<string, unknown>
+  if (e.type !== 'message') return null
+  const message = e.message
+  if (message == null || typeof message !== 'object') return null
+  const m = message as Record<string, unknown>
+  if (m.role !== 'toolResult') return null
+  if (typeof m.toolCallId !== 'string') return null
+  if (typeof m.timestamp !== 'number' || !Number.isFinite(m.timestamp)) {
+    return null
+  }
+  let isError = false
+  if (m.isError === true) isError = true
+  let text: string | null = null
+  const content = m.content
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (block == null || typeof block !== 'object') continue
+      const b = block as Record<string, unknown>
+      if (b.type !== 'text' || typeof b.text !== 'string') continue
+      text = b.text.split('\n')[0]
+      break
+    }
+  }
+  return { ms: m.timestamp, isError, text }
+}
+
+function callName(call: ToolCallBlock): string {
+  if (call.command !== null) {
+    const head = call.command.trim().split(/\s+/)[0]
+    if (head.length > 0) return head
+  }
+  return call.name
+}
+
+function synthesizeToolCalls(
+  segment: readonly FlowRunEvent[],
+  ctx: DiagramContext,
+  runId: string,
+): ToolCallRecord[] {
+  const records: ToolCallRecord[] = []
+  for (const lane of buildLanes(segment, ctx)) {
+    const resultsById = new Map<string, ToolResultInfo>()
+    for (const entry of lane.entries) {
+      const result = extractToolResult(entry)
+      if (result === null) continue
+      const key = resultKeyOf(entry)
+      if (resultsById.has(key)) continue
+      resultsById.set(key, result)
+    }
+    for (const entry of lane.entries) {
+      if (entry == null || typeof entry !== 'object') continue
+      const e = entry as Record<string, unknown>
+      if (e.type !== 'message') continue
+      const message = e.message
+      if (message == null || typeof message !== 'object') continue
+      const m = message as Record<string, unknown>
+      if (m.role !== 'assistant') continue
+      const entryMs = entryTimeMs(entry)
+      let contextTokens: number | undefined
+      const usage = m.usage
+      if (usage != null && typeof usage === 'object') {
+        const total = (usage as Record<string, unknown>).totalTokens
+        if (typeof total === 'number' && Number.isFinite(total)) {
+          contextTokens = total
+        }
+      }
+      const content = m.content
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        const call = extractToolCallBlock(block)
+        if (call === null) continue
+        if (SPAWN_TOOL_SKIP.includes(call.name)) continue
+        const result = resultsById.get(call.id)
+        let at: string
+        if (result === undefined) {
+          if (entryMs !== null) at = new Date(entryMs).toISOString()
+          else at = ''
+        } else {
+          at = new Date(result.ms).toISOString()
+        }
+        const record: ToolCallRecord = {
+          v: 2,
+          harness: 'pi',
+          session: runId,
+          agent_id: lane.agentId,
+          tool_use_id: call.id,
+          tool: call.name,
+          name: clip(callName(call)),
+          duration_ms: 0,
+          at,
+        }
+        if (call.command !== null) record.args = clip(call.command)
+        if (contextTokens !== undefined) record.context_tokens = contextTokens
+        if (result === undefined) {
+          record.running = true
+        } else {
+          record.duration_ms = callDurationMs(result.ms, entryMs)
+          record.ok = !result.isError
+          if (result.text !== null) record.result = clip(result.text)
+        }
+        records.push(record)
+      }
+    }
+  }
+  return records
+}
+
+function resultKeyOf(entry: unknown): string {
+  if (entry == null || typeof entry !== 'object') return ''
+  const e = entry as Record<string, unknown>
+  if (e.type !== 'message') return ''
+  const message = e.message
+  if (message == null || typeof message !== 'object') return ''
+  const toolCallId = (message as Record<string, unknown>).toolCallId
+  if (typeof toolCallId === 'string') return toolCallId
+  return ''
+}
+
+function synthesizeSpendRecords(
+  segment: readonly FlowRunEvent[],
+  ctx: DiagramContext,
+  runId: string,
+): SpendRecord[] {
+  const records: SpendRecord[] = []
+  for (const lane of buildLanes(segment, ctx)) {
+    const spend = computeSpend(lane.entries)
+    if (spend === undefined) continue
+    let endMs = lastEntryMs(lane.entries)
+    if (endMs === null) endMs = lane.fallbackEndMs
+    if (endMs === null) continue
+    records.push({
+      v: 2,
+      harness: 'pi',
+      session: runId,
+      agent_id: lane.agentId,
+      event: 'SubagentStop',
+      spend,
+      at: new Date(endMs).toISOString(),
+    })
+  }
+  return records
+}
+
+function synthesizePhaseMarkers(
+  segment: readonly FlowRunEvent[],
+  runId: string,
+): PhaseMarkerRecord[] {
+  const records: PhaseMarkerRecord[] = []
+  for (const event of segment) {
+    if (event.kind !== 'phase-start') continue
+    records.push({
+      v: 2,
+      harness: 'pi',
+      session: runId,
+      agent_id: 'main',
+      event: 'PreCompact',
+      trigger: `phase ${event.phase}`,
+      at: event.at,
+    })
+  }
+  return records
+}
+
+function synthesizeMilestoneMarkers(
+  segment: readonly FlowRunEvent[],
+  runId: string,
+): MilestoneMarkerRecord[] {
+  const records: MilestoneMarkerRecord[] = []
+  let mark = 0
+  const push = (name: string, at: string): void => {
+    mark += 1
+    records.push({
+      v: 2,
+      harness: 'pi',
+      session: runId,
+      agent_id: 'main',
+      tool: 'Skill',
+      tool_use_id: `mark-${mark}`,
+      name: clip(name),
+      ok: true,
+      at,
+    })
+  }
+  // latest gate-decision per gate
+  const latestByGate = new Map<
+    string,
+    Extract<FlowRunEvent, { kind: 'gate-decision' }>
+  >()
+  for (const event of segment) {
+    if (event.kind === 'gate-decision') latestByGate.set(event.gate, event)
+  }
+  for (const event of latestByGate.values()) {
+    push(`gate ${event.gate}: ${event.status}`, event.at)
+  }
+  for (const event of segment) {
+    if (event.kind === 'command-receipt') {
+      push(`receipt: ${event.command}`, event.at)
+    } else if (event.kind === 'subtask-ranges') {
+      for (const range of event.bySubtask) {
+        for (const sha of range.commits) {
+          push(`commit ${sha.slice(0, 7)} → ${range.subtask}`, event.at)
+        }
+      }
+    }
+  }
+  return records
+}
+
 function synthesizeSpawns(
   segment: readonly FlowRunEvent[],
   ctx: DiagramContext,
@@ -252,13 +653,28 @@ function synthesizeSpawns(
   return records
 }
 
-/** AIDEV-NOTE (PMR-V392): 2.2 adds spawns; 2.3 layers toolCalls/spend/markers here. */
+/**
+ * AIDEV-NOTE (PMR-V392): 2.2 adds spawns; 2.3 layers toolCalls, spend
+ * (SubagentStop) and marker records, then sorts the whole set by `at`.
+ */
 function synthesizeRecords(
   segment: readonly FlowRunEvent[],
   ctx: DiagramContext,
   runId: string,
 ): DiagramRecord[] {
-  return synthesizeSpawns(segment, ctx, runId)
+  const records: DiagramRecord[] = [
+    ...synthesizeSpawns(segment, ctx, runId),
+    ...synthesizeToolCalls(segment, ctx, runId),
+    ...synthesizeSpendRecords(segment, ctx, runId),
+    ...synthesizePhaseMarkers(segment, runId),
+    ...synthesizeMilestoneMarkers(segment, runId),
+  ]
+  records.sort((a, b) => {
+    if (a.at < b.at) return -1
+    if (a.at > b.at) return 1
+    return 0
+  })
+  return records
 }
 
 export function buildDiagram(
@@ -316,6 +732,7 @@ export function buildDiagram(
     },
     runId,
   )
+  if (records.length === 0) return { kind: 'no-records' }
   return { kind: 'ok', header, records }
 }
 
