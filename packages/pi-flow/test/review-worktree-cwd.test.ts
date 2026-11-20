@@ -63,7 +63,10 @@ function makeGitMockPi(script: MockScript = {}) {
     sendUserMessage: async () => {},
     exec: async (_cmd: string, args: string[]) => {
       if (args.includes('--git-common-dir')) {
-        const dir = script.commonDirCode === 1 ? '' : COMMON_DIR
+        let dir = COMMON_DIR
+        if (script.commonDirCode === 1) {
+          dir = ''
+        }
         return execResult(script.commonDirCode ?? 0, `${dir}\n`)
       }
       if (args.includes('--abbrev-ref')) {

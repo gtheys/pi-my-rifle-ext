@@ -535,7 +535,12 @@ export async function resolveCommitReviewCwd(
       productionReviewDeps(pi, sessionCwd),
     )
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error)
+    let msg: string
+    if (error instanceof Error) {
+      msg = error.message
+    } else {
+      msg = String(error)
+    }
     return { ok: false, reason: msg }
   }
   // AIDEV-NOTE: PMR-HXPQ — pi.exec returns non-zero codes without throwing.

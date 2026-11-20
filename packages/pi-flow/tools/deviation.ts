@@ -95,7 +95,12 @@ export async function resolveDeviationCwd(
     const wt = await resolveReviewWorktree(ref, deps)
     return { ok: true, cwd: wt.path }
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error)
+    let msg: string
+    if (error instanceof Error) {
+      msg = error.message
+    } else {
+      msg = String(error)
+    }
     return { ok: false, reason: msg }
   }
 }
