@@ -9,7 +9,8 @@
       "!**/dist",
       "!**/coverage",
       "!**/node_modules",
-      "!**/flow-diagram/vendor/**"
+      "!**/flow-diagram/vendor/hp.js",
+      "!**/flow-diagram/vendor/view.html"
     ]
   },
   "formatter": {

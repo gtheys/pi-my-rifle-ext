@@ -22,6 +22,7 @@
     "README.md",
     "adhoc/tracker.ts",
     "flow-diagram/vendor/harness-profiler/hp.js",
+    "flow-diagram/vendor/harness-profiler/load.ts",
     "flow-diagram/vendor/harness-profiler/view.html",
     "flow-diagram/vendor/harness-profiler/LICENSE",
     "flow-diagram/vendor/harness-profiler/PIN.md",
