@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createFlowLoop, type FlowLoopDeps } from '../flow/loop.ts'
+import { setActiveFlowRef, setFlowWorktree } from '../flow/worktree-context.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 
 interface Harness {
@@ -423,6 +424,136 @@ test('personal: review-passed after validate advances into the feedback wrap-up 
   await loop.onSettled()
   assert.equal(h.sent.length, 2)
   assert.equal(loop.isActive(), false)
+})
+
+const DONE_LABELS = ['planned', 'active', 'review-passed', 'done']
+
+function startDone(mode: 'work' | 'personal' = 'work') {
+  return {
+    ...startInput(),
+    phase: 'feedback' as const,
+    promptInput: { ...PROMPT_INPUT, mode },
+  }
+}
+
+// PMR-81SX: onFlowDone must fire exactly once in the done branch, AFTER the
+// onRunEnd teardown callbacks. A shared log pins the call order.
+test('done: onFlowDone called once with (ref, mode, worktree), after onRunEnd', async () => {
+  const h = makeHarness(DONE_LABELS)
+  const order: string[] = []
+  h.deps.onRunEnd = (ref) => {
+    order.push(`onRunEnd:${ref}`)
+  }
+  h.deps.onFlowDone = async (ref, mode, worktree) => {
+    order.push(`onFlowDone:${ref}:${mode}:${worktree?.path}`)
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startDone())
+  // Bind a worktree BEFORE settling so the done branch captures it pre-teardown.
+  setActiveFlowRef('TP-1')
+  setFlowWorktree('/tmp/wt-done', 'feat/x')
+  await loop.onSettled()
+  assert.deepEqual(order, [
+    'onRunEnd:TP-1',
+    'onFlowDone:TP-1:work:/tmp/wt-done',
+  ])
+  assert.equal(loop.isActive(), false)
+  setActiveFlowRef(null)
+})
+
+test('halt: onRunEnd fires but onFlowDone is never called', async () => {
+  const h = makeHarness([])
+  const order: string[] = []
+  h.deps.onRunEnd = (ref) => {
+    order.push(`onRunEnd:${ref}`)
+  }
+  h.deps.onFlowDone = async () => {
+    order.push('onFlowDone')
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled() // no label -> halt
+  assert.deepEqual(order, ['onRunEnd:TP-1'])
+  assert.equal(loop.isActive(), false)
+})
+
+test('plan-approval pause: onRunEnd fires, onFlowDone is never called', async () => {
+  const h = makeHarness([])
+  h.planState = 'review'
+  const order: string[] = []
+  h.deps.onRunEnd = (ref) => {
+    order.push(`onRunEnd:${ref}`)
+  }
+  h.deps.onFlowDone = async () => {
+    order.push('onFlowDone')
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled() // paused awaiting approval
+  assert.deepEqual(order, ['onRunEnd:TP-1'])
+  assert.equal(loop.isActive(), false)
+  assert.match(h.notes[0].text, /awaiting spec approval/)
+})
+
+test('done without an onFlowDone dep: run still ends done, unaffected', async () => {
+  const h = makeHarness(DONE_LABELS)
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startDone())
+  await loop.onSettled()
+  assert.equal(loop.isActive(), false)
+  assert.equal(
+    h.notifications.some((n) => n.message.includes('all phases complete')),
+    true,
+  )
+  const last = h.events.at(-1)
+  assert.equal(last?.kind, 'loop-state')
+  if (last?.kind === 'loop-state') assert.equal(last.loop.status, 'done')
+})
+
+test('done with a throwing onFlowDone: run still ends done, error never surfaces', async () => {
+  const h = makeHarness(DONE_LABELS)
+  const order: string[] = []
+  h.deps.onRunEnd = () => {
+    order.push('onRunEnd')
+  }
+  h.deps.onFlowDone = async () => {
+    order.push('onFlowDone')
+    throw new Error('cleanup exploded')
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startDone())
+  await loop.onSettled() // must not reject
+  assert.deepEqual(order, ['onRunEnd', 'onFlowDone'])
+  assert.equal(loop.isActive(), false)
+  assert.equal(
+    h.notifications.some((n) => n.message.includes('all phases complete')),
+    true,
+  )
+  const kinds = h.events.map((e) => e.kind)
+  assert.equal(kinds.includes('note'), true) // flow-complete note intact
+  const last = h.events.at(-1)
+  assert.equal(last?.kind, 'loop-state')
+  if (last?.kind === 'loop-state') assert.equal(last.loop.status, 'done')
+})
+
+test('personal done: onFlowDone receives mode=personal and the captured worktree', async () => {
+  const h = makeHarness(DONE_LABELS)
+  let seen: { ref: string; mode: string; worktree: unknown } | null = null
+  h.deps.onFlowDone = async (ref, mode, worktree) => {
+    seen = { ref, mode, worktree }
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startDone('personal'))
+  setActiveFlowRef('TP-1')
+  setFlowWorktree('/tmp/wt-personal', 'feat/y')
+  await loop.onSettled()
+  assert.deepEqual(seen, {
+    ref: 'TP-1',
+    mode: 'personal',
+    worktree: { ref: 'TP-1', path: '/tmp/wt-personal', branch: 'feat/y' },
+  })
+  assert.equal(loop.isActive(), false)
+  setActiveFlowRef(null)
 })
 
 // PMR-69V8: extension-driven route-back on review blockers.
