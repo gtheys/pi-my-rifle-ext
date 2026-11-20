@@ -4,6 +4,7 @@ import type { OpenGate } from '../flow/gates.ts'
 import {
   type AssignmentSummary,
   renderFlowStatusLines,
+  renderFooterStatus,
   type StatusInput,
   shouldShowWidget,
 } from '../flow/status.ts'
@@ -114,6 +115,21 @@ describe('renderFlowStatusLines', () => {
     assert.ok(!joined.includes('[ ]'))
     assert.ok(joined.includes('gates:'))
     assert.ok(joined.includes('PMR-ZGPY — flow run paused'))
+  })
+})
+
+describe('renderFooterStatus', () => {
+  it('returns undefined when state is null', () => {
+    assert.equal(renderFooterStatus(null), undefined)
+  })
+
+  it('omits phase suffix when currentPhase is null', () => {
+    assert.equal(renderFooterStatus(makeState()), '📋 PMR-ZGPY')
+  })
+
+  it('renders phase suffix with emoji for active phase', () => {
+    const state = makeState({ currentPhase: 'implement' })
+    assert.equal(renderFooterStatus(state), '📋 PMR-ZGPY 🔨 implement')
   })
 })
 

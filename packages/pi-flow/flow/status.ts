@@ -42,6 +42,34 @@ export function shouldShowWidget(input: StatusInput): boolean {
   return false
 }
 
+type FlowPhase = Exclude<FlowRunState['currentPhase'], null>
+
+// AIDEV-NOTE (PMR-C3B6): self-contained phase-emoji map — deliberately NOT
+// shared with PMR-X7BH widget styling yet (reconcile there later); hardcoded
+// per the no-config decision.
+const PHASE_EMOJI: Readonly<Record<FlowPhase, string>> = {
+  plan: '📝',
+  implement: '🔨',
+  validate: '🔍',
+  feedback: '🎁',
+}
+
+/** Footer text: `📋 <ref> <emoji> <phase>`; phase suffix omitted when null;
+ * undefined when there is no state (no active flow ⇒ no footer). */
+export function renderFooterStatus(
+  state: FlowRunState | null,
+): string | undefined {
+  if (state === null) {
+    return undefined
+  }
+  let suffix = ''
+  const phase = state.currentPhase
+  if (phase !== null) {
+    suffix = ` ${PHASE_EMOJI[phase]} ${phase}`
+  }
+  return `📋 ${state.ref}${suffix}`
+}
+
 export function renderFlowStatusLines(input: StatusInput): string[] {
   const lines: string[] = []
   if (input.state !== null) {
