@@ -371,8 +371,12 @@ test('missing assignment AND missing sessionFile still yield a lane', () => {
   assert.equal(spawn.child_agent_id, 'child-1')
   assert.equal(spawn.child_agent_type, undefined)
   assert.equal(spawn.child_spend, undefined)
-  assert.equal(spawn.at, new Date('2026-11-07T01:02:00Z').toISOString())
-  assert.equal(spawn.duration_ms, 0)
+  // AIDEV-NOTE (deviation fix): at is the spawn event's own timestamp
+  // (verbatim journal value — position, not an end claim).
+  assert.equal(spawn.at, '2026-11-07T01:02:00Z')
+  // AIDEV-NOTE (deviation fix): lost child = no session end, no assignment
+  // updatedAt — the record carries no duration_ms ("lanes without ends").
+  assert.equal(spawn.duration_ms, undefined)
   assert.equal(spawn.name, 'worker-1')
 })
 

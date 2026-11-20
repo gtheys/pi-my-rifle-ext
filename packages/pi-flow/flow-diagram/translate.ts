@@ -70,7 +70,13 @@ export interface SpawnCallRecord {
   name: string
   child_agent_id: string
   child_agent_type?: string
-  duration_ms: number
+  /**
+   * AIDEV-NOTE (deviation fix): omitted for lost children (no session end,
+   * no assignment updatedAt) — the spec's two-step end chain yields no end,
+   * so the lane carries no length claim ("lanes without ends"). hp.js reads
+   * `duration_ms || 0` for layout, so absence is safe.
+   */
+  duration_ms?: number
   child_spend?: Spend
 }
 
@@ -644,9 +650,21 @@ function synthesizeSpawns(
       const parsed = Date.parse(assignmentRecord.updatedAt)
       if (Number.isFinite(parsed)) endMs = parsed
     }
-    if (endMs === null) endMs = spawnMs
-    let duration = 0
-    if (Number.isFinite(spawnMs)) duration = Math.max(0, endMs - spawnMs)
+    // AIDEV-NOTE (deviation fix): the end chain is two-step per spec §2.2 —
+    // last parsed session entry, else assignment updatedAt. A lost child
+    // (neither present) gets NO end: the record is positioned at the spawn
+    // event's own timestamp (a position, not an end claim) and omits
+    // duration_ms ("lanes without ends"); no spawn-time fallback exists.
+    let at: string
+    let duration: number | undefined
+    if (endMs !== null) {
+      at = new Date(endMs).toISOString()
+      if (Number.isFinite(spawnMs)) {
+        duration = Math.max(0, endMs - spawnMs)
+      }
+    } else {
+      at = note.at
+    }
     let display = note.name
     if (display.length === 0 && assignmentRecord !== undefined) {
       display = assignmentRecord.name
@@ -660,15 +678,15 @@ function synthesizeSpawns(
     const record: SpawnCallRecord = {
       v: 2,
       harness: 'pi',
-      at: new Date(endMs).toISOString(),
+      at,
       session: runId,
       agent_id: 'main',
       tool: 'Agent',
       tool_use_id: `spawn-${note.childId}`,
       name: clip(name),
       child_agent_id: note.childId,
-      duration_ms: duration,
     }
+    if (duration !== undefined) record.duration_ms = duration
     if (assignmentRecord?.agent !== undefined) {
       record.child_agent_type = assignmentRecord.agent
     }
