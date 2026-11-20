@@ -136,6 +136,10 @@ export async function readFlowBase(
       // AIDEV-NOTE: PMR-182S — unset flowbase usually means the session is on
       // the main checkout (flow worktree not bound), not a legacy worktree.
       // Never suggest setting flowbase on the current branch: it masks that.
+      // PMR-81SX: the success path now clears these keys — cleanupFlowWorktree
+      // (worktree/index.ts) calls clearFlowBase on the main checkout after
+      // every successful removal, so an unset flowbase after cleanup is the
+      // expected end state, not a stale-config gap.
       reason: `no recorded flow base for '${cur.branch}' — the flow worktree is not bound (cwd is '${cwd}', not the flow worktree). Resume: run /flow <ref> to re-enter the flow, then worktree action=bind with the worktree path and branch, and re-run. Do NOT set branch.${cur.branch}.flowbase by hand.`,
     }
   }

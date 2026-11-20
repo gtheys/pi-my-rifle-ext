@@ -15,6 +15,7 @@ import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { DEFAULT_RECIPES } from '../flow/effect-gate.ts'
 import {
+  type FlowWorktree,
   getActiveFlowRef,
   getFlowWorktree,
   NO_ACTIVE_FLOW_WARNING,
@@ -637,6 +638,204 @@ export async function removeWorktreeCore(
     pruneNote,
     prState,
     force,
+  }
+}
+
+// AIDEV-NOTE: PMR-81SX — auto-cleanup at flow done (phase 5 of PMR-81SX).
+// Contract: NEVER throws (each fallible step is locally caught; callers also
+// catch as belt-and-braces). Fail-closed defer semantics: dirty worktree,
+// any matched in-flight agent (including unknown agent_status — herdr's state
+// strings are not enumerated in code, so ANY matched agent defers), or an
+// agentList failure all keep the worktree untouched. Halt/pause never reach
+// this code — only the done path calls it. Merged-proof is RE-DERIVED here
+// (git merge-base --is-ancestor in the main checkout) because the loop's
+// mergeAuthorized proves authorization only, not that the merge actually
+// executed on the main checkout.
+export type CleanupFlowWorktreeInput = {
+  ref: string
+  mode: 'work' | 'personal'
+  worktree: FlowWorktree | undefined
+  cwd: string
+  annotate?: (ref: string, body: string) => Promise<void>
+}
+
+export type CleanupFlowWorktreeSummary = {
+  action: 'noop' | 'deferred' | 'kept-all' | 'removed'
+  reason: string
+}
+
+export async function cleanupFlowWorktree(
+  pi: ExtensionAPI,
+  effects: EffectJournal,
+  input: CleanupFlowWorktreeInput,
+): Promise<CleanupFlowWorktreeSummary> {
+  try {
+    if (input.worktree === undefined) {
+      return { action: 'noop', reason: 'no flow worktree bound' }
+    }
+    const wtPath = input.worktree.path
+    const wtBranch = input.worktree.branch
+
+    // Step 2: dirty guard (cheap short-circuit before the in-flight check;
+    // the removal core has its own guard, this skip happens even earlier).
+    const status = await pi.exec('git', ['status', '--porcelain'], {
+      cwd: wtPath,
+    })
+    if (status.stdout.trim() !== '') {
+      return { action: 'deferred', reason: `worktree ${wtPath} is dirty` }
+    }
+
+    // Step 3: in-flight guard — fail-closed. Any matched agent defers,
+    // regardless of its agent_status string (unknown-means-live policy).
+    let agents: HerdrAgent[]
+    try {
+      agents = await agentList(pi, input.cwd)
+    } catch {
+      return {
+        action: 'deferred',
+        reason:
+          'herdr agent list unavailable — cannot prove no agent is in-flight',
+      }
+    }
+    let worktrees: HerdrWorktree[]
+    try {
+      worktrees = await worktreeList(pi, input.cwd)
+    } catch (error) {
+      return {
+        action: 'deferred',
+        reason: `herdr worktree list failed: ${(error as Error).message}`,
+      }
+    }
+    const target = worktrees.find((wt) => wt.path === wtPath)
+    if (!target) {
+      return {
+        action: 'deferred',
+        reason: `no Herdr worktree found at ${wtPath}`,
+      }
+    }
+    const joined = joinAgents([target], agents)
+    const agent = joined.get(target)
+    if (agent) {
+      let agentState = agent.state
+      if (agentState === '') {
+        agentState = 'unknown'
+      }
+      return {
+        action: 'deferred',
+        reason: `agent '${agent.name}' (state: ${agentState}) may still be in-flight in ${wtPath}`,
+      }
+    }
+
+    // Step 4: main checkout + merge proof / PR state.
+    let main: string
+    try {
+      main = await mainCheckout(pi, input.cwd)
+    } catch (error) {
+      return {
+        action: 'deferred',
+        reason: `cannot resolve main checkout: ${(error as Error).message}`,
+      }
+    }
+    let prState: PrState = 'NO_PR'
+    let localMergedProof = false
+    if (input.mode === 'personal') {
+      const proof = await pi.exec(
+        'git',
+        ['merge-base', '--is-ancestor', wtBranch, 'main'],
+        { cwd: main },
+      )
+      if (proof.code === 0) {
+        localMergedProof = true
+      }
+    } else {
+      prState = await ghPrState(pi, main, wtBranch)
+    }
+
+    // Step 5: auto branch-delete decision (phase 3 helper).
+    const decision = decideAutoBranchDelete({
+      mode: input.mode,
+      prState,
+      localMergedProof,
+    })
+    if (decision.action === 'keep-all') {
+      let reviewedAt = ''
+      try {
+        const head = await pi.exec('git', ['rev-parse', 'HEAD'], {
+          cwd: wtPath,
+        })
+        if (head.code === 0) {
+          reviewedAt = head.stdout.trim()
+        }
+      } catch {
+        // best-effort: sha omitted when rev-parse fails
+      }
+      let note = `worktree kept (${wtPath}): ${decision.reason}`
+      if (reviewedAt !== '') {
+        note = `${note} — merged-proof/PR state unproven, reviewed-at: ${reviewedAt}`
+      }
+      if (input.annotate) {
+        try {
+          await input.annotate(input.ref, note)
+        } catch {
+          // best-effort
+        }
+      }
+      return { action: 'kept-all', reason: decision.reason }
+    }
+
+    // Step 6: removal via the phase-3 core, with the EXPLICIT flow ref for
+    // the worktree-remove declaration (never the 'worktree-ops' fallback).
+    const removed = await removeWorktreeCore(pi, effects, input.cwd, {
+      path: wtPath,
+      force: false,
+      deleteBranch: decision.action === 'delete',
+      ref: input.ref,
+    })
+    if ('error' in removed) {
+      return {
+        action: 'deferred',
+        reason: `worktree removal failed: ${removed.error}`,
+      }
+    }
+
+    // Step 7: post-removal chores — clear the stale flow-base config from the
+    // MAIN checkout (PMR-182S gap), then annotate the outcome.
+    const execFn = (c: string, a: string[], o?: { cwd?: string }) =>
+      pi.exec(c, a, o)
+    try {
+      await clearFlowBase(execFn, main, wtBranch)
+    } catch {
+      // best-effort: stale config keys are harmless
+    }
+    let branchWord = 'kept'
+    if (removed.branchDeleted) {
+      branchWord = 'deleted'
+    }
+    let outcomeReason = 'work mode'
+    if (decision.action === 'keep-branch') {
+      outcomeReason = decision.reason
+    }
+    if (input.annotate) {
+      try {
+        await input.annotate(
+          input.ref,
+          `worktree removed (${wtPath}), branch ${branchWord}: ${wtBranch} (${outcomeReason})`,
+        )
+      } catch {
+        // best-effort
+      }
+    }
+
+    return {
+      action: 'removed',
+      reason: `removed ${wtPath}; ${removed.branchNote}; ${removed.pruneNote}`,
+    }
+  } catch (error) {
+    // Never throw — the loop's own catch is belt-and-braces.
+    return {
+      action: 'deferred',
+      reason: `cleanup error (non-fatal): ${(error as Error).message}`,
+    }
   }
 }
 
