@@ -190,6 +190,26 @@ export async function readAvenLabels(
   }
 }
 
+// AIDEV-NOTE: PMR-YG2N — durable-binding read for the worktree cleanup sweep
+// (`aven show <ref> --full`, same --full shape tools/code-review-parse.ts
+// parses). Workspace routing mirrors readAvenLabels via avenArgsWithWorkspace;
+// fail-closed: returns null on any failure, never throws.
+export async function avenShowFull(ref: string): Promise<string | null> {
+  try {
+    const args = await avenArgsWithWorkspace(['show', ref, '--full'], ref)
+    const result = await execFileAsync('aven', args, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    if (result.stdout.length === 0) {
+      return null
+    }
+    return result.stdout
+  } catch (error: unknown) {
+    recordAvenFailure(error)
+    return null
+  }
+}
+
 /**
  * PMR-F8HB — pure classification of an `aven show --json` result against
  * the ref that was asked for. `fuzzy-match` means aven resolved the ref to
