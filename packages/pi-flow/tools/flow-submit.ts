@@ -193,7 +193,7 @@ export function registerFlowSubmitTool(
       ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
       step: Type.String({
         description:
-          'Short step label, 1-64 chars lowercase alphanumerics and dashes, e.g. "unit-tests-green"',
+          'Short step label, free-form but 1-64 chars in the flow value charset (alphanumeric, plus dots, underscores and dashes), e.g. "unit-tests-green"',
       }),
       ok: Type.Optional(
         Type.Boolean({

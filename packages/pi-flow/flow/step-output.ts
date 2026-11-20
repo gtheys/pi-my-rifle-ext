@@ -203,7 +203,7 @@ export function buildStepOutputEvent(input: StepOutputInput): StepOutputResult {
   if (!FLOW_VALUE_RE.test(input.ref)) {
     return {
       ok: false,
-      reason: `Invalid ref "${input.ref}": must match the flow value charset (lowercase alphanumerics and dashes, e.g. "pmr-hvax").`,
+      reason: `Invalid ref "${input.ref}": must match the flow value charset (alphanumeric, plus dots, underscores and dashes, e.g. "pmr-hvax").`,
     }
   }
 
@@ -211,19 +211,19 @@ export function buildStepOutputEvent(input: StepOutputInput): StepOutputResult {
     return {
       ok: false,
       reason:
-        'Invalid step: must be 1-64 chars matching the flow value charset (lowercase alphanumerics and dashes).',
+        'Invalid step: must be 1-64 chars matching the flow value charset (alphanumeric, plus dots, underscores and dashes).',
     }
   }
   if (input.step.length > 64) {
     return {
       ok: false,
-      reason: `Invalid step "${input.step.slice(0, 12)}…": must be 1-64 chars matching the flow value charset (lowercase alphanumerics and dashes).`,
+      reason: `Invalid step "${input.step.slice(0, 12)}…": must be 1-64 chars matching the flow value charset (alphanumeric, plus dots, underscores and dashes).`,
     }
   }
   if (!FLOW_VALUE_RE.test(input.step)) {
     return {
       ok: false,
-      reason: `Invalid step "${input.step}": must be 1-64 chars matching the flow value charset (lowercase alphanumerics and dashes).`,
+      reason: `Invalid step "${input.step}": must be 1-64 chars matching the flow value charset (alphanumeric, plus dots, underscores and dashes).`,
     }
   }
 
