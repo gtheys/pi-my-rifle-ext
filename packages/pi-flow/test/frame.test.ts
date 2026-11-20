@@ -155,7 +155,7 @@ describe('frameFlowStatusLines', () => {
     // Blank separator row directly above each block header (drift-proof:
     // the sentinel is looked up in the REAL rendered lines, not hand-written).
     for (const header of ['subtasks:', 'gates:']) {
-      const idx = content.findIndex((c) => c === header)
+      const idx = content.indexOf(header)
       assert.ok(idx > 0, `${header} header missing from framed output`)
       assert.equal(
         content[idx - 1],
