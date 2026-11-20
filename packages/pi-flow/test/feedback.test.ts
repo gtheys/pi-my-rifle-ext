@@ -110,6 +110,47 @@ test('work prompt: names the sonarqube and pr_quality tools, forbids silent fixe
   assert.match(prompt, /DP-12/)
 })
 
+test('personal prompt: merge-verified close-out contract (PMR-81SX)', () => {
+  const prompt = buildFeedbackPrompt({ mode: 'personal', ref: 'PMR-NG7S' })
+
+  // Outcome-summary contract (matches outcomeSummary() in triage.ts)
+  assert.match(prompt, /## Outcome summary/)
+  assert.match(prompt, /### What\s+shipped/)
+  assert.match(prompt, /### Test evidence/)
+  assert.match(prompt, /### Review verdict/)
+
+  // Done transition via aven edit, then phase completion
+  assert.match(prompt, /aven edit PMR-NG7S --status done/)
+  assert.match(prompt, /flow_phase_complete/)
+  assert.match(prompt, /phase="feedback"/)
+  assert.ok(
+    prompt.indexOf('aven edit PMR-NG7S --status done') <
+      prompt.indexOf('flow_phase_complete'),
+  )
+
+  // Guardrails: landing already consumed; no pushes, no flow_land calls
+  assert.match(prompt, /must NOT call the flow_land tool/)
+  assert.match(prompt, /push stays blocked/)
+  assert.ok(!/git push/.test(prompt))
+  // the ONLY mention of calling flow_land is the prohibition itself
+  const flowLandMentions = prompt.match(/.{0,40}flow_land.{0,40}/gs) ?? []
+  for (const mention of flowLandMentions) {
+    const isGuardrail = /NOT call the flow_land tool/.test(mention)
+    const isCallInstruction = /call the flow_land tool/.test(mention)
+    assert.ok(
+      isGuardrail || !isCallInstruction,
+      `unexpected flow_land call instruction: ${mention}`,
+    )
+  }
+
+  // Oneshot tolerance: no plan artifact assumed
+  assert.match(prompt, /may be a oneshot with no\s+plan artifact/)
+  assert.match(prompt, /do not assume or look for a plan\.md/)
+
+  // Personal-only content (absent from the work prompt)
+  assert.match(prompt, /merge-base --is-ancestor/)
+})
+
 test('parseFeedbackArgs: kind prefixes force the kind (PMR-PCVK)', () => {
   assert.deepEqual(parseFeedbackArgs('aven:DP-71'), {
     kind: 'aven',
