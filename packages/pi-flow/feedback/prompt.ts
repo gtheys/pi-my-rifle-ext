@@ -5,15 +5,20 @@
 // The triage rules mirror classify() in feedback/triage.ts; the escalation
 // rule (new work = new task through the gates) is stated as an absolute in
 // the prompt so the agent can never fix silently or ignore a finding.
-// Personal mode has no feedback phase (PMR-GFM5): validate's personal gate
-// writes the outcome summary note (outcomeSummary() shapes it) and sets done
-// after the push — the canClose() guard is enforced there by prompt contract.
+// Personal mode DOES have a feedback phase (PMR-81SX): it runs after
+// validate's human code-review gate already ff-only merged the flow branch
+// into main and consumed the landing state. The prompt verifies the merge
+// landed (PMR-69V8 fail-closed), writes the outcome summary via the
+// outcomeSummary() contract (feedback/triage.ts), files review-feedback
+// backlog tickets, then transitions done and completes the phase. flow_land
+// must never be called here — the landing is already done and pushes stay
+// blocked for the whole flow.
 
 import { classify, FIX_NOW_SEVERITIES } from './triage.ts'
 
 export interface FeedbackPromptInput {
-  /** Work only: personal folds feedback into validate (PMR-GFM5). */
-  mode: 'work'
+  /** 'work' gates a PR; 'personal' closes out an already-merged local flow (PMR-81SX). */
+  mode: 'work' | 'personal'
   ref: string
 }
 
@@ -53,9 +58,77 @@ phase="feedback" — it applies the "done" label after re-checking the gates,
 and its result confirms the label landed.`
 }
 
+// AIDEV-NOTE: PMR-81SX — the personal feedback section. Runs AFTER validate's
+// human code-review gate already called flow_land (merge-main) and ff-only
+// merged the flow branch into main, so the flow is still loop-active but the
+// landing state is CONSUMED: push stays blocked and flow_land must NOT be
+// called again. Every fail path writes an aven note carrying
+// "reviewed-at: <git rev-parse HEAD>" and STOPs (PMR-69V8) so the loop can
+// retry. The outcome summary follows the outcomeSummary() contract in
+// feedback/triage.ts and must exist before done (canClose(), prompt
+// contract only). Idempotent and oneshot-tolerant: already-done or
+// already-recorded steps count as success, and no plan artifact is assumed.
+function personalSection(ref: string): string {
+  return `Close out the personal-mode flow on ${ref}. The validate phase's
+human code-review gate has already merged the flow branch into main with a
+local ff-only merge. The flow is STILL loop-active: push stays blocked, and
+you must NOT call the flow_land tool again — its landing state is already
+consumed. Execute IN ORDER:
+
+1. Verify the merge actually landed: run
+   \`git -C <main repo> merge-base --is-ancestor <flow branch> main\`
+   (main repo = first entry of \`git worktree list\`). If it fails (exit
+   code non-zero), write an aven note on ${ref} containing
+   "reviewed-at: <git rev-parse HEAD>" plus a one-line description of the
+   missing merge, and STOP and ask the human — do not merge yourself, do
+   not force anything, do not continue to the next steps.
+2. Write the outcome summary as an aven note on ${ref}, following this
+   contract exactly: a "## Outcome summary" heading with "### What
+   shipped", "### Test evidence" and "### Review verdict" sections
+   (whatShipped / testEvidence / reviewVerdict). Gather the content from
+   this run's notes, commits, and test output. If any section has no
+   content, write an aven note on ${ref} containing
+   "reviewed-at: <git rev-parse HEAD>" instead and STOP and ask the human —
+   never invent filler. The outcome-summary note MUST exist before ${ref}
+   can be set to done (canClose contract) — never skip it.
+3. Review-feedback triage: collect every non-blocking review observation
+   (P2/P3, "for later", "non-blocking", "worth knowing") recorded in the
+   review notes and artifacts on ${ref} during this flow, and file each
+   actionable one as its OWN backlog ticket: aven add "<sentence-case
+   title>" --label review-feedback --status backlog --priority
+   <medium|low> --description "..." (create the label first with
+   \`aven label create\` if missing). Each description carries the finding,
+   the source note/artifact id, file references, and a done-when; skip
+   purely informational/self-healing notes and anything an open ticket
+   already covers; mention siblings ("related to PMR-XXXX") when one
+   exists. If there are no non-blocking observations, skip silently.
+4. Wrap up IN ORDER: first set ${ref} to done with
+   \`aven edit ${ref} --status done\`, THEN call the flow_phase_complete
+   tool with ref=${ref} and phase="feedback" — it applies the "done" label
+   after re-checking the gates, and its result confirms the label landed.
+   The aven edit is the verified last step; do not run them in the other
+   order.
+5. Idempotency: if ${ref} is already status done, or a step above was
+   already recorded (outcome-summary note exists, review-feedback tickets
+   already filed), treat that step as success and move on — never fail the
+   close-out because a step already ran. This flow may be a oneshot with no
+   plan artifact: do not assume or look for a plan.md; the ticket
+   description is the spec.
+6. After flow_phase_complete returns ok, report the outcome counts (what
+   shipped, review verdict, review-feedback ticket refs) in your reply.
+   The harness removes the flow worktree automatically — no manual
+   \`git worktree remove\` is needed.`
+}
+
 export function buildFeedbackPrompt(input: FeedbackPromptInput): string {
   const header = `Feedback phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
-  return `${header}\n${workSection(input.ref)}`
+  let section: string
+  if (input.mode === 'personal') {
+    section = personalSection(input.ref)
+  } else {
+    section = workSection(input.ref)
+  }
+  return `${header}\n${section}`
 }
 
 // AIDEV-NOTE: re-export so prompt consumers and tests share one classifier.
