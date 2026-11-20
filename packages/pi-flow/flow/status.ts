@@ -5,7 +5,8 @@
 // research row): `[x]`/`[ ]` marks plus ` <- running` on the current phase;
 // the `-> /flow answer <ref>` hint is only for answerCommand gates — the
 // picker (3.2 wiring) supplies the choices, so we never invent vocabulary
-// here. Subtasks use a minimal structural AssignmentSummary mapped from
+// here. Presentation (✅/emoji/SGR) lives in frame.ts (PMR-X7BH); this module
+// stays ASCII by contract. Subtasks use a minimal structural AssignmentSummary mapped from
 // pi-interactive-subagents listAssignments by the 3.2 lifecycle caller.
 
 import type { FlowRunState } from '../run-state.ts'
