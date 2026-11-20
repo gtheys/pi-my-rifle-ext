@@ -332,8 +332,13 @@ const HANDLER_MODE = path.join(HANDLER_BIN, 'mode.txt')
 // mode file, so done-path tests can serve a canned worktree note; empty =
 // nothing bound (default behavior unchanged for the existing tests).
 const HANDLER_WORKTREE = path.join(HANDLER_BIN, 'worktree-note.txt')
+// AIDEV-NOTE: PMR-YG2N 3.2 — `aven show <ref> --json` serves this file when
+// non-empty so done-path tests can present a full label set; empty = the
+// canned text line (default behavior unchanged for the existing tests).
+const HANDLER_LABELS = path.join(HANDLER_BIN, 'labels.json')
 writeFileSync(HANDLER_MODE, 'ok')
 writeFileSync(HANDLER_WORKTREE, '')
+writeFileSync(HANDLER_LABELS, '')
 writeFileSync(HANDLER_LOG, '')
 writeFileSync(
   path.join(HANDLER_BIN, 'aven'),
@@ -351,6 +356,16 @@ if [ "$1" = "show" ]; then
   if [ -n "$is_full" ]; then
     echo "$2 status=todo title=x"
     cat ${HANDLER_WORKTREE}
+    exit 0
+  fi
+  has_json=""
+  for a in "$@"; do
+    if [ "$a" = "--json" ]; then
+      has_json=1
+    fi
+  done
+  if [ -n "$has_json" ] && [ -s ${HANDLER_LABELS} ]; then
+    cat ${HANDLER_LABELS}
     exit 0
   fi
   if [ "$mode" = "error" ]; then
@@ -420,10 +435,17 @@ interface FlowCallCtx {
   >
 }
 
+/** Structural pi.exec override shape used by the done-path tests (3.2). */
+type FlowExec = (
+  command: string,
+  args: string[],
+  options?: { cwd?: string },
+) => Promise<{ stdout: string; stderr: string; code: number }>
+
 // AIDEV-NOTE: fake ExtensionAPI via Proxy — captures registerCommand('flow')
 // and sendUserMessage; every other registration method is a no-op so the
 // full default extension wires without a live Pi session.
-function captureFlowCommand(): FlowCallCtx {
+function captureFlowCommand(execOverride?: FlowExec): FlowCallCtx {
   const commands = new Map<
     string,
     { handler: (args: string, ctx: unknown) => Promise<void> }
@@ -453,7 +475,8 @@ function captureFlowCommand(): FlowCallCtx {
     sendUserMessage: (message: string) => {
       sent.push(message)
     },
-    exec: async () => ({ stdout: `${HANDLER_WS}\n`, stderr: '' }),
+    exec:
+      execOverride ?? (async () => ({ stdout: `${HANDLER_WS}\n`, stderr: '' })),
   }
   const pi = new Proxy(base, {
     get(target, prop) {
@@ -611,5 +634,212 @@ test('flow handler: dashboard toggle is case-insensitive', async () => {
     assert.equal(notifications.length, 1)
     assert.equal(notifications[0].level, 'info')
     assert.match(notifications[0].message, /No flow content to show/)
+  })
+})
+
+// --- /flow handler done path: worktree sweep wiring (PMR-YG2N 3.2) ---
+
+// AIDEV-NOTE: PMR-YG2N 3.2 — routed pi.exec fake for cleanupFlowWorktree,
+// shaped like sweep.test.ts's makeSweepHarness: git/herdr argv routing with
+// a pass-through fallback, every call appended to `calls` so absence
+// assertions (no `herdr worktree remove`) are pure call-log reads.
+interface CleanupExecOptions {
+  wtPath: string
+  wtBranch: string
+  dirty: boolean
+  calls: string[]
+}
+
+function makeCleanupExec(options: CleanupExecOptions): FlowExec {
+  return async (command, args) => {
+    const argv = args.join(' ')
+    options.calls.push(`${command} ${argv}`)
+    if (command === 'herdr' && argv === 'worktree list') {
+      const worktrees = [
+        {
+          path: options.wtPath,
+          branch: options.wtBranch,
+          label: 'flow',
+          open_workspace_id: 'ws-1',
+          is_linked_worktree: true,
+        },
+      ]
+      return {
+        code: 0,
+        stdout: JSON.stringify({ result: { worktrees } }),
+        stderr: '',
+      }
+    }
+    if (command === 'herdr' && argv === 'agent list') {
+      return {
+        code: 0,
+        stdout: JSON.stringify({ result: { agents: [] } }),
+        stderr: '',
+      }
+    }
+    if (command === 'herdr' && argv.startsWith('worktree remove')) {
+      return { code: 0, stdout: 'removed', stderr: '' }
+    }
+    if (command === 'git' && args[0] === 'status') {
+      if (options.dirty) {
+        return { code: 0, stdout: ' M dirty.txt\n', stderr: '' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (command === 'git' && args[0] === 'merge-base') {
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (command === 'git' && argv === 'worktree list --porcelain') {
+      return { code: 0, stdout: `worktree ${HANDLER_WS}\n`, stderr: '' }
+    }
+    if (command === 'git' && argv === 'rev-parse --abbrev-ref HEAD') {
+      return { code: 0, stdout: `${options.wtBranch}\n`, stderr: '' }
+    }
+    if (command === 'git' && argv === 'rev-parse HEAD') {
+      return { code: 0, stdout: 'abc123\n', stderr: '' }
+    }
+    return { code: 0, stdout: '', stderr: '' }
+  }
+}
+
+function writeDoneLabels(ref: string, labels: string[]): void {
+  writeFileSync(HANDLER_LABELS, JSON.stringify({ ref, labels }))
+}
+
+function writeWorktreeNote(wtPath: string, wtBranch: string): void {
+  writeFileSync(
+    HANDLER_WORKTREE,
+    `note id=TESTNOTE
+body<<EOF
+worktree: ${wtPath} branch: ${wtBranch}
+EOF
+`,
+  )
+}
+
+function journalPath(agentDir: string, ref: string): string {
+  return path.join(agentDir, 'pi-flow', 'runs', `${ref}.journal.jsonl`)
+}
+
+// AIDEV-NOTE: PMR-YG2N 3.2 — a harness-completed flow was started by /flow
+// at some point, so its journal carries run-start; seed it so the sweep
+// marker has a live projection state to fold into (mirrors production).
+function seedRunStart(ref: string): void {
+  const jp = journalPath(HANDLER_AGENT_DIR, ref)
+  mkdirSync(path.dirname(jp), { recursive: true })
+  writeFileSync(
+    jp,
+    `${JSON.stringify({ kind: 'run-start', at: 't', ref, mode: 'personal' })}\n`,
+  )
+}
+
+test('flow handler: done + note-bound worktree is swept to removed (PMR-YG2N 3.2)', async () => {
+  const ref = 'PMR-DONE1'
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-done-wt-'))
+  writeDoneLabels(ref, ['planned', 'active', 'review-passed', 'done'])
+  writeWorktreeNote(wtDir, 'feat/done-one')
+  seedRunStart(ref)
+  const calls: string[] = []
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand(
+      makeCleanupExec({
+        wtPath: wtDir,
+        wtBranch: 'feat/done-one',
+        dirty: false,
+        calls,
+      }),
+    )
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler(ref, flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /all phase labels present \(done\)/)
+    assert.match(notifications[0].message, /Worktree cleanup: removed/)
+    // The cleanup annotates the outcome via `aven note <ref>` (HANDLER_LOG).
+    const avenCalls = readFileSync(HANDLER_LOG, 'utf8')
+    assert.match(avenCalls, new RegExp(`note ${ref}`))
+    // Journal marker with the terminal outcome so later sweeps skip the ref.
+    const journal = readFileSync(journalPath(HANDLER_AGENT_DIR, ref), 'utf8')
+    assert.match(journal, /"kind":"worktree-sweep"/)
+    assert.match(journal, /"outcome":"removed"/)
+    // The routed exec actually removed the herdr worktree.
+    assert.ok(
+      calls.some((call) => call.startsWith('herdr worktree remove')),
+      'expected a herdr worktree remove call',
+    )
+  })
+  rmSync(wtDir, { recursive: true, force: true })
+})
+
+test('flow handler: done + no worktree note ends in noop marker (PMR-YG2N 3.2)', async () => {
+  const ref = 'PMR-DONE2'
+  writeDoneLabels(ref, ['planned', 'active', 'review-passed', 'done'])
+  writeFileSync(HANDLER_WORKTREE, '')
+  seedRunStart(ref)
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler(ref, flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /nothing to run/)
+    assert.match(
+      notifications[0].message,
+      /Worktree cleanup: no flow worktree bound/,
+    )
+    const journal = readFileSync(journalPath(HANDLER_AGENT_DIR, ref), 'utf8')
+    assert.match(journal, /"kind":"worktree-sweep"/)
+    assert.match(journal, /"outcome":"noop"/)
+  })
+})
+
+test('flow handler: done + note-bound dirty worktree is deferred, never removed (PMR-YG2N 3.2)', async () => {
+  const ref = 'PMR-DONE3'
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-dirty-wt-'))
+  writeDoneLabels(ref, ['planned', 'active', 'review-passed', 'done'])
+  writeWorktreeNote(wtDir, 'feat/done-three')
+  seedRunStart(ref)
+  const calls: string[] = []
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand(
+      makeCleanupExec({
+        wtPath: wtDir,
+        wtBranch: 'feat/done-three',
+        dirty: true,
+        calls,
+      }),
+    )
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler(ref, flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /Worktree cleanup: deferred/)
+    const journal = readFileSync(journalPath(HANDLER_AGENT_DIR, ref), 'utf8')
+    assert.match(journal, /"kind":"worktree-sweep"/)
+    assert.match(journal, /"outcome":"deferred"/)
+    assert.ok(
+      !calls.some((call) => call.startsWith('herdr worktree remove')),
+      'dirty worktree must never reach herdr worktree remove',
+    )
+  })
+  rmSync(wtDir, { recursive: true, force: true })
+})
+
+test('flow handler: not-done ticket still takes the run path, no sweep marker (PMR-YG2N 3.2 regression)', async () => {
+  const ref = 'PMR-NOTDONE'
+  writeDoneLabels(ref, ['planned'])
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler(ref, flowCtx(notifications))
+    // Run path: the plan phase prompt goes through sendUserMessage.
+    assert.ok(sent.length > 0, 'expected sendUserMessage on the run path')
+    assert.match(sent[0], new RegExp(ref))
+    const journal = readFileSync(journalPath(HANDLER_AGENT_DIR, ref), 'utf8')
+    assert.doesNotMatch(journal, /"kind":"worktree-sweep"/)
+    assert.match(journal, /"kind":"run-start"/)
   })
 })
