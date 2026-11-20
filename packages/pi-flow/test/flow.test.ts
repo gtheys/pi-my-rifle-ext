@@ -78,10 +78,13 @@ test('nextPhase: review-passed -> feedback', () => {
   })
 })
 
-test('nextPhase: personal review-passed -> done (feedback folded into validate)', () => {
+test('nextPhase: personal review-passed -> feedback (wrap-up phase, PMR-81SX)', () => {
   assert.deepEqual(
     nextPhase(['planned', 'active', 'review-passed'], 'personal'),
-    { kind: 'done' },
+    {
+      kind: 'phase',
+      phase: 'feedback',
+    },
   )
 })
 
@@ -92,10 +95,16 @@ test('nextPhase: work review-passed -> feedback (explicit mode)', () => {
   })
 })
 
-test('nextPhase: done label -> done', () => {
+test('nextPhase: done label -> done (idempotent re-run)', () => {
   assert.deepEqual(nextPhase(['planned', 'active', 'review-passed', 'done']), {
     kind: 'done',
   })
+  // Idempotency pin: re-running nextPhase on an already-done ticket (either
+  // mode) still yields done, not a phase re-run.
+  assert.deepEqual(
+    nextPhase(['planned', 'active', 'review-passed', 'done'], 'personal'),
+    { kind: 'done' },
+  )
 })
 
 test('nextPhase: mid-flow kill resumes at implement without duplicates', () => {

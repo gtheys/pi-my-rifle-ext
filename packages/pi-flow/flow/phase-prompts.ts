@@ -197,15 +197,11 @@ function validatePrompt(input: PhasePromptInput): PhasePrompt {
 }
 
 function feedbackPrompt(input: PhasePromptInput): PhasePrompt {
-  if (input.mode === 'personal') {
-    return {
-      kind: 'block',
-      reason:
-        'personal mode has no feedback phase — validate writes the outcome summary note and sets done after the push.',
-    }
-  }
+  // AIDEV-NOTE: PMR-81SX — personal feedback is a real wrap-up phase now
+  // (runs after validate's human code-review gate already merged); both
+  // entrypoints keep producing identical prompts via this single builder.
   return {
     kind: 'send',
-    prompt: buildFeedbackPrompt({ mode: 'work', ref: input.ref }),
+    prompt: buildFeedbackPrompt({ mode: input.mode, ref: input.ref }),
   }
 }

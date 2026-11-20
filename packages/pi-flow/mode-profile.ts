@@ -18,8 +18,9 @@ export interface ModeProfile {
   acceptsJiraRefs: boolean
   /** Branch derivation rule for the implement phase. */
   branchRule: 'jira_create_branch' | 'conventional-slug'
-  /** Phases /flow runs, in order. Personal folds feedback (summary note +
-   *  done) into validate/land (PMR-GFM5). */
+  /** Phases /flow runs, in order. Both modes run the full PIV order —
+   *  personal feedback is its own wrap-up phase (PMR-81SX, unfolding
+   *  PMR-GFM5's earlier fold). */
   phases: readonly Phase[]
 }
 
@@ -36,6 +37,6 @@ export const MODE_PROFILE: Record<WorkMode, ModeProfile> = {
     artifactRootEnv: 'PERSONAL_FEATURES',
     acceptsJiraRefs: false,
     branchRule: 'conventional-slug',
-    phases: ['plan', 'implement', 'validate'],
+    phases: ['plan', 'implement', 'validate', 'feedback'],
   },
 }

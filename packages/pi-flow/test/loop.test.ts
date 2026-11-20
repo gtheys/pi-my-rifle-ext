@@ -408,12 +408,20 @@ test('start: works without an optional resetLandingState dep', async () => {
   assert.equal(loop.isActive(), true)
 })
 
-test('personal: review-passed after validate ends the flow (no feedback prompt)', async () => {
+test('personal: review-passed after validate advances into the feedback wrap-up (PMR-81SX)', async () => {
   const h = makeHarness(['planned', 'active', 'review-passed'])
   const loop = createFlowLoop(h.deps)
   await loop.start({ ...startInput(), phase: 'validate' })
   await loop.onSettled()
-  assert.equal(h.sent.length, 1)
+  // Loop stays active and injects the personal feedback wrap-up prompt.
+  assert.equal(h.sent.length, 2)
+  assert.match(h.sent[1], /Feedback phase/)
+  assert.match(h.sent[1], /Mode: personal/)
+  assert.equal(loop.isActive(), true)
+  // Done only after the feedback phase label ("done") lands.
+  h.labels = ['planned', 'active', 'review-passed', 'done']
+  await loop.onSettled()
+  assert.equal(h.sent.length, 2)
   assert.equal(loop.isActive(), false)
 })
 

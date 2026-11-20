@@ -840,7 +840,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('flow', {
     description:
-      'PIV run-all (plan -> implement -> validate -> feedback; personal mode stops after validate) or record a protected human decision. Usage: /flow <ref> | /flow answer <ref> <approve|reject|pass|fail> | /flow dashboard. Brainstorm topics go through /brainstorm.',
+      'PIV run-all (plan -> implement -> validate -> feedback; personal feedback = wrap-up: outcome summary, done, auto worktree cleanup) or record a protected human decision. Usage: /flow <ref> | /flow answer <ref> <approve|reject|pass|fail> | /flow dashboard. Brainstorm topics go through /brainstorm.',
     // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
     // failure aborts, never starts mid-phase by accident). nextPhase()
     // resolves the first phase whose completion label is missing, then the

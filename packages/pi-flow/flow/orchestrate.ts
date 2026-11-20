@@ -23,9 +23,10 @@ export const PHASE_LABEL: Record<Phase, string> = {
 
 export type NextPhase = { kind: 'phase'; phase: Phase } | { kind: 'done' }
 
-// AIDEV-NOTE: PMR-GFM5 — the phase list is mode-keyed (MODE_PROFILE.phases);
-// personal never runs feedback as a separate phase. Default 'work' keeps the
-// full PIV order for callers that don't pass a mode.
+// AIDEV-NOTE: PMR-GFM5/PMR-81SX — the phase list is mode-keyed
+// (MODE_PROFILE.phases); both modes now run all four phases (personal
+// feedback = wrap-up). Default 'work' keeps the full PIV order for callers
+// that don't pass a mode.
 export function nextPhase(
   labels: readonly string[],
   mode: WorkMode = 'work',

@@ -249,8 +249,8 @@ export function registerPhaseCommands(pi: ExtensionAPI): void {
   })
 
   // AIDEV-NOTE: Work mode runs the /sonarqube + /pr-quality gate via the
-  // prompt; personal mode has no feedback phase (blocked, PMR-GFM5) — validate
-  // writes the outcome summary and sets done.
+  // prompt; personal mode runs the wrap-up (outcome summary, review-feedback
+  // tickets, done) after validate's merge (PMR-81SX).
   // All gating rules live in the pure feedback/triage.ts and the prompt text.
   registerPhaseCommand(pi, {
     name: 'feedback',

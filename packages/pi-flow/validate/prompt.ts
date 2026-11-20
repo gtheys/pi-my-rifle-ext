@@ -150,30 +150,9 @@ Human code-review gate — run ONLY after the deviation gate returned
    checkout — then run \`git -C <main repo path> merge --ff-only <branch>\`.
    NEVER push; git push stays blocked for the whole flow. No PR, no Jira
    link step. If the ff-only merge fails, STOP and ask the human — do not
-   force, reset or rebase.
-   After the merge succeeds (personal mode has no separate feedback phase —
-   PMR-GFM5), close out the ticket IN ORDER:
-   a. Write the outcome summary as an aven note on ${ref}: "## Outcome
-      summary" with "### What shipped", "### Test evidence" and "### Review
-      verdict" sections. If a section has no content, STOP and ask the
-      human — never invent filler.
-   b. Review-feedback tickets: collect every non-blocking review
-      observation (P2/P3, "for later", "non-blocking", "worth knowing")
-      recorded in the review notes and artifacts on ${ref} during this
-      phase — including notes the review tool wrote and your own delta
-      reviews — and file each actionable one as its OWN backlog ticket:
-      aven add "<sentence-case title>" --label review-feedback --status
-      backlog --priority <medium|low> --description "..." (create the
-      label first with aven label create if missing). Each description
-      carries the finding, the source note/artifact id, file references,
-      and a done-when; skip purely informational/self-healing notes and
-      anything an open ticket already covers; mention siblings ("related
-      to PMR-XXXX") when one exists. Report the created refs in your
-      reply. If there are no non-blocking observations, skip silently.
-   c. ONLY once the outcome-summary note (a) AND the review-feedback
-      tickets (b) exist: set ${ref} status to done, then call the
-      flow_phase_complete tool with ref=${ref} and phase="feedback" — it
-      applies the "done" label after re-checking the gates.
+   force, reset or rebase. After the merge succeeds, the flow loop advances
+   ${ref} into its personal feedback phase (wrap-up: outcome summary,
+   review-feedback tickets, done — PMR-81SX); do not do that close-out here.
 10. On fail: the code_review tool already recorded the tuicr findings as an
    aven note on ${ref}. Add your own note on ${ref} containing
    "reviewed-at: <git rev-parse HEAD>" and STOP — do not land. The flow loop

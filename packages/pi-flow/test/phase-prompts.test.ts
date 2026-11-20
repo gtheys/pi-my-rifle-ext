@@ -115,15 +115,30 @@ test('feedback: work mode sends', async () => {
   assert.equal(result.kind, 'send')
 })
 
-test('feedback: personal mode is blocked (folded into validate, PMR-GFM5)', async () => {
+test('feedback: personal mode sends the wrap-up prompt (PMR-81SX)', async () => {
   const result = await buildPhasePrompt('feedback', BASE)
-  assert.equal(result.kind, 'block')
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  // Matches the outcomeSummary() contract, orders --status done BEFORE
+  // flow_phase_complete(phase="feedback"), and forbids re-landing/pushing.
+  assert.match(result.prompt, /Mode: personal/)
+  assert.match(result.prompt, /Outcome\s+summary/)
+  assert.match(result.prompt, /Test evidence/)
+  assert.match(result.prompt, /Review verdict/)
+  assert.match(result.prompt, /review-feedback/)
+  assert.match(
+    result.prompt,
+    /--status done[\s\S]*flow_phase_complete[\s\S]*phase="feedback"/,
+  )
+  assert.match(result.prompt, /NOT call the flow_land tool/)
+  assert.match(result.prompt, /push stays blocked/)
 })
 
-test('validate: personal prompt writes summary note and done after push', async () => {
+test('validate: personal prompt no longer carries the close-out (moved to feedback, PMR-81SX)', async () => {
   const result = await buildPhasePrompt('validate', BASE)
   assert.equal(result.kind, 'send')
   if (result.kind !== 'send') return
-  assert.match(result.prompt, /Outcome\s+summary/)
-  assert.match(result.prompt, /phase="feedback"/)
+  assert.doesNotMatch(result.prompt, /Outcome\s+summary/)
+  assert.doesNotMatch(result.prompt, /phase="feedback"/)
+  assert.ok(!result.prompt.includes('status to done'))
 })
