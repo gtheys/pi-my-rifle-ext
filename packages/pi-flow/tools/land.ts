@@ -176,6 +176,12 @@ export const DEFAULT_LAND_TEST_COMMAND = ['bun', 'run', 'test'] as const
 // this fixed order (bun-style signals, then cargo, then npm, then pnpm) so a
 // hybrid repo resolves deterministically. Adding a row here must come with a
 // detection-matrix test in test/land-detect.test.ts.
+// AIDEV-NOTE: PMR-RH97 — entries are matched with fs.stat + isFile(), so only
+// regular files count as signals: a directory named Cargo.toml, a FIFO, or a
+// dangling symlink must NOT route the land test. Any stat error (ENOENT,
+// EPERM, EACCES, …) is treated as "signal absent" and scanning continues —
+// failure always falls toward the bun default, never toward a wrong
+// detection.
 const LAND_TEST_SIGNALS: ReadonlyArray<{
   files: readonly string[]
   command: readonly string[]
@@ -203,10 +209,14 @@ export async function detectLandTestCommand(
   for (const entry of LAND_TEST_SIGNALS) {
     for (const file of entry.files) {
       try {
-        await fs.access(path.join(repoRoot, file))
-        return { command: [...entry.command], signal: file }
+        // PMR-RH97: stat (not access) so the entry TYPE is checked — only a
+        // regular file is a signal. Errors mean absent; never a wrong match.
+        const stat = await fs.stat(path.join(repoRoot, file))
+        if (stat.isFile()) {
+          return { command: [...entry.command], signal: file }
+        }
       } catch {
-        // Signal file absent — keep scanning in the fixed order.
+        // Signal absent or unreadable — keep scanning in the fixed order.
       }
     }
   }

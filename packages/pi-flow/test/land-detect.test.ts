@@ -4,7 +4,7 @@
 // PI_CODING_AGENT_DIR to a temp agent dir so the real ~/.pi/agent config can
 // never leak into results (getAgentDir() reads the env at call time).
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -110,6 +110,42 @@ test('detection: hybrid repo resolves deterministically in the fixed order', asy
     makeRepo(['package-lock.json', 'pnpm-lock.yaml']),
   )
   assert.equal(npmBeatsPnpm?.signal, 'package-lock.json')
+})
+
+// --- signal entry type (PMR-RH97): only regular files count ---
+
+// PMR-RH97: fs.access matched ANY existing entry, so a directory named like a
+// signal file could misroute the land test. These tests pin the stat + isFile
+// semantics: non-regular entries and stat errors fall through the scan.
+
+test('detection: directory named Cargo.toml is not a signal', async () => {
+  const repo = makeRepo([])
+  mkdirSync(path.join(repo, 'Cargo.toml'))
+  assert.equal(await detectLandTestCommand(repo), null)
+})
+
+test('detection: directory signal does not shadow a later real signal', async () => {
+  const repo = makeRepo(['bun.lock'])
+  mkdirSync(path.join(repo, 'Cargo.toml'))
+  assert.deepEqual(await detectLandTestCommand(repo), {
+    command: [...DEFAULT_LAND_TEST_COMMAND],
+    signal: 'bun.lock',
+  })
+})
+
+test('detection: dangling symlink is not a signal', async () => {
+  const repo = makeRepo([])
+  symlinkSync(path.join(repo, 'does-not-exist'), path.join(repo, 'bun.lock'))
+  assert.equal(await detectLandTestCommand(repo), null)
+})
+
+test('detection: symlink to a regular file still counts (stat follows links)', async () => {
+  const repo = makeRepo(['real-lockfile'])
+  symlinkSync(path.join(repo, 'real-lockfile'), path.join(repo, 'bun.lock'))
+  assert.deepEqual(await detectLandTestCommand(repo), {
+    command: [...DEFAULT_LAND_TEST_COMMAND],
+    signal: 'bun.lock',
+  })
 })
 
 // --- resolution precedence through defaultSuiteRunner ---
