@@ -1250,6 +1250,20 @@ function updateWidget() {
 
 function updateWidgetUnsafe() {
   const has = runningSubagents.size > 0
+  // AIDEV-NOTE (PMR-C3B6): footer status — MUST run BEFORE the cheap-path
+  // early return below, or a 2→1 settle (cheap path) leaves a stale count.
+  // NOT gated on hideWhenIdle: the footer is the always-truthful lightweight
+  // signal; the widget box stays the config-gated part. Inner try/catch so a
+  // stale-ctx throw never skips the widget handling below.
+  try {
+    let footer: string | undefined
+    if (has) {
+      footer = `🤖 ${runningSubagents.size} running`
+    } else {
+      footer = undefined
+    }
+    latestCtx?.ui.setStatus('subagents', footer)
+  } catch {}
   if (has && getWidgetRegistered()) {
     // Cheap path: don't re-register the component (that would reset the 2s
     // tick) — just ask for a redraw with the fresh snapshot data.
