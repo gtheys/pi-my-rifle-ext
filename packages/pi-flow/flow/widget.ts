@@ -27,6 +27,7 @@ import type { OpenGate } from './gates.ts'
 import {
   type AssignmentSummary,
   renderFlowStatusLines,
+  renderFooterStatus,
   shouldShowWidget,
 } from './status.ts'
 
@@ -133,6 +134,9 @@ async function updateWidgetUnsafe(): Promise<void> {
     // Unregister only on genuinely-empty content, never on a data error.
     cachedLines = []
     cachedPhase = null
+    try {
+      ctx.ui.setStatus('flow', undefined)
+    } catch {}
     if (widgetRegistered) {
       widgetRegistered = false
       widgetTui = null
@@ -142,6 +146,14 @@ async function updateWidgetUnsafe(): Promise<void> {
   }
   cachedLines = renderFlowStatusLines(input)
   cachedPhase = collected.state?.currentPhase ?? null
+  // AIDEV-NOTE (PMR-C3B6): footer status is set on every content refresh —
+  // including the cheap registered path below — so it tracks phase changes
+  // without re-registering the widget. Covers the three refresh entries:
+  // index.ts onFlowSpawn, index.ts agent_settled, session_start (via
+  // initFlowWidget → refreshFlowWidget).
+  try {
+    ctx.ui.setStatus('flow', renderFooterStatus(collected.state))
+  } catch {}
   if (widgetRegistered) {
     // Cheap path (subagents :1115): don't re-register — that would reset the
     // 2s tick. Refresh the cache and ask for a redraw.

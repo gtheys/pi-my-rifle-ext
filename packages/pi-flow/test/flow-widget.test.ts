@@ -16,6 +16,7 @@ type SetWidgetCall = { name: string; component: unknown }
 interface Harness {
   fireSessionStart(): void
   setWidgetCalls(): SetWidgetCall[]
+  statusCalls(): Array<[string, string | undefined]>
   lastComponent():
     | {
         invalidate(): void
@@ -38,6 +39,9 @@ function makeHarness(
 ): Harness {
   let handler: ((event: unknown, ctx: ExtensionContext) => void) | null = null
   const calls: SetWidgetCall[] = []
+  // AIDEV-NOTE (PMR-C3B6): shared across fireSessionStart calls so a fresh
+  // session ctx (wipe model) still lands in one recorder for assertions.
+  const statusCalls: Array<[string, string | undefined]> = []
   const timers: { cleared: unknown[] } = { cleared: [] }
   let component: ReturnType<NonNullable<Harness['lastComponent']>> | undefined
   const pi = {
@@ -68,6 +72,9 @@ function makeHarness(
       const ctx = {
         hasUI: true,
         ui: {
+          setStatus(name: string, value: string | undefined) {
+            statusCalls.push([name, value])
+          },
           setWidget(name: string, comp: unknown) {
             calls.push({ name, component: comp })
             if (comp !== undefined) {
@@ -85,8 +92,15 @@ function makeHarness(
       registered({}, ctx)
     },
     setWidgetCalls: () => calls,
+    statusCalls: () => statusCalls,
     lastComponent: () => component,
   }
+}
+
+// AIDEV-NOTE: session_start fires its own `void refreshFlowWidget()`; a
+// macrotask tick lets that in-flight promise settle before counting calls.
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 function makeState(overrides: Partial<FlowRunState> = {}): FlowRunState {
@@ -220,6 +234,71 @@ describe('flow widget lifecycle', () => {
     const calls = h.setWidgetCalls()
     assert.equal(calls.length, 2)
     assert.notEqual(calls[calls.length - 1]?.component, undefined)
+  })
+
+  it('footer status is recorded on content refresh (PMR-C3B6)', async () => {
+    const h = makeHarness({
+      readState: async () => makeState({ currentPhase: 'plan' }),
+    })
+    h.fireSessionStart()
+    await refreshFlowWidget()
+    await settle()
+    const calls = h.statusCalls()
+    // session_start's initial refresh + the explicit one.
+    assert.equal(calls.length, 2)
+    assert.deepEqual(calls[calls.length - 1], ['flow', '📋 PMR-ZGPY 📝 plan'])
+  })
+
+  it('footer status is cleared on content → empty transition', async () => {
+    let state: FlowRunState | null = makeState({ currentPhase: 'plan' })
+    const h = makeHarness({ readState: async () => state })
+    h.fireSessionStart()
+    await refreshFlowWidget()
+    await settle()
+    assert.equal(h.statusCalls().length, 2)
+    state = null
+    await refreshFlowWidget()
+    await settle()
+    const calls = h.statusCalls()
+    assert.equal(calls.length, 3)
+    assert.deepEqual(calls[calls.length - 1], ['flow', undefined])
+  })
+
+  it('data error → no new status call after the last set', async () => {
+    let fail = false
+    const h = makeHarness({
+      readState: async () => {
+        if (fail) throw new Error('boom')
+        return makeState({ currentPhase: 'plan' })
+      },
+    })
+    h.fireSessionStart()
+    await refreshFlowWidget()
+    await settle()
+    assert.equal(h.statusCalls().length, 2)
+    fail = true
+    await refreshFlowWidget()
+    await settle()
+    // Error branch retains the last footer: no new setStatus call.
+    assert.equal(h.statusCalls().length, 2)
+    assert.deepEqual(h.statusCalls()[0], ['flow', '📋 PMR-ZGPY 📝 plan'])
+  })
+
+  it('footer is re-recorded after a fresh session_start (wipe model)', async () => {
+    const h = makeHarness({
+      readState: async () => makeState({ currentPhase: 'plan' }),
+    })
+    h.fireSessionStart()
+    await refreshFlowWidget()
+    await settle()
+    assert.equal(h.statusCalls().length, 2)
+    // Models a wipe: fresh ctx from a second session_start re-runs the
+    // content path and sets the footer again (its own initial refresh).
+    h.fireSessionStart()
+    await settle()
+    const calls = h.statusCalls()
+    assert.equal(calls.length, 3)
+    assert.deepEqual(calls[calls.length - 1], ['flow', '📋 PMR-ZGPY 📝 plan'])
   })
 
   it('assigns of OTHER parents are filtered out (parentPid)', async () => {
