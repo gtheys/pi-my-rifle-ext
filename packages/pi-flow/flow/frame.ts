@@ -11,6 +11,7 @@
 
 import type { ThemeColor } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth, visibleWidth } from '@mariozechner/pi-tui'
+import { PHASE_EMOJI } from './phase-emoji.ts'
 
 /** Minimal structural slice of Theme we rely on — keeps this module pure
  * and unit-testable with a fake. getFgAnsi gives the raw opening SGR
@@ -47,12 +48,6 @@ const UNDERLINE_RST = '\x1b[24m'
 const FG_RST = '\x1b[39m'
 
 const PHASE_ORDER = ['plan', 'implement', 'validate', 'feedback'] as const
-const PHASE_EMOJI: Readonly<Record<string, string>> = {
-  plan: '📝',
-  implement: '🔨',
-  validate: '🔍',
-  feedback: '🎁',
-}
 
 /** Style a `flow <REF> · <mode>` header row: bold. */
 function styleHeader(line: string): string {

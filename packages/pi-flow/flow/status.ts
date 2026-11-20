@@ -16,6 +16,7 @@
 
 import type { FlowRunState } from '../run-state.ts'
 import type { OpenGate } from './gates.ts'
+import { PHASE_EMOJI } from './phase-emoji.ts'
 
 /** Minimal structural slice of a subagents assignment record. */
 export interface AssignmentSummary {
@@ -45,18 +46,6 @@ export function shouldShowWidget(input: StatusInput): boolean {
   if (input.subtasks.length > 0) return true
   if (input.gates.length > 0) return true
   return false
-}
-
-type FlowPhase = Exclude<FlowRunState['currentPhase'], null>
-
-// AIDEV-NOTE (PMR-C3B6): self-contained phase-emoji map — deliberately NOT
-// shared with PMR-X7BH widget styling yet (reconcile there later); hardcoded
-// per the no-config decision.
-const PHASE_EMOJI: Readonly<Record<FlowPhase, string>> = {
-  plan: '📝',
-  implement: '🔨',
-  validate: '🔍',
-  feedback: '🎁',
 }
 
 /** Footer text: `📋 <ref> <emoji> <phase>`; phase suffix omitted when null;
