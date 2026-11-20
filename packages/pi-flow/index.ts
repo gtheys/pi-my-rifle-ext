@@ -155,7 +155,11 @@ import {
   registerRunAttemptTool,
 } from './tools/run-attempt.ts'
 import { registerSpecApproveTool } from './tools/spec-approve.ts'
-import worktreeExtension from './worktree/index.ts'
+import {
+  cleanupFlowWorktree,
+  type FlowWorktree,
+  default as worktreeExtension,
+} from './worktree/index.ts'
 
 // AIDEV-NOTE: test-facing export surface (PMR-T22H) — tests import these
 // from index.ts; the implementations now live in the boundary modules.
@@ -301,6 +305,18 @@ export default function (pi: ExtensionAPI) {
   let syncTelemetryFlowEnv: (() => void) | null = null
   // late-bound: same handle, used by the ad-hoc tracker for its run traces
   let telemetryHandle: ReturnType<typeof registerTelemetry> | null = null
+  // AIDEV-NOTE: PMR-81SX 5.2 — late-bound worktree cleanup at flow done. The
+  // wrapper is wired into the loop before the worktree extension has resolved
+  // its effects journal; the impl is assigned right after registration so the
+  // cleanup's effect declarations land in the SAME journal the worktree tool
+  // itself uses.
+  let onFlowDoneImpl:
+    | ((
+        ref: string,
+        mode: 'work' | 'personal',
+        worktree: FlowWorktree | undefined,
+      ) => Promise<void>)
+    | null = null
   const loop = createFlowLoop({
     getSessionFile: () => mainSessionFile,
     onRunEnd: (ref) => {
@@ -323,6 +339,17 @@ export default function (pi: ExtensionAPI) {
     readPlanState: (ref) => readPlanState(ref),
     hasFreshBlockers: (ref, since) => readFreshBlockers(ref, since),
     avenNote: (ref, text) => writeAvenNote(ref, text),
+    // PMR-81SX 5.2 — wrapper never rejects (impl never throws either); the
+    // loop additionally catches, belt and braces.
+    onFlowDone: async (ref, mode, worktree) => {
+      if (onFlowDoneImpl !== null) {
+        try {
+          await onFlowDoneImpl(ref, mode, worktree)
+        } catch {
+          // never break the run end
+        }
+      }
+    },
     epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),
     hasInFlightSubagent: () => hasLiveAssignmentForParent(process.pid),
     setActiveRef: (ref) => {
@@ -638,8 +665,19 @@ export default function (pi: ExtensionAPI) {
 
   // AIDEV-NOTE: PMR-K0ZV — worktree/ absorbed from the retired pi-worktree
   // package. Self-registering extension entrypoint (the `worktree` agent
-  // tool); pi-worktree is deleted, so it registers exactly once, here.
-  worktreeExtension(pi)
+  // tool); pi-worktree is deleted, so it registers exactly once, here. The
+  // journal is created here so the flow-done cleanup (PMR-81SX 5.2) can
+  // share the exact same instance.
+  const worktreeEffects = createEffectJournal(getAgentDir())
+  worktreeExtension(pi, { effects: worktreeEffects })
+  onFlowDoneImpl = (ref, mode, worktree) =>
+    cleanupFlowWorktree(pi, worktreeEffects, {
+      ref,
+      mode,
+      worktree,
+      cwd: pi.cwd,
+      annotate: (noteRef, body) => writeAvenNote(noteRef, body),
+    })
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
   // fully settles (blocking ask_user_question gates keep the run in flight,
