@@ -1032,7 +1032,16 @@ export function matchHitRegion(
   return null
 }
 
-/** Compose one row: `● label · status elapsed`. Returns line + label span. Pure. */
+/**
+ * Compose one widget row (PMR-X7BH styled shape):
+ * `<marker> <kind emoji> <bold>label</bold> · <italic>status</italic> elapsed[ · usage]`
+ * where `status` is the live activity detail (e.g. `active (bash 12s)`) when
+ * the child's snapshot carries one, and the usage suffix appears only when
+ * real usage blocks were seen. Returns the line plus the label's hit-span as
+ * VISIBLE column indexes (labelFrom/labelTo) — click matching compares
+ * against visibleWidth columns, so that contract breaks if the prefix shape
+ * changes without updating the span math. Pure.
+ */
 function formatAgentRow(
   running: RunningSubagent,
   now: number,
