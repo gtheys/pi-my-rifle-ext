@@ -1491,6 +1491,7 @@ function makeCleanupInput(
 }
 
 test('cleanupFlowWorktree: no binding is a no-op touching nothing', async () => {
+  const { exec } = makeCleanupExec()
   const executed: string[] = []
   const recordingExec = async (
     command: string,
