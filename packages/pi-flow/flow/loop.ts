@@ -24,6 +24,7 @@ import {
 } from './attribution.ts'
 import { nextPhase, PHASE_LABEL, type Phase } from './orchestrate.ts'
 import { buildPhasePrompt, type PhasePromptInput } from './phase-prompts.ts'
+import { type FlowWorktree, getFlowWorktree } from './worktree-context.ts'
 
 export interface FlowLoopDeps {
   notify(message: string, level: 'info' | 'warning'): void
@@ -77,6 +78,22 @@ export interface FlowLoopDeps {
    * Used to push cost metrics automatically.
    */
   onRunEnd?: (ref: string) => void
+  /**
+   * AIDEV-NOTE: PMR-81SX — best-effort post-success cleanup, called ONCE in
+   * advanceAfter's done branch AFTER loop-state teardown (snapshot done, state
+   * null, env cleared, active ref cleared). Never called on halt/pause (those
+   * fire onRunEnd — do not piggyback). The loop defensively try/catches this:
+   * a throwing implementation must never break the run end. Optional so
+   * existing tests/consumers need no changes. worktree is the binding captured
+   * BEFORE teardown (getFlowWorktree()) — it is already cleared by the time
+   * this runs; the explicit ref is also what cleanup's effects declaration
+   * must carry (never the 'worktree-ops' fallback).
+   */
+  onFlowDone?: (
+    ref: string,
+    mode: 'work' | 'personal',
+    worktree: FlowWorktree | undefined,
+  ) => Promise<void>
   // AIDEV-NOTE: PMR-VZEV — clears the landing state (authorized +
   // humanReviewPassed) on every start so stale authorization from a
   // superseded/prior flow cannot authorize a later landing.
@@ -416,12 +433,25 @@ class FlowLoopImpl implements FlowLoop {
         text: 'flow complete — all phase labels present',
       })
       this.deps.notify(`/flow ${ref}: all phases complete.`, 'info')
+      const doneState = this.state
+      if (doneState === null) return
+      const doneRef = doneState.ref
+      const doneMode = doneState.promptInput.mode
+      const doneWorktree = getFlowWorktree() ?? undefined
       this.snapshot('done')
       this.state = null
       clearFlowEnv(this.env)
       this.deps.onFlowEnvChange?.()
       this.deps.setActiveRef?.(null)
       this.deps.onRunEnd?.(ref)
+      if (this.deps.onFlowDone) {
+        try {
+          await this.deps.onFlowDone(doneRef, doneMode, doneWorktree)
+        } catch {
+          // AIDEV-NOTE: PMR-81SX — cleanup is best-effort; a failure here must
+          // never surface as a run failure. The worktree simply stays.
+        }
+      }
       return
     }
     await this.sendPhasePrompt(next.phase)
