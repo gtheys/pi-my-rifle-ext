@@ -589,9 +589,10 @@ test('execute: ask_user_question unavailable fails closed (no marker, no note)',
 })
 
 // --- registered execute: full gate paths (PMR-G68P) ---
-// AIDEV-NOTE: the worktree path must exist on disk (productionDeps.exists
-// is existsSync), so the herdr fake points at a real temp dir. Resolution
-// settles on the herdr source: aven show returns a title but no notes.
+// AIDEV-NOTE: the worktree path must exist on disk (productionReviewDeps
+// wiring sets exists to existsSync), so the herdr fake points at a real temp
+// dir. Resolution settles on the herdr source: aven show returns a title but
+// no notes.
 
 const CR_WT_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-cr-wt-'))
 

@@ -43,30 +43,36 @@ import { toolResult } from './result.ts'
 
 export { buildCodeReviewGatePrompt } from './code-review-parse.ts'
 
-function productionDeps(
+// AIDEV-NOTE: PMR-0KMQ — shared factory: the fresh-context review gate
+// (review/review.ts, commit mode) and the deviation gate (tools/deviation.ts)
+// reuse this exact wiring so all three gates resolve the same VERIFIED bound
+// flow worktree (resolveReviewWorktree: binding → aven note → herdr, each
+// candidate verified via common-git-dir + branch). Takes a bare repoRoot
+// instead of the tool context so non-code-review callers can pass ctx.cwd.
+export function productionReviewDeps(
   pi: ExtensionAPI,
-  ctx: ExtensionToolContext,
+  repoRoot: string,
 ): ReviewDeps {
   return {
     getFlowWorktree,
     avenShowFull: async (ref: string) => {
       const result = await pi.exec('aven', ['show', ref, '--full'], {
-        cwd: ctx.cwd,
+        cwd: repoRoot,
       })
       if (result.code !== 0) {
         throw new Error(result.stderr || `aven show ${ref} failed`)
       }
       return result.stdout
     },
-    herdrWorktreeList: () => worktreeList(pi, ctx.cwd),
+    herdrWorktreeList: () => worktreeList(pi, repoRoot),
     exec: async (cmd: string, args: string[], opts?: { cwd?: string }) => {
       const result = await pi.exec(cmd, args, {
-        cwd: opts?.cwd ?? ctx.cwd,
+        cwd: opts?.cwd ?? repoRoot,
       })
       return { code: result.code, stdout: result.stdout, stderr: result.stderr }
     },
     exists: (p: string) => existsSync(p),
-    repoRoot: ctx.cwd,
+    repoRoot,
   }
 }
 
@@ -148,7 +154,7 @@ export function registerCodeReviewTool(
       // the removed agent-attested fallback is gone; ask_user_question is
       // re-looked-up below the tuicr open.
 
-      const deps = productionDeps(pi, ctx)
+      const deps = productionReviewDeps(pi, ctx.cwd)
       let worktree: ResolvedWorktree
       try {
         worktree = await resolveReviewWorktree(params.ref, deps)
