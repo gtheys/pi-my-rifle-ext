@@ -139,7 +139,7 @@ async function authorizeMergeMain(
 // merge form is blocked while the flow is active.
 function mergeOkNote(command: string): string {
   const recovery = DEFAULT_RECIPES['merge-main'].join('; ')
-  return ` Run EXACTLY this command in the main checkout: ${command} — any other merge form is blocked while the flow is active. Recovery if the merge goes wrong: ${recovery}. Do not push.`
+  return ` Run EXACTLY this command in the main checkout: ${command} — run it ALONE, nothing appended (the interceptor compares the full command string byte-for-byte, so a compound command like "${command} && git log" is refused). Any other merge form is blocked while the flow is active. Recovery if the merge goes wrong: ${recovery}. Do not push.`
 }
 
 // AIDEV-NOTE: shared with the bash tool_call interceptor in index.ts — the

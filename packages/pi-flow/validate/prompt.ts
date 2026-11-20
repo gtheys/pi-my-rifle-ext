@@ -97,8 +97,10 @@ ${buildDeltaReviewStep(ref)}
   } else {
     landing = `merge the branch into main LOCALLY —
    git -C <main repo> merge --ff-only <branch> (main repo = first entry of
-   \`git worktree list\`). NEVER push. No PR, no Jira link step. On ff-only
-   failure STOP and ask the human.`
+   \`git worktree list\`). Run the pinned command ALONE, nothing appended —
+   flow_land authorizes that exact command string and a compound command
+   (e.g. appending && git log) is refused. NEVER push. No PR, no Jira link
+   step. On ff-only failure STOP and ask the human.`
   }
   return `
 Review gate — run ONLY after validation has fully passed:
@@ -147,7 +149,9 @@ Human code-review gate — run ONLY after the deviation gate returned
    the flow_land tool with ref=${ref} and the route (merge-main). After it
    returns ok, merge the flow branch into main LOCALLY: first run
    \`git worktree list\` — its first entry is the MAIN (non-worktree)
-   checkout — then run \`git -C <main repo path> merge --ff-only <branch>\`.
+   checkout — then run \`git -C <main repo path> merge --ff-only <branch>\`
+   ALONE, nothing appended: flow_land pinned that exact command and a
+   compound command (e.g. appending && git log) is refused.
    NEVER push; git push stays blocked for the whole flow. No PR, no Jira
    link step. If the ff-only merge fails, STOP and ask the human — do not
    force, reset or rebase. After the merge succeeds, the flow loop advances
