@@ -4,7 +4,13 @@
 // PI_CODING_AGENT_DIR to a temp agent dir so the real ~/.pi/agent config can
 // never leak into results (getAgentDir() reads the env at call time).
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -60,56 +66,71 @@ async function withAgentDir<T>(
 
 test('detection: bun.lock → bun run test', async () => {
   assert.deepEqual(await detectLandTestCommand(makeRepo(['bun.lock'])), {
-    command: [...DEFAULT_LAND_TEST_COMMAND],
-    signal: 'bun.lock',
+    detected: {
+      command: [...DEFAULT_LAND_TEST_COMMAND],
+      signal: 'bun.lock',
+    },
+    unreadable: [],
   })
 })
 
 test('detection: bunfig.toml → bun run test', async () => {
   assert.deepEqual(await detectLandTestCommand(makeRepo(['bunfig.toml'])), {
-    command: [...DEFAULT_LAND_TEST_COMMAND],
-    signal: 'bunfig.toml',
+    detected: {
+      command: [...DEFAULT_LAND_TEST_COMMAND],
+      signal: 'bunfig.toml',
+    },
+    unreadable: [],
   })
 })
 
 test('detection: Cargo.toml → cargo test', async () => {
   assert.deepEqual(await detectLandTestCommand(makeRepo(['Cargo.toml'])), {
-    command: ['cargo', 'test'],
-    signal: 'Cargo.toml',
+    detected: {
+      command: ['cargo', 'test'],
+      signal: 'Cargo.toml',
+    },
+    unreadable: [],
   })
 })
 
 test('detection: package-lock.json → npm test', async () => {
   assert.deepEqual(
     await detectLandTestCommand(makeRepo(['package-lock.json'])),
-    { command: ['npm', 'test'], signal: 'package-lock.json' },
+    {
+      detected: { command: ['npm', 'test'], signal: 'package-lock.json' },
+      unreadable: [],
+    },
   )
 })
 
 test('detection: pnpm-lock.yaml → pnpm test', async () => {
   assert.deepEqual(await detectLandTestCommand(makeRepo(['pnpm-lock.yaml'])), {
-    command: ['pnpm', 'test'],
-    signal: 'pnpm-lock.yaml',
+    detected: {
+      command: ['pnpm', 'test'],
+      signal: 'pnpm-lock.yaml',
+    },
+    unreadable: [],
   })
 })
 
 test('detection: no signals → null (caller falls back to default)', async () => {
-  assert.equal(await detectLandTestCommand(makeRepo([])), null)
+  assert.equal((await detectLandTestCommand(makeRepo([]))).detected, null)
 })
 
 test('detection: hybrid repo resolves deterministically in the fixed order', async () => {
   const bunBeatsAll = await detectLandTestCommand(
     makeRepo(['bun.lock', 'Cargo.toml', 'package-lock.json']),
   )
-  assert.equal(bunBeatsAll?.signal, 'bun.lock')
+  assert.equal(bunBeatsAll?.detected.signal, 'bun.lock')
   const cargoBeatsNode = await detectLandTestCommand(
     makeRepo(['Cargo.toml', 'package-lock.json']),
   )
-  assert.equal(cargoBeatsNode?.signal, 'Cargo.toml')
+  assert.equal(cargoBeatsNode?.detected.signal, 'Cargo.toml')
   const npmBeatsPnpm = await detectLandTestCommand(
     makeRepo(['package-lock.json', 'pnpm-lock.yaml']),
   )
-  assert.equal(npmBeatsPnpm?.signal, 'package-lock.json')
+  assert.equal(npmBeatsPnpm?.detected.signal, 'package-lock.json')
 })
 
 // --- signal entry type (PMR-RH97): only regular files count ---
@@ -121,31 +142,82 @@ test('detection: hybrid repo resolves deterministically in the fixed order', asy
 test('detection: directory named Cargo.toml is not a signal', async () => {
   const repo = makeRepo([])
   mkdirSync(path.join(repo, 'Cargo.toml'))
-  assert.equal(await detectLandTestCommand(repo), null)
+  assert.equal((await detectLandTestCommand(repo)).detected, null)
 })
 
 test('detection: directory signal does not shadow a later real signal', async () => {
   const repo = makeRepo(['bun.lock'])
   mkdirSync(path.join(repo, 'Cargo.toml'))
   assert.deepEqual(await detectLandTestCommand(repo), {
-    command: [...DEFAULT_LAND_TEST_COMMAND],
-    signal: 'bun.lock',
+    detected: {
+      command: [...DEFAULT_LAND_TEST_COMMAND],
+      signal: 'bun.lock',
+    },
+    unreadable: [],
   })
 })
 
 test('detection: dangling symlink is not a signal', async () => {
   const repo = makeRepo([])
   symlinkSync(path.join(repo, 'does-not-exist'), path.join(repo, 'bun.lock'))
-  assert.equal(await detectLandTestCommand(repo), null)
+  assert.equal((await detectLandTestCommand(repo)).detected, null)
 })
 
 test('detection: symlink to a regular file still counts (stat follows links)', async () => {
   const repo = makeRepo(['real-lockfile'])
   symlinkSync(path.join(repo, 'real-lockfile'), path.join(repo, 'bun.lock'))
   assert.deepEqual(await detectLandTestCommand(repo), {
-    command: [...DEFAULT_LAND_TEST_COMMAND],
-    signal: 'bun.lock',
+    detected: {
+      command: [...DEFAULT_LAND_TEST_COMMAND],
+      signal: 'bun.lock',
+    },
+    unreadable: [],
   })
+})
+
+test('detection: unreadable signal (EACCES) is recorded, not treated as absent', async () => {
+  const repo = makeRepo(['bun.lock'])
+  chmodSync(repo, 0o000)
+  try {
+    const scan = await detectLandTestCommand(repo)
+    assert.equal(scan.detected, null)
+    // Every signal in the fixed scan order is recorded as unreadable.
+    assert.deepEqual(scan.unreadable, [
+      'bun.lock (EACCES)',
+      'bunfig.toml (EACCES)',
+      'Cargo.toml (EACCES)',
+      'package-lock.json (EACCES)',
+      'pnpm-lock.yaml (EACCES)',
+    ])
+  } finally {
+    chmodSync(repo, 0o700)
+  }
+})
+
+test('fallback source label names an unreadable signal (absent vs unreadable)', async () => {
+  // The REPO stays readable (loadConfig must not throw); the unreadability
+  // sits in an ANCESTOR of the signal target: bun.lock is a symlink into a
+  // directory whose traverse permission is removed, so stat(repo/bun.lock)
+  // fails with EACCES while the config lookup stays ENOENT.
+  const repo = makeRepo([])
+  const secret = mkdtempSync(path.join(TMP_ROOT, 'secret-'))
+  symlinkSync(path.join(secret, 'x'), path.join(repo, 'bun.lock'))
+  const agentDir = writeGlobalConfig({ workRoots: [] })
+  chmodSync(secret, 0o000)
+  try {
+    await withAgentDir(agentDir, async () => {
+      const run = await defaultSuiteRunner(repo)
+      // bun default still runs (fail-safe direction unchanged), but the
+      // source label distinguishes "signal exists but unreadable" from
+      // "no signals".
+      assert.match(
+        run.summary,
+        /land test command: bun run test \(default \(signal read failed: bun\.lock \(EACCES\)/,
+      )
+    })
+  } finally {
+    chmodSync(secret, 0o700)
+  }
 })
 
 // --- resolution precedence through defaultSuiteRunner ---

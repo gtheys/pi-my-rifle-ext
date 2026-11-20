@@ -221,29 +221,57 @@ export interface DetectedLandTest {
   signal: string
 }
 
+export interface LandTestScan {
+  /** First matching signal, or null when none matched. */
+  detected: DetectedLandTest | null
+  /**
+   * Signals that EXIST but could not be stat'd (stat error other than
+   * ENOENT/ENOTDIR — e.g. EACCES on an ancestor dir or ELOOP on a symlink
+   * loop), formatted as 'Cargo.toml (EACCES)'. Surfaced in the fallback
+   * source label so "no signals" and "signal present but unreadable" are
+   * distinguishable; the command still falls toward the bun default
+   * (fail-safe direction unchanged, PMR-RH97).
+   */
+  unreadable: readonly string[]
+}
+
 /**
  * Repo-signal detection for the land test (PMR-H5ST): lockfile/manifest
- * presence under repoRoot picks the suite command. Returns null when no
- * signal matches (caller falls back to DEFAULT_LAND_TEST_COMMAND).
+ * presence under repoRoot picks the suite command. detected is null when no
+ * signal matches (caller falls back to DEFAULT_LAND_TEST_COMMAND); unreadable
+ * names present-but-unreadable signals (caller may label the fallback with
+ * them).
  */
 export async function detectLandTestCommand(
   repoRoot: string,
-): Promise<DetectedLandTest | null> {
+): Promise<LandTestScan> {
+  const unreadable: string[] = []
   for (const entry of LAND_TEST_SIGNALS) {
     for (const file of entry.files) {
+      let stat: Awaited<ReturnType<typeof fs.stat>>
       try {
         // PMR-RH97: stat (not access) so the entry TYPE is checked — only a
-        // regular file is a signal. Errors mean absent; never a wrong match.
-        const stat = await fs.stat(path.join(repoRoot, file))
-        if (stat.isFile()) {
-          return { command: [...entry.command], signal: file }
+        // regular file is a signal. ENOENT/ENOTDIR mean absent; any other
+        // error means the signal exists but cannot be read — recorded, and
+        // the scan continues. Failure always falls toward the bun default,
+        // never toward a wrong detection.
+        stat = await fs.stat(path.join(repoRoot, file))
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          unreadable.push(`${file} (${code ?? 'unknown error'})`)
         }
-      } catch {
-        // Signal absent or unreadable — keep scanning in the fixed order.
+        continue
+      }
+      if (stat.isFile()) {
+        return {
+          detected: { command: [...entry.command], signal: file },
+          unreadable,
+        }
       }
     }
   }
-  return null
+  return { detected: null, unreadable }
 }
 
 /** Pure: bounded tail of the suite output for the refusal message. */
@@ -268,13 +296,19 @@ export async function defaultSuiteRunner(cwd: string): Promise<SuiteRun> {
     command = config.landTestCommand
     source = 'landTestCommand config'
   } else {
-    const detected = await detectLandTestCommand(cwd)
-    if (detected !== null) {
-      command = detected.command
-      source = `repo detection via ${detected.signal}`
+    const scan = await detectLandTestCommand(cwd)
+    if (scan.detected !== null) {
+      command = scan.detected.command
+      source = `repo detection via ${scan.detected.signal}`
     } else {
       command = [...DEFAULT_LAND_TEST_COMMAND]
-      source = 'default'
+      // Distinguish "no signals at all" from "signal present but unreadable"
+      // in the fallback label (both still run the bun default).
+      if (scan.unreadable.length > 0) {
+        source = `default (signal read failed: ${scan.unreadable.join(', ')})`
+      } else {
+        source = 'default'
+      }
     }
   }
   const header = `land test command: ${command.join(' ')} (${source})`
