@@ -208,3 +208,263 @@ test('worktree-sweep round-trip: readRunEvents and projection keep it', async ()
   assert.equal(state.ref, ref)
   assert.equal(state.updatedAt, 't2')
 })
+
+// --- resolveNoteWorktree ---
+// AIDEV-NOTE: PMR-8SFJ resolver matrix. aven goes through a fake on PATH
+// (routed by mode file) because avenShowFull execs the real binary; herdr
+// goes through a routed pi.exec fake following makeCleanupExec
+// (test/worktree.test.ts:1350+).
+
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { setAvenSessionCwd } from '../aven/client.ts'
+import { resolveNoteWorktree } from '../worktree/sweep.ts'
+
+const NOTE_BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-note-bin-'))
+const NOTE_SHOW_FILE = path.join(NOTE_BIN_DIR, 'show.txt')
+const NOTE_MODE_FILE = path.join(NOTE_BIN_DIR, 'mode.txt')
+writeFileSync(NOTE_MODE_FILE, 'ok')
+writeFileSync(
+  path.join(NOTE_BIN_DIR, 'aven'),
+  `#!/bin/sh
+mode=$(cat ${NOTE_MODE_FILE})
+if [ "$mode" = "fail" ]; then
+  echo "aven exploded" >&2
+  exit 1
+fi
+cat ${NOTE_SHOW_FILE}
+`,
+)
+chmodSync(path.join(NOTE_BIN_DIR, 'aven'), 0o755)
+
+const NOTE_SESSION_CWD = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-note-ws-'))
+mkdirSync(path.join(NOTE_SESSION_CWD, '.pi', 'pi-flow'), { recursive: true })
+writeFileSync(
+  path.join(NOTE_SESSION_CWD, '.pi', 'pi-flow', 'config.json'),
+  JSON.stringify({ workRoots: [], avenWorkspace: 'ws-note-test' }),
+)
+
+const NOTE_WT_PATH = path.join(NOTE_SESSION_CWD, 'wt', 'feat-note')
+const NOTE_BRANCH = 'feat/note-x'
+
+/** Route herdr worktree list through a pi.exec fake. */
+function noteExec(worktrees: unknown, failHerdr = false) {
+  return async (): Promise<{
+    code: number
+    stdout: string
+    stderr: string
+  }> => {
+    if (failHerdr) {
+      return { code: 1, stdout: '', stderr: 'herdr exploded' }
+    }
+    return {
+      code: 0,
+      stdout: JSON.stringify({ result: { worktrees } }),
+      stderr: '',
+    }
+  }
+}
+
+async function withFakeAven(
+  show: string,
+  mode: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  writeFileSync(NOTE_SHOW_FILE, show)
+  writeFileSync(NOTE_MODE_FILE, mode)
+  const previousPath = process.env.PATH ?? ''
+  process.env.PATH = `${NOTE_BIN_DIR}:${previousPath}`
+  setAvenSessionCwd(NOTE_SESSION_CWD)
+  try {
+    await fn()
+  } finally {
+    process.env.PATH = previousPath
+  }
+}
+
+function noteShow(bodyLines: string[]): string {
+  return [
+    'PMR-1 status=todo title="x"',
+    'note id=n1 key=worktree',
+    'body<<EOF',
+    ...bodyLines,
+    'EOF',
+    '',
+  ].join('\n')
+}
+
+const LINKED_WT = {
+  path: NOTE_WT_PATH,
+  branch: NOTE_BRANCH,
+  label: 'feat-note',
+  workspace_id: 'ws1',
+  is_linked_worktree: true,
+}
+
+test('resolveNoteWorktree: bound via single-line note', async () => {
+  await withFakeAven(
+    noteShow([`worktree: ${NOTE_WT_PATH} branch: ${NOTE_BRANCH}`]),
+    'ok',
+    async () => {
+      const binding = await resolveNoteWorktree(
+        { exec: noteExec([LINKED_WT]) } as unknown as ExtensionAPI,
+        NOTE_SESSION_CWD,
+        'PMR-1',
+      )
+      assert.deepEqual(binding, {
+        kind: 'bound',
+        worktree: { ref: 'PMR-1', path: NOTE_WT_PATH, branch: NOTE_BRANCH },
+      })
+    },
+  )
+})
+
+test('resolveNoteWorktree: bound via two-line note', async () => {
+  await withFakeAven(
+    noteShow([`worktree: ${NOTE_WT_PATH}`, `branch: ${NOTE_BRANCH}`]),
+    'ok',
+    async () => {
+      const binding = await resolveNoteWorktree(
+        { exec: noteExec([LINKED_WT]) } as unknown as ExtensionAPI,
+        NOTE_SESSION_CWD,
+        'PMR-1',
+      )
+      assert.deepEqual(binding, {
+        kind: 'bound',
+        worktree: { ref: 'PMR-1', path: NOTE_WT_PATH, branch: NOTE_BRANCH },
+      })
+    },
+  )
+})
+
+test('resolveNoteWorktree: bound via path match when note branch is null', async () => {
+  await withFakeAven(
+    noteShow([`worktree: ${NOTE_WT_PATH}`]),
+    'ok',
+    async () => {
+      const binding = await resolveNoteWorktree(
+        { exec: noteExec([LINKED_WT]) } as unknown as ExtensionAPI,
+        NOTE_SESSION_CWD,
+        'PMR-1',
+      )
+      assert.deepEqual(binding, {
+        kind: 'bound',
+        worktree: { ref: 'PMR-1', path: NOTE_WT_PATH, branch: NOTE_BRANCH },
+      })
+    },
+  )
+})
+
+test('resolveNoteWorktree: gone when note path does not exist', async () => {
+  await withFakeAven(
+    noteShow(['worktree: /tmp/does-not-exist-wt branch: feat/gone']),
+    'ok',
+    async () => {
+      const binding = await resolveNoteWorktree(
+        { exec: noteExec([LINKED_WT]) } as unknown as ExtensionAPI,
+        NOTE_SESSION_CWD,
+        'PMR-1',
+      )
+      assert.deepEqual(binding, { kind: 'gone' })
+    },
+  )
+})
+
+test('resolveNoteWorktree: gone on herdr branch mismatch', async () => {
+  await withFakeAven(
+    noteShow([`worktree: ${NOTE_WT_PATH} branch: ${NOTE_BRANCH}`]),
+    'ok',
+    async () => {
+      const binding = await resolveNoteWorktree(
+        {
+          exec: noteExec([
+            { ...LINKED_WT, branch: 'other/branch', path: '/tmp/other' },
+          ]),
+        } as unknown as ExtensionAPI,
+        NOTE_SESSION_CWD,
+        'PMR-1',
+      )
+      assert.deepEqual(binding, { kind: 'gone' })
+    },
+  )
+})
+
+test('resolveNoteWorktree: none when show has no worktree note body', async () => {
+  await withFakeAven('PMR-1 status=todo title="x"\n', 'ok', async () => {
+    const binding = await resolveNoteWorktree(
+      { exec: noteExec([LINKED_WT]) } as unknown as ExtensionAPI,
+      NOTE_SESSION_CWD,
+      'PMR-1',
+      [],
+    )
+    assert.deepEqual(binding, { kind: 'none' })
+  })
+})
+
+test('resolveNoteWorktree: unverifiable when aven show fails', async () => {
+  await withFakeAven('', 'fail', async () => {
+    const binding = await resolveNoteWorktree(
+      { exec: noteExec([LINKED_WT]) } as unknown as ExtensionAPI,
+      NOTE_SESSION_CWD,
+      'PMR-1',
+      [],
+    )
+    assert.equal(binding.kind, 'unverifiable')
+  })
+})
+
+test('resolveNoteWorktree: unverifiable when herdr worktree list fails', async () => {
+  await withFakeAven(
+    noteShow([`worktree: ${NOTE_WT_PATH} branch: ${NOTE_BRANCH}`]),
+    'ok',
+    async () => {
+      const binding = await resolveNoteWorktree(
+        { exec: noteExec([], true) } as unknown as ExtensionAPI,
+        NOTE_SESSION_CWD,
+        'PMR-1',
+      )
+      assert.equal(binding.kind, 'unverifiable')
+    },
+  )
+})
+
+test('resolveNoteWorktree: chat-text worktree mentions are ignored', async () => {
+  await withFakeAven(
+    [
+      'PMR-1 status=todo title="x"',
+      'the worktree: should be ignored in chat text',
+      '',
+    ].join('\n'),
+    'ok',
+    async () => {
+      const binding = await resolveNoteWorktree(
+        { exec: noteExec([LINKED_WT]) } as unknown as ExtensionAPI,
+        NOTE_SESSION_CWD,
+        'PMR-1',
+      )
+      assert.deepEqual(binding, { kind: 'none' })
+    },
+  )
+})
+
+// The bound cases need note.path to exist on disk.
+mkdirSync(NOTE_WT_PATH, { recursive: true })
+
+// AIDEV-NOTE: herdr worktree list output paths come from the CLI, so the
+// parsed `path` string equals NOTE_WT_PATH only if the fixture uses it.
+process.on('exit', () => {
+  try {
+    rmSync(NOTE_SESSION_CWD, { recursive: true, force: true })
+    rmSync(NOTE_BIN_DIR, { recursive: true, force: true })
+  } catch {
+    // best-effort cleanup
+  }
+})
