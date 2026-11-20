@@ -1,6 +1,9 @@
 // AIDEV-NOTE (PMR-ZGPY 3.1, D1/D2): pure render helpers for the flow-status
-// widget — no IO, no Pi imports. D1 (register-when-content): the widget shows
-// iff state, subtasks, or gates exist (shouldShowWidget). D2 (output shape):
+// widget — no IO, no Pi imports. D1 (rewritten, PMR-C3B6): shouldShowWidget
+// now answers "is there content to render" (state, subtasks, or gates
+// exist), NOT "should the widget be visible" — registration is
+// flash/pin-gated by the visibility state machine in flow/widget.ts
+// (phase-transition flash + toggleFlowDashboardPin). D2 (output shape):
 // phase lines mirror flow-viewer.mjs renderState (PMR-Z2K7 lifecycle, no
 // research row): `[x]`/`[ ]` marks plus ` <- running` on the current phase;
 // the `-> /flow answer <ref>` hint is only for answerCommand gates — the
