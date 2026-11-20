@@ -91,6 +91,7 @@ import {
 import {
   initFlowWidget,
   refreshFlowWidget,
+  toggleFlowDashboardPin,
   type WidgetAssignment,
 } from './flow/widget.ts'
 import {
@@ -800,7 +801,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand('flow', {
     description:
-      'PIV run-all (plan -> implement -> validate -> feedback; personal mode stops after validate) or record a protected human decision. Usage: /flow <ref> | /flow answer <ref> <approve|reject|pass|fail>. Brainstorm topics go through /brainstorm.',
+      'PIV run-all (plan -> implement -> validate -> feedback; personal mode stops after validate) or record a protected human decision. Usage: /flow <ref> | /flow answer <ref> <approve|reject|pass|fail> | /flow dashboard. Brainstorm topics go through /brainstorm.',
     // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
     // failure aborts, never starts mid-phase by accident). nextPhase()
     // resolves the first phase whose completion label is missing, then the
@@ -832,6 +833,29 @@ export default function (pi: ExtensionAPI) {
           { ref: answerParsed.ref, choice: answerParsed.choice },
           makeAnswerDeps(ctx),
         )
+        return
+      }
+      // AIDEV-NOTE (PMR-C3B6): '/flow dashboard' is a literal token reserved at the
+      // HANDLER level, before parseFlowArgs — 'dashboard' matches the ref charset
+      // ([A-Za-z0-9][A-Za-z0-9._-]{0,99}) so without this branch it would start a
+      // run for a ticket named 'dashboard'. Exact single token, case-insensitive
+      // (same reservation semantics as the 'help' literal in flow/args.ts,
+      // PMR-N0W6). Toggle-only: never sendUserMessage, never spawns.
+      if (args.trim().toLowerCase() === 'dashboard') {
+        const outcome = await toggleFlowDashboardPin(ctx)
+        if (outcome === 'no-content') {
+          ctx.ui.notify(
+            'No flow content to show — the dashboard appears when a flow is active.',
+            'info',
+          )
+        } else if (outcome === 'pinned') {
+          ctx.ui.notify(
+            'Flow dashboard pinned — /flow dashboard or alt+d to hide.',
+            'info',
+          )
+        } else {
+          ctx.ui.notify('Flow dashboard hidden.', 'info')
+        }
         return
       }
       const parsed = parseFlowArgs(args)

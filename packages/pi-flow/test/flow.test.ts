@@ -506,3 +506,41 @@ test('flow handler: plain ref takes the run path (aven labels read), no answer w
     assert.doesNotMatch(calls, /note PMR-XXX/)
   })
 })
+
+// AIDEV-NOTE (PMR-C3B6): the '/flow dashboard' literal reservation lives in the
+// handler BEFORE parseFlowArgs — these cases pin the branch, its case
+// insensitivity, and that 'dashboard <extra>' still falls through to usage.
+test('flow handler: dashboard toggles with no content, never sendUserMessage', async () => {
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler('dashboard', flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /No flow content to show/)
+  })
+})
+
+test("flow handler: 'dashboard extra' does not toggle, falls through to usage", async () => {
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler('dashboard extra', flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.doesNotMatch(notifications[0].message, /dashboard/i)
+    assert.match(notifications[0].message, /Usage: \/flow/)
+  })
+})
+
+test('flow handler: dashboard toggle is case-insensitive', async () => {
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler('DASHBOARD', flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /No flow content to show/)
+  })
+})
