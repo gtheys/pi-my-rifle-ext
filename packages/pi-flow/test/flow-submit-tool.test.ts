@@ -73,10 +73,21 @@ function memoryWriter(): { writer: EventWriter; captured: FlowRunEvent[] } {
   const writer = {
     record: async (event: FlowRunEvent) => {
       captured.push(event)
+      return true
     },
     recordJournalOnly: async () => {},
   } as unknown as EventWriter
   return { writer, captured }
+}
+
+// PMR-HRZE: production writers SWALLOW write failures and report the outcome
+// via the record() boolean — a false return must surface as journaled:false
+// exactly like a throw does.
+function swallowingWriter(): EventWriter {
+  return {
+    record: async () => false,
+    recordJournalOnly: async () => {},
+  } as unknown as EventWriter
 }
 
 function throwingWriter(): EventWriter {
@@ -390,6 +401,26 @@ test('journal write failure degrades to journaled false on an ok result', async 
   assert.equal(result.details?.journaled, false)
   assert.match(result.content[0].text, /NOT journaled/)
   assert.match(result.content[0].text, /best-effort/)
+})
+
+// (f) PMR-HRZE: a production writer that SWALLOWS the write and reports the
+// outcome via the record() boolean must degrade to journaled:false exactly
+// like a throw — the contract no longer holds only for test fakes.
+test('swallowed journal write (record returns false) surfaces journaled false', async () => {
+  const execute = captureTool({
+    writer: swallowingWriter(),
+    resolveHead: async () => null,
+    readEvents: async () => [],
+  })
+  const result = await execute('t2', {
+    ref: 'PMR-TESTB',
+    step: 'writer-swallows',
+    output: { phase: 'plan' },
+  })
+  assert.equal(result.isError, undefined)
+  assert.equal(result.details?.ok, true)
+  assert.equal(result.details?.journaled, false)
+  assert.match(result.content[0].text, /NOT journaled/)
 })
 
 // (f) prompt-contains: prompts mention flow_submit.

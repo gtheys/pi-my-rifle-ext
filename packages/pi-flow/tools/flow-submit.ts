@@ -121,17 +121,18 @@ async function verifyGateTargets(
 // AIDEV-NOTE: PMR-C998 / PMR-XTQQ — best-effort journal write: a failure
 // degrades to journaled:false + warning; the result stays ok. Injected
 // writer wins; absence keeps the direct recordRunEvent path so index.ts
-// stays untouched (subtask 2.4 owns wiring).
+// stays untouched (subtask 2.4 owns wiring). Production writers report the
+// write outcome via the record() boolean, so journaled:false is reachable
+// even when the best-effort writer swallows the failure (PMR-HRZE).
 async function journalEvent(
   event: StepOutputEventPayload,
   writer: EventWriter | undefined,
 ): Promise<boolean> {
   try {
     if (writer !== undefined) {
-      await writer.record(event)
-    } else {
-      await recordRunEvent(getAgentDir(), event)
+      return await writer.record(event)
     }
+    await recordRunEvent(getAgentDir(), event)
     return true
   } catch {
     return false

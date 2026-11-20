@@ -637,7 +637,10 @@ export default function (pi: ExtensionAPI) {
   registerRunAttemptTool(
     pi,
     createAttemptLedger(getAgentDir(), {
-      record: (event) => writer.record(event),
+      record: async (event) => {
+        // Outcome boolean intentionally discarded: the ledger is best-effort.
+        await writer.record(event)
+      },
     }),
   )
   // AIDEV-NOTE: PMR-CD46 — mode-aware writer so spec_approve receipt

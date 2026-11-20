@@ -1036,8 +1036,9 @@ export function createReceiptJournal(
   // AIDEV-NOTE: PMR-XTQQ — optional mode-aware record fn (server/writer.ts)
   // threaded through registerLandTool/registerPhaseCompleteTool so receipt
   // writes route journal-only while the daemon owns the projection. Absent =
-  // today's exact full-writer behavior.
-  record?: (event: FlowRunEvent) => Promise<void>,
+  // today's exact full-writer behavior. Outcome-agnostic: accepts the
+  // EventWriter.record boolean (PMR-HRZE) as well as void writers.
+  record?: (event: FlowRunEvent) => Promise<void> | Promise<boolean>,
 ): ReceiptJournal {
   const recordEvent = async (query: ReceiptQuery): Promise<void> => {
     const event: FlowRunEvent = {
