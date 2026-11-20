@@ -459,6 +459,11 @@ function flowCtx(
 ): unknown {
   return {
     cwd: HANDLER_WS,
+    // hasUI: true so the dashboard toggle tests reach the REAL empty-content
+    // exit (collectWidgetData -> shouldShowWidget) instead of short-circuiting
+    // on the !hasUI guard; the no-UI guard exit is pinned separately in
+    // flow-widget.test.ts.
+    hasUI: true,
     ui: {
       notify: (message: string, level: string) =>
         notifications.push({ message, level }),
