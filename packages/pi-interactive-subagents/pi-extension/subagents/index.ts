@@ -921,6 +921,23 @@ export type WidgetStateKind =
   | 'stalled'
   | 'lost'
 
+// AIDEV-NOTE (PMR-X7BH): row styling — raw SGR, narrow resets only (icons.ts
+// precedent). Emoji live HERE, not in markerFor (marker output is test-pinned
+// and reused); hit spans are measured with visibleWidth over the styled
+// prefix so click-to-focus stays column-accurate through boxWidgetLines.
+const BOLD = '\x1b[1m'
+const BOLD_RST = '\x1b[22m'
+const ITALIC = '\x1b[3m'
+const ITALIC_RST = '\x1b[23m'
+const KIND_EMOJI: Readonly<Record<WidgetStateKind, string>> = {
+  working: '🏃',
+  starting: '🏃', // transient pre-working — same glyph (PMR-X7BH)
+  blocked: '⚠️', // waiting on a human — attention group with stalled/lost
+  waiting: '💤',
+  stalled: '⚠️',
+  lost: '⚠️',
+}
+
 /** Herdsman's state markers. */
 export function markerFor(kind: WidgetStateKind): string {
   if (kind === 'working') return '●'
@@ -1027,7 +1044,7 @@ function formatAgentRow(
     status = `active (${running.statusState.activityLabel} ${dur})`
   }
   const elapsed = formatElapsed(Math.floor((now - running.startTime) / 1000))
-  const labelFrom = visibleWidth(`${marker} `)
+  const labelFrom = visibleWidth(`${marker} ${KIND_EMOJI[kind]} `)
   const labelTo = labelFrom + visibleWidth(label)
   // PMR-874G: one-liner usage suffix, only when real usage blocks were seen
   // (coverage discipline — never an invented zero).
@@ -1036,7 +1053,7 @@ function formatAgentRow(
     usagePart = ` · ${formatUsageCompact(running.usage.totals)}`
   }
   const line = truncateToWidth(
-    `${marker} ${label} · ${status} ${elapsed}${usagePart}`,
+    `${marker} ${KIND_EMOJI[kind]} ${BOLD}${label}${BOLD_RST} · ${ITALIC}${status}${ITALIC_RST} ${elapsed}${usagePart}`,
     Number.MAX_SAFE_INTEGER,
   )
   return { line, labelFrom, labelTo }

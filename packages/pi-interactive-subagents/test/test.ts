@@ -3905,7 +3905,13 @@ describe('status widget rows (PMR-TABUX)', () => {
     assert.match(rendered.lines[0], /Subagents · 1 running/)
     // Fresh state (never observed) classifies as starting — marker + label +
     // status + elapsed are what matters here.
-    assert.match(rendered.lines[1], /^[●◌] Worker · (working|starting) /)
+    // PMR-X7BH: rows carry a kind emoji, bold name, italic status — strip SGR
+    // before the shape match, then pin the bold-name SGR once.
+    assert.match(
+      rendered.lines[1].replace(/\x1b\[[0-9;]*m/g, ''),
+      /^[●◌] 🏃 Worker · (working|starting) /,
+    )
+    assert.ok(rendered.lines[1].includes('\x1b[1mWorker\x1b[22m'))
     assert.match(rendered.lines[1], /13s/)
     assert.equal(rendered.hits.length, 1)
     assert.equal(rendered.hits[0].childId, 'a1')
@@ -3923,7 +3929,10 @@ describe('status widget rows (PMR-TABUX)', () => {
     assert.equal(markerFor('starting'), '◌')
 
     const rendered = renderSupervisionRows([starting], 1_000_000)
-    assert.match(rendered.lines[1], /^◌ Worker · starting /)
+    assert.match(
+      rendered.lines[1].replace(/\x1b\[[0-9;]*m/g, ''),
+      /^◌ 🏃 Worker · starting /,
+    )
   })
 
   it('caps rows and shows the … N more overflow line', () => {
@@ -4649,7 +4658,10 @@ describe('stall watchdog escalation wiring (PMR-YFRB phase 3)', () => {
       assert.equal(statusKindOf(running, now), 'stalled')
       assert.equal(markerFor('stalled'), '?')
       const rendered = renderSupervisionRows([running], now)
-      assert.match(rendered.lines[1], /^\? Worker · stalled /)
+      assert.match(
+        rendered.lines[1].replace(/\x1b\[[0-9;]*m/g, ''),
+        /^\? ⚠️ Worker · stalled /,
+      )
       const snapshot = classifyStatus(running.statusState, now, SHRUNK)
       assert.match(formatStatusLine(running.name, snapshot), /dead turn/)
     } finally {
@@ -4699,7 +4711,10 @@ describe('stall watchdog escalation wiring (PMR-YFRB phase 3)', () => {
       const snapshot = classifyStatus(running.statusState, now, SHRUNK)
       assert.equal(snapshot.statusLabel, 'dead turn')
       const row = formatAgentRow(running, now)
-      assert.match(row.line, /^\? RowWorker · stalled /)
+      assert.match(
+        row.line.replace(/\x1b\[[0-9;]*m/g, ''),
+        /^\? ⚠️ RowWorker · stalled /,
+      )
       assert.equal(markerFor('stalled'), '?')
     } finally {
       testApi.setWatchdogThresholdsForTest(undefined)
@@ -6148,8 +6163,16 @@ describe('usage.ts (PMR-874G)', () => {
         1_000_000,
       )
       assert.match(rendered.lines[0], /4\.0k tok \$0\.0200/)
-      assert.match(rendered.lines[1], /Worker · .* 1\.5k tok \$0\.0100/)
-      assert.match(rendered.lines[2], /Scout · .* 2\.5k tok \$0\.0100/)
+      // PMR-X7BH (sanction E8NE9ZQ2EZTG0QRS): rows are SGR-styled now — strip
+      // before matching so the regex keeps asserting per-row usage renders.
+      assert.match(
+        rendered.lines[1].replace(/\x1b\[[0-9;]*m/g, ''),
+        /Worker · .* 1\.5k tok \$0\.0100/,
+      )
+      assert.match(
+        rendered.lines[2].replace(/\x1b\[[0-9;]*m/g, ''),
+        /Scout · .* 2\.5k tok \$0\.0100/,
+      )
     })
 
     it('omits usage entirely when no child saw usage (no invented zeros)', () => {
