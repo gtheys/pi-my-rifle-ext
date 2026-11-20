@@ -5,15 +5,20 @@
 import { existsSync } from 'node:fs'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { avenShowFull } from '../aven/client.ts'
+import { nextPhase } from '../flow/orchestrate.ts'
 import { resumeSeedFromEvents } from '../flow/resume.ts'
 import type { FlowWorktree } from '../flow/worktree-context.ts'
 import { isValidRef } from '../herdr/viewer.ts'
-import type { FlowRunEvent } from '../run-state.ts'
+import type { EffectJournal, FlowRunEvent } from '../run-state.ts'
 import {
   latestWorktreeNote,
   matchHerdrWorktree,
 } from '../tools/code-review-parse.ts'
 import { type HerdrWorktree, worktreeList } from './herdr.ts'
+import {
+  type CleanupFlowWorktreeSummary,
+  cleanupFlowWorktree,
+} from './index.ts'
 
 export type SweepOutcome = 'removed' | 'noop' | 'kept-all' | 'deferred'
 
@@ -88,9 +93,15 @@ export async function resolveNoteWorktree(
   try {
     stdout = await avenShowFull(ref)
   } catch (error: unknown) {
+    let reason: string
+    if (error instanceof Error) {
+      reason = error.message
+    } else {
+      reason = String(error)
+    }
     return {
       kind: 'unverifiable',
-      reason: error instanceof Error ? error.message : String(error),
+      reason,
     }
   }
   if (stdout === null) {
@@ -110,9 +121,15 @@ export async function resolveNoteWorktree(
     try {
       list = await worktreeList(pi, cwd)
     } catch (error: unknown) {
+      let reason: string
+      if (error instanceof Error) {
+        reason = error.message
+      } else {
+        reason = String(error)
+      }
       return {
         kind: 'unverifiable',
-        reason: error instanceof Error ? error.message : String(error),
+        reason,
       }
     }
   }
@@ -152,4 +169,180 @@ export function sweepCandidateInput(
   const seed = resumeSeedFromEvents(events, () => true)
   if (seed.input === undefined) return null
   return { mode: seed.input.mode, gitRoot: seed.input.gitRoot }
+}
+
+// --- sweepMergedFlowWorktrees ---
+
+export interface SweepDeps {
+  listRefs: () => Promise<string[]>
+  readEvents: (ref: string) => Promise<FlowRunEvent[]>
+  appendEvent: (event: FlowRunEvent) => Promise<void>
+  readLabels: (ref: string) => Promise<string[] | null>
+  annotate: (ref: string, body: string) => Promise<void>
+  sessionGitRoot: () => Promise<string | null>
+  notify?: (message: string, level: 'info' | 'warning') => void
+}
+
+/**
+ * AIDEV-NOTE: PMR-YG2N — background sweep engine over run-journal refs.
+ * Never-throw by construction: only truly global steps (sessionGitRoot,
+ * worktreeList) short-circuit the whole sweep by return — fail-closed; every
+ * per-ref fallible step is locally try/caught so one bad ref never rejects
+ * the sweep nor poisons the others. Local-only filters (terminal marker,
+ * gitRoot match) run before any per-ref aven exec. The labels-done gate
+ * below is what makes this sweep safe for in-flight flows: an active loop
+ * always carries un-set phase labels, so `nextPhase(labels, mode)` can never
+ * return 'done' for a flow that is still running — no active-loop skip-list
+ * is needed, and refs failing the gate get no marker so they are retried by
+ * a later sweep once they finish.
+ */
+export async function sweepMergedFlowWorktrees(
+  pi: ExtensionAPI,
+  effects: EffectJournal,
+  cwd: string,
+  deps: SweepDeps,
+): Promise<void> {
+  let sessionRoot: string | null
+  try {
+    sessionRoot = await deps.sessionGitRoot()
+  } catch {
+    return
+  }
+  if (sessionRoot === null) {
+    return
+  }
+
+  let sharedWorktrees: HerdrWorktree[]
+  try {
+    // AIDEV-NOTE: fetched once and shared across all refs — no re-list per ref.
+    sharedWorktrees = await worktreeList(pi, cwd)
+  } catch {
+    return
+  }
+  if (sharedWorktrees.length === 0) {
+    // Zero aven execs on an empty herdr state.
+    return
+  }
+
+  let refs: string[]
+  try {
+    refs = await deps.listRefs()
+  } catch {
+    return
+  }
+
+  for (const ref of refs) {
+    let events: FlowRunEvent[]
+    try {
+      events = await deps.readEvents(ref)
+    } catch {
+      continue
+    }
+    const prior = lastSweepOutcome(events)
+    if (prior !== null && isTerminalSweepOutcome(prior.outcome)) {
+      continue
+    }
+    const candidate = sweepCandidateInput(events)
+    if (candidate === null) {
+      continue
+    }
+    if (candidate.gitRoot !== sessionRoot) {
+      continue
+    }
+
+    let labels: string[] | null
+    try {
+      labels = await deps.readLabels(ref)
+    } catch {
+      continue
+    }
+    if (labels === null) {
+      // No marker: label-read failure is retried by a later sweep.
+      continue
+    }
+    // AIDEV-NOTE: PMR-YG2N — the labels-done gate. Runs before
+    // resolveNoteWorktree and before anything destructive (see note above).
+    const phase = nextPhase(labels, candidate.mode)
+    if (phase.kind !== 'done') {
+      // No marker: not-done refs are retried later.
+      continue
+    }
+
+    let binding: NoteBinding
+    try {
+      binding = await resolveNoteWorktree(pi, cwd, ref, sharedWorktrees)
+    } catch {
+      // No marker: unverifiable refs are retried by a later sweep.
+      continue
+    }
+    if (binding.kind === 'unverifiable') {
+      continue
+    }
+    if (binding.kind === 'none' || binding.kind === 'gone') {
+      let detail: string
+      if (binding.kind === 'none') {
+        detail = 'no recorded worktree note'
+      } else {
+        detail = 'no existing worktree note'
+      }
+      try {
+        await deps.appendEvent({
+          kind: 'worktree-sweep',
+          at: new Date().toISOString(),
+          ref,
+          source: 'sweep',
+          outcome: 'noop',
+          detail,
+        })
+      } catch {
+        // A failed marker changes nothing else.
+      }
+      continue
+    }
+
+    let summary: CleanupFlowWorktreeSummary
+    try {
+      summary = await cleanupFlowWorktree(pi, effects, {
+        ref,
+        mode: candidate.mode,
+        worktree: binding.worktree,
+        cwd,
+        annotate: deps.annotate,
+      })
+    } catch {
+      continue
+    }
+    try {
+      await deps.appendEvent({
+        kind: 'worktree-sweep',
+        at: new Date().toISOString(),
+        ref,
+        source: 'sweep',
+        outcome: summary.action,
+        detail: summary.reason,
+      })
+    } catch {
+      // A failed marker changes nothing else.
+    }
+    if (summary.action === 'removed' || summary.action === 'kept-all') {
+      if (deps.notify !== undefined) {
+        let level: 'info' | 'warning'
+        let message: string
+        if (summary.action === 'removed') {
+          level = 'info'
+          message = `Sweep: removed flow worktree for ${ref}`
+        } else {
+          // kept-all means an unmerged worktree was deliberately left in
+          // place — worth surfacing as a warning so the user can look.
+          level = 'warning'
+          message = `Sweep: kept flow worktree for ${ref} (${summary.reason})`
+        }
+        try {
+          deps.notify(message, level)
+        } catch {
+          // A failed notify changes nothing else.
+        }
+      }
+    }
+  }
 }

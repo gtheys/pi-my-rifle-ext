@@ -226,7 +226,11 @@ import os from 'node:os'
 import path from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { setAvenSessionCwd } from '../aven/client.ts'
-import { resolveNoteWorktree } from '../worktree/sweep.ts'
+import type { EffectJournal } from '../run-state.ts'
+import {
+  resolveNoteWorktree,
+  sweepMergedFlowWorktrees,
+} from '../worktree/sweep.ts'
 
 const NOTE_BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-note-bin-'))
 const NOTE_SHOW_FILE = path.join(NOTE_BIN_DIR, 'show.txt')
@@ -467,4 +471,28 @@ process.on('exit', () => {
   } catch {
     // best-effort cleanup
   }
+})
+
+// --- sweepMergedFlowWorktrees (engine smoke tests; full scenario matrix
+// --- belongs to subtask 2.2's harness) ---
+
+test('sweepMergedFlowWorktrees: sessionGitRoot null returns quietly with zero deps calls', async () => {
+  let listRefsCalls = 0
+  await sweepMergedFlowWorktrees(
+    {} as ExtensionAPI,
+    { declare: async () => {} } as unknown as EffectJournal,
+    '/tmp',
+    {
+      listRefs: async () => {
+        listRefsCalls++
+        return ['PMR-1']
+      },
+      readEvents: async () => [],
+      appendEvent: async () => {},
+      readLabels: async () => [],
+      annotate: async () => {},
+      sessionGitRoot: async () => null,
+    },
+  )
+  assert.equal(listRefsCalls, 0)
 })
