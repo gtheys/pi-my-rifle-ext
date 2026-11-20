@@ -445,6 +445,29 @@ describe('flow widget flash + pin (PMR-C3B6)', () => {
     assert.deepEqual(pinnedStatus, ['flow', '📋 PMR-ZGPY 🔨 implement'])
   })
 
+  it('(i) registerWidget throw on a stale ctx resets visibility so the next toggle pins again', async () => {
+    const h = makeHarness({ readState: async () => makeState() })
+    h.fireSessionStart()
+    await settle()
+    // Stale ctx: setWidget throws (e.g. torn-down TUI). The pin path must not
+    // leave the machine 'pinned' for an unregistered widget.
+    const staleCtx = {
+      hasUI: true,
+      ui: {
+        setStatus() {},
+        setWidget() {
+          throw new Error('stale ctx')
+        },
+      },
+    } as unknown as ExtensionContext
+    assert.equal(await toggleFlowDashboardPin(staleCtx), 'pinned')
+    assert.equal(h.setWidgetCalls().length, 0)
+    // Visibility was reset to 'hidden': the next toggle PINS again, it does
+    // not take the pinned→hidden unpin path.
+    assert.equal(await toggleFlowDashboardPin(), 'pinned')
+    assert.equal(h.setWidgetCalls().length, 1)
+  })
+
   it('footer status is recorded on content refresh (PMR-C3B6)', async () => {
     const h = makeHarness({
       readState: async () => makeState({ currentPhase: 'plan' }),

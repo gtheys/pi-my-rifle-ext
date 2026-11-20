@@ -389,7 +389,14 @@ export async function toggleFlowDashboardPin(
   } catch {}
   try {
     registerWidget(target)
-  } catch {}
+  } catch {
+    // AIDEV-NOTE: a throw here (e.g. a stale ctx whose setWidget fails) must
+    // not leave the machine claiming 'pinned' for an unregistered widget —
+    // reset to 'hidden' so the next toggle re-pins instead of unpinning; the
+    // footer status set above still reflects the attempted pin and the next
+    // session_start re-syncs regardless.
+    visibility = 'hidden'
+  }
   return 'pinned'
 }
 
