@@ -610,7 +610,9 @@ test('decideAutoBranchDelete: personal + merged-proof failure → keep-all namin
     localMergedProof: false,
   })
   assert.equal(decision.action, 'keep-all')
-  assert.ok(decision.action !== 'delete' && 'reason' in decision)
+  // assert.equal above narrows the action to 'keep-all' — a `!== 'delete'`
+  // comparison here is a tsc-fatal no-overlap check; keep only the shape pin.
+  assert.ok('reason' in decision)
   assert.match(decision.reason, /merge-base --is-ancestor/)
 })
 
@@ -643,7 +645,8 @@ test('decideAutoBranchDelete: work keep reasons are branch-only (keep-branch, ne
       localMergedProof: false,
     })
     assert.equal(decision.action, 'keep-branch', prState)
-    assert.ok(decision.action !== 'delete' && 'reason' in decision)
+    // assert.equal above narrows the action — see the keep-all note above.
+    assert.ok('reason' in decision)
     assert.ok(decision.reason.length > 0, prState)
   }
 })
@@ -1330,6 +1333,7 @@ interface CleanupExecOpts {
     agent_status: string
     workspace_id: string
     cwd: string
+    pane_id?: string
   }>
   agentListFails?: boolean
   mergeBaseOk?: boolean

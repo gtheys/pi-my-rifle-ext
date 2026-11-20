@@ -28,6 +28,7 @@ import {
   discoverAvenPrefixes,
   ensureLabels,
   epicHasOpenChildren,
+  getAvenSessionCwd,
   lastAvenResolutionFailure,
   readAvenLabels,
   readFreshBlockers,
@@ -95,6 +96,7 @@ import {
   toggleFlowDashboardPin,
   type WidgetAssignment,
 } from './flow/widget.ts'
+import type { FlowWorktree } from './flow/worktree-context.ts'
 import {
   type FlowBindingSnapshot,
   parseFlowBindingSnapshot,
@@ -157,7 +159,6 @@ import {
 import { registerSpecApproveTool } from './tools/spec-approve.ts'
 import {
   cleanupFlowWorktree,
-  type FlowWorktree,
   default as worktreeExtension,
 } from './worktree/index.ts'
 
@@ -673,14 +674,22 @@ export default function (pi: ExtensionAPI) {
   // share the exact same instance.
   const worktreeEffects = createEffectJournal(getAgentDir())
   worktreeExtension(pi, { effects: worktreeEffects })
-  onFlowDoneImpl = (ref, mode, worktree) =>
-    cleanupFlowWorktree(pi, worktreeEffects, {
+  onFlowDoneImpl = async (ref, mode, worktree) => {
+    // Loop contract is Promise<void>: the CleanupFlowWorktreeSummary is
+    // intentionally discarded here (observability lives in the annotate
+    // path inside cleanupFlowWorktree itself, PMR-W6C4).
+    await cleanupFlowWorktree(pi, worktreeEffects, {
       ref,
       mode,
       worktree,
-      cwd: pi.cwd,
-      annotate: (noteRef, body) => writeAvenNote(noteRef, body),
+      // ExtensionAPI exposes no cwd; the session cwd captured at
+      // session_start is the same value aven routing uses.
+      cwd: getAvenSessionCwd() ?? process.cwd(),
+      annotate: async (noteRef, body) => {
+        await writeAvenNote(noteRef, body)
+      },
     })
+  }
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
   // fully settles (blocking ask_user_question gates keep the run in flight,

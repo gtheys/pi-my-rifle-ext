@@ -692,31 +692,31 @@ export async function cleanupFlowWorktree(
   effects: EffectJournal,
   input: CleanupFlowWorktreeInput,
 ): Promise<CleanupFlowWorktreeSummary> {
-  try {
-    // AIDEV-NOTE (PMR-W6C4): every non-removed outcome is made human-visible
-    // via a best-effort annotation naming the path and reason — otherwise a
-    // superseded stale worktree is kept with no trace at all, undermining the
-    // no-lingering-worktrees goal. The ONE exception is the trivial
-    // 'no flow worktree bound' noop: nothing exists, and annotating every
-    // worktree-less flow done would spam the ticket.
-    const annotateOutcome = async (
-      action: CleanupFlowWorktreeSummary['action'],
-      reason: string,
-      pathForNote: string | undefined,
-    ): Promise<CleanupFlowWorktreeSummary> => {
-      if (input.annotate) {
-        try {
-          const pathText = pathForNote ?? 'unknown path'
-          await input.annotate(
-            input.ref,
-            `worktree cleanup ${action} (${pathText}): ${reason}`,
-          )
-        } catch {
-          // best-effort
-        }
+  // AIDEV-NOTE (PMR-W6C4): every non-removed outcome is made human-visible
+  // via a best-effort annotation naming the path and reason — otherwise a
+  // superseded stale worktree is kept with no trace at all, undermining the
+  // no-lingering-worktrees goal. The ONE exception is the trivial
+  // 'no flow worktree bound' noop: nothing exists, and annotating every
+  // worktree-less flow done would spam the ticket.
+  const annotateOutcome = async (
+    action: CleanupFlowWorktreeSummary['action'],
+    reason: string,
+    pathForNote: string | undefined,
+  ): Promise<CleanupFlowWorktreeSummary> => {
+    if (input.annotate) {
+      try {
+        const pathText = pathForNote ?? 'unknown path'
+        await input.annotate(
+          input.ref,
+          `worktree cleanup ${action} (${pathText}): ${reason}`,
+        )
+      } catch {
+        // best-effort
       }
-      return { action, reason }
     }
+    return { action, reason }
+  }
+  try {
     if (input.worktree === undefined) {
       return { action: 'noop', reason: 'no flow worktree bound' }
     }

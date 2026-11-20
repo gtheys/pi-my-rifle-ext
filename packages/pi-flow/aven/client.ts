@@ -665,6 +665,10 @@ export function setAvenSessionCwd(cwd: string | undefined): void {
   avenSessionCwd = cwd
 }
 
+export function getAvenSessionCwd(): string | undefined {
+  return avenSessionCwd
+}
+
 // AIDEV-NOTE: Best-effort label bootstrap — label creation must never break
 // startup (PMR-SE93). Failures are classified (flow/ensure-labels.ts):
 // aven-missing → one visible warning; already-exists → silent; anything else
