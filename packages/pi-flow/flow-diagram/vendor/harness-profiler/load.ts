@@ -50,8 +50,12 @@ export function loadHpRendererFrom(dir: string): HpRenderer | null {
   try {
     return loadHpFile(join(dir, HP_JS_FILENAME), dir)
   } catch (error) {
+    let detail = String(error)
+    if (error instanceof Error) {
+      detail = error.message
+    }
     console.warn(
-      `[pi-flow] flow-diagram: vendored harness-profiler renderer failed to load: ${error instanceof Error ? error.message : String(error)}`,
+      `[pi-flow] flow-diagram: vendored harness-profiler renderer failed to load: ${detail}`,
     )
     return null
   }
