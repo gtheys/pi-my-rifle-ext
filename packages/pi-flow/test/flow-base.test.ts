@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Exec } from '../shared/diff-base.ts'
 import {
+  clearFlowBase,
   currentBranch,
   readFlowBase,
   recordFlowBase,
@@ -106,4 +107,37 @@ test('recordFlowBase gives up after bounded attempts with the last error', async
   assert.equal(r.ok, false)
   assert.equal(calls, 4)
   if (!r.ok) assert.match(r.reason, /could not lock config file/)
+})
+
+// AIDEV-NOTE: PMR-182S/PMR-81SX — after a successful worktree removal the
+// cleanup path unsets the recorded flow base from the main checkout, so an
+// unset flowbase afterwards is the expected end state.
+test('clearFlowBase runs after successful removal: record then cleanup leaves keys absent', async () => {
+  const store = new Map<string, string>()
+  const exec: Exec = async (_cmd, args) => {
+    if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+      return { stdout: 'feat/x\n', code: 0 }
+    }
+    if (args[0] !== 'config') return { stdout: '', code: 1 }
+    if (args[1] === '--unset') {
+      store.delete(args[2])
+      return { stdout: '', code: 0 }
+    }
+    if (args.length === 3) {
+      store.set(args[1], args[2])
+      return { stdout: '', code: 0 }
+    }
+    const value = store.get(args[1])
+    if (value === undefined) return { stdout: '', code: 1 }
+    return { stdout: `${value}\n`, code: 0 }
+  }
+  const recorded = await recordFlowBase(exec, '/m', 'feat/x', 'staging', 'abc')
+  assert.equal(recorded.ok, true)
+  assert.equal(store.size, 2)
+  const before = await readFlowBase(exec, '/m')
+  assert.equal(before.ok, true)
+  await clearFlowBase(exec, '/m', 'feat/x')
+  assert.equal(store.size, 0, 'both flow-base keys removed')
+  const after = await readFlowBase(exec, '/m')
+  assert.equal(after.ok, false, 'no recorded flow base after cleanup')
 })

@@ -44,6 +44,7 @@ import {
 } from './herdr.ts'
 import {
   type BranchDeleteDecision,
+  decideAutoBranchDelete,
   decideBranchDelete,
   describePruneFailure,
   type PrState,

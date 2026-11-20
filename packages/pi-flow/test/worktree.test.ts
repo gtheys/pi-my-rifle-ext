@@ -1312,3 +1312,424 @@ test('worktree remove: force appends --force to the declared command', async () 
     'herdr worktree remove --workspace w27 --force',
   )
 })
+
+// --- cleanupFlowWorktree (PMR-81SX phase 5, subtask 5.3) ---
+
+import type { FlowWorktree } from '../flow/worktree-context.ts'
+import { cleanupFlowWorktree } from '../worktree/index.ts'
+
+const CLEANUP_WT_PATH = '/tmp/herdr-wt/feat-x'
+const CLEANUP_MAIN_CWD = '/tmp/main-checkout'
+const CLEANUP_BRANCH = 'feat/x'
+const CLEANUP_WORKSPACE_ID = 'w27'
+
+interface CleanupExecOpts {
+  dirty?: string
+  agents?: Array<{
+    agent: string
+    agent_status: string
+    workspace_id: string
+    cwd: string
+  }>
+  agentListFails?: boolean
+  mergeBaseOk?: boolean
+  prState?: string
+}
+
+// AIDEV-NOTE: routed exec fake serving every command cleanupFlowWorktree /
+// removeWorktreeCore / clearFlowBase issue: git status (dirty guard), herdr
+// agent list (in-flight guard), herdr worktree list (preflight + target),
+// git worktree list --porcelain (main checkout), merge-base (personal
+// merged-proof), gh pr view (work mode), rev-parse (branch capture +
+// reviewed-at), git branch -D, git fetch --prune, git config (flow-base
+// clear). herdr worktree remove, branch -D, and config calls are recorded
+// WITH their cwd so tests can assert the main-checkout chore attribution.
+function makeCleanupExec(opts: CleanupExecOpts = {}): {
+  exec: (
+    command: string,
+    args: string[],
+    options?: { cwd?: string },
+  ) => Promise<{ code: number; stdout: string; stderr: string }>
+  herdrCalls: string[]
+  configCalls: Array<{ args: string; cwd: string | undefined }>
+  branchDeleteCalls: Array<{ args: string; cwd: string | undefined }>
+} {
+  const herdrCalls: string[] = []
+  const configCalls: Array<{ args: string; cwd: string | undefined }> = []
+  const branchDeleteCalls: Array<{ args: string; cwd: string | undefined }> = []
+  const prState = opts.prState ?? 'MERGED'
+  let mergeBaseCode = 0
+  if (opts.mergeBaseOk !== true) {
+    mergeBaseCode = 1
+  }
+  const exec = async (
+    command: string,
+    args: string[],
+    options?: { cwd?: string },
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    const cwd = options?.cwd
+    if (command === 'git' && args[0] === 'status') {
+      return { code: 0, stdout: opts.dirty ?? '', stderr: '' }
+    }
+    if (command === 'herdr' && args[0] === 'agent' && args[1] === 'list') {
+      if (opts.agentListFails === true) {
+        return { code: 1, stdout: '', stderr: 'herdr agent list exploded' }
+      }
+      return {
+        code: 0,
+        stderr: '',
+        stdout: JSON.stringify({ result: { agents: opts.agents ?? [] } }),
+      }
+    }
+    if (command === 'herdr') {
+      herdrCalls.push(`herdr ${args.join(' ')}`)
+      if (args[1] === 'remove') {
+        return { code: 0, stdout: '', stderr: '' }
+      }
+      return {
+        code: 0,
+        stderr: '',
+        stdout: JSON.stringify({
+          result: {
+            worktrees: [
+              {
+                path: CLEANUP_WT_PATH,
+                branch: CLEANUP_BRANCH,
+                workspace_id: CLEANUP_WORKSPACE_ID,
+                is_linked_worktree: true,
+              },
+            ],
+          },
+        }),
+      }
+    }
+    if (command === 'git' && args[0] === 'worktree') {
+      return {
+        code: 0,
+        stderr: '',
+        stdout: `worktree ${CLEANUP_MAIN_CWD}\nbranch refs/heads/main\n`,
+      }
+    }
+    if (command === 'git' && args[0] === 'merge-base') {
+      return { code: mergeBaseCode, stdout: '', stderr: '' }
+    }
+    if (command === 'gh') {
+      return {
+        code: 0,
+        stderr: '',
+        stdout: JSON.stringify({ state: prState }),
+      }
+    }
+    if (command === 'git' && args[0] === 'rev-parse') {
+      if (args[1] === '--abbrev-ref') {
+        return { code: 0, stderr: '', stdout: `${CLEANUP_BRANCH}\n` }
+      }
+      return { code: 0, stderr: '', stdout: `${BASE_SHA}\n` }
+    }
+    if (command === 'git' && args[0] === 'branch' && args[1] === '-D') {
+      branchDeleteCalls.push({ args: args.join(' '), cwd })
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (command === 'git' && args[0] === 'fetch') {
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    if (command === 'git' && args[0] === 'config') {
+      configCalls.push({ args: args.join(' '), cwd })
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  return { exec, herdrCalls, configCalls, branchDeleteCalls }
+}
+
+function makeCleanupInput(
+  mode: 'work' | 'personal',
+  overrides?: Partial<{
+    worktree: FlowWorktree | undefined
+    ref: string
+  }>,
+): {
+  ref: string
+  mode: 'work' | 'personal'
+  worktree: FlowWorktree | undefined
+  cwd: string
+  annotate: (ref: string, body: string) => Promise<void>
+} & { annotateCalls: Array<{ ref: string; body: string }> } {
+  const annotateCalls: Array<{ ref: string; body: string }> = []
+  const annotate = async (ref: string, body: string) => {
+    annotateCalls.push({ ref, body })
+  }
+  let worktree: FlowWorktree | undefined = {
+    ref: 'PMR-CLN',
+    path: CLEANUP_WT_PATH,
+    branch: CLEANUP_BRANCH,
+  }
+  if (overrides !== undefined && 'worktree' in overrides) {
+    worktree = overrides.worktree
+  }
+  return {
+    ref: overrides?.ref ?? 'PMR-CLN',
+    mode,
+    worktree,
+    cwd: CLEANUP_MAIN_CWD,
+    annotate,
+    annotateCalls,
+  }
+}
+
+test('cleanupFlowWorktree: no binding is a no-op touching nothing', async () => {
+  const { exec } = makeCleanupExec()
+  const executed: string[] = []
+  const recordingExec = async (
+    command: string,
+    args: string[],
+    options?: { cwd?: string },
+  ) => {
+    executed.push(`${command} ${args.join(' ')}`)
+    return exec(command, args, options)
+  }
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal', { worktree: undefined })
+  const summary = await cleanupFlowWorktree(
+    { exec: recordingExec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.deepEqual(summary, {
+    action: 'noop',
+    reason: 'no flow worktree bound',
+  })
+  assert.equal(executed.length, 0, 'no-op must not exec anything')
+  assert.equal(effects.declarations.length, 0)
+  assert.equal(input.annotateCalls.length, 0)
+})
+
+test('cleanupFlowWorktree: dirty worktree defers before any agent probe or removal', async () => {
+  const { exec, herdrCalls, configCalls, branchDeleteCalls } = makeCleanupExec({
+    dirty: ' M src/foo.ts\n',
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal')
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'deferred')
+  assert.match(summary.reason, /dirty/)
+  assert.equal(
+    herdrCalls.length,
+    0,
+    'dirty guard must short-circuit before herdr probes',
+  )
+  assert.equal(effects.declarations.length, 0, 'no effect declared when dirty')
+  assert.equal(branchDeleteCalls.length, 0)
+  assert.equal(configCalls.length, 0)
+  assert.equal(input.annotateCalls.length, 0)
+})
+
+test('cleanupFlowWorktree: live agent in the worktree workspace defers', async () => {
+  const { exec, herdrCalls, branchDeleteCalls } = makeCleanupExec({
+    agents: [
+      {
+        agent: 'pi',
+        agent_status: 'working',
+        workspace_id: CLEANUP_WORKSPACE_ID,
+        cwd: CLEANUP_WT_PATH,
+      },
+    ],
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal')
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'deferred')
+  assert.match(summary.reason, /in-flight/)
+  assert.match(summary.reason, /state: working/)
+  assert.equal(
+    herdrCalls.some((c) => c.startsWith('herdr worktree remove')),
+    false,
+    'no removal while an agent may be live',
+  )
+  assert.equal(branchDeleteCalls.length, 0)
+  assert.equal(effects.declarations.length, 0)
+})
+
+test('cleanupFlowWorktree: unrecognized agent_status defers (unknown-means-live)', async () => {
+  const { exec, herdrCalls } = makeCleanupExec({
+    agents: [
+      {
+        agent: 'pi',
+        agent_status: 'mysterious-zombie',
+        workspace_id: CLEANUP_WORKSPACE_ID,
+        cwd: CLEANUP_WT_PATH,
+      },
+    ],
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal')
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'deferred')
+  assert.match(summary.reason, /in-flight/)
+  assert.match(summary.reason, /state: mysterious-zombie/)
+  assert.equal(
+    herdrCalls.some((c) => c.startsWith('herdr worktree remove')),
+    false,
+  )
+})
+
+test('cleanupFlowWorktree: agentList failure defers fail-closed', async () => {
+  const { exec, herdrCalls } = makeCleanupExec({ agentListFails: true })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal')
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'deferred')
+  assert.match(summary.reason, /agent list unavailable/)
+  assert.equal(
+    herdrCalls.some((c) => c.startsWith('herdr worktree remove')),
+    false,
+  )
+  assert.equal(effects.declarations.length, 0)
+})
+
+test('cleanupFlowWorktree: personal + merged-proof removes with the explicit flow ref', async () => {
+  const { exec, herdrCalls, configCalls, branchDeleteCalls } = makeCleanupExec({
+    mergeBaseOk: true,
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal', { ref: 'PMR-EXPLICIT' })
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'removed')
+  assert.match(summary.reason, /removed/)
+  // Explicit-ref assertion on the fake journal — never 'worktree-ops'.
+  assert.equal(effects.declarations.length, 1)
+  const decl = effects.declarations[0]
+  assert.equal(decl.ref, 'PMR-EXPLICIT')
+  assert.notEqual(decl.ref, 'worktree-ops')
+  assert.equal(decl.effect, 'worktree-remove')
+  assert.equal(
+    decl.command,
+    `herdr worktree remove --workspace ${CLEANUP_WORKSPACE_ID}`,
+  )
+  assert.ok(
+    herdrCalls.includes(
+      `herdr worktree remove --workspace ${CLEANUP_WORKSPACE_ID}`,
+    ),
+    'herdr removal executed',
+  )
+  assert.equal(branchDeleteCalls.length, 1, 'branch -D runs exactly once')
+  assert.equal(branchDeleteCalls[0].args, `branch -D ${CLEANUP_BRANCH}`)
+  assert.equal(branchDeleteCalls[0].cwd, CLEANUP_MAIN_CWD)
+  // clearFlowBase unsets both keys against the MAIN checkout cwd.
+  assert.deepEqual(
+    configCalls.map((c) => ({ args: c.args, cwd: c.cwd })),
+    [
+      {
+        args: `config --unset branch.${CLEANUP_BRANCH}.flowbase`,
+        cwd: CLEANUP_MAIN_CWD,
+      },
+      {
+        args: `config --unset branch.${CLEANUP_BRANCH}.flowbasesha`,
+        cwd: CLEANUP_MAIN_CWD,
+      },
+    ],
+  )
+  assert.equal(input.annotateCalls.length, 1)
+  assert.equal(input.annotateCalls[0].ref, 'PMR-EXPLICIT')
+  assert.match(input.annotateCalls[0].body, /branch deleted/)
+})
+
+test('cleanupFlowWorktree: personal + failed merged-proof keeps all and annotates', async () => {
+  const { exec, herdrCalls, configCalls, branchDeleteCalls } = makeCleanupExec({
+    mergeBaseOk: false,
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal')
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'kept-all')
+  assert.match(summary.reason, /merge-base --is-ancestor/)
+  assert.equal(
+    herdrCalls.some((c) => c.startsWith('herdr worktree remove')),
+    false,
+    'worktree kept',
+  )
+  assert.equal(branchDeleteCalls.length, 0, 'branch kept')
+  assert.equal(configCalls.length, 0, 'no flow-base clear on keep-all')
+  assert.equal(effects.declarations.length, 0)
+  assert.equal(input.annotateCalls.length, 1)
+  assert.equal(input.annotateCalls[0].ref, 'PMR-CLN')
+  assert.match(input.annotateCalls[0].body, /worktree kept/)
+  assert.match(input.annotateCalls[0].body, /reviewed-at/)
+})
+
+test('cleanupFlowWorktree: work + OPEN PR removes worktree but keeps the branch', async () => {
+  const { exec, herdrCalls, configCalls, branchDeleteCalls } = makeCleanupExec({
+    prState: 'OPEN',
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('work')
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'removed')
+  assert.ok(
+    herdrCalls.includes(
+      `herdr worktree remove --workspace ${CLEANUP_WORKSPACE_ID}`,
+    ),
+  )
+  assert.equal(branchDeleteCalls.length, 0, 'OPEN PR keeps the branch')
+  assert.deepEqual(
+    configCalls.map((c) => c.args),
+    [
+      `config --unset branch.${CLEANUP_BRANCH}.flowbase`,
+      `config --unset branch.${CLEANUP_BRANCH}.flowbasesha`,
+    ],
+  )
+  assert.equal(input.annotateCalls.length, 1)
+  assert.match(input.annotateCalls[0].body, /branch kept/)
+})
+
+test('cleanupFlowWorktree: work + MERGED PR removes worktree and deletes the branch', async () => {
+  const { exec, herdrCalls, branchDeleteCalls } = makeCleanupExec({
+    prState: 'MERGED',
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('work')
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'removed')
+  assert.ok(
+    herdrCalls.includes(
+      `herdr worktree remove --workspace ${CLEANUP_WORKSPACE_ID}`,
+    ),
+  )
+  assert.equal(branchDeleteCalls.length, 1)
+  assert.equal(branchDeleteCalls[0].args, `branch -D ${CLEANUP_BRANCH}`)
+  assert.equal(branchDeleteCalls[0].cwd, CLEANUP_MAIN_CWD)
+  assert.equal(input.annotateCalls.length, 1)
+  assert.match(input.annotateCalls[0].body, /branch deleted/)
+})
