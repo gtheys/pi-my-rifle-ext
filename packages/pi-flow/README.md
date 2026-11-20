@@ -78,6 +78,17 @@ Agent-callable tools registered by pi-flow:
 | `pr_quality` | Gathers unresolved PR review threads + SonarCloud issues into a triage prompt (absorbed from pi-review). |
 | `worktree` | Creates, lists, and removes Herdr-managed git worktree workspaces (absorbed from pi-worktree). |
 
+### Automatic worktree cleanup
+
+Flow-created worktrees are cleaned up automatically at three trigger points:
+loop-driven flows clean up via the done handler, a `/flow` rerun of a
+harness-completed flow cleans up its bound worktree, and session start or
+flow start sweeps run-journal refs whose flow is done. Deletion only happens
+when the merge is provable (merge-base ancestor of main for personal flows,
+PR MERGED state for work flows); dirty, in-flight, or unproven worktrees are
+never deleted — they are deferred with an aven note and retried by a later
+sweep.
+
 ## Effect contracts
 
 Before a risky action runs, the agent declares it in the run journal. Five
