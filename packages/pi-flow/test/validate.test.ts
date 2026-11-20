@@ -152,6 +152,23 @@ test('buildValidatePrompt: work mode lists all gate steps in order', () => {
   assert.ok(p.includes('/x/sh-devctl/scripts'))
 })
 
+test('buildValidatePrompt: work-mode flow_submit advisory teaches a validate-legal submission', () => {
+  const p = buildValidatePrompt({
+    mode: 'work',
+    ref: 'DP-71',
+    scriptsDir: '/x/sh-devctl/scripts',
+  })
+  // The example must use a free-form step label (not step="validate" — that
+  // conflates label and phase discriminator) and validate-phase facts only
+  // (command is an implement-branch fact; following the old example literally
+  // got the submission refused).
+  assert.match(p, /step="gate-evidence"/)
+  assert.match(p, /output\.phase="validate"/)
+  assert.match(p, /prUrl\/prNumber\/\s*\n\s*gateTargetIds/)
+  assert.doesNotMatch(p, /step="validate"/)
+  assert.doesNotMatch(p, /command\/gateTargetIds/)
+})
+
 // --- personal mode (PMR-8449) ---
 
 describe('composeHumanTest', () => {
@@ -364,9 +381,11 @@ or reorder any of them. Every step must succeed before the next one starts.
 6. Jira evidence comment: via acli, post a comment on DP-71 describing
    HOW the change was validated — what was deployed, which tests ran, and the
    evidence from steps 1-5.
-   Advisory: report gate evidence via the flow_submit tool (step="validate",
-   command/gateTargetIds for the checks that ran) after the gate steps
-   complete — it journals evidence only and never replaces step 6 or the
+   Advisory: report gate evidence via the flow_submit tool after the gate
+   steps complete — free-form step label (e.g. step="gate-evidence"),
+   output.phase="validate", and validate-legal facts only: prUrl/prNumber/
+   gateTargetIds (command is an implement-phase fact and would be refused).
+   It journals evidence only and never replaces step 6 or the
    phase-completion label.
 
 Completion rule: the phase passes ONLY after the Jira comment from step 6 has
