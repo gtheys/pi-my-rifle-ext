@@ -774,7 +774,22 @@ export async function cleanupFlowWorktree(
       )
     }
     const joined = joinAgents([target], agents)
-    const agent = joined.get(target)
+    let agent = joined.get(target)
+    // AIDEV-NOTE (PMR-F5HB): the flow session's OWN herdr agent must not
+    // self-match the in-flight guard — when the session runs INSIDE the flow
+    // worktree, its own agent row carries the worktree cwd/workspace and
+    // would defer cleanup forever. Identify self by pane id: herdr exposes
+    // the current pane via HERDR_PANE_ID ('<workspaceId>:<paneId>') and
+    // agentList carries pane_id per agent. Subagent children live on their
+    // own panes and still match (and defer) as before.
+    const herdrPane = process.env.HERDR_PANE_ID?.trim()
+    let ownPaneId = ''
+    if (herdrPane?.includes(':') === true) {
+      ownPaneId = herdrPane.slice(herdrPane.indexOf(':') + 1)
+    }
+    if (agent !== undefined && ownPaneId !== '' && agent.pane === ownPaneId) {
+      agent = undefined
+    }
     if (agent) {
       let agentState = agent.state
       if (agentState === '') {

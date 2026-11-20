@@ -1578,6 +1578,79 @@ test('cleanupFlowWorktree: live agent in the worktree workspace defers', async (
   assert.match(input.annotateCalls[0]?.body ?? '', /in-flight/)
 })
 
+test('cleanupFlowWorktree: the session own herdr agent does not self-match the guard', async () => {
+  // PMR-F5HB: when the flow session itself runs INSIDE the worktree, its own
+  // agent row (same workspace/cwd) must not defer cleanup forever — the
+  // guard excludes the agent whose pane_id matches HERDR_PANE_ID.
+  const { exec, herdrCalls } = makeCleanupExec({
+    mergeBaseOk: true,
+    agents: [
+      {
+        agent: 'pi',
+        agent_status: 'working',
+        pane_id: 'pane-self',
+        workspace_id: CLEANUP_WORKSPACE_ID,
+        cwd: CLEANUP_WT_PATH,
+      },
+    ],
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal')
+  const previous = process.env.HERDR_PANE_ID
+  process.env.HERDR_PANE_ID = `${CLEANUP_WORKSPACE_ID}:pane-self`
+  try {
+    const summary = await cleanupFlowWorktree(
+      { exec } as unknown as ExtensionAPI,
+      effects,
+      input,
+    )
+    assert.equal(summary.action, 'removed')
+    assert.equal(
+      herdrCalls.some((c) => c.startsWith('herdr worktree remove')),
+      true,
+      'own-agent self-match must not defer the removal',
+    )
+  } finally {
+    if (previous === undefined) delete process.env.HERDR_PANE_ID
+    else process.env.HERDR_PANE_ID = previous
+  }
+})
+
+test('cleanupFlowWorktree: a different agent on another pane still defers', async () => {
+  const { exec, herdrCalls } = makeCleanupExec({
+    agents: [
+      {
+        agent: 'worker',
+        agent_status: 'working',
+        pane_id: 'pane-child',
+        workspace_id: CLEANUP_WORKSPACE_ID,
+        cwd: CLEANUP_WT_PATH,
+      },
+    ],
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal')
+  const previous = process.env.HERDR_PANE_ID
+  process.env.HERDR_PANE_ID = `${CLEANUP_WORKSPACE_ID}:pane-self`
+  try {
+    const summary = await cleanupFlowWorktree(
+      { exec } as unknown as ExtensionAPI,
+      effects,
+      input,
+    )
+    assert.equal(summary.action, 'deferred')
+    assert.match(summary.reason, /in-flight/)
+    assert.equal(
+      herdrCalls.some((c) => c.startsWith('herdr worktree remove')),
+      false,
+      'a non-self agent still defers cleanup',
+    )
+  } finally {
+    if (previous === undefined) delete process.env.HERDR_PANE_ID
+    else process.env.HERDR_PANE_ID = previous
+  }
+})
+
 test('cleanupFlowWorktree: unrecognized agent_status defers (unknown-means-live)', async () => {
   const { exec, herdrCalls } = makeCleanupExec({
     agents: [
