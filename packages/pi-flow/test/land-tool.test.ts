@@ -63,6 +63,10 @@ function landExecute(
     memEffects(),
     resolvers?.resolveMainRepo ?? (async () => '/repo'),
     resolvers?.resolveLandingBranch ?? (async () => 'flow-branch'),
+    // PMR-1KAE: permissive main-advancement fake — these tests exercise the
+    // other gates, not the staleness detection (covered in
+    // land-advancement-*.test.ts).
+    async () => ({ ok: true }),
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return execute
@@ -488,6 +492,10 @@ function landHarness(options?: {
     options?.effects ?? memEffects(),
     options?.resolveMainRepo ?? (async () => '/repo'),
     options?.resolveLandingBranch ?? (async () => 'flow-branch'),
+    // PMR-1KAE: permissive main-advancement fake — these tests exercise the
+    // receipt/adoption/human-gate machinery, not the staleness detection
+    // (covered in land-advancement-*.test.ts).
+    async () => ({ ok: true }),
   )
   if (!execute) throw new Error('flow_land tool not registered')
   return { execute, suiteRuns: () => suiteRunCount, receipts }

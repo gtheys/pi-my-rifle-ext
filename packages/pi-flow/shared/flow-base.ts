@@ -53,6 +53,62 @@ export async function resolveBaseSha(
   return { ok: true, branch: sha }
 }
 
+export type MergeBaseResult =
+  | { ok: true; sha: string }
+  | { ok: false; reason: string }
+
+// AIDEV-NOTE: PMR-1KAE — merge-base is the rebase-aware staleness anchor for
+// the merge-main landing gate: for an unrebased flow branch it equals the
+// recorded branch.<branch>.flowbasesha (the pre-rebase base), and after the
+// guided rebase onto the base it equals the base tip — so staleness
+// detection self-heals where the recorded config value cannot (no rebase
+// ever updates flowbasesha). Fail-closed: any git error or empty output is
+// an error result, never a guess.
+export async function resolveMergeBase(
+  exec: Exec,
+  cwd: string,
+  refA: string,
+  refB: string,
+): Promise<MergeBaseResult> {
+  const r = await exec('git', ['merge-base', refA, refB], { cwd })
+  const sha = r.stdout.trim()
+  if (r.code !== 0 || sha === '') {
+    return {
+      ok: false,
+      reason: `git merge-base ${refA} ${refB} failed in ${cwd}`,
+    }
+  }
+  return { ok: true, sha }
+}
+
+export type AncestryResult =
+  | { ok: true; value: boolean }
+  | { ok: false; reason: string }
+
+// AIDEV-NOTE: PMR-1KAE — exit-code ancestry probe: git merge-base
+// --is-ancestor exits 0 when ancestorRef is an ancestor of descendantRef
+// (equality included), 1 when it is not, anything else is a git error. The
+// distinction matters: a failure must refuse the landing fail-closed, a "no"
+// must not.
+export async function refIsAncestor(
+  exec: Exec,
+  cwd: string,
+  ancestorRef: string,
+  descendantRef: string,
+): Promise<AncestryResult> {
+  const r = await exec(
+    'git',
+    ['merge-base', '--is-ancestor', ancestorRef, descendantRef],
+    { cwd },
+  )
+  if (r.code === 0) return { ok: true, value: true }
+  if (r.code === 1) return { ok: true, value: false }
+  return {
+    ok: false,
+    reason: `git merge-base --is-ancestor ${ancestorRef} ${descendantRef} failed in ${cwd} (${(r.stderr ?? '').trim()})`,
+  }
+}
+
 const CONFIG_WRITE_ATTEMPTS = 4
 const CONFIG_WRITE_DELAY_MS = 50
 
