@@ -119,6 +119,7 @@ import { loadHpRenderer } from './flow-diagram/vendor/harness-profiler/load.ts'
 import {
   preflightRepo,
   resolveRepoRoot,
+  resolveSessionRepoRoot,
   syncHerdrPlugin,
 } from './herdr/sync.ts'
 import {
@@ -333,6 +334,8 @@ export default function (pi: ExtensionAPI) {
         ref: string,
         mode: 'work' | 'personal',
         worktree: FlowWorktree | undefined,
+        // PMR-YG2N fix round — session repo root (undefined = process cwd).
+        cwd: string | undefined,
       ) => Promise<CleanupFlowWorktreeSummary>)
     | null = null
   const loop = createFlowLoop({
@@ -362,7 +365,18 @@ export default function (pi: ExtensionAPI) {
     onFlowDone: async (ref, mode, worktree) => {
       if (onFlowDoneImpl !== null) {
         try {
-          await onFlowDoneImpl(ref, mode, worktree)
+          // AIDEV-NOTE: PMR-YG2N fix round — the loop has no ctx, so the
+          // done-path cwd falls back to the session repo root resolved from
+          // the process cwd (no cwd arg), matching commandPhaseInput's
+          // journal gitRoot semantics.
+          const loopRoot = await resolveSessionRepoRoot(pi)
+          let loopCwd: string | undefined
+          if (loopRoot === null) {
+            loopCwd = undefined
+          } else {
+            loopCwd = loopRoot
+          }
+          await onFlowDoneImpl(ref, mode, worktree, loopCwd)
         } catch {
           // never break the run end
         }
@@ -728,10 +742,14 @@ export default function (pi: ExtensionAPI) {
       annotate: async (ref: string, body: string) => {
         await writeAvenNote(ref, body)
       },
-      // AIDEV-NOTE: PMR-82K0 pattern — no ctx in scope here, so the repo
-      // root comes from the established resolveRepoRoot() seam; a throw
-      // (or null) makes the sweep return quietly (fail-closed).
-      sessionGitRoot: async () => resolveRepoRoot(),
+      // AIDEV-NOTE: PMR-YG2N fix round — the sweep's gitRoot filter must
+      // match the journal's gitRoot semantics (commandPhaseInput:
+      // `git rev-parse --show-toplevel` from the session cwd), NOT
+      // resolveRepoRoot()'s install-root value; a foreign-root journal ref
+      // under the old wiring was silently noop'd with a terminal marker.
+      // resolveSessionRepoRoot never throws; null (or a throw) makes the
+      // sweep return quietly (fail-closed).
+      sessionGitRoot: async () => resolveSessionRepoRoot(pi, ctx.cwd),
       notify: (message: string, level: 'info' | 'warning') => {
         if (notifyUser !== null) {
           notifyUser(message, level)
@@ -744,7 +762,7 @@ export default function (pi: ExtensionAPI) {
         sweepInFlight = false
       })
   }
-  onFlowDoneImpl = async (ref, mode, worktree) => {
+  onFlowDoneImpl = async (ref, mode, worktree, cwd) => {
     // Loop contract is Promise<void>: the CleanupFlowWorktreeSummary is
     // intentionally discarded here (observability lives in the annotate
     // path inside cleanupFlowWorktree itself, PMR-W6C4).
@@ -752,9 +770,12 @@ export default function (pi: ExtensionAPI) {
       ref,
       mode,
       worktree,
-      // ExtensionAPI exposes no cwd; the session cwd captured at
-      // session_start is the same value aven routing uses.
-      cwd: getAvenSessionCwd() ?? process.cwd(),
+      // AIDEV-NOTE: PMR-YG2N fix round — the done-path cwd is the session
+      // repo root supplied by the caller (/flow done branch passes ctx.cwd;
+      // the loop wrapper passes resolveSessionRepoRoot(pi), process-cwd
+      // semantics), replacing the PMR-82K0 resolveRepoRoot() install-root
+      // value that mis-scoped cleanup in foreign repos.
+      cwd,
       annotate: async (noteRef, body) => {
         await writeAvenNote(noteRef, body)
       },
@@ -1287,7 +1308,7 @@ export default function (pi: ExtensionAPI) {
           summary = { action: 'deferred', reason: 'cleanup not ready' }
         } else {
           try {
-            summary = await onFlowDoneImpl(ref, mode, resolved)
+            summary = await onFlowDoneImpl(ref, mode, resolved, ctx.cwd)
           } catch {
             summary = { action: 'deferred', reason: 'cleanup error' }
           }
@@ -1297,6 +1318,10 @@ export default function (pi: ExtensionAPI) {
           cleanupLine = `Worktree cleanup: removed ${resolved?.path ?? ''}.`
         } else if (summary.action === 'noop') {
           cleanupLine = 'Worktree cleanup: no flow worktree bound.'
+        } else if (summary.action === 'kept-all') {
+          // AIDEV-NOTE: PMR-YG2N fix round — kept-all is a deliberate KEEP
+          // (unmerged worktree), not a deferral; label it accordingly.
+          cleanupLine = `Worktree cleanup: kept (${summary.reason}).`
         } else {
           cleanupLine = `Worktree cleanup: deferred (${summary.reason}).`
         }

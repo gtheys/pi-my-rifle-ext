@@ -311,7 +311,10 @@ export async function sweepMergedFlowWorktrees(
       if (binding.kind === 'none') {
         detail = 'no recorded worktree note'
       } else {
-        detail = 'no existing worktree note'
+        // AIDEV-NOTE: PMR-YG2N fix round — 'gone' means the note EXISTS but
+        // the worktree it recorded is gone or absent from herdr state; the
+        // old wording ('no existing worktree note') was misleading.
+        detail = 'recorded worktree gone or absent from herdr'
       }
       try {
         await deps.appendEvent({

@@ -111,7 +111,8 @@ function pickArray(root: unknown, key: string): unknown[] {
  */
 export async function herdrAvailable(
   pi: ExtensionAPI,
-  cwd: string,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const result = await pi.exec('herdr', ['worktree', 'list'], { cwd })
   if (result.code === 0) {
@@ -142,7 +143,8 @@ export function parseWorktrees(root: unknown): HerdrWorktree[] {
 
 export async function worktreeList(
   pi: ExtensionAPI,
-  cwd: string,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
 ): Promise<HerdrWorktree[]> {
   const result = await pi.exec('herdr', ['worktree', 'list'], { cwd })
   if (result.code !== 0) {
@@ -234,7 +236,8 @@ export async function worktreeCreate(
 
 export async function worktreeRemove(
   pi: ExtensionAPI,
-  cwd: string,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
   workspaceId: string,
   force: boolean,
 ): Promise<void> {
@@ -252,7 +255,8 @@ export async function worktreeRemove(
 
 export async function agentList(
   pi: ExtensionAPI,
-  cwd: string,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
 ): Promise<HerdrAgent[]> {
   const result = await pi.exec('herdr', ['agent', 'list'], { cwd })
   if (result.code !== 0) {

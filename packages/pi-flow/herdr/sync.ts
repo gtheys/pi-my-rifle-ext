@@ -7,6 +7,7 @@ import { type SpawnSyncReturns, spawnSync } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { escapeRegExp } from '../spec-review/escape-regexp.ts'
 
 export const HERDR_PLUGIN_ID = 'gtheys.pi-my-rifle-ext'
@@ -32,6 +33,37 @@ export function resolveRepoRoot(): string {
     '..',
     '..',
   )
+}
+
+// AIDEV-NOTE: PMR-YG2N fix round — deliberate contrast with resolveRepoRoot()
+// above. resolveRepoRoot() resolves from import.meta.url: the EXTENSION
+// INSTALL root, session-independent — correct for version/preflight callers
+// only. resolveSessionRepoRoot() runs `git rev-parse --show-toplevel` from
+// the session's cwd (process cwd when omitted), mirroring commandPhaseInput's
+// journal gitRoot semantics. Never throws: null on failure/empty output, so
+// callers can fail closed.
+export async function resolveSessionRepoRoot(
+  pi: ExtensionAPI,
+  cwd?: string,
+): Promise<string | null> {
+  const options: { cwd?: string } = {}
+  if (cwd !== undefined) {
+    options.cwd = cwd
+  }
+  try {
+    const result = await pi.exec(
+      'git',
+      ['rev-parse', '--show-toplevel'],
+      options,
+    )
+    const root = result.stdout.trim()
+    if (root === '') {
+      return null
+    }
+    return root
+  } catch {
+    return null
+  }
 }
 
 export type HerdrSyncStatus =

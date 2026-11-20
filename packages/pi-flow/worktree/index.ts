@@ -107,7 +107,11 @@ async function declareWorktreeEffect(
 }
 
 /** First `worktree <path>` entry of `git worktree list --porcelain`. */
-async function mainCheckout(pi: ExtensionAPI, cwd: string): Promise<string> {
+async function mainCheckout(
+  pi: ExtensionAPI,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
+): Promise<string> {
   const result = await pi.exec('git', ['worktree', 'list', '--porcelain'], {
     cwd,
   })
@@ -520,7 +524,8 @@ export type RemoveWorktreeResult = {
 export async function removeWorktreeCore(
   pi: ExtensionAPI,
   effects: EffectJournal,
-  cwd: string,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
   opts: RemoveWorktreeOpts,
 ): Promise<RemoveWorktreeResult | { error: string }> {
   const path = opts.path
@@ -678,7 +683,9 @@ export type CleanupFlowWorktreeInput = {
   ref: string
   mode: 'work' | 'personal'
   worktree: FlowWorktree | undefined
-  cwd: string
+  // PMR-YG2N fix round — session cwd when invoked from the /flow done
+  // branch; undefined (process cwd) on the loop done path.
+  cwd: string | undefined
   annotate?: (ref: string, body: string) => Promise<void>
 }
 

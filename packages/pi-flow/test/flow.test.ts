@@ -738,6 +738,13 @@ interface CleanupExecOptions {
   wtBranch: string
   dirty: boolean
   calls: string[]
+  // PMR-YG2N fix round — what `git rev-parse --show-toplevel` serves (the
+  // session repo root the sweep keys on). Defaults to the install root so
+  // the pre-existing fixtures keep their old (install-root) pairing.
+  sessionRoot?: string
+  // Exit code for `git merge-base --is-ancestor` — 1 simulates an unmerged
+  // branch (kept-all outcome) for the done-branch notify test.
+  mergeBaseCode?: number
 }
 
 function makeCleanupExec(options: CleanupExecOptions): FlowExec {
@@ -776,8 +783,19 @@ function makeCleanupExec(options: CleanupExecOptions): FlowExec {
       }
       return { code: 0, stdout: '', stderr: '' }
     }
+    if (command === 'git' && argv === 'rev-parse --show-toplevel') {
+      let root = options.sessionRoot
+      if (root === undefined) {
+        root = resolveRepoRoot()
+      }
+      return { code: 0, stdout: `${root}\n`, stderr: '' }
+    }
     if (command === 'git' && args[0] === 'merge-base') {
-      return { code: 0, stdout: '', stderr: '' }
+      let mergeBaseCode = options.mergeBaseCode
+      if (mergeBaseCode === undefined) {
+        mergeBaseCode = 0
+      }
+      return { code: mergeBaseCode, stdout: '', stderr: '' }
     }
     if (command === 'git' && argv === 'worktree list --porcelain') {
       return { code: 0, stdout: `worktree ${HANDLER_WS}\n`, stderr: '' }
@@ -934,6 +952,135 @@ test('flow handler: concurrent session_start fires exactly one sweep (latch, PMR
       call.startsWith('herdr worktree remove'),
     )
     assert.equal(removals.length, 1)
+  })
+  rmSync(wtDir, { recursive: true, force: true })
+})
+
+// AIDEV-NOTE: PMR-YG2N fix round regression — the sweep's sessionGitRoot is
+// the SESSION repo root (git rev-parse from ctx.cwd), not the extension
+// install root. A ref journaled from a foreign repo must still be swept.
+test('session_start sweep keys on the session repo root, not the install root — foreign-root ref is swept (PMR-YG2N fix round)', async () => {
+  const ref = 'PMR-SWEEPF'
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-sweepf-wt-'))
+  const foreignRoot = mkdtempSync(path.join(os.tmpdir(), 'pmr-yg2n-foreign-'))
+  writeDoneLabels(ref, ['planned', 'active', 'review-passed', 'done'])
+  writeWorktreeNote(wtDir, 'feat/sweep-foreign')
+  seedRunStartWithInput(ref, foreignRoot)
+  const calls: string[] = []
+  await withHandlerEnv(async () => {
+    const { fireSessionStart } = captureFlowCommand(
+      makeCleanupExec({
+        wtPath: wtDir,
+        wtBranch: 'feat/sweep-foreign',
+        dirty: false,
+        calls,
+        sessionRoot: foreignRoot,
+      }),
+    )
+    const notifications: Array<{ message: string; level: string }> = []
+    fireSessionStart(sessionStartCtx(notifications))
+    await drainUntil(() => {
+      const jp = journalPath(HANDLER_AGENT_DIR, ref)
+      if (!existsSync(jp)) return false
+      return /"kind":"worktree-sweep"/.test(readFileSync(jp, 'utf8'))
+    })
+    // The sweep actually ran: aven execs in HANDLER_LOG, herdr removal in
+    // the routed exec, terminal removed marker journaled.
+    const avenCalls = readFileSync(HANDLER_LOG, 'utf8')
+    assert.match(avenCalls, new RegExp(`show ${ref} --json`))
+    assert.match(avenCalls, new RegExp(`note ${ref}`))
+    assert.ok(
+      calls.some((call) => call.startsWith('herdr worktree remove')),
+      'expected a herdr worktree remove call from the sweep',
+    )
+    const journal = readFileSync(journalPath(HANDLER_AGENT_DIR, ref), 'utf8')
+    assert.match(journal, /"source":"sweep"/)
+    assert.match(journal, /"outcome":"removed"/)
+  })
+  rmSync(wtDir, { recursive: true, force: true })
+  rmSync(foreignRoot, { recursive: true, force: true })
+})
+
+// AIDEV-NOTE: PMR-YG2N fix round regression — a ref journaled with the
+// INSTALL root (the old buggy pairing) is foreign from a session whose repo
+// is elsewhere, so the sweep must skip it entirely: zero aven execs, no
+// marker (the old code wrongly swept it and journaled a terminal noop).
+test('session_start sweep keys on the session repo root, not the install root — install-root ref from a foreign session is skipped (PMR-YG2N fix round)', async () => {
+  const ref = 'PMR-SWEEPS'
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-sweeps-wt-'))
+  const foreignRoot = mkdtempSync(path.join(os.tmpdir(), 'pmr-yg2n-foreign-'))
+  writeDoneLabels(ref, ['planned', 'active', 'review-passed', 'done'])
+  writeWorktreeNote(wtDir, 'feat/sweep-skipped')
+  seedRunStartWithInput(ref, resolveRepoRoot())
+  const calls: string[] = []
+  await withHandlerEnv(async () => {
+    const { fireSessionStart } = captureFlowCommand(
+      makeCleanupExec({
+        wtPath: wtDir,
+        wtBranch: 'feat/sweep-skipped',
+        dirty: false,
+        calls,
+        sessionRoot: foreignRoot,
+      }),
+    )
+    const notifications: Array<{ message: string; level: string }> = []
+    fireSessionStart(sessionStartCtx(notifications))
+    // Let any (wrong) sweep work settle — no timers, event loop is the clock.
+    await settle(200)
+    // Unrelated session_start bootstrap traffic (ensure-labels) may exist;
+    // what must be absent is the sweep's own traffic: the note read, the
+    // annotate, and any herdr removal.
+    const log = readFileSync(HANDLER_LOG, 'utf8')
+    assert.ok(
+      !log.includes(`show ${ref} --full`),
+      'foreign-session ref must not be swept (no aven show --full)',
+    )
+    assert.ok(
+      !log.includes(`note ${ref} `),
+      'foreign-session ref must not be swept (no aven note)',
+    )
+    assert.ok(
+      !calls.some((call) => call.startsWith('herdr worktree remove')),
+      'foreign-session ref must never reach herdr worktree remove',
+    )
+    const jp = journalPath(HANDLER_AGENT_DIR, ref)
+    if (existsSync(jp)) {
+      assert.doesNotMatch(readFileSync(jp, 'utf8'), /"kind":"worktree-sweep"/)
+    }
+  })
+  rmSync(wtDir, { recursive: true, force: true })
+  rmSync(foreignRoot, { recursive: true, force: true })
+})
+
+// AIDEV-NOTE: PMR-YG2N fix round — kept-all is a deliberate KEEP (unmerged
+// worktree left in place), not a deferral; the done-branch notify must not
+// label it 'deferred'.
+test('flow handler: done + unmerged worktree notifies kept, not deferred (PMR-YG2N fix round)', async () => {
+  const ref = 'PMR-KEPT1'
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-kept-wt-'))
+  writeDoneLabels(ref, ['planned', 'active', 'review-passed', 'done'])
+  writeWorktreeNote(wtDir, 'feat/kept-one')
+  seedRunStart(ref)
+  const calls: string[] = []
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand(
+      makeCleanupExec({
+        wtPath: wtDir,
+        wtBranch: 'feat/kept-one',
+        dirty: false,
+        calls,
+        mergeBaseCode: 1,
+      }),
+    )
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler(ref, flowCtx(notifications))
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /Worktree cleanup: kept \(/)
+    assert.doesNotMatch(notifications[0].message, /Worktree cleanup: deferred/)
+    const journal = readFileSync(journalPath(HANDLER_AGENT_DIR, ref), 'utf8')
+    assert.match(journal, /"outcome":"kept-all"/)
   })
   rmSync(wtDir, { recursive: true, force: true })
 })
