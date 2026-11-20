@@ -77,7 +77,7 @@ describe('frameFlowStatusLines', () => {
       l.replace(/\x1b\[[0-9;]*m/g, '').replace(/[│]/g, ''),
     )
     // phase rows indented under the header
-    assert.ok(bare[2].trimStart().startsWith('[x]'))
+    assert.ok(bare[2].trimStart().startsWith('✅'))
     assert.ok(bare[3].trimStart().startsWith('[ ]'))
     // blank separator rows before subtasks: and gates:
     assert.equal(bare[4].replace(/[│]/g, '').trim(), '')
@@ -104,7 +104,10 @@ describe('frameFlowStatusLines', () => {
   // AIDEV-NOTE (PMR-CT52): pins the vocabulary contract between
   // flow/status.ts and flow/frame.ts — frame.ts keys its shaping on the
   // exact literals 'subtasks:', 'gates:', '[x] '/'[ ] ' from
-  // renderFlowStatusLines. Both sides are unit-tested in isolation, so a
+  // renderFlowStatusLines. PMR-X7BH: frame.ts renders done marks as '✅'
+  // (mark column normalized to 4 visible cols) and prefixes phase rows
+  // with per-phase emoji — the checkbox comparison below derives the
+  // expected visible form from the raw status.ts line before comparing. Both sides are unit-tested in isolation, so a
   // wording change in status.ts would otherwise silently drop the blank
   // separators / indentation (cosmetic-only regression). If this test
   // fails, update the frame.ts matchers together with the status.ts
@@ -160,11 +163,30 @@ describe('frameFlowStatusLines', () => {
         `blank separator row missing before ${header}`,
       )
     }
+    // PMR-X7BH: frame.ts renders done marks as '✅' (mark column
+    // normalized to 4 visible cols) and prefixes phase rows with per-phase
+    // emoji — derive the expected visible form from the raw status.ts line
+    // before comparing.
+    const PHASE_EMOJI: Record<string, string> = {
+      plan: '📝',
+      implement: '🔨',
+      validate: '🔍',
+      feedback: '🎁',
+    }
+    const styledVisible = (raw: string): string => {
+      const done = raw.startsWith('[x] ')
+      const rest = raw.slice(4)
+      const phase = Object.keys(PHASE_EMOJI).find((p) => rest.startsWith(p))
+      if (phase === undefined) return raw
+      let mark = '[ ] '
+      if (done) mark = '✅  '
+      return `${mark}${PHASE_EMOJI[phase]} ${rest}`
+    }
     // Every checkbox row indents two spaces under its block header.
     for (const line of lines) {
       if (line.startsWith('[x] ') || line.startsWith('[ ] ')) {
         assert.ok(
-          content.includes(`  ${line}`),
+          content.includes(`  ${styledVisible(line)}`),
           `checkbox row not indented in frame: ${line}`,
         )
       }
