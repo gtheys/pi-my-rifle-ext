@@ -331,6 +331,7 @@ test('selectEnvFiles: empty dirs', () => {
 // --- decideBranchDelete: basics (full matrix in subtask 3.3) ---
 
 import {
+  decideAutoBranchDelete,
   decideBranchDelete,
   describePruneFailure,
 } from '../worktree/remove-guards.ts'
@@ -585,6 +586,90 @@ for (const c of DECIDE_MATRIX) {
     }
   })
 }
+
+// --- decideAutoBranchDelete: full matrix (subtask 3.3, PMR-81SX phase 3) ---
+// Auto-cleanup path never refuses/skips: delete or keep (branch or all).
+// Personal-mode merged-proof failure keeps worktree AND branch (keep-all);
+// work-mode unproven states keep only the branch (keep-branch).
+
+test('decideAutoBranchDelete: personal + merged-proof → delete', () => {
+  assert.deepEqual(
+    decideAutoBranchDelete({
+      mode: 'personal',
+      prState: 'NO_PR',
+      localMergedProof: true,
+    }),
+    { action: 'delete' },
+  )
+})
+
+test('decideAutoBranchDelete: personal + merged-proof failure → keep-all naming the ancestor check', () => {
+  const decision = decideAutoBranchDelete({
+    mode: 'personal',
+    prState: 'NO_PR',
+    localMergedProof: false,
+  })
+  assert.equal(decision.action, 'keep-all')
+  assert.ok(decision.action !== 'delete' && 'reason' in decision)
+  assert.match(decision.reason, /merge-base --is-ancestor/)
+})
+
+for (const prState of [
+  'MERGED',
+  'OPEN',
+  'CLOSED',
+  'GH_MISSING',
+  'NO_PR',
+] as const) {
+  const expected =
+    prState === 'MERGED'
+      ? { action: 'delete' as const }
+      : { action: 'keep-branch' as const }
+  test(`decideAutoBranchDelete: work + ${prState} → ${expected.action}`, () => {
+    const decision = decideAutoBranchDelete({
+      mode: 'work',
+      prState,
+      localMergedProof: false,
+    })
+    assert.equal(decision.action, expected.action)
+  })
+}
+
+test('decideAutoBranchDelete: work keep reasons are branch-only (keep-branch, never keep-all)', () => {
+  for (const prState of ['OPEN', 'CLOSED', 'GH_MISSING', 'NO_PR'] as const) {
+    const decision = decideAutoBranchDelete({
+      mode: 'work',
+      prState,
+      localMergedProof: false,
+    })
+    assert.equal(decision.action, 'keep-branch', prState)
+    assert.ok(decision.action !== 'delete' && 'reason' in decision)
+    assert.ok(decision.reason.length > 0, prState)
+  }
+})
+
+test('decideAutoBranchDelete: force deletes regardless of mode/proof/state', () => {
+  // personal + failed proof + force
+  assert.deepEqual(
+    decideAutoBranchDelete({
+      mode: 'personal',
+      prState: 'NO_PR',
+      localMergedProof: false,
+      force: true,
+    }),
+    { action: 'delete' },
+  )
+  // work + OPEN + force
+  assert.deepEqual(
+    decideAutoBranchDelete({
+      mode: 'work',
+      prState: 'OPEN',
+      localMergedProof: false,
+      force: true,
+    }),
+    { action: 'delete' },
+  )
+})
 
 // --- selectEnvFiles: edge matrix (subtask 3.3) ---
 
