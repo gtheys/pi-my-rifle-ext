@@ -399,14 +399,14 @@ export default function (pi: ExtensionAPI) {
       name: info.name,
       spawnKind: info.kind,
     }
-    if (info.subtask !== undefined) {
+    if (info.subtask !== undefined && info.subtask !== '') {
       event.subtask = info.subtask
     }
     // AIDEV-NOTE (PMR-EA8X): sessionFile lets /flow-cost resolve child
     // sessions from the journal alone (PMR-C998: now a structured field on
     // the spawn-record instead of a note-text suffix; older notes without it
     // still fall back to the durable assignment records).
-    if (info.sessionFile !== undefined) {
+    if (info.sessionFile !== undefined && info.sessionFile !== '') {
       event.sessionFile = info.sessionFile
     }
     if (nested) {
