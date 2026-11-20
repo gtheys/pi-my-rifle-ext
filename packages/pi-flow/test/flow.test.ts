@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,6 +20,7 @@ import {
   resumeSeedFromEvents,
   runInputRecord,
 } from '../flow/resume.ts'
+import { resolveRepoRoot } from '../herdr/sync.ts'
 import flowExtension, { setAvenSessionCwd } from '../index.ts'
 
 // --- parseFlowArgs ---
@@ -435,6 +437,60 @@ interface FlowCallCtx {
   >
 }
 
+/** Structural shape of the pi.on(event, handler) registrations we capture. */
+type CapturedEventHandler = (event: unknown, ctx: unknown) => unknown
+
+// AIDEV-NOTE: PMR-YG2N 4.2 — structural session_start ctx: exactly what the
+// session_start handler in index.ts destructures (cwd, ui.notify,
+// sessionManager.getSessionFile/getBranch). No branch entries = no binding
+// restore, so firing it exercises the background sweep without the parked-run
+// consumer.
+interface SessionStartTestCtx {
+  cwd: string
+  ui: { notify: (message: string, level: string) => void }
+  sessionManager: {
+    getSessionFile: () => string | null
+    getBranch: () => Array<{
+      type: string
+      customType?: string
+      data?: unknown
+    }>
+  }
+}
+
+function sessionStartCtx(
+  notifications: Array<{ message: string; level: string }>,
+): SessionStartTestCtx {
+  return {
+    cwd: HANDLER_WS,
+    ui: {
+      notify: (message: string, level: string) =>
+        notifications.push({ message, level }),
+    },
+    sessionManager: {
+      getSessionFile: () => null,
+      getBranch: () => [],
+    },
+  }
+}
+
+// AIDEV-NOTE: PMR-YG2N 4.2 — bounded setImmediate-chaining drain; the sweep
+// chain involves multiple awaited execs, so poll until the check passes. No
+// timers/sleeps — the event loop itself is the clock.
+async function drainUntil(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 1000; i++) {
+    if (check()) return
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  assert.fail('drainUntil: condition not met within the drain budget')
+}
+
+async function settle(amount: number): Promise<void> {
+  for (let i = 0; i < amount; i++) {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+}
+
 /** Structural pi.exec override shape used by the done-path tests (3.2). */
 type FlowExec = (
   command: string,
@@ -442,10 +498,16 @@ type FlowExec = (
   options?: { cwd?: string },
 ) => Promise<{ stdout: string; stderr: string; code: number }>
 
-// AIDEV-NOTE: fake ExtensionAPI via Proxy — captures registerCommand('flow')
-// and sendUserMessage; every other registration method is a no-op so the
-// full default extension wires without a live Pi session.
-function captureFlowCommand(execOverride?: FlowExec): FlowCallCtx {
+// AIDEV-NOTE: fake ExtensionAPI via Proxy — captures registerCommand('flow'),
+// sendUserMessage, and (PMR-YG2N 4.2, additive) pi.on(event, handler)
+// registrations in a Map so tests can fire session_start through the SAME
+// handler instance the default extension wired. Every other registration
+// method is a no-op so the full default extension wires without a live Pi
+// session.
+function captureFlowCommand(execOverride?: FlowExec): FlowCallCtx & {
+  events: Map<string, CapturedEventHandler[]>
+  fireSessionStart: (ctx: SessionStartTestCtx) => void
+} {
   const commands = new Map<
     string,
     { handler: (args: string, ctx: unknown) => Promise<void> }
@@ -454,6 +516,7 @@ function captureFlowCommand(execOverride?: FlowExec): FlowCallCtx {
     string,
     { description: string; handler: (ctx: unknown) => Promise<void> }
   >()
+  const events = new Map<string, CapturedEventHandler[]>()
   const sent: string[] = []
   const base = {
     registerCommand: (
@@ -477,6 +540,17 @@ function captureFlowCommand(execOverride?: FlowExec): FlowCallCtx {
     },
     exec:
       execOverride ?? (async () => ({ stdout: `${HANDLER_WS}\n`, stderr: '' })),
+    on: (event: string, handler: CapturedEventHandler) => {
+      // AIDEV-NOTE: PMR-YG2N 4.2 — multiple in-repo extensions register the
+      // same event (widget/review/telemetry also hook session_start), so
+      // keep every handler; the Map must not overwrite earlier ones.
+      const existing = events.get(event)
+      if (existing === undefined) {
+        events.set(event, [handler])
+      } else {
+        existing.push(handler)
+      }
+    },
   }
   const pi = new Proxy(base, {
     get(target, prop) {
@@ -491,7 +565,23 @@ function captureFlowCommand(execOverride?: FlowExec): FlowCallCtx {
   if (def === undefined) {
     throw new Error('/flow command was not registered')
   }
-  return { handler: def.handler, sent, shortcuts }
+  const fireSessionStart = (ctx: SessionStartTestCtx): void => {
+    const handlers = events.get('session_start')
+    if (handlers === undefined) {
+      throw new Error('session_start handler was not registered')
+    }
+    for (const handler of handlers) {
+      // AIDEV-NOTE: PMR-YG2N 4.2 — best-effort fan-out mirrors production:
+      // one hook failing (e.g. a non-flow hook wanting richer ctx) must not
+      // stop the pi-flow session_start handler under test from running.
+      try {
+        handler(undefined, ctx)
+      } catch {
+        // non-flow hooks are out of scope for this capture
+      }
+    }
+  }
+  return { handler: def.handler, sent, shortcuts, events, fireSessionStart }
 }
 
 function flowCtx(
@@ -732,6 +822,121 @@ function seedRunStart(ref: string): void {
     `${JSON.stringify({ kind: 'run-start', at: 't', ref, mode: 'personal' })}\n`,
   )
 }
+
+// AIDEV-NOTE: PMR-YG2N 4.2 — a swept ref must carry a run-input whose gitRoot
+// matches the sweep's session root (resolveRepoRoot(), the same seam index.ts
+// wires as sessionGitRoot), so the local filter passes before any aven exec.
+function seedRunStartWithInput(ref: string, gitRoot: string): void {
+  seedRunStart(ref)
+  const jp = journalPath(HANDLER_AGENT_DIR, ref)
+  writeFileSync(
+    jp,
+    readFileSync(jp, 'utf8') +
+      `${JSON.stringify({
+        kind: 'run-input',
+        at: 't',
+        ref,
+        input: { mode: 'personal', gitRoot, workRoots: [] },
+      })}\n`,
+  )
+}
+
+function countLogLines(log: string, prefix: string): number {
+  return log.split('\n').filter((line) => line.startsWith(prefix)).length
+}
+
+// --- session_start background sweep wiring (PMR-YG2N 4.2) ---
+
+test('flow handler: session_start sweep removes journaled done ref, marker journaled (PMR-YG2N 4.2)', async () => {
+  const ref = 'PMR-SWEEP1'
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-sweep-wt-'))
+  writeDoneLabels(ref, ['planned', 'active', 'review-passed', 'done'])
+  writeWorktreeNote(wtDir, 'feat/sweep-one')
+  seedRunStartWithInput(ref, resolveRepoRoot())
+  const calls: string[] = []
+  await withHandlerEnv(async () => {
+    const { fireSessionStart } = captureFlowCommand(
+      makeCleanupExec({
+        wtPath: wtDir,
+        wtBranch: 'feat/sweep-one',
+        dirty: false,
+        calls,
+      }),
+    )
+    const notifications: Array<{ message: string; level: string }> = []
+    fireSessionStart(sessionStartCtx(notifications))
+    await drainUntil(() => {
+      const jp = journalPath(HANDLER_AGENT_DIR, ref)
+      if (!existsSync(jp)) return false
+      return /"kind":"worktree-sweep"/.test(readFileSync(jp, 'utf8'))
+    })
+    // The sweep's aven execs landed in HANDLER_LOG (presence, not order).
+    const avenCalls = readFileSync(HANDLER_LOG, 'utf8')
+    assert.match(avenCalls, new RegExp(`show ${ref} --json`))
+    assert.match(avenCalls, new RegExp(`show ${ref} --full`))
+    assert.match(avenCalls, new RegExp(`note ${ref}`))
+    // The routed exec actually removed the herdr worktree.
+    assert.ok(
+      calls.some((call) => call.startsWith('herdr worktree remove')),
+      'expected a herdr worktree remove call from the sweep',
+    )
+    // Sweep-sourced terminal marker so later sweeps skip the ref.
+    const journal = readFileSync(journalPath(HANDLER_AGENT_DIR, ref), 'utf8')
+    assert.match(journal, /"kind":"worktree-sweep"/)
+    assert.match(journal, /"source":"sweep"/)
+    assert.match(journal, /"outcome":"removed"/)
+  })
+  rmSync(wtDir, { recursive: true, force: true })
+})
+
+test('flow handler: concurrent session_start fires exactly one sweep (latch, PMR-YG2N 4.2)', async () => {
+  const ref = 'PMR-SWEEP2'
+  const wtDir = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-sweep2-wt-'))
+  writeDoneLabels(ref, ['planned', 'active', 'review-passed', 'done'])
+  writeWorktreeNote(wtDir, 'feat/sweep-two')
+  seedRunStartWithInput(ref, resolveRepoRoot())
+  const calls: string[] = []
+  await withHandlerEnv(async () => {
+    const { fireSessionStart } = captureFlowCommand(
+      makeCleanupExec({
+        wtPath: wtDir,
+        wtBranch: 'feat/sweep-two',
+        dirty: false,
+        calls,
+      }),
+    )
+    const notifications: Array<{ message: string; level: string }> = []
+    // Both handlers run synchronously up to their first await — the second
+    // must hit the in-flight latch and be dropped, not queued.
+    const ctx = sessionStartCtx(notifications)
+    fireSessionStart(ctx)
+    fireSessionStart(ctx)
+    await drainUntil(() => {
+      const jp = journalPath(HANDLER_AGENT_DIR, ref)
+      if (!existsSync(jp)) return false
+      return /"kind":"worktree-sweep"/.test(readFileSync(jp, 'utf8'))
+    })
+    // Let any straggler work settle before counting (still no timers).
+    await settle(50)
+    // One sweep's worth of aven execs, counted by argv prefix — the sweep's
+    // own reads/annotate are distinguishable from session_start's unrelated
+    // ensure-labels bootstrap traffic. Call-count, not timing.
+    // AIDEV-NOTE: PMR-YG2N 4.2 — one sweep reads labels twice per ref: the
+    // per-ref aven workspace resolution (avenArgsWithWorkspace) execs
+    // `show <ref> --json` once, then readAvenLabels execs it again. A second
+    // (latch-dropped) sweep would add a third --json read plus a second
+    // --full read, note, and removal — the exact counts below pin ONE sweep.
+    const log = readFileSync(HANDLER_LOG, 'utf8')
+    assert.equal(countLogLines(log, `show ${ref} --json`), 2)
+    assert.equal(countLogLines(log, `show ${ref} --full`), 1)
+    assert.equal(countLogLines(log, `note ${ref} `), 1)
+    const removals = calls.filter((call) =>
+      call.startsWith('herdr worktree remove'),
+    )
+    assert.equal(removals.length, 1)
+  })
+  rmSync(wtDir, { recursive: true, force: true })
+})
 
 test('flow handler: done + note-bound worktree is swept to removed (PMR-YG2N 3.2)', async () => {
   const ref = 'PMR-DONE1'
