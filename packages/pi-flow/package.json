@@ -21,6 +21,9 @@
   "files": [
     "README.md",
     "adhoc/tracker.ts",
+    "flow-diagram/command.ts",
+    "flow-diagram/translate.ts",
+    "flow-diagram/assemble.ts",
     "flow-diagram/vendor/harness-profiler/hp.js",
     "flow-diagram/vendor/harness-profiler/load.ts",
     "flow-diagram/vendor/harness-profiler/view.html",

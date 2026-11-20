@@ -7,6 +7,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import type { AssignmentRecord } from '@gtheys/pi-interactive-subagents'
 import type { FlowDiagramDeps } from '../flow-diagram/command.ts'
 import {
+  diagramStamp,
   parseDiagramArgs,
   registerFlowDiagramCommand,
 } from '../flow-diagram/command.ts'
@@ -17,6 +18,7 @@ const noopDeps: FlowDiagramDeps = {
   listAssignmentRecords: () => [],
   readSessionFile: () => null,
   loadRenderer: () => null,
+  now: () => 0,
   writeDiagram: async () => '/tmp/diagram.html',
   openDiagram: async () => true,
 }
@@ -260,7 +262,9 @@ test('handler: write ok + open ok -> path notified as info', async () => {
       },
     }),
     readRunEvents: async () => journal('PMR-DIA'),
-    writeDiagram: async (html: string) => {
+    writeDiagram: async (ref: string, runIndex: number, html: string) => {
+      assert.equal(ref, 'PMR-DIA')
+      assert.equal(runIndex, 1)
       assert.match(html, /<html>/)
       return '/tmp/diagram.html'
     },
@@ -367,4 +371,12 @@ test('handler: unreadable session files -> exactly one summary notify', async ()
   assert.equal(summaries.length, 1)
   assert.equal(summaries[0].level, 'info')
   assert.match(summaries[0].message, /2 session files unreadable/)
+})
+
+test('diagramStamp produces YYYYMMDD-HHmmss', () => {
+  // 2026-11-07 01:02:03 local — construct via Date components to stay TZ-safe
+  const d = new Date()
+  d.setFullYear(2026, 10, 7)
+  d.setHours(1, 2, 3, 0)
+  assert.equal(diagramStamp(d.getTime()), '20261107-010203')
 })

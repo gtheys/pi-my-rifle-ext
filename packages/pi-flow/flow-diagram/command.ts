@@ -27,8 +27,14 @@ export interface FlowDiagramDeps {
   readSessionFile: (file: string) => string | null
   /** Vendored renderer; null aborts the command (fail-graceful load). */
   loadRenderer: () => HpRenderer | null
-  /** Write the self-contained HTML; resolves the written file path. */
-  writeDiagram: (html: string) => Promise<string>
+  /** Wall clock, injected so tests can pin the filename stamp. */
+  now: () => number
+  /**
+   * Write the self-contained HTML as
+   * `pi-flow/diagrams/<ref>.run<k>.<YYYYMMDD-HHmmss>.html` under the agent
+   * dir; resolves the written file path.
+   */
+  writeDiagram: (ref: string, runIndex: number, html: string) => Promise<string>
   /** Best-effort open (xdg-open/open fallback); false = user opens by hand. */
   openDiagram: (path: string) => Promise<boolean>
 }
@@ -36,6 +42,18 @@ export interface FlowDiagramDeps {
 export type ParsedDiagramArgs =
   | { kind: 'ok'; ref: string; run: number | null }
   | { kind: 'help' }
+
+/**
+ * Filename stamp for diagram files: local-time `YYYYMMDD-HHmmss`. Pure so
+ * index.ts can reuse it in the writeDiagram wiring and tests can pin it.
+ */
+export function diagramStamp(ms: number): string {
+  const d = new Date(ms)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const date = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`
+  const time = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  return `${date}-${time}`
+}
 
 /**
  * First token = ref (aven:/jira: prefix stripped via parseRefKind), optional
@@ -167,7 +185,7 @@ export async function runFlowDiagram(
     result.records,
     `${ref} run ${result.header.runIndex}`,
   )
-  const path = await deps.writeDiagram(html)
+  const path = await deps.writeDiagram(ref, result.header.runIndex, html)
   const opened = await deps.openDiagram(path)
   if (opened) {
     notify(`/flow-diagram ${ref}: diagram written to ${path}`, 'info')

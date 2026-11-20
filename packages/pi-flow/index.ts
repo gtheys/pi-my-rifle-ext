@@ -4,8 +4,11 @@
 // commands; spec-review/commands.ts owns the spec commands. What stays here:
 // the extension entrypoint, the enforcement interceptors, the flow loop
 // wiring, and /flow + /herdr-sync + /flow-view + /flow-view-replay.
+
+import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, promises as fs, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
   getAgentDir,
@@ -105,6 +108,12 @@ import {
   setActiveFlowRef,
   setBindingChangeListener,
 } from './flow/worktree-context.ts'
+import type { FlowDiagramDeps } from './flow-diagram/command.ts'
+import {
+  diagramStamp,
+  registerFlowDiagramCommand,
+} from './flow-diagram/command.ts'
+import { loadHpRenderer } from './flow-diagram/vendor/harness-profiler/load.ts'
 import {
   preflightRepo,
   resolveRepoRoot,
@@ -762,6 +771,74 @@ export default function (pi: ExtensionAPI) {
     },
   }
   registerFlowCostCommand(pi, costDeps)
+
+  // AIDEV-NOTE (PMR-PVT5 4.2): /flow-diagram wiring — mirrors the costDeps
+  // shapes (readRunEvents + filtered listAssignments + try/catch session
+  // reads) and owns only the side effects: diagram write under
+  // `<agentDir>/pi-flow/diagrams` with an injected-clock filename stamp, and
+  // a best-effort xdg-open/open fallback that resolves false on anything
+  // abnormal. Filename/patch logic lives in flow-diagram/command.ts; this
+  // file stays wiring-only.
+  const nowMs = (): number => Date.now()
+  const flowDiagramDeps: FlowDiagramDeps = {
+    readRunEvents: (ref) => readRunEvents(getAgentDir(), ref),
+    listAssignmentRecords: () => {
+      const records: AssignmentRecord[] = []
+      for (const view of listAssignments()) {
+        if (view.state === 'unknown') continue
+        records.push(view.record)
+      }
+      return records
+    },
+    readSessionFile: (file) => {
+      try {
+        return readFileSync(file, 'utf8')
+      } catch {
+        return null
+      }
+    },
+    loadRenderer: () => loadHpRenderer(),
+    now: nowMs,
+    writeDiagram: async (ref, runIndex, html) => {
+      const dir = join(getAgentDir(), 'pi-flow', 'diagrams')
+      await fs.mkdir(dir, { recursive: true })
+      const path = join(
+        dir,
+        `${ref}.run${runIndex}.${diagramStamp(nowMs())}.html`,
+      )
+      await fs.writeFile(path, html, 'utf8')
+      return path
+    },
+    openDiagram: (path) => {
+      // AIDEV-NOTE: try each opener in order; detached + stdio ignore, unref
+      // the child, resolve false on spawn error or non-zero exit.
+      const openers = ['xdg-open', 'open']
+      const attempt = (index: number): Promise<boolean> => {
+        if (index >= openers.length) return Promise.resolve(false)
+        return new Promise((resolve) => {
+          const child = spawn(openers[index] as string, [path], {
+            detached: true,
+            stdio: 'ignore',
+          })
+          child.on('error', () => {
+            void attempt(index + 1).then(resolve)
+          })
+          child.on('spawn', () => {
+            child.unref()
+          })
+          child.on('exit', (code) => {
+            if (code === 0) {
+              resolve(true)
+            } else {
+              void attempt(index + 1).then(resolve)
+            }
+          })
+        })
+      }
+      return attempt(0)
+    },
+  }
+  registerFlowDiagramCommand(pi, flowDiagramDeps)
   // AIDEV-NOTE: cost metrics are pushed automatically when a run ends (done,
   // halt, pause) — same env gate as `/flow-cost --push`; see flow/cost-autopush.ts.
   autoPushCost = createCostAutoPush({
