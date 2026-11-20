@@ -457,6 +457,12 @@ async function listFlow(pi: ExtensionAPI, cwd: string): Promise<ToolResult> {
 // checkout does); PR merge state via gh checked BEFORE herdr removal so a
 // refused branch delete leaves the worktree untouched. `git branch -D`
 // (not -d) because squash merges look unmerged to git's ancestry check.
+// Decision injection (PMR-81SX fix round): opts.branchDecision, when
+// present, replaces the ghPrState + decideBranchDelete re-derivation —
+// manual removeFlow passes no decision (re-derive as always); the auto
+// cleanup path passes its pre-made decideAutoBranchDelete decision, since
+// personal flows never have PRs and the manual NO_PR refusal must not veto
+// an auto delete.
 async function ghPrState(
   pi: ExtensionAPI,
   main: string,
@@ -491,6 +497,12 @@ export type RemoveWorktreeOpts = {
   force: boolean
   deleteBranch: boolean
   ref: string
+  // AIDEV-NOTE: PMR-81SX fix round — pre-made branch-delete decision for the
+  // AUTO path. When present, the core skips ghPrState + decideBranchDelete
+  // entirely and uses this decision verbatim ('refuse' still aborts with the
+  // worktree intact). The manual tool passes no decision and keeps the
+  // re-derivation semantics byte-identical.
+  branchDecision?: BranchDeleteDecision
 }
 
 export type RemoveWorktreeResult = {
@@ -569,7 +581,16 @@ export async function removeWorktreeCore(
     reason: 'delete_branch not requested',
   }
   let prState: PrState | undefined
-  if (opts.deleteBranch) {
+  if (opts.branchDecision !== undefined) {
+    // Auto path: caller already decided — never re-derive via gh/decideBranchDelete.
+    decision = opts.branchDecision
+    if (decision.action === 'refuse') {
+      return {
+        error: `Refusing to remove: branch ${branch} not deletable — ${decision.reason}.\nPass force: true to remove anyway.`,
+      }
+    }
+  } else if (opts.deleteBranch) {
+    // Manual path: re-derive PR state and consult the manual guard.
     prState = await ghPrState(pi, main, branch)
     decision = decideBranchDelete({
       deleteBranchRequested: true,
@@ -673,6 +694,16 @@ export async function cleanupFlowWorktree(
   try {
     if (input.worktree === undefined) {
       return { action: 'noop', reason: 'no flow worktree bound' }
+    }
+    // Fail-closed binding invariant (PMR-81SX fix round): after a /flow
+    // supersede, a stale binding from the prior flow can still be attached —
+    // never remove another flow's worktree or branch -D its branch under
+    // this flow's effect-journal ref / annotation.
+    if (input.worktree.ref !== input.ref) {
+      return {
+        action: 'noop',
+        reason: `worktree binding belongs to flow ${input.worktree.ref}, not ${input.ref} — not cleaning up`,
+      }
     }
     const wtPath = input.worktree.path
     const wtBranch = input.worktree.branch
@@ -786,11 +817,22 @@ export async function cleanupFlowWorktree(
 
     // Step 6: removal via the phase-3 core, with the EXPLICIT flow ref for
     // the worktree-remove declaration (never the 'worktree-ops' fallback).
+    // AIDEV-NOTE: decision injection — the AUTO decision computed in step 5
+    // is passed verbatim (branchDecision) so the core's manual NO_PR/
+    // GH_MISSING re-derivation never vetoes a personal delete (personal
+    // flows never have PRs). For 'keep-branch' no decision is injected:
+    // deleteBranch is false, so the core's default skip ('delete_branch not
+    // requested') reproduces the previous note byte-identically.
+    let branchDecision: BranchDeleteDecision | undefined
+    if (decision.action === 'delete') {
+      branchDecision = { action: 'delete' }
+    }
     const removed = await removeWorktreeCore(pi, effects, input.cwd, {
       path: wtPath,
       force: false,
       deleteBranch: decision.action === 'delete',
       ref: input.ref,
+      branchDecision,
     })
     if ('error' in removed) {
       return {

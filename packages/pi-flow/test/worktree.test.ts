@@ -1334,6 +1334,8 @@ interface CleanupExecOpts {
   agentListFails?: boolean
   mergeBaseOk?: boolean
   prState?: string
+  // Simulate gh being absent entirely (`gh pr view` fails with command-not-found).
+  ghMissing?: boolean
 }
 
 // AIDEV-NOTE: routed exec fake serving every command cleanupFlowWorktree /
@@ -1357,7 +1359,12 @@ function makeCleanupExec(opts: CleanupExecOpts = {}): {
   const herdrCalls: string[] = []
   const configCalls: Array<{ args: string; cwd: string | undefined }> = []
   const branchDeleteCalls: Array<{ args: string; cwd: string | undefined }> = []
-  const prState = opts.prState ?? 'MERGED'
+  // AIDEV-NOTE: PMR-81SX fix round — the gh fake defaults to NO_PR, the
+  // realistic state for personal mode (pushes are blocked, so no PR can
+  // ever exist). The MERGED default masked the P0 where the core's manual
+  // NO_PR refusal vetoed auto deletes; work-mode tests set prState
+  // explicitly.
+  const prState = opts.prState ?? 'NO_PR'
   let mergeBaseCode = 0
   if (opts.mergeBaseOk !== true) {
     mergeBaseCode = 1
@@ -1414,6 +1421,9 @@ function makeCleanupExec(opts: CleanupExecOpts = {}): {
       return { code: mergeBaseCode, stdout: '', stderr: '' }
     }
     if (command === 'gh') {
+      if (opts.ghMissing === true) {
+        return { code: 127, stdout: '', stderr: 'bash: gh: command not found' }
+      }
       return {
         code: 0,
         stderr: '',
@@ -1447,6 +1457,9 @@ function makeCleanupInput(
   overrides?: Partial<{
     worktree: FlowWorktree | undefined
     ref: string
+    // Explicit binding ref override — defaults to matching `ref` so tests
+    // only get the ref-mismatch invariant when they ask for it.
+    worktreeRef: string
   }>,
 ): {
   ref: string
@@ -1460,7 +1473,7 @@ function makeCleanupInput(
     annotateCalls.push({ ref, body })
   }
   let worktree: FlowWorktree | undefined = {
-    ref: 'PMR-CLN',
+    ref: overrides?.worktreeRef ?? overrides?.ref ?? 'PMR-CLN',
     path: CLEANUP_WT_PATH,
     branch: CLEANUP_BRANCH,
   }
@@ -1478,7 +1491,6 @@ function makeCleanupInput(
 }
 
 test('cleanupFlowWorktree: no binding is a no-op touching nothing', async () => {
-  const { exec } = makeCleanupExec()
   const executed: string[] = []
   const recordingExec = async (
     command: string,
@@ -1732,4 +1744,91 @@ test('cleanupFlowWorktree: work + MERGED PR removes worktree and deletes the bra
   assert.equal(branchDeleteCalls[0].cwd, CLEANUP_MAIN_CWD)
   assert.equal(input.annotateCalls.length, 1)
   assert.match(input.annotateCalls[0].body, /branch deleted/)
+})
+
+// PMR-81SX fix round P0 regression: personal mode has NO gh PR by design
+// (pushes are blocked) — the auto delete decision must pass into the core
+// verbatim so the manual NO_PR refusal never vetoes the removal.
+test('cleanupFlowWorktree: personal + merged-proof + NO_PR still removes (P0 regression)', async () => {
+  const { exec, herdrCalls, branchDeleteCalls } = makeCleanupExec({
+    mergeBaseOk: true,
+    prState: 'NO_PR',
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal', { ref: 'PMR-CLN' })
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'removed')
+  assert.ok(
+    herdrCalls.includes(
+      `herdr worktree remove --workspace ${CLEANUP_WORKSPACE_ID}`,
+    ),
+    'worktree removed despite NO_PR',
+  )
+  assert.equal(branchDeleteCalls.length, 1, 'branch -D executed')
+  assert.equal(branchDeleteCalls[0].args, `branch -D ${CLEANUP_BRANCH}`)
+  assert.equal(branchDeleteCalls[0].cwd, CLEANUP_MAIN_CWD)
+  assert.equal(effects.declarations.length, 1)
+  assert.equal(effects.declarations[0].ref, 'PMR-CLN')
+  assert.equal(effects.declarations[0].effect, 'worktree-remove')
+})
+
+// Same regression with gh entirely absent (GH_MISSING) — the manual guard
+// refuses on GH_MISSING too, the injected auto decision must not.
+test('cleanupFlowWorktree: personal + merged-proof + gh absent still removes', async () => {
+  const { exec, herdrCalls, branchDeleteCalls } = makeCleanupExec({
+    mergeBaseOk: true,
+    ghMissing: true,
+  })
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal', { ref: 'PMR-CLN' })
+  const summary = await cleanupFlowWorktree(
+    { exec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'removed')
+  assert.ok(
+    herdrCalls.includes(
+      `herdr worktree remove --workspace ${CLEANUP_WORKSPACE_ID}`,
+    ),
+    'worktree removed despite gh being absent',
+  )
+  assert.equal(branchDeleteCalls.length, 1)
+  assert.equal(branchDeleteCalls[0].args, `branch -D ${CLEANUP_BRANCH}`)
+  assert.equal(effects.declarations.length, 1)
+  assert.equal(effects.declarations[0].ref, 'PMR-CLN')
+})
+
+// PMR-81SX fix round P1: after a supersede, a stale binding from the prior
+// flow must never be removed (or branch -D'd) under the new flow's ref.
+test('cleanupFlowWorktree: binding ref mismatch is a no-op with zero side-effects', async () => {
+  const { exec } = makeCleanupExec({ mergeBaseOk: true })
+  const executed: string[] = []
+  const recordingExec = async (
+    command: string,
+    args: string[],
+    options?: { cwd?: string },
+  ) => {
+    executed.push(`${command} ${args.join(' ')}`)
+    return exec(command, args, options)
+  }
+  const effects = makeFakeEffects(true)
+  const input = makeCleanupInput('personal', {
+    ref: 'PMR-NEWFLOW',
+    worktreeRef: 'PMR-CLN',
+  })
+  const summary = await cleanupFlowWorktree(
+    { exec: recordingExec } as unknown as ExtensionAPI,
+    effects,
+    input,
+  )
+  assert.equal(summary.action, 'noop')
+  assert.match(summary.reason, /belongs to flow PMR-CLN, not PMR-NEWFLOW/)
+  assert.equal(executed.length, 0, 'ref mismatch must not exec anything')
+  assert.equal(effects.declarations.length, 0, 'no effect declared')
+  assert.equal(input.annotateCalls.length, 0, 'no annotation')
 })
