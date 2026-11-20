@@ -8,6 +8,7 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, promises as fs, readFileSync } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
@@ -172,7 +173,11 @@ import {
   cleanupFlowWorktree,
   default as worktreeExtension,
 } from './worktree/index.ts'
-import { resolveDoneWorktree } from './worktree/sweep.ts'
+import {
+  refsFromRunsDir,
+  resolveDoneWorktree,
+  sweepMergedFlowWorktrees,
+} from './worktree/sweep.ts'
 
 // AIDEV-NOTE: test-facing export surface (PMR-T22H) — tests import these
 // from index.ts; the implementations now live in the boundary modules.
@@ -520,6 +525,9 @@ export default function (pi: ExtensionAPI) {
     setBindingChangeListener((snapshot) => {
       pi.appendEntry('pi-flow-binding', snapshot)
     })
+    // AIDEV-NOTE: PMR-YG2N 4.1 — fire-and-forget sweep AFTER the restore
+    // block + binding listener: a restored done binding is itself sweepable.
+    runBackgroundSweep({ cwd: ctx.cwd })
   })
 
   // AIDEV-NOTE: PMR-EZHA — enforcement boundary for lifecycle run state.
@@ -686,6 +694,56 @@ export default function (pi: ExtensionAPI) {
   // share the exact same instance.
   const worktreeEffects = createEffectJournal(getAgentDir())
   worktreeExtension(pi, { effects: worktreeEffects })
+
+  // AIDEV-NOTE: PMR-YG2N 4.1 — background worktree sweep, latched fire-and-
+  // forget. Latched because session_start and the /flow run path can both
+  // trigger it within one session; the sweep itself is idempotent but the
+  // aven execs it performs are not free, so a concurrent invocation is
+  // dropped, not queued. Wiring only (PMR-T22H): all sweep logic lives in
+  // worktree/sweep.ts.
+  let sweepInFlight = false
+  const runBackgroundSweep = (ctx: { cwd: string }): void => {
+    if (sweepInFlight) {
+      return
+    }
+    sweepInFlight = true
+    const deps = {
+      listRefs: async () => {
+        try {
+          const names = await readdir(join(getAgentDir(), 'pi-flow', 'runs'))
+          return refsFromRunsDir(names)
+        } catch {
+          return []
+        }
+      },
+      readEvents: async (ref: string) => {
+        const events = await readRunEvents(getAgentDir(), ref)
+        if (events === null) {
+          return []
+        }
+        return events
+      },
+      appendEvent: (event: FlowRunEvent) => journal(event),
+      readLabels: (ref: string) => readAvenLabels(ref),
+      annotate: async (ref: string, body: string) => {
+        await writeAvenNote(ref, body)
+      },
+      // AIDEV-NOTE: PMR-82K0 pattern — no ctx in scope here, so the repo
+      // root comes from the established resolveRepoRoot() seam; a throw
+      // (or null) makes the sweep return quietly (fail-closed).
+      sessionGitRoot: async () => resolveRepoRoot(),
+      notify: (message: string, level: 'info' | 'warning') => {
+        if (notifyUser !== null) {
+          notifyUser(message, level)
+        }
+      },
+    }
+    void sweepMergedFlowWorktrees(pi, worktreeEffects, ctx.cwd, deps)
+      .catch(() => {})
+      .finally(() => {
+        sweepInFlight = false
+      })
+  }
   onFlowDoneImpl = async (ref, mode, worktree) => {
     // Loop contract is Promise<void>: the CleanupFlowWorktreeSummary is
     // intentionally discarded here (observability lives in the annotate
@@ -1310,6 +1368,10 @@ export default function (pi: ExtensionAPI) {
       if (seed.resume !== undefined) {
         startInput.resume = seed.resume
       }
+      // AIDEV-NOTE: PMR-YG2N 4.1 — fire-and-forget sweep immediately before
+      // loop.start: a restarting flow is never done, so the labels-done gate
+      // keeps its own worktree safe without a skip-list.
+      runBackgroundSweep({ cwd: ctx.cwd })
       await loop.start(startInput)
       // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — a real rerun re-arms the pending
       // consumer for this ref.
