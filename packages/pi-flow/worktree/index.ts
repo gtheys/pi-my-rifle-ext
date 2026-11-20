@@ -693,6 +693,30 @@ export async function cleanupFlowWorktree(
   input: CleanupFlowWorktreeInput,
 ): Promise<CleanupFlowWorktreeSummary> {
   try {
+    // AIDEV-NOTE (PMR-W6C4): every non-removed outcome is made human-visible
+    // via a best-effort annotation naming the path and reason — otherwise a
+    // superseded stale worktree is kept with no trace at all, undermining the
+    // no-lingering-worktrees goal. The ONE exception is the trivial
+    // 'no flow worktree bound' noop: nothing exists, and annotating every
+    // worktree-less flow done would spam the ticket.
+    const annotateOutcome = async (
+      action: CleanupFlowWorktreeSummary['action'],
+      reason: string,
+      pathForNote: string | undefined,
+    ): Promise<CleanupFlowWorktreeSummary> => {
+      if (input.annotate) {
+        try {
+          const pathText = pathForNote ?? 'unknown path'
+          await input.annotate(
+            input.ref,
+            `worktree cleanup ${action} (${pathText}): ${reason}`,
+          )
+        } catch {
+          // best-effort
+        }
+      }
+      return { action, reason }
+    }
     if (input.worktree === undefined) {
       return { action: 'noop', reason: 'no flow worktree bound' }
     }
@@ -701,10 +725,11 @@ export async function cleanupFlowWorktree(
     // never remove another flow's worktree or branch -D its branch under
     // this flow's effect-journal ref / annotation.
     if (input.worktree.ref !== input.ref) {
-      return {
-        action: 'noop',
-        reason: `worktree binding belongs to flow ${input.worktree.ref}, not ${input.ref} — not cleaning up`,
-      }
+      return annotateOutcome(
+        'noop',
+        `worktree binding belongs to flow ${input.worktree.ref}, not ${input.ref} — not cleaning up`,
+        input.worktree.path,
+      )
     }
     const wtPath = input.worktree.path
     const wtBranch = input.worktree.branch
@@ -715,7 +740,7 @@ export async function cleanupFlowWorktree(
       cwd: wtPath,
     })
     if (status.stdout.trim() !== '') {
-      return { action: 'deferred', reason: `worktree ${wtPath} is dirty` }
+      return annotateOutcome('deferred', `worktree ${wtPath} is dirty`, wtPath)
     }
 
     // Step 3: in-flight guard — fail-closed. Any matched agent defers,
@@ -724,27 +749,29 @@ export async function cleanupFlowWorktree(
     try {
       agents = await agentList(pi, input.cwd)
     } catch {
-      return {
-        action: 'deferred',
-        reason:
-          'herdr agent list unavailable — cannot prove no agent is in-flight',
-      }
+      return annotateOutcome(
+        'deferred',
+        'herdr agent list unavailable — cannot prove no agent is in-flight',
+        wtPath,
+      )
     }
     let worktrees: HerdrWorktree[]
     try {
       worktrees = await worktreeList(pi, input.cwd)
     } catch (error) {
-      return {
-        action: 'deferred',
-        reason: `herdr worktree list failed: ${(error as Error).message}`,
-      }
+      return annotateOutcome(
+        'deferred',
+        `herdr worktree list failed: ${(error as Error).message}`,
+        wtPath,
+      )
     }
     const target = worktrees.find((wt) => wt.path === wtPath)
     if (!target) {
-      return {
-        action: 'deferred',
-        reason: `no Herdr worktree found at ${wtPath}`,
-      }
+      return annotateOutcome(
+        'deferred',
+        `no Herdr worktree found at ${wtPath}`,
+        wtPath,
+      )
     }
     const joined = joinAgents([target], agents)
     const agent = joined.get(target)
@@ -753,10 +780,11 @@ export async function cleanupFlowWorktree(
       if (agentState === '') {
         agentState = 'unknown'
       }
-      return {
-        action: 'deferred',
-        reason: `agent '${agent.name}' (state: ${agentState}) may still be in-flight in ${wtPath}`,
-      }
+      return annotateOutcome(
+        'deferred',
+        `agent '${agent.name}' (state: ${agentState}) may still be in-flight in ${wtPath}`,
+        wtPath,
+      )
     }
 
     // Step 4: main checkout + merge proof / PR state.
@@ -764,10 +792,11 @@ export async function cleanupFlowWorktree(
     try {
       main = await mainCheckout(pi, input.cwd)
     } catch (error) {
-      return {
-        action: 'deferred',
-        reason: `cannot resolve main checkout: ${(error as Error).message}`,
-      }
+      return annotateOutcome(
+        'deferred',
+        `cannot resolve main checkout: ${(error as Error).message}`,
+        wtPath,
+      )
     }
     let prState: PrState = 'NO_PR'
     let localMergedProof = false
@@ -836,10 +865,11 @@ export async function cleanupFlowWorktree(
       branchDecision,
     })
     if ('error' in removed) {
-      return {
-        action: 'deferred',
-        reason: `worktree removal failed: ${removed.error}`,
-      }
+      return annotateOutcome(
+        'deferred',
+        `worktree removal failed: ${removed.error}`,
+        wtPath,
+      )
     }
 
     // Step 7: post-removal chores — clear the stale flow-base config from the
@@ -879,10 +909,11 @@ export async function cleanupFlowWorktree(
     }
   } catch (error) {
     // Never throw — the loop's own catch is belt-and-braces.
-    return {
-      action: 'deferred',
-      reason: `cleanup error (non-fatal): ${(error as Error).message}`,
-    }
+    return annotateOutcome(
+      'deferred',
+      `cleanup error (non-fatal): ${(error as Error).message}`,
+      input.worktree?.path,
+    )
   }
 }
 

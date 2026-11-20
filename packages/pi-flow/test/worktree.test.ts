@@ -1538,7 +1538,10 @@ test('cleanupFlowWorktree: dirty worktree defers before any agent probe or remov
   assert.equal(effects.declarations.length, 0, 'no effect declared when dirty')
   assert.equal(branchDeleteCalls.length, 0)
   assert.equal(configCalls.length, 0)
-  assert.equal(input.annotateCalls.length, 0)
+  // PMR-W6C4: the deferred outcome is human-visible on the flow ticket.
+  assert.equal(input.annotateCalls.length, 1)
+  assert.match(input.annotateCalls[0]?.body ?? '', /cleanup deferred/)
+  assert.match(input.annotateCalls[0]?.body ?? '', /dirty/)
 })
 
 test('cleanupFlowWorktree: live agent in the worktree workspace defers', async () => {
@@ -1569,6 +1572,10 @@ test('cleanupFlowWorktree: live agent in the worktree workspace defers', async (
   )
   assert.equal(branchDeleteCalls.length, 0)
   assert.equal(effects.declarations.length, 0)
+  // PMR-W6C4: the deferred outcome is human-visible on the flow ticket.
+  assert.equal(input.annotateCalls.length, 1)
+  assert.match(input.annotateCalls[0]?.body ?? '', /cleanup deferred/)
+  assert.match(input.annotateCalls[0]?.body ?? '', /in-flight/)
 })
 
 test('cleanupFlowWorktree: unrecognized agent_status defers (unknown-means-live)', async () => {
@@ -1596,6 +1603,9 @@ test('cleanupFlowWorktree: unrecognized agent_status defers (unknown-means-live)
     herdrCalls.some((c) => c.startsWith('herdr worktree remove')),
     false,
   )
+  // PMR-W6C4: the deferred outcome is human-visible on the flow ticket.
+  assert.equal(input.annotateCalls.length, 1)
+  assert.match(input.annotateCalls[0]?.body ?? '', /cleanup deferred/)
 })
 
 test('cleanupFlowWorktree: agentList failure defers fail-closed', async () => {
@@ -1614,6 +1624,10 @@ test('cleanupFlowWorktree: agentList failure defers fail-closed', async () => {
     false,
   )
   assert.equal(effects.declarations.length, 0)
+  // PMR-W6C4: the fail-closed defer is human-visible on the flow ticket.
+  assert.equal(input.annotateCalls.length, 1)
+  assert.match(input.annotateCalls[0]?.body ?? '', /cleanup deferred/)
+  assert.match(input.annotateCalls[0]?.body ?? '', /agent list unavailable/)
 })
 
 test('cleanupFlowWorktree: personal + merged-proof removes with the explicit flow ref', async () => {
@@ -1836,5 +1850,9 @@ test('cleanupFlowWorktree: binding ref mismatch is a no-op with zero side-effect
   assert.match(summary.reason, /belongs to flow PMR-CLN, not PMR-NEWFLOW/)
   assert.equal(executed.length, 0, 'ref mismatch must not exec anything')
   assert.equal(effects.declarations.length, 0, 'no effect declared')
-  assert.equal(input.annotateCalls.length, 0, 'no annotation')
+  // PMR-W6C4: the stale-binding noop is safety-relevant — it annotates (the
+  // only annotated noop; the trivial no-binding noop stays silent).
+  assert.equal(input.annotateCalls.length, 1)
+  assert.match(input.annotateCalls[0]?.body ?? '', /cleanup noop/)
+  assert.match(input.annotateCalls[0]?.body ?? '', /belongs to flow PMR-CLN/)
 })
