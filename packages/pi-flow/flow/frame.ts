@@ -93,6 +93,12 @@ function stylePhaseRow(
   if (PHASE_EMOJI[phase] !== undefined) emojiPrefix = `${PHASE_EMOJI[phase]} `
   // Lazy accent: only ask the theme when a running row is actually styled
   // (frame.test.ts asserts requested.length === 1 without a runner).
+  // AIDEV-NOTE: ordering constraint — runningPart closes with BOLD_RST (SGR
+  // 22), which ALSO terminates the outer current-phase bold opened below
+  // (the `${BOLD}${UNDERLINE}${body}` wrapper). Harmless only while
+  // runningPart stays the FINAL span of body; any future append after it
+  // silently loses bold on the current-phase row (move the outer close or
+  // re-order first).
   let runningPart = ''
   if (running !== '') {
     runningPart = ` ${theme.getFgAnsi('accent')}${BOLD}${running.slice(1)}${BOLD_RST}${FG_RST}`
