@@ -754,19 +754,29 @@ export function watchdogThresholdsFromConfig(
  * Carve-outs: interactive children (widget-only display, no failed result,
  * pane untouched) and claude children (no activity file) NEVER escalate —
  * the closure returns null for them every tick. Otherwise it observes fresh
- * activity (cheap + idempotent), classifies with the cached thresholds, and
- * resolves the poll with an error PollResult on a stalled verdict — riding
- * the existing crash-inference-shaped error path (settleAssignment 'lost',
- * failed subagent_result steer) with no new message type and NO new timers:
- * it runs inside pollForExit's existing loop/AbortSignal, so RELOAD_SENTINEL
- * abort semantics are unchanged.
+ * activity (cheap + idempotent; pass { skipObserve: true } when the caller
+ * already observed THIS tick — see PMR-617R), classifies with the cached
+ * thresholds, and resolves the poll with an error PollResult on a stalled
+ * verdict — riding the existing crash-inference-shaped error path
+ * (settleAssignment 'lost', failed subagent_result steer) with no new
+ * message type and NO new timers: it runs inside pollForExit's existing
+ * loop/AbortSignal, so RELOAD_SENTINEL abort semantics are unchanged.
  */
 export function makeCheckStall(
   running: RunningSubagent,
+  options?: { skipObserve?: boolean },
 ): () => PollResult | null {
+  // AIDEV-NOTE (PMR-617R): self-contained observation for standalone/test
+  // callers. Production wiring (watchSubagent) passes skipObserve — pollForExit
+  // invokes onTick IMMEDIATELY BEFORE checkStall in the same tick, so the
+  // state is already fresh and a second observe would read the activity file
+  // twice per child per second for nothing.
+  const skipObserve = options?.skipObserve === true
   return () => {
     if (running.interactive || running.cli === 'claude') return null
-    observeRunningSubagent(running)
+    if (!skipObserve) {
+      observeRunningSubagent(running)
+    }
     const verdict = classifyTurnStall(
       running.statusState,
       Date.now(),
@@ -2670,7 +2680,7 @@ async function watchSubagent(
         onVerifiedExit() {
           verifiedExit = true
         },
-        checkStall: makeCheckStall(running),
+        checkStall: makeCheckStall(running, { skipObserve: true }),
       },
     )
 
