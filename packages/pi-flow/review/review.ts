@@ -60,11 +60,7 @@ import {
   adhocFinish,
 } from '../adhoc/tracker.ts'
 import { resolveMode } from '../config.ts'
-import {
-  clearFlowWorktree,
-  getActiveFlowRef,
-  getFlowWorktree,
-} from '../flow/worktree-context.ts'
+import { getActiveFlowRef } from '../flow/worktree-context.ts'
 import {
   createDaemonAliveProbe,
   createEventWriter,
@@ -72,6 +68,11 @@ import {
 } from '../server/writer.ts'
 import { type Exec, getMergeBase } from '../shared/diff-base.ts'
 import { readFlowBase } from '../shared/flow-base.ts'
+import { productionReviewDeps } from '../tools/code-review.ts'
+import {
+  type ResolvedWorktree,
+  resolveReviewWorktree,
+} from '../tools/code-review-parse.ts'
 import {
   buildGateTarget,
   deriveSubtaskAttribution,
@@ -483,19 +484,70 @@ async function loadProjectReviewGuidelines(
 /**
  * AIDEV-NOTE: PMR-1CCT — prefer the active flow's worktree as the review cwd
  * so branch/uncommitted reviews diff the tree carrying the change, not the
- * session checkout. Stale bindings (worktree removed) are cleared and
- * ignored.
+ * session checkout.
+ * AIDEV-NOTE: PMR-0KMQ — upgraded to the VERIFIED resolver (binding → aven
+ * note → herdr list; each candidate verified: path exists, common git dir
+ * matches the session repo per PMR-9XR0, HEAD branch matches). Stale/foreign
+ * bindings are no longer trusted by path alone and no longer cleared here —
+ * they fall through to the other sources, and only a total resolution
+ * failure silently falls back to the session checkout (branch/uncommitted
+ * semantics preserved; their wrong-tree guard is isEmptyBranchRange).
  */
-async function resolveFlowReviewCwd(fallback: string): Promise<string> {
-  const flowWt = getFlowWorktree()
-  if (flowWt === null) return fallback
+async function resolveFlowReviewCwd(
+  pi: ExtensionAPI,
+  fallback: string,
+): Promise<string> {
+  const activeRef = getActiveFlowRef()
+  if (activeRef === null) return fallback
   try {
-    await fs.access(flowWt.path)
-    return flowWt.path
+    const wt = await resolveReviewWorktree(
+      activeRef,
+      productionReviewDeps(pi, fallback),
+    )
+    return wt.path
   } catch {
-    clearFlowWorktree()
     return fallback
   }
+}
+
+export type CommitReviewCwd =
+  | { ok: true; cwd: string; source: 'worktree' | 'session' }
+  | { ok: false; reason: string }
+
+// AIDEV-NOTE: PMR-0KMQ — commit reviews of flow work must pin, diff, spawn
+// and re-check HEAD in the VERIFIED bound worktree (PMR-9XR0 identity check);
+// from the session checkout the staleness recheck compares against main's
+// HEAD and reports a bogus 'stale' verdict. Shas NOT on the flow branch keep
+// the session checkout so unrelated commit reviews are unaffected.
+export async function resolveCommitReviewCwd(
+  pi: ExtensionAPI,
+  sessionCwd: string,
+  sha: string,
+): Promise<CommitReviewCwd> {
+  const activeRef = getActiveFlowRef()
+  if (activeRef === null) {
+    return { ok: true, cwd: sessionCwd, source: 'session' }
+  }
+  let wt: ResolvedWorktree
+  try {
+    wt = await resolveReviewWorktree(
+      activeRef,
+      productionReviewDeps(pi, sessionCwd),
+    )
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    return { ok: false, reason: msg }
+  }
+  // AIDEV-NOTE: PMR-HXPQ — pi.exec returns non-zero codes without throwing.
+  const ancestor = await pi.exec(
+    'git',
+    ['-C', wt.path, 'merge-base', '--is-ancestor', sha, 'HEAD'],
+    {},
+  )
+  if (ancestor.code !== 0) {
+    return { ok: true, cwd: sessionCwd, source: 'session' }
+  }
+  return { ok: true, cwd: wt.path, source: 'worktree' }
 }
 
 /**
@@ -2454,7 +2506,29 @@ ${result.summary}`
       // skipped/clean-looking artifact.
       let reviewCwd = ctx.cwd
       if (p.type === 'branch' || p.type === 'uncommitted') {
-        reviewCwd = await resolveFlowReviewCwd(ctx.cwd)
+        reviewCwd = await resolveFlowReviewCwd(pi, ctx.cwd)
+      } else if (p.type === 'commit' && getActiveFlowRef() !== null) {
+        // AIDEV-NOTE: PMR-0KMQ — a commit review of flow work must pin and
+        // re-check HEAD in the VERIFIED bound worktree; from the session
+        // checkout the staleness recheck compares against main's HEAD and
+        // reports a misleading 'stale' verdict. Fail closed BEFORE the mux
+        // check when the worktree cannot be verified.
+        const commitCwd = await resolveCommitReviewCwd(pi, ctx.cwd, p.sha)
+        if (!commitCwd.ok) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Review refused: checkout mismatch — ${commitCwd.reason}. Pinning commit ${p.sha} from ${ctx.cwd} would re-check HEAD against the wrong checkout and report a misleading 'stale' verdict. Fix or re-bind the flow worktree (herdr worktree bind), then re-run the review.`,
+              },
+            ],
+            // AIDEV-NOTE: isError results omit details — a fabricated
+            // empty hint would mislead consumers. See pr-quality/index.ts.
+            details: undefined,
+            isError: true,
+          }
+        }
+        reviewCwd = commitCwd.cwd
       }
       // AIDEV-NOTE: PMR-R4AP — in a flow worktree the review base is the SHA
       // recorded at worktree create (same value deviation_review uses), not
