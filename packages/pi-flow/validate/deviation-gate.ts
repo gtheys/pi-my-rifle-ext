@@ -115,6 +115,17 @@ export function parseDeviationArtifact(artifact: string): DeviationArtifact {
   if (!Number.isInteger(count) || count < 0) {
     return { ok: false, reason: `invalid deviations_count value: ${count}` }
   }
+  // AIDEV-NOTE (PMR-N98C): a declared count the payload cannot back up is a
+  // TRUNCATED artifact (observed in production: "N deviation(s) from spec:"
+  // with the payload lines missing) — fail loudly here so the caller gets an
+  // error result to re-run, never an ok result it cannot present. Checked in
+  // BOTH directions: more lines than the count is equally malformed.
+  if (count !== deviations.length) {
+    return {
+      ok: false,
+      reason: `deviation artifact is truncated or malformed: deviations_count declares ${count} but ${deviations.length} "- deviation: ..." line(s) parsed — re-run the deviation reviewer and ensure exactly one deviation line per deviation`,
+    }
+  }
   return { ok: true, deviationsCount: count, deviations }
 }
 

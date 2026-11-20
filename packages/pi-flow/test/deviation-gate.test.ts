@@ -9,10 +9,13 @@ import {
 
 // --- parseDeviationArtifact (strict deviations_count contract) ---
 
-test('parseDeviationArtifact: parses deviations_count line', () => {
+// PMR-N98C repro: a count whose payload lines are missing is the production
+// truncated-artifact defect — it must be an ERROR, never an ok result with an
+// empty payload.
+test('parseDeviationArtifact: count with no payload lines is a truncated-artifact error', () => {
   const result = parseDeviationArtifact('notes\ndeviations_count: 2\n')
-  assert.equal(result.ok, true)
-  if (result.ok) assert.equal(result.deviationsCount, 2)
+  assert.equal(result.ok, false)
+  if (!result.ok) assert.match(result.reason, /truncated or malformed/)
 })
 
 test('parseDeviationArtifact: zero deviations', () => {
@@ -111,11 +114,17 @@ test('parseDeviationArtifact: quoted heading prose cannot false-positive count',
     'deviations_count: 0',
     '```',
     DEVIATION_VERDICT_HEADING,
+    '- deviation: first finding | why: spec mismatch (inferred: diff) | src/x.ts:1',
+    '- deviation: second finding | why: scope drift (inferred: diff) | src/y.ts:2',
     'deviations_count: 2',
   ].join('\n')
   const result = parseDeviationArtifact(artifact)
   assert.ok(result.ok)
-  if (result.ok) assert.equal(result.deviationsCount, 2)
+  if (result.ok) {
+    // The fenced 0 must NOT win; the real count is 2 and the payload backs it.
+    assert.equal(result.deviationsCount, 2)
+    assert.equal(result.deviations.length, 2)
+  }
 })
 
 // --- decideDeviationRoute (pure gate decision) ---
