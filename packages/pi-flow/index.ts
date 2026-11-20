@@ -184,7 +184,7 @@ export {
 // the extension closure below (makeAnswerDeps) so the answer path's journal
 // appends route through the mode-aware writer seam.
 
-// Shared by /flow dashboard and the alt+d shortcut — one notify surface so the
+// Shared by /flow dashboard and the alt+shift+d shortcut — one notify surface so the
 // keyboard path and the command path always stay in parity.
 type DashboardNotifyLevel = 'info' | 'warning' | 'error'
 type DashboardNotifyCtx = {
@@ -202,7 +202,7 @@ function notifyDashboardOutcome(
     )
   } else if (outcome === 'pinned') {
     ctx.ui.notify(
-      'Flow dashboard pinned — /flow dashboard or alt+d to hide.',
+      'Flow dashboard pinned — /flow dashboard or alt+shift+d to hide.',
       'info',
     )
   } else {
@@ -826,10 +826,12 @@ export default function (pi: ExtensionAPI) {
     },
   })
 
-  // AIDEV-NOTE: alt+d is the keyboard twin of `/flow dashboard` — both delegate
-  // to toggleFlowDashboardPin. Precedent: pi-prompt-snippets pairs alt+s with
-  // /snippets.
-  pi.registerShortcut('alt+d', {
+  // AIDEV-NOTE: alt+shift+d is the keyboard twin of `/flow dashboard` — both
+  // delegate to toggleFlowDashboardPin. Precedent: pi-prompt-snippets pairs
+  // alt+s with /snippets. alt+d was rejected: it is a Pi built-in
+  // (tui.editor.deleteWordForward), so the old registration shadowed it — the
+  // earlier no-collision check only covered in-repo extensions, not built-ins.
+  pi.registerShortcut('alt+shift+d', {
     description: 'Toggle the flow dashboard widget',
     handler: async (ctx) => {
       notifyDashboardOutcome(ctx, await toggleFlowDashboardPin(ctx))

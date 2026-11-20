@@ -415,9 +415,9 @@ function captureFlowCommand(): FlowCallCtx {
       commands.set(name, def)
     },
     // Captures registerShortcut calls so shortcut/command parity (same toggle
-    // path) can be asserted. Note: the /hotkeys no-collision check (alt+d
-    // verified unused in-repo @ 4da80b1) is a manual check that cannot run
-    // under node --test.
+    // path) can be asserted. Note: the /hotkeys no-collision check (alt+shift+d
+    // verified free among Pi built-ins and in-repo extensions) is a manual
+    // check that cannot run under node --test.
     registerShortcut: (
       key: string,
       def: { description: string; handler: (ctx: unknown) => Promise<void> },
@@ -540,19 +540,20 @@ test('flow handler: dashboard toggles with no content, never sendUserMessage', a
   })
 })
 
-// alt+d must reach the same no-content notify path as the /flow dashboard
+// alt+shift+d must reach the same no-content notify path as the /flow dashboard
 // command — parity is delegated to toggleFlowDashboardPin. Pinned-path state
 // is covered by the Phase 3 widget toggle unit tests; not duplicated here.
-// Note: /hotkeys no-collision for alt+d (verified unused in-repo @ 4da80b1)
-// is a manual check that cannot run under node --test.
-test('flow shortcut: alt+d toggles dashboard, same no-content path as command', async () => {
+// Note: /hotkeys no-collision for alt+shift+d (checked against Pi built-ins
+// and in-repo extensions; alt+d was Pi's tui.editor.deleteWordForward) is a
+// manual check that cannot run under node --test.
+test('flow shortcut: alt+shift+d toggles dashboard, same no-content path as command', async () => {
   await withHandlerEnv(async () => {
     const { shortcuts } = captureFlowCommand()
-    const altD = shortcuts.get('alt+d')
-    assert.ok(altD, 'alt+d shortcut was not registered')
-    assert.equal(altD.description, 'Toggle the flow dashboard widget')
+    const altShiftD = shortcuts.get('alt+shift+d')
+    assert.ok(altShiftD, 'alt+shift+d shortcut was not registered')
+    assert.equal(altShiftD.description, 'Toggle the flow dashboard widget')
     const notifications: Array<{ message: string; level: string }> = []
-    await altD.handler(flowCtx(notifications))
+    await altShiftD.handler(flowCtx(notifications))
     assert.equal(notifications.length, 1)
     assert.equal(notifications[0].level, 'info')
     assert.match(notifications[0].message, /No flow content to show/)
