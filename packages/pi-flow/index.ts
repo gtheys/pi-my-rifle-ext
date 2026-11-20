@@ -99,9 +99,10 @@ import {
   toggleFlowDashboardPin,
   type WidgetAssignment,
 } from './flow/widget.ts'
-import type { FlowWorktree } from './flow/worktree-context.ts'
 import {
   type FlowBindingSnapshot,
+  type FlowWorktree,
+  getActiveFlowRef,
   parseFlowBindingSnapshot,
   reactivateFlowRef,
   restoreFlowBinding,
@@ -167,9 +168,11 @@ import {
 } from './tools/run-attempt.ts'
 import { registerSpecApproveTool } from './tools/spec-approve.ts'
 import {
+  type CleanupFlowWorktreeSummary,
   cleanupFlowWorktree,
   default as worktreeExtension,
 } from './worktree/index.ts'
+import { resolveDoneWorktree } from './worktree/sweep.ts'
 
 // AIDEV-NOTE: test-facing export surface (PMR-T22H) — tests import these
 // from index.ts; the implementations now live in the boundary modules.
@@ -325,7 +328,7 @@ export default function (pi: ExtensionAPI) {
         ref: string,
         mode: 'work' | 'personal',
         worktree: FlowWorktree | undefined,
-      ) => Promise<void>)
+      ) => Promise<CleanupFlowWorktreeSummary>)
     | null = null
   const loop = createFlowLoop({
     getSessionFile: () => mainSessionFile,
@@ -687,7 +690,7 @@ export default function (pi: ExtensionAPI) {
     // Loop contract is Promise<void>: the CleanupFlowWorktreeSummary is
     // intentionally discarded here (observability lives in the annotate
     // path inside cleanupFlowWorktree itself, PMR-W6C4).
-    await cleanupFlowWorktree(pi, worktreeEffects, {
+    const summary = await cleanupFlowWorktree(pi, worktreeEffects, {
       ref,
       mode,
       worktree,
@@ -698,6 +701,22 @@ export default function (pi: ExtensionAPI) {
         await writeAvenNote(noteRef, body)
       },
     })
+    // AIDEV-NOTE: PMR-YG2N 3.1 — best-effort worktree-sweep marker with the
+    // flow-done source so later sweeps can skip terminal outcomes; routed
+    // through the mode-aware writer seam (journal closure above).
+    try {
+      await journal({
+        kind: 'worktree-sweep',
+        at: new Date().toISOString(),
+        ref,
+        source: 'flow-done',
+        outcome: summary.action,
+        detail: summary.reason,
+      })
+    } catch {
+      // a failed marker changes nothing else
+    }
+    return summary
   }
 
   // AIDEV-NOTE: The /flow advancement hook. agent_settled fires after a run
@@ -1199,8 +1218,37 @@ export default function (pi: ExtensionAPI) {
       }
       const next = nextPhase(labels, mode)
       if (next.kind === 'done') {
+        // AIDEV-NOTE: PMR-YG2N — harness-orchestrated flows never enter the
+        // loop, so this early return is their only cleanup trigger. Resolve
+        // the worktree binding-first/note-second, run the same onFlowDoneImpl
+        // the loop uses (summary discarded there), and surface the outcome
+        // without ever blocking the handler on cleanup failure.
+        const resolved = await resolveDoneWorktree(pi, ctx.cwd, ref)
+        let summary: CleanupFlowWorktreeSummary
+        if (onFlowDoneImpl === null) {
+          summary = { action: 'deferred', reason: 'cleanup not ready' }
+        } else {
+          try {
+            summary = await onFlowDoneImpl(ref, mode, resolved)
+          } catch {
+            summary = { action: 'deferred', reason: 'cleanup error' }
+          }
+        }
+        let cleanupLine: string
+        if (summary.action === 'removed') {
+          cleanupLine = `Worktree cleanup: removed ${resolved?.path ?? ''}.`
+        } else if (summary.action === 'noop') {
+          cleanupLine = 'Worktree cleanup: no flow worktree bound.'
+        } else {
+          cleanupLine = `Worktree cleanup: deferred (${summary.reason}).`
+        }
+        if (summary.action === 'removed' && getActiveFlowRef() === ref) {
+          // Durable hygiene: the null-binding write also appends the
+          // session entry (see setActiveFlowRef).
+          setActiveFlowRef(null)
+        }
         ctx.ui.notify(
-          `/flow ${ref}: all phase labels present (done) — nothing to run.`,
+          `/flow ${ref}: all phase labels present (done) — nothing to run. ${cleanupLine}`,
           'info',
         )
         return

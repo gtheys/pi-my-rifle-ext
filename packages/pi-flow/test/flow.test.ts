@@ -327,7 +327,13 @@ test('run-input: no seed keeps the freshly rebuilt promptInput as-is', () => {
 const HANDLER_BIN = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-handler-bin-'))
 const HANDLER_LOG = path.join(HANDLER_BIN, 'calls.txt')
 const HANDLER_MODE = path.join(HANDLER_BIN, 'mode.txt')
+// AIDEV-NOTE: PMR-YG2N 3.1 — `aven show <ref> --full` keeps serving the
+// canned metadata line (the answer/spec paths parse it) and appends this
+// mode file, so done-path tests can serve a canned worktree note; empty =
+// nothing bound (default behavior unchanged for the existing tests).
+const HANDLER_WORKTREE = path.join(HANDLER_BIN, 'worktree-note.txt')
 writeFileSync(HANDLER_MODE, 'ok')
+writeFileSync(HANDLER_WORKTREE, '')
 writeFileSync(HANDLER_LOG, '')
 writeFileSync(
   path.join(HANDLER_BIN, 'aven'),
@@ -336,6 +342,17 @@ printf '%s ' "$@" >> ${HANDLER_LOG}
 echo >> ${HANDLER_LOG}
 mode=$(cat ${HANDLER_MODE})
 if [ "$1" = "show" ]; then
+  is_full=""
+  for a in "$@"; do
+    if [ "$a" = "--full" ]; then
+      is_full=1
+    fi
+  done
+  if [ -n "$is_full" ]; then
+    echo "$2 status=todo title=x"
+    cat ${HANDLER_WORKTREE}
+    exit 0
+  fi
   if [ "$mode" = "error" ]; then
     exit 1
   fi

@@ -227,8 +227,14 @@ import os from 'node:os'
 import path from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { setAvenSessionCwd } from '../aven/client.ts'
+import {
+  clearFlowWorktree,
+  setActiveFlowRef,
+  setFlowWorktree,
+} from '../flow/worktree-context.ts'
 import type { EffectJournal } from '../run-state.ts'
 import {
+  resolveDoneWorktree,
   resolveNoteWorktree,
   sweepMergedFlowWorktrees,
 } from '../worktree/sweep.ts'
@@ -1048,6 +1054,82 @@ test('sweep scenario 10: deterministic ref order; mid-flight ref with a bound no
       0,
       'mid-flight ref not annotated',
     )
+  })
+})
+
+// --- resolveDoneWorktree (PMR-YG2N 3.1) ---
+// Uses the SWEEP_BIN_DIR aven fake + show fixtures: a note whose path does
+// not exist resolves as 'gone' (unbound); a missing fixture makes aven fail
+// (unverifiable). The attached-binding case uses the worktree-context
+// globals with unique refs so the process-global state stays isolated.
+
+const DONE_RESOLVE_PI = {} as unknown as ExtensionAPI
+
+function writeDoneShowFixture(ref: string, body: string): void {
+  writeFileSync(path.join(SWEEP_SHOW_DIR, `${ref}.txt`), body)
+}
+
+async function withDonePath(fn: () => Promise<void>): Promise<void> {
+  const previousPath = process.env.PATH ?? ''
+  process.env.PATH = `${SWEEP_BIN_DIR}:${previousPath}`
+  setAvenSessionCwd(SWEEP_MAIN_CWD)
+  try {
+    await fn()
+  } finally {
+    process.env.PATH = previousPath
+    setActiveFlowRef(null)
+    clearFlowWorktree()
+  }
+}
+
+test('resolveDoneWorktree: attached binding with matching ref wins, aven untouched', async () => {
+  await withDonePath(async () => {
+    const ref = 'PMR-RDW1'
+    setActiveFlowRef(ref)
+    assert.equal(
+      setFlowWorktree('/tmp/rdw1-wt', 'feat/rdw1'),
+      true,
+      'binding applied',
+    )
+    const resolved = await resolveDoneWorktree(
+      DONE_RESOLVE_PI,
+      SWEEP_MAIN_CWD,
+      ref,
+    )
+    assert.deepEqual(resolved, {
+      ref,
+      path: '/tmp/rdw1-wt',
+      branch: 'feat/rdw1',
+    })
+  })
+})
+
+test('resolveDoneWorktree: non-matching attached binding falls through to the note (gone => undefined)', async () => {
+  await withDonePath(async () => {
+    const ref = 'PMR-RDW2'
+    setActiveFlowRef('PMR-OTHER')
+    setFlowWorktree('/tmp/other-wt', 'feat/other')
+    writeDoneShowFixture(
+      ref,
+      'note id=w2 at=t ref=PMR-RDW2\nbody<<EOF\nworktree: /nonexistent-rdw2 branch: feat/rdw2\nEOF\n',
+    )
+    const resolved = await resolveDoneWorktree(
+      DONE_RESOLVE_PI,
+      SWEEP_MAIN_CWD,
+      ref,
+    )
+    assert.equal(resolved, undefined)
+  })
+})
+
+test('resolveDoneWorktree: aven failure (no fixture) never throws, returns undefined', async () => {
+  await withDonePath(async () => {
+    const resolved = await resolveDoneWorktree(
+      DONE_RESOLVE_PI,
+      SWEEP_MAIN_CWD,
+      'PMR-RDW3-NO-FIXTURE',
+    )
+    assert.equal(resolved, undefined)
   })
 })
 

@@ -7,7 +7,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { avenShowFull } from '../aven/client.ts'
 import { nextPhase } from '../flow/orchestrate.ts'
 import { resumeSeedFromEvents } from '../flow/resume.ts'
-import type { FlowWorktree } from '../flow/worktree-context.ts'
+import { type FlowWorktree, getFlowWorktree } from '../flow/worktree-context.ts'
 import { isValidRef } from '../herdr/viewer.ts'
 import type { EffectJournal, FlowRunEvent } from '../run-state.ts'
 import {
@@ -65,6 +65,34 @@ export function refsFromRunsDir(names: string[]): string[] {
     }
   }
   return [...refs].sort()
+}
+
+// --- resolveDoneWorktree ---
+
+/**
+ * AIDEV-NOTE: PMR-YG2N 3.1 — resolve the worktree a finished flow's done
+ * branch should clean up: the live /flow binding first (getFlowWorktree),
+ * the aven note second (resolveNoteWorktree). undefined = nothing bound.
+ * Never throws — the done branch must not block on resolution failure.
+ */
+export async function resolveDoneWorktree(
+  pi: ExtensionAPI,
+  cwd: string,
+  ref: string,
+): Promise<FlowWorktree | undefined> {
+  const attached = getFlowWorktree()
+  if (attached !== null && attached.ref === ref) {
+    return attached
+  }
+  try {
+    const binding = await resolveNoteWorktree(pi, cwd, ref)
+    if (binding.kind === 'bound') {
+      return binding.worktree
+    }
+  } catch {
+    // never throw from resolution — the caller treats this as unbound
+  }
+  return undefined
 }
 
 // --- resolveNoteWorktree ---
