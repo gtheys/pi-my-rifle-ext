@@ -240,6 +240,9 @@ function registerWidget(ctx: ExtensionContext): void {
           render(width: number): string[] {
             // AIDEV-NOTE (PMR-MGWP): ANSI-aware framing replaces the old
             // String.slice clamp; without a theme (harness) we keep the plain clamp.
+            // Styling (PMR-X7BH) lives inside frameFlowStatusLines; cachedLines
+            // must stay plain ASCII — the no-theme clamp below would split
+            // surrogate pairs / cut SGR sequences mid-escape otherwise.
             const localTheme = widgetTheme
             if (localTheme === null) {
               return cachedLines.map((line) =>
