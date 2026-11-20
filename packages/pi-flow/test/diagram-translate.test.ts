@@ -444,7 +444,9 @@ function toolResultEntry(
   return {
     type: 'message',
     id,
-    timestamp: timestampMs,
+    // top-level timestamp is an ISO string in real pi session files
+    // (message.timestamp stays ms-epoch) — entryTimeMs clips on it
+    timestamp: new Date(timestampMs).toISOString(),
     message: {
       role: 'toolResult',
       toolCallId,
@@ -465,6 +467,11 @@ function mainSessionEvents(sessionFile: string): FlowRunEvent[] {
       ref: 'PMR-TEST',
       sessionFile,
     },
+    // AIDEV-NOTE (review blocker B2): lanes clip main entries to phase
+    // windows (buildMainRows rule), so fixtures need a window bracketing
+    // their entry timestamps — 01:00:30 → 01:30 covers 01:01.
+    phaseStart('2026-11-07T01:00:30Z', 'plan'),
+    phaseComplete('2026-11-07T01:30:00Z', 'plan'),
   ]
 }
 
@@ -594,11 +601,27 @@ test('orchestrator subagent tool calls are skipped', () => {
   ]
   const sessions = new Map([[MAIN_SESSION_FILE, entries]])
   const result = buildDiagram('PMR-TEST', 1, events, [], sessions)
-  assert.equal(result.kind, 'no-records')
+  // AIDEV-NOTE (review blocker B2): the bracketed factory emits phase-marker
+  // records, so absence is asserted at the CALL level — the raw orchestrator
+  // subagent tool call must not become a tool-call record.
+  assert.equal(result.kind, 'ok')
+  if (result.kind !== 'ok') return
+  const calls = result.records.filter(
+    (record) => 'tool_use_id' in record && 'tool' in record,
+  )
+  assert.deepEqual(calls, [])
 })
 
 test('one SubagentStop spend record per context, main included, exact mapping', () => {
-  const events = [runStart('2026-11-07T01:00:00Z'), spawnForMainChild()]
+  const events = [
+    runStart('2026-11-07T01:00:00Z'),
+    spawnForMainChild(),
+    // AIDEV-NOTE (review blocker B2): phase window bracketing the main
+    // entries (01:01/01:02) — main lanes clip to windows; child lanes keep
+    // per-run session semantics.
+    phaseStart('2026-11-07T01:00:30Z', 'plan'),
+    phaseComplete('2026-11-07T01:30:00Z', 'plan'),
+  ]
   const mainEntries = [
     assistantEntry('m1', '2026-11-07T01:01:00Z', {
       input: 10,
@@ -741,4 +764,133 @@ test('records are sorted by at', () => {
   const ats = result.records.map((r) => r.at)
   const sorted = [...ats].sort()
   assert.deepEqual(ats, sorted)
+})
+
+// AIDEV-NOTE (review blocker B2): main sessions resume across runs, so a
+// lane must only carry entries inside the SELECTED segment's phase windows —
+// same rule as buildMainRows in flow/cost.ts. Pre/post-flow chat and the
+// other run's entries must not leak into main-lane calls or token totals.
+function mainSessionCall(id: string, atIso: string): readonly unknown[] {
+  const ms = Date.parse(atIso)
+  return [
+    {
+      type: 'message',
+      id: `a-${id}`,
+      timestamp: atIso,
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'toolCall',
+            id,
+            name: 'bash',
+            arguments: { command: `echo ${id}` },
+          },
+        ],
+        usage: {
+          input: 10,
+          cacheWrite: 0,
+          cacheRead: 0,
+          output: 1,
+          totalTokens: 11,
+        },
+      },
+    },
+    {
+      type: 'message',
+      id: `r-${id}`,
+      timestamp: atIso,
+      message: {
+        role: 'toolResult',
+        toolCallId: id,
+        toolName: 'bash',
+        content: [{ type: 'text', text: 'ok' }],
+        isError: false,
+        timestamp: ms + 5,
+      },
+    },
+  ]
+}
+
+function resumedMainEvents(): FlowRunEvent[] {
+  return [
+    runStart('2026-11-07T01:00:00Z'),
+    {
+      kind: 'main-session',
+      at: '2026-11-07T01:00:30Z',
+      ref: 'PMR-TEST',
+      sessionFile: '/sessions/main.jsonl',
+    },
+    phaseStart('2026-11-07T01:01:00Z', 'plan'),
+    phaseComplete('2026-11-07T01:11:00Z', 'plan'),
+    runStart('2026-11-07T02:00:00Z'),
+    {
+      kind: 'main-session',
+      at: '2026-11-07T02:00:30Z',
+      ref: 'PMR-TEST',
+      sessionFile: '/sessions/main.jsonl',
+    },
+    phaseStart('2026-11-07T02:01:00Z', 'implement'),
+    phaseComplete('2026-11-07T02:31:00Z', 'implement'),
+  ]
+}
+
+function resumedMainEntries(): Map<string, readonly unknown[]> {
+  const entries = [
+    ...mainSessionCall('tc-pre', '2026-11-07T00:59:30Z'),
+    ...mainSessionCall('tc-run1', '2026-11-07T01:05:00Z'),
+    ...mainSessionCall('tc-run2', '2026-11-07T02:05:00Z'),
+    ...mainSessionCall('tc-post', '2026-11-07T03:00:00Z'),
+  ]
+  return new Map([['/sessions/main.jsonl', entries]])
+}
+
+function mainToolCallIds(result: ReturnType<typeof buildDiagram>): string[] {
+  if (result.kind !== 'ok') return []
+  return result.records
+    .filter(
+      (r): r is ToolCallRecord =>
+        'tool_use_id' in r &&
+        'tool' in r &&
+        r.tool === 'bash' &&
+        r.agent_id === 'main',
+    )
+    .map((r) => r.tool_use_id)
+}
+
+function mainSpendNew(
+  result: ReturnType<typeof buildDiagram>,
+): number | undefined {
+  if (result.kind !== 'ok') return undefined
+  const spend = result.records.find(
+    (r): r is SpendRecord =>
+      'event' in r && r.event === 'SubagentStop' && r.agent_id === 'main',
+  )
+  return spend?.spend.new
+}
+
+test('run 1 diagram clips main lane to run 1 windows', () => {
+  const result = buildDiagram(
+    'PMR-TEST',
+    1,
+    resumedMainEvents(),
+    [],
+    resumedMainEntries(),
+  )
+  assert.equal(result.kind, 'ok')
+  assert.deepEqual(mainToolCallIds(result), ['tc-run1'])
+  assert.equal(mainSpendNew(result), 10)
+})
+
+test('run 2 diagram clips main lane to run 2 windows', () => {
+  const result = buildDiagram(
+    'PMR-TEST',
+    2,
+    resumedMainEvents(),
+    [],
+    resumedMainEntries(),
+  )
+  assert.equal(result.kind, 'ok')
+  assert.deepEqual(mainToolCallIds(result), ['tc-run2'])
+  assert.equal(mainSpendNew(result), 10)
 })

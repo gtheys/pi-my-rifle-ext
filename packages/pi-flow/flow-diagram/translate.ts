@@ -9,7 +9,9 @@ import {
   collectMainSessionFiles,
   collectSpawnNotes,
   type PhaseDuration,
+  type PhaseWindow,
   phaseDurations,
+  phaseWindows,
 } from '../flow/cost.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 
@@ -317,15 +319,39 @@ function laneEntries(
   return entries
 }
 
+/**
+ * AIDEV-NOTE (review blocker B2): main pi sessions RESUME across runs, so a
+ * lane must only carry entries inside the selected segment's phase windows —
+ * same rule as buildMainRows in flow/cost.ts. Entries outside every window
+ * are pre/post-flow chat; entries without a parseable timestamp are dropped
+ * (they cannot be placed on the timeline). Empty windows clip everything —
+ * a run with no phase-starts has no attributable main-lane activity.
+ */
+function clipToWindows(
+  entries: readonly unknown[],
+  windows: readonly PhaseWindow[],
+): readonly unknown[] {
+  const clipped: unknown[] = []
+  for (const entry of entries) {
+    const ms = entryTimeMs(entry)
+    if (ms === null) continue
+    const window = windows.find((w) => ms >= w.startMs && ms < w.endMs)
+    if (window === undefined) continue
+    clipped.push(entry)
+  }
+  return clipped
+}
+
 function buildLanes(
   segment: readonly FlowRunEvent[],
   ctx: DiagramContext,
 ): Lane[] {
+  const windows = phaseWindows(segment)
   const lanes: Lane[] = []
   for (const sessionFile of collectMainSessionFiles(segment)) {
     lanes.push({
       agentId: 'main',
-      entries: laneEntries(ctx, sessionFile),
+      entries: clipToWindows(laneEntries(ctx, sessionFile), windows),
       fallbackEndMs: null,
     })
   }
