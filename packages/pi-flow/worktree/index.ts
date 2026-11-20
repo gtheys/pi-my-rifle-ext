@@ -855,6 +855,9 @@ export async function cleanupFlowWorktree(
       branchWord = 'deleted'
     }
     let outcomeReason = 'work mode'
+    if (input.mode === 'personal') {
+      outcomeReason = 'personal mode'
+    }
     if (decision.action === 'keep-branch') {
       outcomeReason = decision.reason
     }

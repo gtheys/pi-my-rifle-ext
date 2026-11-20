@@ -1665,6 +1665,8 @@ test('cleanupFlowWorktree: personal + merged-proof removes with the explicit flo
   assert.equal(input.annotateCalls.length, 1)
   assert.equal(input.annotateCalls[0].ref, 'PMR-EXPLICIT')
   assert.match(input.annotateCalls[0].body, /branch deleted/)
+  // Personal-mode removed annotation must not carry work-mode wording.
+  assert.doesNotMatch(input.annotateCalls[0].body, /work mode/)
 })
 
 test('cleanupFlowWorktree: personal + failed merged-proof keeps all and annotates', async () => {
@@ -1775,6 +1777,9 @@ test('cleanupFlowWorktree: personal + merged-proof + NO_PR still removes (P0 reg
   assert.equal(effects.declarations.length, 1)
   assert.equal(effects.declarations[0].ref, 'PMR-CLN')
   assert.equal(effects.declarations[0].effect, 'worktree-remove')
+  assert.equal(input.annotateCalls.length, 1)
+  assert.match(input.annotateCalls[0].body, /branch deleted/)
+  assert.doesNotMatch(input.annotateCalls[0].body, /work mode/)
 })
 
 // Same regression with gh entirely absent (GH_MISSING) — the manual guard
