@@ -247,6 +247,22 @@ export type FlowRunEvent =
     }
   | {
       /**
+       * AIDEV-NOTE: PMR-YG2N durable sweep marker — one per worktree removed
+       * or skipped by the sweep. `source` records who wrote it ('flow-done'
+       * from the flow-done path, 'sweep' from the manual sweep command).
+       * Terminal outcomes ('removed'/'noop') let a later sweep skip the ref;
+       * 'kept-all'/'deferred' are retried later. Fail-closed: sweep runs only
+       * when the journal says every merged worktree was already handled.
+       */
+      kind: 'worktree-sweep'
+      at: string
+      ref: string
+      source: 'flow-done' | 'sweep'
+      outcome: 'removed' | 'noop' | 'kept-all' | 'deferred'
+      detail?: string
+    }
+  | {
+      /**
        * AIDEV-NOTE: durable run server — serializable prompt-input subset
        * ({ mode, gitRoot, workRoots }); labels are re-derived live and
        * findTicketRef/epicHasOpenChildren are rebuilt closures, never
@@ -616,6 +632,16 @@ export function applyEvent(
       return {
         ...state,
         notes: [...state.notes, { at: event.at, text: event.text }],
+        updatedAt: event.at,
+      }
+    }
+    case 'worktree-sweep': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      // AIDEV-NOTE: PMR-YG2N — sweep markers are evidence-only; the
+      // projection only keeps updatedAt fresh so replays stay current.
+      return {
+        ...state,
         updatedAt: event.at,
       }
     }
