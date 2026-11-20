@@ -145,7 +145,14 @@ test('no refusal guidance instructs an agent-run merge — merge commands are hu
       MAIN_REPO,
       BRANCH,
     )
-    if (result.ok) continue
+    // Self-guarding: every scenario in this matrix must refuse. A routing
+    // regression that makes a scenario pass must fail the matrix loudly
+    // here — never skip silently via a vacuous `if (result.ok) continue`.
+    if (result.ok) {
+      throw new Error(
+        `${scenario.name}: expected a refusal, but the advancement check authorized — scenario regressed to vacuous`,
+      )
+    }
     if (/merge --ff-only/.test(result.reason)) {
       assert.match(
         result.reason,
