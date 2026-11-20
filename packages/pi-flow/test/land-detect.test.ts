@@ -122,15 +122,15 @@ test('detection: hybrid repo resolves deterministically in the fixed order', asy
   const bunBeatsAll = await detectLandTestCommand(
     makeRepo(['bun.lock', 'Cargo.toml', 'package-lock.json']),
   )
-  assert.equal(bunBeatsAll?.detected.signal, 'bun.lock')
+  assert.equal(bunBeatsAll?.detected?.signal, 'bun.lock')
   const cargoBeatsNode = await detectLandTestCommand(
     makeRepo(['Cargo.toml', 'package-lock.json']),
   )
-  assert.equal(cargoBeatsNode?.detected.signal, 'Cargo.toml')
+  assert.equal(cargoBeatsNode?.detected?.signal, 'Cargo.toml')
   const npmBeatsPnpm = await detectLandTestCommand(
     makeRepo(['package-lock.json', 'pnpm-lock.yaml']),
   )
-  assert.equal(npmBeatsPnpm?.detected.signal, 'package-lock.json')
+  assert.equal(npmBeatsPnpm?.detected?.signal, 'package-lock.json')
 })
 
 // --- signal entry type (PMR-RH97): only regular files count ---
