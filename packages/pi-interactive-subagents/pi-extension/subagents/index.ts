@@ -1063,6 +1063,9 @@ function formatAgentRow(
  * Render the supervision widget: header + capped agent rows. Pure — exported
  * for tests. Snapshot failure on any agent ⇒ `stale` in the header, last
  * snapshot still shown.
+ *
+ * PMR-X7BH: header is bold-wrapped only at the line edges (SGR around the
+ * fully-assembled header), so unanchored substring regexes keep matching.
  */
 export function renderSupervisionRows(
   agents: readonly RunningSubagent[],
@@ -1099,7 +1102,7 @@ export function renderSupervisionRows(
     header += ` · ${formatUsageCompact(aggregate.totals)}`
   }
 
-  const lines: string[] = [header]
+  const lines: string[] = [`${BOLD}${header}${BOLD_RST}`]
   const hits: HitRegion[] = []
   const visible = ordered.slice(0, WIDGET_ROW_CAP)
   for (let i = 0; i < visible.length; i++) {
