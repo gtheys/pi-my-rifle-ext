@@ -52,8 +52,12 @@ const okChecker: Checker = async () => ({ ok: true })
 const staleReason =
   "main advancement detected: merge-base of flow branch 'flow-branch' and 'main' is oldbase but 'main' tip is newtip — rebase-then-reland required"
 
+// Mirrors the live human-routed wording (tools/land.ts origin-advancement
+// refusal) so the injected example cannot drift from the production message:
+// direct merges are agent-blocked while the flow is active, so the merge is
+// routed to the HUMAN, not run by the agent.
 const originAheadReason =
-  "origin advancement detected: 'origin/main' is ahead of the local 'main' in /repo — fast-forward the local branch first: git -C '/repo' merge --ff-only 'origin/main' — then call flow_land again"
+  "origin advancement detected: 'origin/main' is ahead of the local 'main' in /repo — direct merges are agent-blocked while the flow is active, so ask the HUMAN to run: git -C '/repo' merge --ff-only 'origin/main' — then call flow_land again; the landing must never integrate onto a stale local base"
 
 function memEffects(): EffectJournal & { declared: EffectDeclareInput[] } {
   const declared: EffectDeclareInput[] = []
