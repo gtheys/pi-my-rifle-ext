@@ -88,6 +88,12 @@ async function authorizeMergeMain(
   resolveLandingBranch: LandingBranchResolver,
   checkMainAdvancement: MainAdvancementChecker,
 ): Promise<{ ok: true; command: string } | { ok: false; reason: string }> {
+  // AIDEV-NOTE: PMR-1KAE/PMR-5PQH — a new authorization attempt ALWAYS
+  // invalidates the previous pin FIRST, before any resolver or staleness
+  // check — including the resolver-failure refusals below — so no refused
+  // attempt ever leaves an earlier (possibly no longer executable) merge
+  // command authorized. Only a fresh ok at the bottom sets a new pin.
+  state.mergeAuthorized = null
   const mainRepo = await resolveMainRepo()
   if (mainRepo === null) {
     return {
@@ -104,12 +110,6 @@ async function authorizeMergeMain(
         'cannot resolve the landing branch — the merge command cannot be pinned, landing refused',
     }
   }
-  // AIDEV-NOTE: PMR-1KAE/PMR-5PQH — a new authorization attempt always
-  // invalidates the previous pin BEFORE anything is checked: a refused
-  // re-authorization must never leave the earlier (possibly no longer
-  // executable) merge command authorized. Only a fresh ok below sets a new
-  // pin.
-  state.mergeAuthorized = null
   // AIDEV-NOTE: PMR-1KAE — staleness gate BEFORE declare/pin: a refusal must
   // not journal a merge-main effect for a landing that cannot fast-forward.
   // Runs on every authorization — fresh suite AND receipt adoption — so a
@@ -354,17 +354,38 @@ export type MainAdvancementChecker = (
 // execFileAsync rejects on non-zero exit; the shared/flow-base Exec contract
 // wants {stdout, stderr, code} — adapt rejections into code-carrying results
 // so the flow-base helpers can be reused unchanged.
+// AIDEV-NOTE: PMR-1KAE review blocker — bounded git plumbing: without a
+// timeout the fetch leg (network) can hang the landing gate indefinitely on
+// a black-holed remote or a credential prompt (piped stdio cannot answer a
+// tty prompt). 60s covers dev-scale fetches; a timeout kill rejects into the
+// catch below and fails the gate closed.
+const FLOW_GIT_TIMEOUT_MS = 60_000
+
 const execAsFlowBase: Exec = async (cmd, args, options) => {
   try {
     const { stdout, stderr } = await execFileAsync(cmd, args, {
       cwd: options?.cwd,
+      timeout: FLOW_GIT_TIMEOUT_MS,
     })
     return { stdout, stderr, code: 0 }
   } catch (error: unknown) {
-    const err = error as { stdout?: string; stderr?: string; code?: number }
+    const err = error as {
+      stdout?: string
+      stderr?: string
+      code?: number
+      killed?: boolean
+      message?: string
+    }
+    let stderr = err.stderr ?? ''
+    if (stderr.length === 0 && err.killed === true) {
+      stderr = 'git subprocess timed out'
+    }
+    if (stderr.length === 0) {
+      stderr = err.message ?? ''
+    }
     return {
       stdout: err.stdout ?? '',
-      stderr: err.stderr ?? '',
+      stderr,
       code: typeof err.code === 'number' ? err.code : 1,
     }
   }
@@ -458,7 +479,7 @@ export async function checkMainAdvancement(
   if (behind.value) {
     return {
       ok: false,
-      reason: `origin advancement detected: '${originRef}' is ahead of the local '${base.branch}' in ${mainRepo} — fast-forward the local branch first: git -C '${mainRepo}' merge --ff-only '${originRef}' — then call flow_land again; the landing must never integrate onto a stale local base`,
+      reason: `origin advancement detected: '${originRef}' is ahead of the local '${base.branch}' in ${mainRepo} — direct merges are agent-blocked while the flow is active, so ask the HUMAN to run: git -C '${mainRepo}' merge --ff-only '${originRef}' — then call flow_land again; the landing must never integrate onto a stale local base`,
     }
   }
   return { ok: true }

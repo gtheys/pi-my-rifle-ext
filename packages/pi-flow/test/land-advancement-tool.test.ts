@@ -113,6 +113,7 @@ function landHarness(options?: {
   landing?: ReturnType<typeof createLandingState>
   receipts?: ReceiptJournal & { entries: ReceiptQuery[] }
   checker?: Checker
+  resolveMainRepo?: () => Promise<string | null>
 }): Harness {
   let suiteRunCount = 0
   const countingSuite: SuiteRunner = async () => {
@@ -138,7 +139,7 @@ function landHarness(options?: {
     async () => 'aaa111',
     undefined,
     effects,
-    async () => '/repo',
+    options?.resolveMainRepo ?? (async () => '/repo'),
     async () => 'flow-branch',
     options?.checker ?? okChecker,
   )
@@ -280,6 +281,36 @@ test('after the guided rebase, re-authorization passes and re-pins the command f
       landing.mergeAuthorized.command,
       `git -C '/repo' merge --ff-only flow-branch`,
       'command is re-derived from the current resolution, not a stored no-op',
+    )
+  })
+})
+
+test('every authorization attempt invalidates a previous pin — even resolver failures (PMR-1KAE review blocker)', async () => {
+  const landing = createLandingState()
+  let resolveMain: string | null = '/repo'
+  const harness = landHarness({
+    landing,
+    resolveMainRepo: async () => resolveMain,
+  })
+  await withFakeAven(async () => {
+    const first = await harness.execute('b1', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(first.isError, undefined)
+    if (landing.mergeAuthorized === null) {
+      throw new Error('the first ok call must pin the merge command')
+    }
+    resolveMain = null // the main checkout becomes unresolvable on the retry
+    const second = await harness.execute('b2', {
+      ref: 'PMR-ABC1',
+      route: 'merge-main',
+    })
+    assert.equal(second.isError, true)
+    assert.equal(
+      landing.mergeAuthorized,
+      null,
+      'a refused attempt must not leave the earlier pin authorized',
     )
   })
 })

@@ -116,6 +116,46 @@ test('landing branch already checked out in the main checkout is a no-op refusal
   assert.match(result.reason, /no-op/)
 })
 
+test('no refusal guidance instructs an agent-run merge — merge commands are human-routed (PMR-1KAE review blocker)', async () => {
+  const scenarios: Array<{ name: string; routes: Route[] }> = [
+    { name: 'stale', routes: routesFor({ mergeBase: MERGE_BASE }) },
+    {
+      name: 'origin-ahead',
+      routes: routesFor({ originTip: ORIGIN_TIP, isAncestorCode: 0 }),
+    },
+    {
+      name: 'fetch-failure',
+      routes: routesFor({ fetchCode: 128, fetchStderr: 'boom' }),
+    },
+    { name: 'missing-origin-ref', routes: routesFor({ originTipCode: 1 }) },
+    { name: 'detached-head', routes: routesFor({ headStdout: 'HEAD' }) },
+    {
+      name: 'merge-base-failure',
+      routes: routesFor({ mergeBaseCode: 128 }),
+    },
+    {
+      name: 'ancestry-failure',
+      routes: routesFor({ originTip: ORIGIN_TIP, isAncestorCode: 128 }),
+    },
+    { name: 'no-op-landing-branch', routes: routesFor({ headStdout: BRANCH }) },
+  ]
+  for (const scenario of scenarios) {
+    const result = await checkMainAdvancement(
+      fakeExec(scenario.routes),
+      MAIN_REPO,
+      BRANCH,
+    )
+    if (result.ok) continue
+    if (/merge --ff-only/.test(result.reason)) {
+      assert.match(
+        result.reason,
+        /human/i,
+        `${scenario.name}: a refusal naming a merge command must route it to the human — mergeIntercept blocks agent-run merges while the flow is active`,
+      )
+    }
+  }
+})
+
 test('stale flow branch is refused with the rebase-then-reland guidance (PMR-1KAE)', async () => {
   const result = await checkMainAdvancement(
     fakeExec(routesFor({ mergeBase: MERGE_BASE })),
