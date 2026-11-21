@@ -238,6 +238,14 @@ test('real git, unbound fresh session: landing branch resolves to the base and t
         0,
         'a refusal must not journal a merge-main effect',
       )
+      // PMR-1W5M: pin the suite-run cost — the gate runs the suite BEFORE
+      // the merge-main resolution check, so even this refusal burns exactly
+      // one suite run (the countingSuite run is the only one).
+      assert.equal(
+        h.suiteRuns(),
+        1,
+        'the unbound refusal must burn exactly one suite run — the gate runs the suite before the resolution refusal',
+      )
     }),
   )
 })
@@ -272,6 +280,13 @@ test('real git, bound flow worktree: landing branch resolves to the flow branch 
         git(repo, 'rev-parse', 'main'),
         git(repo, 'rev-parse', 'flow-branch'),
         'running the pinned operation must fast-forward main onto the flow branch head',
+      )
+      // PMR-1W5M: an authorized landing burns exactly one suite run — no
+      // hidden retries or double runs on the happy path.
+      assert.equal(
+        h.suiteRuns(),
+        1,
+        'an authorized landing must burn exactly one suite run',
       )
     }),
   )
