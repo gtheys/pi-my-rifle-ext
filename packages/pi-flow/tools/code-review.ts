@@ -24,6 +24,7 @@ import type {
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { writeAvenNote } from '../aven/client.ts'
+import { healFlowBinding } from '../flow/binding-heal.ts'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
 import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
@@ -32,9 +33,7 @@ import {
   openTuicrReview,
   parseAskAnswer,
   pickLatestSessionSlug,
-  type ResolvedWorktree,
   type ReviewDeps,
-  resolveReviewWorktree,
   routeReviewFail,
   routeReviewPass,
 } from './code-review-parse.ts'
@@ -155,17 +154,19 @@ export function registerCodeReviewTool(
       // re-looked-up below the tuicr open.
 
       const deps = productionReviewDeps(pi, ctx.cwd)
-      let worktree: ResolvedWorktree
-      try {
-        worktree = await resolveReviewWorktree(params.ref, deps)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
+      // AIDEV-NOTE: PMR-DRKH — heal-first: the module binding dies on a pi
+      // reload (PMR-PJM0), so the resolve doubles as a re-arm. Failure keeps
+      // the refusal prefix verbatim (existing regexes are substring matches)
+      // and appends only the recovery line.
+      const heal = await healFlowBinding(params.ref, deps)
+      if (!heal.ok) {
         return toolResult(
-          `code_review refused: ${message}`,
-          { ok: false, reason: message },
+          `code_review refused: ${heal.reason}\nRecovery: run ${heal.recovery} to re-arm the flow binding, then re-call.`,
+          { ok: false, reason: heal.reason },
           { isError: true },
         )
       }
+      const worktree = heal.worktree
 
       const open = await openTuicrReview(params.ref, worktree.path, deps)
       if (open.ok) {

@@ -13,11 +13,17 @@ import { promisify } from 'node:util'
 import type {
   AgentToolResult,
   ExtensionAPI,
+  ExtensionToolContext,
 } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { readAvenLabels } from '../aven/client.ts'
 import { loadConfigWithOrigins } from '../config.ts'
+import {
+  type HealResult,
+  healFlowBinding,
+  recoveryCommand,
+} from '../flow/binding-heal.ts'
 import { DEFAULT_RECIPES } from '../flow/effect-gate.ts'
 import { landDecision } from '../flow/land-gate.ts'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
@@ -35,7 +41,31 @@ import {
   resolveBaseSha,
   resolveMergeBase,
 } from '../shared/flow-base.ts'
+import { productionReviewDeps } from './code-review.ts'
 import { toolResult } from './result.ts'
+
+// AIDEV-NOTE: PMR-DRKH — injectable heal seam for flow_land. Production
+// default resolves the ref's worktree via healFlowBinding (aven note → herdr
+// list) and rebinds module state; fully try/catch-wrapped so ANY throw
+// (mockPi without exec in tests, missing binaries, ...) degrades to a heal
+// failure, never an escaped exception.
+async function defaultHealBinding(
+  pi: ExtensionAPI,
+  repoRoot: string,
+  ref: string,
+): Promise<HealResult> {
+  try {
+    return await healFlowBinding(ref, productionReviewDeps(pi, repoRoot))
+  } catch (error) {
+    let reason: string
+    if (error instanceof Error) {
+      reason = error.message
+    } else {
+      reason = String(error)
+    }
+    return { ok: false, reason, recovery: recoveryCommand(ref) }
+  }
+}
 
 const execFileAsync = promisify(execFile)
 const LAND_SUITE_TIMEOUT_MS = 10 * 60 * 1000
@@ -613,6 +643,10 @@ export function registerLandTool(
   // authorization (fresh suite AND receipt adoption) before the command is
   // pinned; a refusal must not journal a merge-main effect.
   checkMainAdvancement: MainAdvancementChecker = defaultCheckMainAdvancement,
+  // AIDEV-NOTE: PMR-DRKH — injectable heal seam, added LAST positionally to
+  // keep earlier positional call sites (tests, index.ts) working. Absent =
+  // production defaultHealBinding above.
+  healBinding?: (ref: string) => Promise<HealResult>,
 ): void {
   let effectiveReceipts = receipts
   if (writer !== undefined) {
@@ -660,6 +694,9 @@ export function registerLandTool(
         route: 'pr' | 'merge-main'
         artifact?: string
       },
+      _signal?: AbortSignal,
+      _onUpdate?: unknown,
+      ctx?: ExtensionToolContext,
     ): Promise<AgentToolResult<{ ok: boolean; reason: string }>> {
       // AIDEV-NOTE: PMR-C6AK — the human code-review gate check lives here
       // (PMR-T8ZG wrote the field) so behavior flips in one child. Only
@@ -680,6 +717,61 @@ export function registerLandTool(
           { ok: false, reason: 'ref does not match active flow ref' },
           { isError: true },
         )
+      }
+      // AIDEV-NOTE: PMR-DRKH — scoped entry heal, ALWAYS after the mismatch
+      // gate above (heal must never run across a live different ref). Only
+      // heals when the binding is null/mismatched AND no live flow owns a
+      // different ref. Active-flow heal failure refuses LOUDLY before the
+      // suite (running it in the session checkout would be a silent
+      // false-green); hand-run failure keeps the cwd fallback but appends a
+      // WARNING naming the recovery command. landingSuiteCwd() itself is
+      // unchanged — healing rebinds state before it is read.
+      let healWarning = ''
+      const binding = getFlowWorktree()
+      const healNeeded = binding === null || binding.ref !== params.ref
+      const healAllowed = flowRef === null || flowRef === params.ref
+      // AIDEV-NOTE: PMR-DRKH — the production default only runs under the
+      // real Pi runtime (a tool context is present); a bare execute call
+      // (unit-test harnesses with a mockPi lacking exec) skips healing and
+      // keeps today's behavior exactly.
+      const canAttemptHeal = healBinding !== undefined || ctx !== undefined
+      if (healNeeded && healAllowed && canAttemptHeal) {
+        let heal: HealResult
+        try {
+          if (healBinding !== undefined) {
+            heal = await healBinding(params.ref)
+          } else if (ctx !== undefined) {
+            heal = await defaultHealBinding(pi, ctx.cwd, params.ref)
+          } else {
+            // canAttemptHeal guarantees one of the branches above runs.
+            heal = {
+              ok: false,
+              reason: 'healing unavailable',
+              recovery: recoveryCommand(params.ref),
+            }
+          }
+        } catch (error) {
+          let reason: string
+          if (error instanceof Error) {
+            reason = error.message
+          } else {
+            reason = String(error)
+          }
+          heal = { ok: false, reason, recovery: recoveryCommand(params.ref) }
+        }
+        if (!heal.ok) {
+          if (flowRef === params.ref) {
+            return toolResult(
+              `flow_land refused landing ${params.ref}: the flow worktree for the active flow could not be resolved (${heal.reason}) — running the landing suite outside the flow worktree would be a false green. Recovery: run ${heal.recovery} to re-arm the flow binding, then re-call.`,
+              {
+                ok: false,
+                reason: 'flow worktree unresolvable for active flow',
+              },
+              { isError: true },
+            )
+          }
+          healWarning = `\n\nWARNING: the flow worktree could not be resolved (${heal.reason}); the suite ran in ${process.cwd()} instead. Recovery: run ${heal.recovery} to re-arm the flow binding.`
+        }
       }
       // AIDEV-NOTE: PMR-C6AK — the merge-main human pass has durable twins
       // (PMR-XTQQ/5.2 + PMR-R5VB): when the in-memory marker is absent
@@ -758,7 +850,7 @@ export function registerLandTool(
             }
             state.authorized = params.ref
             return toolResult(
-              `flow_land: landing for ${params.ref} authorized via pr — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run — run the git push / gh pr create step now`,
+              `flow_land: landing for ${params.ref} authorized via pr — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run — run the git push / gh pr create step now${healWarning}`,
               { ok: true, reason: '' },
             )
           }
@@ -779,7 +871,7 @@ export function registerLandTool(
             )
           }
           return toolResult(
-            `flow_land: landing for ${params.ref} gated ok via merge-main — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run.${humanGateNote}${mergeOkNote(merge.command)}`,
+            `flow_land: landing for ${params.ref} gated ok via merge-main — adopted the stored receipt from ${stored.at} (HEAD unchanged) — the suite was NOT re-run.${humanGateNote}${mergeOkNote(merge.command)}${healWarning}`,
             { ok: true, reason: '' },
           )
         }
@@ -838,7 +930,7 @@ export function registerLandTool(
           )
         }
         return toolResult(
-          `flow_land: landing for ${params.ref} gated ok via merge-main${humanGateNote} — the suite ran green just now.${mergeOkNote(merge.command)}`,
+          `flow_land: landing for ${params.ref} gated ok via merge-main${humanGateNote} — the suite ran green just now.${mergeOkNote(merge.command)}${healWarning}`,
           { ok: true, reason: '' },
         )
       }
@@ -852,7 +944,7 @@ export function registerLandTool(
       }
       state.authorized = params.ref
       return toolResult(
-        `flow_land: landing for ${params.ref} authorized via pr — run the git push / gh pr create step now`,
+        `flow_land: landing for ${params.ref} authorized via pr — run the git push / gh pr create step now${healWarning}`,
         { ok: true, reason: '' },
       )
     },
