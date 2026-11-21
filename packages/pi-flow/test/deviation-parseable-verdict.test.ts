@@ -114,6 +114,27 @@ test('golden PMR-C0YV run 3: parse failure excerpt includes the surviving contra
   assert.ok(text.includes('deviations_count: 4'))
 })
 
+test('long artifact: excerpt keeps a bounded head slice alongside the tail (PMR-H17H)', () => {
+  // > RAW_ARTIFACT_EXCERPT_MAX so the excerpt path engages: prose findings
+  // at the head, verdict section at the tail, filler in between.
+  const artifact = [
+    '1. PROSE-FINDING-HEAD-MARKER: spec requires X but diff drops it',
+    'filler\n'.repeat(600),
+    DEVIATION_VERDICT_HEADING,
+    'reviewed_range: a1e483a..7034e29',
+    // Count mismatch (declares 1, zero "- deviation:" lines) forces the
+    // parse-failure path — the excerpt only ships on isError results.
+    'deviations_count: 1',
+  ].join('\n')
+  const result = deviationResultToToolResult(artifact)
+  assert.equal(result.isError, true)
+  const text = textOf(result)
+  // Tail (verdict) and head (prose findings) both survive; the middle is cut.
+  assert.ok(text.includes('deviations_count: 1'))
+  assert.ok(text.includes('PROSE-FINDING-HEAD-MARKER'))
+  assert.match(text, /\n…\n/)
+})
+
 // --- the fix: the reviewer prompt carries an explicit self-check contract ---
 
 test('reviewer prompt requires a verdict section with ONLY contract lines and a self-check', () => {

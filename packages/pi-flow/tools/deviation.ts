@@ -200,14 +200,21 @@ export type DeviationReviewDetails = DeviationArtifact
 
 // AIDEV-NOTE: PMR-MH1Y — bound the excerpt so a pathological artifact cannot
 // blow up the tool result; tail-biased because the verdict section is emitted
-// at the end of the reviewer reply.
+// at the end of the reviewer reply. PMR-H17H: keep a bounded HEAD slice too —
+// the numbered prose findings (the exact diagnosis the excerpt exists for)
+// are enumerated BEFORE the verdict section and a pure tail can cut them off.
 const RAW_ARTIFACT_EXCERPT_MAX = 4000
+const RAW_ARTIFACT_EXCERPT_HEAD = 800
 
 function rawArtifactExcerpt(artifact: string): string {
   if (artifact.length <= RAW_ARTIFACT_EXCERPT_MAX) {
     return artifact
   }
-  return `…${artifact.slice(-RAW_ARTIFACT_EXCERPT_MAX)}`
+  const head = artifact.slice(0, RAW_ARTIFACT_EXCERPT_HEAD)
+  const tail = artifact.slice(
+    -(RAW_ARTIFACT_EXCERPT_MAX - RAW_ARTIFACT_EXCERPT_HEAD),
+  )
+  return `${head}\n…\n${tail}`
 }
 
 /**
