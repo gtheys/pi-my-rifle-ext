@@ -95,6 +95,13 @@ import {
   POLL_CHECK_ORDER,
   shellEscape,
 } from '../pi-extension/subagents/surface.ts'
+import {
+  claimInterruptWatermark,
+  type InterruptWatermark,
+  interruptWatermarkMatches,
+  interruptWatermarkPath,
+  readInterruptWatermark,
+} from '../pi-extension/subagents/watermark.ts'
 
 const resolveDenyTools = subagentsModule.__test__.resolveDenyTools
 
@@ -3693,6 +3700,209 @@ describe('request/ack handshake (PMR-DNPZ)', () => {
     assert.equal(findLastStopReason([{ role: 'assistant' }]), null)
     assert.equal(findLastStopReason([]), null)
     assert.equal(findLastStopReason(undefined), null)
+  })
+})
+
+describe('interrupt watermark (PMR-J3WY replay-safe interrupts)', () => {
+  function makeRunning(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'a1',
+      name: 'Worker',
+      task: '',
+      surface: 'pane-1',
+      startTime: 0,
+      sessionFile: 'a1.jsonl',
+      interactive: false,
+      statusState: createStatusState({ source: 'pi', startTimeMs: 0 }),
+      ...overrides,
+    }
+  }
+
+  function makeWatermark(overrides: Record<string, unknown> = {}) {
+    return {
+      toolCallId: 'tc-1',
+      childId: 'a1',
+      sessionFile: 'a1.jsonl',
+      requestId: 'req-1',
+      sentAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    }
+  }
+
+  function makeWatermarkIo(root: string, written: ControlRecord[]) {
+    return {
+      writeControlRecord: (record: ControlRecord) => {
+        written.push(record)
+      },
+      readAckSidecar: () => null,
+      readControlRecord: () => null,
+      cleanupAck: () => {},
+      readInterruptWatermark: (toolCallId: string) =>
+        readInterruptWatermark(toolCallId, root),
+      claimInterruptWatermark: (watermark: InterruptWatermark) =>
+        claimInterruptWatermark(watermark, root),
+    }
+  }
+
+  it('claims the watermark before the first send and correlates the requestId', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-'))
+    const written: ControlRecord[] = []
+    const io = makeWatermarkIo(root, written)
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    let sent = 0
+    runningMap.clear()
+
+    try {
+      runningMap.set('a1', makeRunning())
+      const result = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        () => {
+          sent++
+        },
+        io,
+        'tc-1',
+      )
+
+      assert.equal(sent, 1)
+      assert.equal(result.details.status, 'interrupt_requested')
+      const watermark = readInterruptWatermark('tc-1', root)
+      assert.ok(watermark)
+      assert.equal(watermark?.childId, 'a1')
+      assert.equal(watermark?.sessionFile, 'a1.jsonl')
+      assert.equal(written.length, 1)
+      assert.equal(written[0].requestId, watermark?.requestId)
+      const state = runningMap.get('a1').statusState
+      assert.equal(state.pendingRequest?.requestId, watermark?.requestId)
+    } finally {
+      runningMap.clear()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('suppresses a replayed interrupt: no second Escape, no second pending request', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-'))
+    const written: ControlRecord[] = []
+    const io = makeWatermarkIo(root, written)
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    let sent = 0
+    const send = () => {
+      sent++
+    }
+    runningMap.clear()
+
+    try {
+      runningMap.set('a1', makeRunning())
+      const first = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        send,
+        io,
+        'tc-1',
+      )
+      assert.equal(first.details.status, 'interrupt_requested')
+      const firstRequestId = written[0].requestId
+
+      const replay = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        send,
+        io,
+        'tc-1',
+      )
+      assert.equal(replay.details.status, 'interrupt_replayed')
+      assert.equal(sent, 1)
+      assert.equal(written.length, 1)
+      const state = runningMap.get('a1').statusState
+      assert.equal(state.pendingRequest?.requestId, firstRequestId)
+
+      // Simulated parent restart: the in-memory map is rebuilt from scratch,
+      // so the fresh entry carries no pending request. The durable watermark
+      // alone must still suppress the replay.
+      runningMap.clear()
+      runningMap.set('a1', makeRunning())
+      const afterRestart = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        send,
+        io,
+        'tc-1',
+      )
+      assert.equal(afterRestart.details.status, 'interrupt_replayed')
+      assert.equal(sent, 1)
+      assert.equal(written.length, 1)
+      const freshState = runningMap.get('a1').statusState
+      assert.equal(freshState.pendingRequest, null)
+    } finally {
+      runningMap.clear()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to send Escape when the watermark names a different child or session', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-'))
+    const written: ControlRecord[] = []
+    const io = makeWatermarkIo(root, written)
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    let sent = 0
+    runningMap.clear()
+
+    try {
+      claimInterruptWatermark(
+        makeWatermark({ childId: 'other', sessionFile: 'other.jsonl' }),
+        root,
+      )
+      runningMap.set('a1', makeRunning())
+      const result = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        () => {
+          sent++
+        },
+        io,
+        'tc-1',
+      )
+
+      assert.equal(sent, 0)
+      assert.equal(
+        result.details.error,
+        'interrupt watermark identity mismatch',
+      )
+      assert.equal(written.length, 0)
+      const state = runningMap.get('a1').statusState
+      assert.equal(state.pendingRequest, null)
+    } finally {
+      runningMap.clear()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('watermark primitives claim once, round trip, and fail closed on malformed files', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-'))
+    try {
+      const watermark = makeWatermark()
+      assert.equal(claimInterruptWatermark(watermark, root), true)
+      assert.equal(claimInterruptWatermark(watermark, root), false)
+      assert.deepEqual(readInterruptWatermark('tc-1', root), watermark)
+      assert.equal(readInterruptWatermark('no-such-call', root), null)
+      assert.equal(interruptWatermarkMatches(watermark, 'a1', 'a1.jsonl'), true)
+      assert.equal(
+        interruptWatermarkMatches(watermark, 'a2', 'a1.jsonl'),
+        false,
+      )
+      assert.equal(
+        interruptWatermarkMatches(watermark, 'a1', 'a2.jsonl'),
+        false,
+      )
+
+      writeFileSync(interruptWatermarkPath('bad', root), 'not json')
+      assert.equal(readInterruptWatermark('bad', root), null)
+      writeFileSync(
+        interruptWatermarkPath('partial', root),
+        JSON.stringify({ toolCallId: 'partial' }),
+      )
+      assert.equal(readInterruptWatermark('partial', root), null)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

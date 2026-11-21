@@ -141,6 +141,12 @@ import {
   updateSessionUsageTracker,
 } from './usage.ts'
 import {
+  claimInterruptWatermark,
+  type InterruptWatermark,
+  interruptWatermarkMatches,
+  readInterruptWatermark,
+} from './watermark.ts'
+import {
   createSubagentWorktree,
   deriveWorktreeBranch,
   type WorktreeOption,
@@ -1551,6 +1557,9 @@ export interface InterruptControlIo {
   readAckSidecar: (sessionFile: string) => ControlAck | null
   readControlRecord: (childId: string) => ControlRecord | null
   cleanupAck: (sessionFile: string, childId: string) => void
+  /** Optional watermark IO (PMR-J3WY); tests inject temp-dir versions. */
+  readInterruptWatermark?: (toolCallId: string) => InterruptWatermark | null
+  claimInterruptWatermark?: (watermark: InterruptWatermark) => boolean
 }
 
 const defaultInterruptControlIo: InterruptControlIo = {
@@ -1561,12 +1570,15 @@ const defaultInterruptControlIo: InterruptControlIo = {
     removeAckSidecar(sessionFile)
     removeControlRecord(childId)
   },
+  readInterruptWatermark: (toolCallId) => readInterruptWatermark(toolCallId),
+  claimInterruptWatermark: (watermark) => claimInterruptWatermark(watermark),
 }
 
 function handleSubagentInterrupt(
   params: { id?: string; name?: string },
   sendEscapeKey: (surface: string) => void = sendEscape,
   controlIo: InterruptControlIo = defaultInterruptControlIo,
+  toolCallId?: string,
 ): AgentToolResult<InterruptDetails> {
   const resolved = resolveInterruptTarget(params)
   if ('error' in resolved) {
@@ -1593,6 +1605,97 @@ function handleSubagentInterrupt(
     }
   }
 
+  // AIDEV-NOTE (PMR-J3WY): replay-safe watermark gate, keyed by the logical
+  // tool call id. Consulted BEFORE any Escape is sent (mark-before-send,
+  // restricted to interrupts — owner inbox/ask/peer receive-side mark-after-
+  // send ordering is deliberate and unchanged). The watermark file is durable,
+  // so replay suppression survives a parent restart and never depends on the
+  // in-memory runningSubagents map. Calls without a toolCallId (none today —
+  // pi always passes one) skip watermarking and keep legacy behavior.
+  let requestId: string = randomUUID()
+  if (toolCallId) {
+    const readWatermark: (id: string) => InterruptWatermark | null =
+      controlIo.readInterruptWatermark ?? readInterruptWatermark
+    const claimWatermark: (watermark: InterruptWatermark) => boolean =
+      controlIo.claimInterruptWatermark ?? claimInterruptWatermark
+    let watermark = readWatermark(toolCallId)
+    let freshlyClaimed = false
+    if (!watermark) {
+      // First execution of this logical call: claim the watermark before the
+      // send. A claim throw degrades to legacy behavior — same precedent as
+      // the control-record write, which never blocks the send.
+      const candidate: InterruptWatermark = {
+        toolCallId,
+        childId: running.id,
+        sessionFile: running.sessionFile,
+        requestId,
+        sentAt: new Date().toISOString(),
+      }
+      try {
+        freshlyClaimed = claimWatermark(candidate)
+      } catch {
+        freshlyClaimed = true
+      }
+      if (freshlyClaimed) {
+        watermark = candidate
+      } else {
+        // Lost a concurrent claim race — re-read the winner and treat this
+        // execution as a replay of it.
+        watermark = readWatermark(toolCallId)
+        if (!watermark) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Refusing interrupt for subagent "${running.name}": a durable watermark for this tool call exists but could not be read. Retry with a new tool call.`,
+              },
+            ],
+            details: {
+              error: 'interrupt watermark unreadable',
+              id: running.id,
+              name: running.name,
+            },
+          }
+        }
+      }
+    }
+    if (!freshlyClaimed) {
+      if (
+        interruptWatermarkMatches(watermark, running.id, running.sessionFile)
+      ) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Interrupt already requested for subagent "${running.name}" — replayed tool call suppressed; no new Escape sent.`,
+            },
+          ],
+          details: {
+            id: running.id,
+            name: running.name,
+            status: 'interrupt_replayed',
+          },
+        }
+      }
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Refusing interrupt for subagent "${running.name}": the durable watermark for this tool call names a different child or session. Escalate to a new interrupt call if this is genuinely new intent.`,
+          },
+        ],
+        details: {
+          error: 'interrupt watermark identity mismatch',
+          id: running.id,
+          name: running.name,
+        },
+      }
+    }
+    // The durable watermark wins the requestId so the control record and the
+    // pending request correlate with it across a restart.
+    requestId = watermark.requestId
+  }
+
   const now = Date.now()
   observeRunningSubagent(running, now)
 
@@ -1612,7 +1715,9 @@ function handleSubagentInterrupt(
   // (at-least-once window: if the child's ack write is lost we expire and fall
   // back to legacy fire-and-forget — the record alone never re-applies the
   // escape). Record-write failure must not block the interrupt itself.
-  const requestId = randomUUID()
+  // AIDEV-NOTE (PMR-J3WY): requestId comes from the watermark gate above when
+  // a toolCallId was supplied, so the record correlates with the durable
+  // watermark; otherwise it is the fresh random id generated there.
   let ackState: 'pending' | 'unavailable' = 'pending'
   try {
     controlIo.writeControlRecord({
@@ -3355,8 +3460,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         ),
       }),
 
-      async execute(_toolCallId, params) {
-        return handleSubagentInterrupt(params)
+      async execute(toolCallId, params) {
+        return handleSubagentInterrupt(
+          params,
+          sendEscape,
+          defaultInterruptControlIo,
+          toolCallId,
+        )
       },
 
       renderCall(args, theme) {

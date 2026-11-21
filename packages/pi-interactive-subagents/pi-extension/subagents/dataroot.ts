@@ -10,6 +10,7 @@ export type SubagentsDataDirName =
   | 'assignments'
   | 'inbox'
   | 'delivered'
+  | 'interrupts'
   | 'spawn-seq'
   | 'retired'
 
@@ -21,6 +22,7 @@ export const SUBAGENTS_DATA_DIR_NAMES: readonly SubagentsDataDirName[] = [
   'assignments',
   'inbox',
   'delivered',
+  'interrupts',
   'spawn-seq',
   'retired',
 ]
