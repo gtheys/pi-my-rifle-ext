@@ -159,7 +159,10 @@ type SpecApproveExecute = (
   details: { ok: boolean }
 }>
 
-function specApproveExecute(receipts?: ReceiptJournal): SpecApproveExecute {
+function specApproveExecute(
+  receipts?: ReceiptJournal,
+  isYoloRunFn: (ref: string) => Promise<boolean> = async () => false,
+): SpecApproveExecute {
   let execute: SpecApproveExecute | undefined
   const mockPi = {
     registerTool: (options: { execute: SpecApproveExecute }) => {
@@ -184,6 +187,8 @@ function specApproveExecute(receipts?: ReceiptJournal): SpecApproveExecute {
   registerSpecApproveTool(
     mockPi as unknown as Parameters<typeof registerSpecApproveTool>[0],
     effectiveReceipts,
+    undefined,
+    isYoloRunFn,
   )
   if (!execute) throw new Error('spec_approve tool not registered')
   return execute
@@ -379,6 +384,55 @@ test('spec_approve tool: oneshot ticket skips the receipt gate', async () => {
     } finally {
       writeFileSync(LABELS_FILE, '[]')
     }
+  })
+})
+
+// AIDEV-NOTE: yolo plan 3.2 — the isYoloRun exemption mirrors the 3.1
+// pattern in phase-complete: a ref journaled with input.yolo === true (from
+// the human's CLI invocation, not agent-writable) approves the spec
+// receipt-free. Fail-closed: an absent projection / read failure means NOT
+// yolo, and a non-yolo ref keeps the full gate.
+test('spec_approve tool: yolo-journaled ref approves receipt-free', async () => {
+  const receipts = memReceipts()
+  const execute = specApproveExecute(receipts, async () => true)
+  await withFakeAven(async () => {
+    writeFileSync(ANSWER_FILE, '')
+    const result = await execute('y1', { ref: 'PMR-YOLO1' })
+    assert.equal(result.isError, undefined)
+    assert.equal(result.details.ok, true)
+    const args = lastArgs()
+    assert.ok(args.includes('edit'))
+    assert.deepEqual(receipts.entries[0], {
+      ref: 'PMR-YOLO1',
+      command: 'spec_approve',
+      target: 'plan',
+    })
+  })
+})
+
+test('spec_approve tool: non-yolo ref keeps the receipt gate', async () => {
+  const execute = specApproveExecute()
+  await withFakeAven(async () => {
+    writeFileSync(ANSWER_FILE, '')
+    const result = await execute('y2', { ref: 'PMR-YOLO2' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /\/flow answer PMR-YOLO2 approve/)
+    assert.ok(!lastArgs().includes('edit'))
+  })
+})
+
+test('spec_approve tool: yolo read failure refuses (fail-closed via default reader)', async () => {
+  const receipts = memReceipts()
+  // No injected reader: the production default isYoloRun reads the real
+  // projection; this ref has none, so it must resolve false and refuse.
+  const execute = specApproveExecute(receipts)
+  await withFakeAven(async () => {
+    writeFileSync(ANSWER_FILE, '')
+    const result = await execute('y3', { ref: 'PMR-YOLO3' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /\/flow answer PMR-YOLO3 approve/)
+    assert.equal(receipts.entries.length, 0)
+    assert.ok(!lastArgs().includes('edit'))
   })
 })
 

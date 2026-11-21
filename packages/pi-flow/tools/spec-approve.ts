@@ -33,7 +33,11 @@ import type {
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { readAvenLabels, readGateAnswer, specApprove } from '../aven/client.ts'
-import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
+import {
+  createReceiptJournal,
+  isYoloRun,
+  type ReceiptJournal,
+} from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
 import { toolResult } from './result.ts'
 
@@ -55,6 +59,10 @@ export function registerSpecApproveTool(
   pi: ExtensionAPI,
   receipts: ReceiptJournal = createReceiptJournal(getAgentDir()),
   writer?: EventWriter,
+  // AIDEV-NOTE: yolo plan 3.2 — injectable for tests; production default
+  // reads the real run projection (fail-closed), mirroring the 3.1 seam in
+  // registerPhaseCompleteTool.
+  isYoloRunFn: (ref: string) => Promise<boolean> = isYoloRun,
 ): void {
   let effectiveReceipts = receipts
   if (writer !== undefined) {
@@ -68,11 +76,11 @@ export function registerSpecApproveTool(
     name: 'spec_approve',
     label: 'spec approve',
     description:
-      'Approve a spec under review: pins it to the plan label, sets plan-state=approved, moves it to todo. This is the ONLY way to approve a spec — never run `aven edit <ref> --metadata plan-state=approved` yourself. Tickets carrying the oneshot label skip the receipt gate. After this returns ok, call the spec_publish tool with the same ref.',
+      'Approve a spec under review: pins it to the plan label, sets plan-state=approved, moves it to todo. This is the ONLY way to approve a spec — never run `aven edit <ref> --metadata plan-state=approved` yourself. Tickets carrying the oneshot label OR runs journaled as yolo (--yolo) skip the receipt gate. After this returns ok, call the spec_publish tool with the same ref.',
     promptSnippet:
       'Approval transition for specs in plan-state=review — call instead of raw aven edits.',
     promptGuidelines: [
-      'Only call spec_approve when the user explicitly said "approve <REF>" — never without that explicit word, and only for the ref they named — and only after the human ran `/flow answer <ref> approve` (the tool refuses without that receipt; tickets carrying the `oneshot` label skip this receipt).',
+      'Only call spec_approve when the user explicitly said "approve <REF>" — never without that explicit word, and only for the ref they named — and only after the human ran `/flow answer <ref> approve` (the tool refuses without that receipt; tickets carrying the `oneshot` label skip this receipt, and so do runs the human started with --yolo).',
       'After spec_approve returns ok, call the spec_publish tool with that ref (never the /spec-publish slash command — agents cannot run slash commands). On a tool error, report the reason to the user — do not retry with raw aven commands. If spec_approve refuses with "no human approval receipt", tell the human to run `/flow answer <ref> approve`, then re-call spec_approve once the receipt exists.',
       'Dedup is flow-run-only (PMR-FA3D): outside an active flow run the approval receipt is not journaled, so a repeated spec_approve re-checks the human gate instead of adopting a stored receipt. That is expected fail-safe behavior, not an error — the human gate simply applies again.',
     ],
@@ -117,9 +125,19 @@ export function registerSpecApproveTool(
       // checkpoint by accepted design; see the full anchor on the plan-gate
       // check in tools/phase-complete.ts for why `--label oneshot`
       // interception was considered and rejected.
+      // AIDEV-NOTE: yolo plan 3.2 — third exemption path beside the oneshot
+      // label (PMR-ZWX8), mirroring tools/phase-complete.ts (3.1):
+      // input.yolo === true is journaled by the run server from the human's
+      // CLI invocation (--yolo), not from any agent-writable label or
+      // metadata, so a yolo ref cannot be self-granted by the agent and may
+      // approve the spec without the approval receipt. The isYoloRun read is
+      // fail-closed (absent projection / read failure = not yolo → full
+      // gate). The receiptMetadataMutation bash interceptor is untouched —
+      // synthetic plan-state receipts remain blocked at the shell.
       const labels = await readAvenLabels(params.ref, params.workspace)
       const isOneshot = labels?.includes('oneshot') === true
-      if (!isOneshot) {
+      const isYolo = await isYoloRunFn(params.ref)
+      if (!isOneshot && !isYolo) {
         const answer = await readGateAnswer(
           params.ref,
           'spec',
