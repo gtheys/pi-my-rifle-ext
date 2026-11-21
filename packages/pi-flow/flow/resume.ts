@@ -70,18 +70,22 @@ export function mergeSeedInput<T extends JournalablePromptInput>(
   if (seed.input === undefined) {
     return promptInput
   }
-  // AIDEV-NOTE: yolo plan 2.2 — the JOURNALED seed wins for yolo too:
-  // a flag-less re-invocation of a yolo run stays yolo, and a later --yolo
-  // re-invocation cannot upgrade a running non-yolo seed (an old journal
-  // without the field resolves to non-yolo). The handler must therefore
-  // stamp parsed.yolo onto promptInput BEFORE calling this, not after.
+  // AIDEV-NOTE: yolo plan 2.2 + review fix (P1) — the JOURNALED seed wins
+  // for yolo ONLY while the journaled run is non-terminal: seed.resume is
+  // present exactly when the last loop snapshot was running/paused
+  // (resumeSeedFromEvents), so a flag-less re-invocation of a live yolo run
+  // stays yolo and --yolo cannot upgrade a live non-yolo seed. A halted/done
+  // run is a FRESH start: the explicit flag/config applies and history never
+  // silently vetoes it. The handler must therefore stamp parsed.yolo onto
+  // promptInput BEFORE calling this, not after.
   const seedYolo = seed.input.yolo === true
   return {
     ...promptInput,
     mode: seed.input.mode,
     gitRoot: seed.input.gitRoot,
     workRoots: seed.input.workRoots,
-    yolo: seedYolo,
+    // terminal journal (no resume block): keep the fresh flag/config value
+    ...(seed.resume !== undefined ? { yolo: seedYolo } : {}),
   }
 }
 

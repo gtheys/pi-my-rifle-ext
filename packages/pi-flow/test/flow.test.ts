@@ -366,14 +366,20 @@ test('run-input: no seed keeps the freshly rebuilt promptInput as-is', () => {
   })
 })
 
-// yolo plan 2.2: the JOURNALED seed wins for yolo — a flag-less re-invocation
-// of a yolo run stays yolo, and a --yolo re-invocation cannot upgrade a
-// running non-yolo seed.
-test('run-input yolo: journaled yolo seed wins over the fresh --yolo value', () => {
-  // flag-less resume of a yolo run stays yolo
+// yolo plan 2.2 + review fix: the JOURNALED seed wins for yolo only while the
+// journaled run is NON-TERMINAL (seed.resume present — running/paused). A
+// halted/done run is a fresh start: the explicit --yolo flag (or config)
+// applies and is never silently overridden by history.
+test('run-input yolo: journaled yolo seed wins over the fresh --yolo value while the run is live', () => {
+  const liveResume = {
+    blockerRetries: 0,
+    validateStartedAt: '2026-11-21T00:00:00Z',
+  }
+  // flag-less resume of a live yolo run stays yolo
   const yoloResume = mergeSeedInput(
     { mode: 'work', gitRoot: '/fresh', workRoots: ['/fresh'], yolo: false },
     {
+      resume: liveResume,
       input: {
         mode: 'work',
         gitRoot: '/parked',
@@ -390,10 +396,11 @@ test('run-input yolo: journaled yolo seed wins over the fresh --yolo value', () 
     yolo: true,
   })
 
-  // --yolo re-invocation of a non-yolo journaled run does NOT upgrade it
+  // --yolo re-invocation of a live non-yolo journaled run does NOT upgrade it
   const nonYoloSeed = mergeSeedInput(
     { mode: 'work', gitRoot: '/fresh', workRoots: ['/fresh'], yolo: true },
     {
+      resume: liveResume,
       input: {
         mode: 'work',
         gitRoot: '/parked',
@@ -408,10 +415,42 @@ test('run-input yolo: journaled yolo seed wins over the fresh --yolo value', () 
   const legacySeed = mergeSeedInput(
     { mode: 'work', gitRoot: '/fresh', workRoots: ['/fresh'], yolo: true },
     {
+      resume: liveResume,
       input: { mode: 'work', gitRoot: '/parked', workRoots: ['/parked-w'] },
     },
   )
   assert.equal(legacySeed.yolo, false)
+})
+
+test('run-input yolo: terminal journal never overrides the fresh flag (review fix)', () => {
+  // halted/done run: seed.input WITHOUT a resume block = terminal. The
+  // explicit flag/config applies; history does not silently veto it.
+  const haltedNonYolo = mergeSeedInput(
+    { mode: 'work', gitRoot: '/fresh', workRoots: ['/fresh'], yolo: true },
+    {
+      input: {
+        mode: 'work',
+        gitRoot: '/parked',
+        workRoots: ['/parked-w'],
+        yolo: false,
+      },
+    },
+  )
+  assert.equal(haltedNonYolo.yolo, true)
+
+  // terminal yolo journal + flag-less re-invocation starts non-yolo
+  const haltedYolo = mergeSeedInput(
+    { mode: 'work', gitRoot: '/fresh', workRoots: ['/fresh'], yolo: false },
+    {
+      input: {
+        mode: 'work',
+        gitRoot: '/parked',
+        workRoots: ['/parked-w'],
+        yolo: true,
+      },
+    },
+  )
+  assert.equal(haltedYolo.yolo, false)
 })
 // --- /flow handler dispatch: answer path (PMR-R5VB subtask 1.4) ---
 
