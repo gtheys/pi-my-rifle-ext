@@ -117,6 +117,17 @@ function pickArray(root: unknown, key: string): unknown[] {
   return arr
 }
 
+// AIDEV-NOTE: PMR-PMPF — distinguishes "herdr reported zero workspaces"
+// (explicit empty array) from "payload has no workspaces array at all"
+// (envelope renamed upstream). pickArray alone conflates the two into [].
+function hasWorkspacesArray(root: unknown): boolean {
+  const result = isRecord(root) ? root.result : null
+  if (!isRecord(result)) {
+    return false
+  }
+  return Array.isArray(result.workspaces)
+}
+
 /**
  * Preflight: `herdr worktree list` exit 0 proves binary exists, socket
  * reachable, and HERDR_ENV guardrail passes. Failure surfaces stderr
@@ -375,7 +386,18 @@ export async function workspaceList(
       `herdr workspace list returned non-JSON: ${result.stdout.slice(-200)}`,
     )
   }
-  return parseWorkspaces(parsed)
+  const workspaces = parseWorkspaces(parsed)
+  // AIDEV-NOTE: PMR-PMPF — zero parsed workspaces is only acceptable when
+  // the payload carries a recognizable workspaces array (an explicit empty
+  // list). If a future herdr renames the result.workspaces envelope, parsing
+  // would silently yield [] and prune would report a clean 0-closed/0-skipped
+  // no-op, resurrecting the PMR-DMZR silent-dangling bug. Fail loudly.
+  if (workspaces.length === 0 && !hasWorkspacesArray(parsed)) {
+    throw new Error(
+      `herdr workspace list payload has no recognizable workspaces array — refusing to treat it as zero workspaces: ${result.stdout.slice(-200)}`,
+    )
+  }
+  return workspaces
 }
 
 export async function workspaceClose(

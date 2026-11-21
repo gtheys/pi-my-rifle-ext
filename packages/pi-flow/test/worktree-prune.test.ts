@@ -15,7 +15,7 @@ import {
   type EffectDeclarationRecord,
   type EffectJournal,
 } from '../run-state.ts'
-import { parseWorkspaces } from '../worktree/herdr.ts'
+import { parseWorkspaces, workspaceList } from '../worktree/herdr.ts'
 import worktreeExtension from '../worktree/index.ts'
 
 // --- parseWorkspaces (herdr.ts defensive parsing) ---
@@ -62,6 +62,33 @@ const LIVE_WORKSPACES = [
     },
   },
 ]
+
+test('workspaceList: missing workspaces envelope fails loudly (PMR-PMPF)', async () => {
+  const mockPi = {
+    exec: async () => ({
+      code: 0,
+      stderr: '',
+      stdout: JSON.stringify({ result: { type: 'workspace_list', ws: [] } }),
+    }),
+  } as unknown as ExtensionAPI
+  await assert.rejects(
+    workspaceList(mockPi, undefined),
+    /no recognizable workspaces array/,
+  )
+})
+
+test('workspaceList: explicit empty workspaces array stays a valid zero', async () => {
+  const mockPi = {
+    exec: async () => ({
+      code: 0,
+      stderr: '',
+      stdout: JSON.stringify({
+        result: { type: 'workspace_list', workspaces: [] },
+      }),
+    }),
+  } as unknown as ExtensionAPI
+  assert.deepEqual(await workspaceList(mockPi, undefined), [])
+})
 
 test('parseWorkspaces: real herdr 0.8.2 workspace list payload', () => {
   const payload = {
