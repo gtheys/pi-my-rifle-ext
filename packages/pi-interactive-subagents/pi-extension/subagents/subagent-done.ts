@@ -601,9 +601,82 @@ export default function (pi: ExtensionAPI) {
             'PI_SUBAGENT_ID/PI_SUBAGENT_SESSION environment variables are not set.',
         )
       }
+      // AIDEV-NOTE (PMR-ZJCP): the memo-hit path runs BEFORE resolvePeer, so
+      // it cannot name the peer — static text mirroring message_owner's.
+      const replayedSentText =
+        'Message delivered to the peer. You can keep working — the peer ' +
+        'will pick it up as its next turn.'
+      const fingerprint = effectFingerprint('message_peer', identity.childId, {
+        peer: params.peer,
+        message: params.message,
+        resultRef: params.resultRef,
+      })
+      // AIDEV-NOTE (PMR-ZJCP): replay-safety for message_peer. Memo hit → the
+      // earlier send already happened; replay the memoized messageId with NO
+      // send and NO inbox mutation — and no resolvePeer call, so a peer that
+      // has since gone offline still gets its memoized delivery. Malformed
+      // memo results fail closed by falling through to the inbox scan below.
+      const memo = readEffectMemo(identity.childId, 'message_peer', fingerprint)
+      if (
+        memo !== null &&
+        typeof memo.result.messageId === 'string' &&
+        typeof memo.result.path === 'string'
+      ) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `[Replay of an interrupted call] ${replayedSentText}`,
+            },
+          ],
+          details: { messageId: memo.result.messageId, path: memo.result.path },
+        }
+      }
       const target = resolvePeer(params.peer, identity)
       if (target.self) {
         throw new Error('Cannot message yourself — just continue working.')
+      }
+      const sentText = `Message delivered to ${target.name} (${target.childId}). You can keep working — the peer will pick it up as its next turn.`
+      // AIDEV-NOTE (PMR-ZJCP): W1 crash-window evidence scan — the inbox is
+      // the source of truth when a send happened but the memo write was
+      // interrupted. Matches sender childId + byte-exact message + exact
+      // resultRef (undefined never matches ''). Note the fingerprint keys on
+      // the RAW `params.peer` string: a replay that spells the recipient
+      // differently (name vs childId) misses the memo and sends fresh.
+      const delivered = readInbox(target.childId).find(
+        (entry) =>
+          entry.message.from.childId === identity.childId &&
+          entry.message.message === params.message &&
+          (entry.message.resultRef || undefined) ===
+            (params.resultRef || undefined),
+      )
+      if (delivered !== undefined) {
+        writeEffectMemo({
+          version: 1,
+          childId: identity.childId,
+          tool: 'message_peer',
+          fingerprint,
+          createdAt: new Date().toISOString(),
+          result: {
+            messageId: delivered.message.messageId,
+            path: delivered.path,
+          },
+        })
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `An identical message was already delivered to ${target.name} ` +
+                `(${target.childId}) earlier (messageId ` +
+                `${delivered.message.messageId}); no duplicate send was made.`,
+            },
+          ],
+          details: {
+            messageId: delivered.message.messageId,
+            path: delivered.path,
+          },
+        }
       }
       const sent = sendPeerMessage({
         toChildId: target.childId,
@@ -611,11 +684,21 @@ export default function (pi: ExtensionAPI) {
         message: params.message,
         resultRef: params.resultRef,
       })
+      // AIDEV-NOTE (PMR-ZJCP): mark-after-effect — memo written only after
+      // the send is durable, so a memo hit is trustworthy evidence.
+      writeEffectMemo({
+        version: 1,
+        childId: identity.childId,
+        tool: 'message_peer',
+        fingerprint,
+        createdAt: new Date().toISOString(),
+        result: { messageId: sent.messageId, path: sent.path },
+      })
       return {
         content: [
           {
             type: 'text',
-            text: `Message delivered to ${target.name} (${target.childId}). You can keep working — the peer will pick it up as its next turn.`,
+            text: sentText,
           },
         ],
         details: { messageId: sent.messageId, path: sent.path },
