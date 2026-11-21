@@ -105,6 +105,18 @@ import {
 
 const resolveDenyTools = subagentsModule.__test__.resolveDenyTools
 
+/** withTempDir for async bodies: the temp dir must outlive the awaited run. */
+async function withTempDirAsync<T>(
+  run: (dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = createTestDir()
+  try {
+    return await run(dir)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 import {
   appendBranchSummary,
   copySessionFile,
@@ -138,7 +150,7 @@ import {
   type StallThresholds,
   stallErrorMessage,
 } from '../pi-extension/subagents/status.ts'
-import {
+import subagentDoneExtension, {
   decideReplyDelivery,
   decideThresholdIntercept,
   exitSidecarPayload,
@@ -7543,5 +7555,259 @@ describe('snapshot.ts (PMR-YJC5 aggregate snapshot)', () => {
     // records from earlier tests in this shared root).
     assert.equal(snap.reads, 1 + snap.inboxEntries.length)
     removeAskRecord(childB, root)
+  })
+})
+
+// --- Handler-level tests: ask_owner replay windows (aven PMR-1006, PMR-ZJCP) ---
+// AIDEV-NOTE (PMR-1006): first suite to load the CHILD extension's default
+// export. Env is set per-test AFTER module load (the module-load scrub near
+// the top of this file stays intact) and restored in finally. The mock
+// extension api needs no extra surface: the child extension only registers
+// tools/handlers plus unref'd 500ms pump intervals that no-op once env is
+// restored (childId/sessionFile unset).
+
+describe('subagent-done.ts ask_owner replay windows (PMR-1006 / PMR-ZJCP)', () => {
+  const CHILD_ENV_NAMES = [
+    'PI_SUBAGENT_ID',
+    'PI_SUBAGENT_SESSION',
+    'PI_SUBAGENT_NAME',
+    'PI_SUBAGENT_PARENT_SESSION',
+    'PI_SUBAGENT_ACTIVITY_FILE',
+    'PI_CODING_AGENT_DIR',
+  ] as const
+
+  interface AskReplayHarness {
+    childId: string
+    root: string
+    sessionFile: string
+    askTool: {
+      execute: (
+        toolCallId: string,
+        params: any,
+        signal: any,
+        onUpdate: any,
+        ctx: any,
+      ) => Promise<any>
+    }
+  }
+
+  async function withChildExtensionEnv<T>(
+    dir: string,
+    run: (harness: AskReplayHarness) => Promise<T>,
+  ): Promise<T> {
+    const previous = new Map(
+      CHILD_ENV_NAMES.map((name) => [name, process.env[name]] as const),
+    )
+    const childId = 'ask-replay-child'
+    const agentDir = join(dir, 'agent')
+    const root = subagentsDataRoot(agentDir)
+    const sessionFile = join(dir, 'child-session.jsonl')
+    process.env.PI_SUBAGENT_ID = childId
+    process.env.PI_SUBAGENT_SESSION = sessionFile
+    process.env.PI_SUBAGENT_NAME = 'ask-replay-child'
+    process.env.PI_SUBAGENT_PARENT_SESSION = join(dir, 'parent-session.jsonl')
+    process.env.PI_SUBAGENT_ACTIVITY_FILE = join(dir, 'activity.json')
+    process.env.PI_CODING_AGENT_DIR = agentDir
+    try {
+      const mock = createMockExtensionApi()
+      subagentDoneExtension(mock.api)
+      const askTool = mock.registeredTools.find((t) => t.name === 'ask_owner')
+      assert.ok(askTool, 'child extension must register ask_owner')
+      return await run({ childId, root, sessionFile, askTool })
+    } finally {
+      for (const [name, value] of previous) {
+        restoreEnvVar(name, value)
+      }
+    }
+  }
+
+  const QUESTION = 'What should the timeout be for the deploy step?'
+  const OTHER_QUESTION = 'A completely different question?'
+
+  function askFingerprint(childId: string, question: string): string {
+    return effectFingerprint('ask_owner', childId, {
+      question,
+      files: undefined,
+    })
+  }
+
+  function askRecordNames(root: string): string[] {
+    return readdirSync(join(root, 'asks')).filter(
+      (name) => name.endsWith('.json') && !name.endsWith('.reply.json'),
+    )
+  }
+
+  function callAsk(
+    askTool: AskReplayHarness['askTool'],
+    question: string,
+  ): Promise<any> {
+    // Per-call ctx mock (later phases reuse this harness).
+    const ctx = { shutdown() {} }
+    return askTool.execute('call-1', { question }, undefined, undefined, ctx)
+  }
+
+  it('(a) identical interrupted call replays: same askId, one ask record, memo present', async () => {
+    await withTempDirAsync((dir) =>
+      withChildExtensionEnv(
+        dir,
+        async ({ childId, root, sessionFile, askTool }) => {
+          const first = await callAsk(askTool, QUESTION)
+          const firstAskId = first.details.askId
+          assert.equal(typeof firstAskId, 'string')
+
+          const replay = await callAsk(askTool, QUESTION)
+          assert.equal(replay.details.askId, firstAskId)
+          assert.match(replay.content[0].text, /Replay of an interrupted call/)
+
+          const record = readAskRecord(childId, root)
+          assert.ok(record)
+          assert.equal(record.askId, firstAskId)
+          assert.equal(askRecordNames(root).length, 1)
+
+          const memo = readEffectMemo(
+            childId,
+            'ask_owner',
+            askFingerprint(childId, QUESTION),
+            root,
+          )
+          assert.ok(memo)
+          assert.equal(memo.result.askId, firstAskId)
+
+          assert.equal(readAskSidecar(sessionFile)?.askId, firstAskId)
+        },
+      ),
+    )
+  })
+
+  it('(b) missing .ask sidecar is healed on replay with the record askId', async () => {
+    await withTempDirAsync((dir) =>
+      withChildExtensionEnv(
+        dir,
+        async ({ childId, root, sessionFile, askTool }) => {
+          const first = await callAsk(askTool, QUESTION)
+          const firstAskId = first.details.askId
+
+          rmSync(`${sessionFile}.ask`)
+
+          const replay = await callAsk(askTool, QUESTION)
+          assert.equal(replay.details.askId, firstAskId)
+          const healed = readAskSidecar(sessionFile)
+          assert.ok(healed, 'sidecar must be healed')
+          assert.equal(healed.askId, firstAskId)
+          const record = readAskRecord(childId, root)
+          assert.equal(record?.askId, firstAskId)
+        },
+      ),
+    )
+  })
+
+  it('(c) formal resume wipe + orphan memo yields a fresh askId and names the dead one', async () => {
+    await withTempDirAsync((dir) =>
+      withChildExtensionEnv(
+        dir,
+        async ({ childId, root, sessionFile, askTool }) => {
+          const first = await callAsk(askTool, QUESTION)
+          const deadAskId = first.details.askId
+
+          // Simulated formal resume (index.ts cleanup path).
+          removeAskRecordsForSession(sessionFile, root)
+          rmSync(`${sessionFile}.ask`)
+
+          const fresh = await callAsk(askTool, QUESTION)
+          const freshAskId = fresh.details.askId
+          assert.equal(typeof freshAskId, 'string')
+          assert.notEqual(freshAskId, deadAskId)
+          assert.ok(
+            fresh.content[0].text.includes(deadAskId),
+            'result text must name the dead askId',
+          )
+          assert.match(fresh.content[0].text, /no longer live/)
+
+          const record = readAskRecord(childId, root)
+          assert.equal(record?.askId, freshAskId)
+          // Memo is rewritten to point at the fresh ask.
+          const memo = readEffectMemo(
+            childId,
+            'ask_owner',
+            askFingerprint(childId, QUESTION),
+            root,
+          )
+          assert.ok(memo)
+          assert.equal(memo.result.askId, freshAskId)
+        },
+      ),
+    )
+  })
+
+  it('(d) a different question while an ask is live throws outstanding-ask', async () => {
+    await withTempDirAsync((dir) =>
+      withChildExtensionEnv(dir, async ({ askTool }) => {
+        await callAsk(askTool, QUESTION)
+        await assert.rejects(
+          callAsk(askTool, OTHER_QUESTION),
+          /outstanding ask/,
+        )
+      }),
+    )
+  })
+
+  it('(e) hand-written live ask record (W1: no memo) is replayed with its askId', async () => {
+    await withTempDirAsync((dir) =>
+      withChildExtensionEnv(
+        dir,
+        async ({ childId, root, sessionFile, askTool }) => {
+          const handAskId = 'hand-written-ask-id'
+          writeAskRecord(
+            {
+              askId: handAskId,
+              childId,
+              name: 'hand',
+              question: QUESTION,
+              files: undefined,
+              sessionFile,
+              createdAt: new Date().toISOString(),
+            },
+            root,
+          )
+
+          const result = await callAsk(askTool, QUESTION)
+          assert.equal(result.details.askId, handAskId)
+          assert.match(result.content[0].text, /Replay of an interrupted call/)
+        },
+      ),
+    )
+  })
+
+  it('(f) corrupted memo behaves as fresh: no crash, new ask, no orphan notice', async () => {
+    await withTempDirAsync((dir) =>
+      withChildExtensionEnv(
+        dir,
+        async ({ childId, root, sessionFile, askTool }) => {
+          const first = await callAsk(askTool, QUESTION)
+          const firstAskId = first.details.askId
+          const memoPath = effectMemoPath(
+            childId,
+            'ask_owner',
+            askFingerprint(childId, QUESTION),
+            root,
+          )
+          writeFileSync(memoPath, 'definitely not valid json')
+
+          // Wipe live records so the next call must take the fresh-ask path.
+          removeAskRecordsForSession(sessionFile, root)
+          rmSync(`${sessionFile}.ask`)
+
+          const fresh = await callAsk(askTool, QUESTION)
+          const freshAskId = fresh.details.askId
+          assert.equal(typeof freshAskId, 'string')
+          assert.notEqual(freshAskId, firstAskId)
+          assert.ok(
+            !fresh.content[0].text.includes('earlier ask_owner'),
+            'corrupt memo must not trigger the orphan notice',
+          )
+          assert.equal(readAskRecord(childId, root)?.askId, freshAskId)
+        },
+      ),
+    )
   })
 })
