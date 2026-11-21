@@ -32,6 +32,15 @@ export type DeviationArtifact =
         file: string
         line: number
       }[]
+      /**
+       * AIDEV-NOTE (PMR-6YC7): set when the declared count could not be
+       * backed by the extracted verdict section but exactly that many
+       * well-formed deviation lines existed elsewhere in the artifact
+       * (a restated trailing heading or an in-section subheading had
+       * scoped them out). Recovery is still a STRICT exact-count match —
+       * never a partial or best-effort payload.
+       */
+      recovered?: true
     }
   | { ok: false; reason: string }
 
@@ -39,6 +48,43 @@ const COUNT_RE = /^deviations_count:\s*(\d+)\s*$/
 const DEVIATION_RE =
   /^- deviation:\s*(.+?)\s*\|\s*why:\s*(.+?)\s*\|\s*(.+?):(\d+)\s*$/
 const EVIDENCE_RE = /\(inferred:\s*(.+?)\)\s*$/
+
+type ScannedDeviation = Extract<
+  Extract<DeviationArtifact, { ok: true }>['deviations'][number],
+  unknown
+>
+
+interface SectionScan {
+  counts: number[]
+  deviations: ScannedDeviation[]
+}
+
+function scanSection(section: string): SectionScan {
+  const counts: number[] = []
+  const deviations: ScannedDeviation[] = []
+  for (const rawLine of section.split('\n')) {
+    const line = rawLine.trim()
+    const countMatch = COUNT_RE.exec(line)
+    if (countMatch !== null) {
+      counts.push(Number.parseInt(countMatch[1] as string, 10))
+      continue
+    }
+    const deviationMatch = DEVIATION_RE.exec(line)
+    if (deviationMatch !== null) {
+      const what = (deviationMatch[1] as string).trim()
+      const why = (deviationMatch[2] as string).trim()
+      const file = (deviationMatch[3] as string).trim()
+      const lineNo = Number.parseInt(deviationMatch[4] as string, 10)
+      const evidenceMatch = EVIDENCE_RE.exec(why)
+      let evidence: string | undefined
+      if (evidenceMatch !== null) {
+        evidence = (evidenceMatch[1] as string).trim()
+      }
+      deviations.push({ what, why, evidence, file, line: lineNo })
+    }
+  }
+  return { counts, deviations }
+}
 
 // AIDEV-NOTE: Scopes parsing to the deviation verdict section so a verdict
 // that merely QUOTES the contract does not double-count. The section after
@@ -72,32 +118,9 @@ export function extractDeviationSection(artifact: string): string {
 }
 
 export function parseDeviationArtifact(artifact: string): DeviationArtifact {
-  const counts: number[] = []
-  const deviations: Extract<
-    Extract<DeviationArtifact, { ok: true }>['deviations'][number],
-    unknown
-  >[] = []
-  for (const rawLine of extractDeviationSection(artifact).split('\n')) {
-    const line = rawLine.trim()
-    const countMatch = COUNT_RE.exec(line)
-    if (countMatch !== null) {
-      counts.push(Number.parseInt(countMatch[1] as string, 10))
-      continue
-    }
-    const deviationMatch = DEVIATION_RE.exec(line)
-    if (deviationMatch !== null) {
-      const what = (deviationMatch[1] as string).trim()
-      const why = (deviationMatch[2] as string).trim()
-      const file = (deviationMatch[3] as string).trim()
-      const lineNo = Number.parseInt(deviationMatch[4] as string, 10)
-      const evidenceMatch = EVIDENCE_RE.exec(why)
-      let evidence: string | undefined
-      if (evidenceMatch !== null) {
-        evidence = (evidenceMatch[1] as string).trim()
-      }
-      deviations.push({ what, why, evidence, file, line: lineNo })
-    }
-  }
+  const scoped = scanSection(extractDeviationSection(artifact))
+  const counts = scoped.counts
+  const deviations = scoped.deviations
   if (counts.length === 0) {
     return {
       ok: false,
@@ -115,15 +138,46 @@ export function parseDeviationArtifact(artifact: string): DeviationArtifact {
   if (!Number.isInteger(count) || count < 0) {
     return { ok: false, reason: `invalid deviations_count value: ${count}` }
   }
+  // AIDEV-NOTE (PMR-6YC7): the verdict-section scoping above can exclude
+  // well-formed "- deviation:" lines that live OUTSIDE the extracted
+  // section (a restated trailing verdict heading wins the LAST-heading
+  // rule; a subheading between the count and the lines cuts the section
+  // early) — the PMR-C0YV 8ed3ad1 run failed "declares 3 but 0 parsed"
+  // with 3 well-formed lines plainly visible in the raw artifact. Scan the
+  // WHOLE artifact as a cross-check so scoping misses are recoverable and
+  // diagnostics can distinguish scoping exclusion from transport loss.
+  const full = scanSection(artifact)
+  // AIDEV-NOTE: a declared 0 must be corroborated artifact-wide — with the
+  // lines scoped out, a bare "deviations_count: 0" would otherwise skip the
+  // human gate while well-formed findings sit elsewhere in the artifact.
+  if (count === 0 && full.deviations.length > 0) {
+    return {
+      ok: false,
+      reason: `deviation artifact is contradictory: deviations_count declares 0 but ${full.deviations.length} well-formed "- deviation:" line(s) exist in the artifact — re-run the deviation reviewer and ensure the count matches the payload`,
+    }
+  }
   // AIDEV-NOTE (PMR-N98C): a declared count the payload cannot back up is a
   // TRUNCATED artifact (observed in production: "N deviation(s) from spec:"
   // with the payload lines missing) — fail loudly here so the caller gets an
   // error result to re-run, never an ok result it cannot present. Checked in
   // BOTH directions: more lines than the count is equally malformed.
   if (count !== deviations.length) {
+    // AIDEV-NOTE (PMR-6YC7): exact-count recovery — when the section scoped
+    // too narrowly but the artifact as a whole carries exactly the declared
+    // number of well-formed lines, accept the artifact-wide payload (flagged
+    // as recovered). A partial or over-long artifact-wide payload still
+    // fails: recovery never loosens the strict count contract.
+    if (full.deviations.length === count) {
+      return {
+        ok: true,
+        deviationsCount: count,
+        deviations: full.deviations,
+        recovered: true,
+      }
+    }
     return {
       ok: false,
-      reason: `deviation artifact is truncated or malformed: deviations_count declares ${count} but ${deviations.length} "- deviation: ..." line(s) parsed — re-run the deviation reviewer and ensure exactly one deviation line per deviation`,
+      reason: `deviation artifact is truncated or malformed: deviations_count declares ${count} but ${deviations.length} "- deviation: ..." line(s) parsed (${full.deviations.length} well-formed line(s) artifact-wide) — re-run the deviation reviewer and ensure exactly one deviation line per deviation`,
     }
   }
   return { ok: true, deviationsCount: count, deviations }

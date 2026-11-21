@@ -239,12 +239,20 @@ export function deviationResultToToolResult(
   const listed = parsed.deviations
     .map((d) => `- ${d.what} (${d.file}:${d.line})`)
     .join('\n')
+  // AIDEV-NOTE (PMR-6YC7): a recovered parse (well-formed lines were scoped
+  // out of the verdict section) is flagged so the caller knows the artifact
+  // shape was off-contract even though the count matched exactly.
+  let recoveredNote = ''
+  if (parsed.recovered === true) {
+    recoveredNote =
+      ' (recovered: the verdict-section scoping excluded the well-formed lines — e.g. a restated heading or subheading — but the artifact-wide lines exactly match the declared count)'
+  }
   let summary: string
   if (parsed.deviationsCount === 0) {
     summary =
       'deviation_review: 0 deviations from spec — continue to D5 (record the "no deviation from spec" aven note, then flow_phase_complete).'
   } else {
-    summary = `deviation_review: ${parsed.deviationsCount} deviation(s) from spec:\n${listed}\nContinue to D5 — a HUMAN decides via ask_user_question (accept / fix).`
+    summary = `deviation_review: ${parsed.deviationsCount} deviation(s) from spec${recoveredNote}:\n${listed}\nContinue to D5 — a HUMAN decides via ask_user_question (accept / fix).`
   }
   return toolResult(summary, parsed)
 }

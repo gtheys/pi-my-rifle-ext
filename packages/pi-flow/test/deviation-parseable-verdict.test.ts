@@ -159,6 +159,67 @@ test('reviewer prompt requires a verdict section with ONLY contract lines and a 
 
 // --- happy-path guard: a contract-conformant artifact parses cleanly ---
 
+// AIDEV-NOTE: PMR-6YC7 golden reproduction — PMR-C0YV validate, 2026-11-21
+// (HEAD 8ed3ad1, AFTER the PMR-MH1Y emitter fix had landed): the reviewer
+// emitted 3 well-formed "- deviation:" lines plus a correct self-check, yet
+// the gate returned "deviations_count declares 3 but 0 parsed"; a re-run
+// with identical inputs parsed fine. Root cause: extractDeviationSection
+// scopes parsing to the section after the LAST verdict heading, cut at the
+// next heading — a trailing restated heading (self-check recap) or a
+// subheading between the count and the lines silently excludes well-formed
+// lines from the parse while they remain visible in the raw artifact.
+// These tests pin the fix: (a) well-formed lines anywhere in the artifact
+// are recovered when they exactly back the declared count (flagged as
+// recovered, never a silent 0), (b) a declared 0 with lines present is a
+// contradictory-artifact error, (c) unrecoverable mismatches name the
+// artifact-wide vs in-section line counts so transport loss and scoping
+// exclusion are distinguishable.
+const PMR_6YC7_ARTIFACT = [
+  'The diff deviates from the spec in 3 places (see prose above).',
+  '',
+  DEVIATION_VERDICT_HEADING,
+  '- deviation: APPROVAL_SUFFIX branches by delivery path | why: spec mandates one mode-neutral sentence (inferred: spec change 2) | plan/prompt.ts:50',
+  '- deviation: oneshot closing made conditional | why: spec mandates unconditional auto-advance (inferred: spec change 1) | plan/prompt.ts:70',
+  '- deviation: extra both-paths test | why: spec prescribes two test sets (inferred: spec tests section) | test/plan.test.ts:206',
+  'deviations_count: 3',
+  '',
+  '## Self-check',
+  'I count 3 "- deviation:" lines in the verdict section, matching N=3.',
+  'Restating the verdict:',
+  '',
+  DEVIATION_VERDICT_HEADING,
+  'deviations_count: 3',
+].join('\n')
+
+test('golden PMR-6YC7: well-formed lines hidden by a restated verdict heading are recovered', () => {
+  const parsed = parseDeviationArtifact(PMR_6YC7_ARTIFACT)
+  assert.equal(parsed.ok, true)
+  if (parsed.ok) {
+    assert.equal(parsed.deviationsCount, 3)
+    assert.equal(parsed.deviations.length, 3)
+    assert.equal(parsed.recovered, true)
+  }
+})
+
+test('golden PMR-6YC7: recovered parse is flagged in the tool result text', () => {
+  const result = deviationResultToToolResult(PMR_6YC7_ARTIFACT)
+  assert.equal(result.isError, undefined)
+  const text = textOf(result)
+  assert.match(text, /3 deviation\(s\) from spec/)
+  assert.match(text, /recovered/)
+})
+
+test('golden PMR-6YC7: a clean single-section artifact parses without the recovered flag', () => {
+  const artifact = [
+    DEVIATION_VERDICT_HEADING,
+    '- deviation: oneshot closing made conditional | why: spec mandates unconditional auto-advance (inferred: spec change 1) | plan/prompt.ts:70',
+    'deviations_count: 1',
+  ].join('\n')
+  const result = deviationResultToToolResult(artifact)
+  assert.equal(result.isError, undefined)
+  assert.ok(!textOf(result).includes('recovered'))
+})
+
 test('contract-conformant artifact with special characters in fields parses cleanly', () => {
   const artifact = [
     'Some review prose above the verdict section is fine.',
