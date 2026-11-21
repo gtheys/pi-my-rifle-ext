@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { describe, test } from 'node:test'
 import {
   AUTO_EXIT_HINT,
   AUTO_EXIT_SUMMARY_INSTRUCTION,
@@ -181,4 +181,74 @@ test('byte stability: same role inputs, different task → systemPromptIdentity 
   })
   assert.strictEqual(a.systemPromptIdentity, b.systemPromptIdentity)
   assert.strictEqual(a.systemPromptFlag, b.systemPromptFlag)
+})
+
+// AIDEV-NOTE: PMR-KTCT acceptance evidence — the stable guidance prefix
+// (identity + flag) must be byte-identical across same-role spawns, and the
+// task messages may only diverge at the task body itself.
+describe('request composition: two same-role spawns with different tasks', () => {
+  const IDENTITY = 'You are a worker agent. Follow repo conventions.'
+  const TASK_A = 'Fix the flaky retry test in test.ts'
+  const TASK_B = 'Document the flow-env module conventions'
+
+  function commonPrefix(a: string, b: string): string {
+    let i = 0
+    while (i < a.length && i < b.length && a[i] === b[i]) {
+      i += 1
+    }
+    return a.slice(0, i)
+  }
+
+  const a = composeChildTask({
+    task: TASK_A,
+    identity: IDENTITY,
+    systemPromptMode: undefined,
+    autoExit: true,
+    inheritsConversationContext: false,
+  })
+  const b = composeChildTask({
+    task: TASK_B,
+    identity: IDENTITY,
+    systemPromptMode: undefined,
+    autoExit: true,
+    inheritsConversationContext: false,
+  })
+  const modeHint = AUTO_EXIT_HINT
+  const summaryInstruction = AUTO_EXIT_SUMMARY_INSTRUCTION
+
+  test('systemPromptIdentity strictly equal across spawns', () => {
+    assert.strictEqual(a.systemPromptIdentity, IDENTITY)
+    assert.strictEqual(b.systemPromptIdentity, IDENTITY)
+  })
+
+  test('systemPromptFlag equal across spawns', () => {
+    assert.equal(a.systemPromptFlag, '--append-system-prompt')
+    assert.equal(b.systemPromptFlag, a.systemPromptFlag)
+  })
+
+  test('task messages diverge exactly after modeHint + blank line', () => {
+    const expectedPrefix = `${modeHint}\n\n`
+    assert.equal(commonPrefix(a.taskMessage, b.taskMessage), expectedPrefix)
+  })
+
+  test('stable prefix contains no task text', () => {
+    const identity = a.systemPromptIdentity
+    assert.ok(identity !== null)
+    assert.ok(!identity.includes(TASK_A))
+    assert.ok(!identity.includes(TASK_B))
+  })
+
+  test('identity appears exactly once across identity + taskMessage', () => {
+    const combined = `${IDENTITY}${a.taskMessage}`
+    const first = combined.indexOf(IDENTITY)
+    assert.equal(first, 0)
+    assert.equal(combined.indexOf(IDENTITY, first + 1), -1)
+  })
+
+  test('modeHint and summaryInstruction each occur exactly once in taskMessage', () => {
+    for (const r of [a, b]) {
+      assert.equal(r.taskMessage.split(modeHint).length - 1, 1)
+      assert.equal(r.taskMessage.split(summaryInstruction).length - 1, 1)
+    }
+  })
 })
