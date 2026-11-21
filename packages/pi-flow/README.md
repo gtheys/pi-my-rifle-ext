@@ -54,7 +54,7 @@ Failure behavior:
 | `/flow-view <ref> [placement]` | Opens/focuses a Herdr pane rendering the run-state journal for a ref. |
 | `/flow-diagram <ref> [run]` | Renders the per-ticket flow timeline as a self-contained HTML sequence diagram (one lane per subagent + orchestrator, phase markers, tool arrows with dashed returns, per-lane token totals). Writes to `pi-flow/diagrams/<ref>.run<k>.<stamp>.html` and best-effort opens it; the file path is always the deliverable. |
 | `/flow <ref>` | Extension-owned loop: injects one phase prompt at a time (same builders the phase commands use, gates intact), then advances when the phase turn settles and its completion label has landed; missing label → halt note + stop. Resume = first phase whose completion label is missing. Work mode + Jira ID: find-or-create the local epic (`jira-ref` metadata, dep-linked to the synced ticket) and run on the epic ref. |
-| `/flow` (bare) | Same gate picker as `/flow <ref>`, plus an extra "Start a flow on a ready ticket…" row; picking it opens the cwd-project's ready tickets from `aven list --ready` and Enter starts the flow exactly like `/flow <ref>`. Zero ready gates skips the menu and goes straight to the ticket list. Esc cancels silently. |
+| `/flow` (bare) | Same gate picker as `/flow <ref>`, plus an extra "Start a flow on a ready ticket…" row; picking it opens the cwd-project's ready tickets from `aven list --ready` and Enter starts the flow exactly like `/flow <ref>`. Zero open gates skips the menu and goes straight to the ticket list. Esc cancels silently. |
 
 Lifecycle labels on the aven ticket are the run state:
 `planned → active → review-passed → done`; type labels
