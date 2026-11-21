@@ -209,8 +209,14 @@ function feedbackPrompt(input: PhasePromptInput): PhasePrompt {
   // AIDEV-NOTE: PMR-81SX — personal feedback is a real wrap-up phase now
   // (runs after validate's human code-review gate already merged); both
   // entrypoints keep producing identical prompts via this single builder.
+  // Yolo rides along (yolo 4.3); work mode keeps its prompt unchanged even
+  // when yolo is set (yolo is personal-only).
   return {
     kind: 'send',
-    prompt: buildFeedbackPrompt({ mode: input.mode, ref: input.ref }),
+    prompt: buildFeedbackPrompt({
+      mode: input.mode,
+      ref: input.ref,
+      yolo: input.yolo,
+    }),
   }
 }

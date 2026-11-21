@@ -441,3 +441,75 @@ test('yolo validate: oneshot label names ticket description as spec source (yolo
   assert.match(gate, /ticket description/)
   assert.doesNotMatch(gate, /plan-path/)
 })
+
+// AIDEV-NOTE: yolo 4.3 — byte-pin the non-yolo personal feedback prompt so
+// the yolo branch can never leak into it.
+const NON_YOLO_PERSONAL_FEEDBACK_PROMPT =
+  'Feedback phase (PIV flow). Mode: personal. Ref: TP-1.\nClose out the personal-mode flow on TP-1. The validate phase\'s\nhuman code-review gate has already merged the flow branch into main with a\nlocal ff-only merge. The flow is STILL loop-active: push stays blocked, and\nyou must NOT call the flow_land tool again — its landing state is already\nconsumed. Execute IN ORDER:\n\n1. Verify the merge actually landed: run\n   `git -C <main repo> merge-base --is-ancestor <flow branch> main`\n   (main repo = first entry of `git worktree list`). If it fails (exit\n   code non-zero), write an aven note on TP-1 containing\n   "reviewed-at: <git rev-parse HEAD>" plus a one-line description of the\n   missing merge, and STOP and ask the human — do not merge yourself, do\n   not force anything, do not continue to the next steps.\n2. Write the outcome summary as an aven note on TP-1, following this\n   contract exactly: a "## Outcome summary" heading with "### What\n   shipped", "### Test evidence" and "### Review verdict" sections\n   (whatShipped / testEvidence / reviewVerdict). Gather the content from\n   this run\'s notes, commits, and test output. If any section has no\n   content, write an aven note on TP-1 containing\n   "reviewed-at: <git rev-parse HEAD>" instead and STOP and ask the human —\n   never invent filler. The outcome-summary note MUST exist before TP-1\n   can be set to done (canClose contract) — never skip it.\n3. Review-feedback triage: collect every non-blocking review observation\n   (P2/P3, "for later", "non-blocking", "worth knowing") recorded in the\n   review notes and artifacts on TP-1 during this flow, and file each\n   actionable one as its OWN backlog ticket: aven add "<sentence-case\n   title>" --label review-feedback --status backlog --priority\n   <medium|low> --description "..." (create the label first with\n   `aven label create` if missing). Each description carries the finding,\n   the source note/artifact id, file references, and a done-when; skip\n   purely informational/self-healing notes and anything an open ticket\n   already covers; mention siblings ("related to PMR-XXXX") when one\n   exists. If there are no non-blocking observations, skip silently.\n4. Wrap up IN ORDER: first set TP-1 to done with\n   `aven edit TP-1 --status done`, THEN call the flow_phase_complete\n   tool with ref=TP-1 and phase="feedback" — it applies the "done" label\n   after re-checking the gates, and its result confirms the label landed.\n   The aven edit is the verified last step; do not run them in the other\n   order.\n5. Idempotency: if TP-1 is already status done, or a step above was\n   already recorded (outcome-summary note exists, review-feedback tickets\n   already filed), treat that step as success and move on — never fail the\n   close-out because a step already ran. This flow may be a oneshot with no\n   plan artifact: do not assume or look for a plan.md; the ticket\n   description is the spec.\n6. After flow_phase_complete returns ok, report the outcome counts (what\n   shipped, review verdict, review-feedback ticket refs) in your reply.\n   The harness removes the flow worktree automatically — no manual\n   `git worktree remove` is needed.'
+
+test('feedback: non-yolo personal prompt is byte-identical to the pre-yolo text (yolo 4.3)', async () => {
+  const result = await buildPhasePrompt('feedback', BASE)
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  assert.equal(result.prompt, NON_YOLO_PERSONAL_FEEDBACK_PROMPT)
+})
+
+test('yolo feedback: lands via flow_land route=pr then push, PR, verify, note, complete (yolo 4.3)', async () => {
+  const result = await buildPhasePrompt('feedback', { ...BASE, yolo: true })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  const p = result.prompt
+  // landing sequence, in order: land gate -> push -> pr create -> verify -> note -> complete
+  const iLand = p.indexOf('flow_land')
+  const iRoute = p.indexOf('route=pr')
+  const iPush = p.indexOf('git push -u origin')
+  const iCreate = p.indexOf('gh pr create', iPush)
+  const iView = p.indexOf('gh pr view --json url')
+  const iNote = p.indexOf('aven note', iView)
+  const iDone = p.indexOf('--status done')
+  const iComplete = p.indexOf('flow_phase_complete')
+  for (const [name, i] of [
+    ['flow_land', iLand],
+    ['route=pr', iRoute],
+    ['push', iPush],
+    ['gh pr create', iCreate],
+    ['gh pr view --json url', iView],
+    ['note', iNote],
+    ['done', iDone],
+    ['complete', iComplete],
+  ]) {
+    assert.ok(i >= 0, `missing ${name} in yolo feedback prompt`)
+  }
+  assert.ok(
+    iLand < iRoute &&
+      iRoute < iPush &&
+      iPush < iCreate &&
+      iCreate < iView &&
+      iView < iNote,
+    'landing sequence must be in order',
+  )
+  assert.ok(iDone < iComplete, 'done edit must precede flow_phase_complete')
+  assert.match(p, /phase="feedback"/)
+  // PR body conventions: ticket context + what changed + test evidence
+  assert.match(p, /ticket context/)
+  assert.match(p, /what changed/)
+  assert.match(p, /test evidence/)
+  // no merge-verification step, no push-blocked language
+  assert.doesNotMatch(p, /merge-base --is-ancestor/)
+  assert.doesNotMatch(p, /ff-only/)
+  assert.doesNotMatch(p, /NOT call the flow_land tool/)
+  assert.doesNotMatch(p, /push stays blocked/)
+  // the PR is the end state: no merge of the PR
+  assert.doesNotMatch(p, /gh pr merge/)
+})
+
+test('yolo feedback: keeps wrap-up steps (outcome summary, review-feedback) (yolo 4.3)', async () => {
+  const result = await buildPhasePrompt('feedback', { ...BASE, yolo: true })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  const p = result.prompt
+  assert.match(p, /Outcome summary/)
+  assert.match(p, /Test evidence/)
+  assert.match(p, /review-feedback/)
+  assert.match(p, /Idempoten/)
+})
