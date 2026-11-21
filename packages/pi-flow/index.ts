@@ -33,6 +33,7 @@ import {
   ensureLabels,
   epicHasOpenChildren,
   lastAvenResolutionFailure,
+  listReadyTickets,
   readAvenLabels,
   readFreshBlockers,
   readGateAnswer,
@@ -54,7 +55,7 @@ import {
   executeFlowAnswer,
   parseFlowAnswerArgs,
 } from './flow/answer.ts'
-import { parseFlowArgs } from './flow/args.ts'
+import { type FlowArgs, parseFlowArgs } from './flow/args.ts'
 import { spawnJournalTarget } from './flow/attribution.ts'
 import { pushToGateway } from './flow/cost.ts'
 import { createCostAutoPush } from './flow/cost-autopush.ts'
@@ -80,7 +81,9 @@ import {
 import {
   isPickerInvocation,
   planPickerOutcome,
+  planTicketPickerOutcome,
   splitGateValue,
+  TICKET_ROW_VALUE,
 } from './flow/picker.ts'
 import {
   parseRefKind,
@@ -1120,7 +1123,7 @@ export default function (pi: ExtensionAPI) {
         notifyDashboardOutcome(ctx, await toggleFlowDashboardPin(ctx))
         return
       }
-      const parsed = parseFlowArgs(args)
+      let parsed: FlowArgs = parseFlowArgs(args)
       if (isPickerInvocation(args)) {
         // AIDEV-NOTE (PMR-ZGPY 4.2, PMR-XQA1; fix round 2): ONLY zero-arg
         // /flow opens the two-step picker (gate select → choice select). Every
@@ -1137,6 +1140,13 @@ export default function (pi: ExtensionAPI) {
         // warn once, never throw (ISC-13). ctx.ui.select returns the option
         // STRING or undefined on cancel (Pi types.d.ts) — labels map back to
         // values through the option lists.
+        // AIDEV-NOTE (PMR-3E1Z 3.1): the ONLY fall-through outcome is the
+        // ready-ticket 'run' plan: a picked ref is reassigned into `parsed`
+        // as { kind: 'aven', ref } and the block falls through into the
+        // standard run path — the exact same start a typed /flow <ref> gets.
+        // Every other picker outcome returns inside this block. No
+        // sendUserMessage / spawn / resume here (PMR-W60H / ISC-A-1):
+        // falling through IS the flow start.
         let gates: OpenGate[] = []
         let gatesFailed = false
         try {
@@ -1165,14 +1175,23 @@ export default function (pi: ExtensionAPI) {
               stage: 'gate-cancelled',
             })
           } else {
-            // Composite value → ref+kind (fix round 2): ref-only lookup could
-            // first-match another row sharing the ref.
-            const split = splitGateValue(labelToValue.get(picked) ?? '')
-            plan = planPickerOutcome(ctx.hasUI, gates, {
-              stage: 'gate-picked',
-              gateRef: split.ref,
-              gateKind: split.kind,
-            })
+            const value = labelToValue.get(picked) ?? ''
+            // Sentinel row first (PMR-3E1Z): the ready-ticket row must never
+            // reach splitGateValue — it is not a composite ref|kind value.
+            if (value === TICKET_ROW_VALUE) {
+              plan = planPickerOutcome(ctx.hasUI, gates, {
+                stage: 'ticket-row-picked',
+              })
+            } else {
+              // Composite value → ref+kind (fix round 2): ref-only lookup could
+              // first-match another row sharing the ref.
+              const split = splitGateValue(value)
+              plan = planPickerOutcome(ctx.hasUI, gates, {
+                stage: 'gate-picked',
+                gateRef: split.ref,
+                gateKind: split.kind,
+              })
+            }
           }
         }
         if (plan.kind === 'choice-menu') {
@@ -1198,34 +1217,92 @@ export default function (pi: ExtensionAPI) {
             })
           }
         }
-        if (plan.kind === 'fallback') {
+        if (plan.kind === 'tickets') {
+          // PMR-3E1Z 3.1: ready-ticket picker step. Same IO pattern as the
+          // gate step: pure planner + ctx.ui.select. Only 'run' falls
+          // through (parsed reassigned below); everything else notifies or
+          // stays silent and returns.
+          const tickets = await listReadyTickets()
+          let ticketPlan = planTicketPickerOutcome(
+            ctx.hasUI,
+            gates.length > 0,
+            tickets,
+          )
+          if (ticketPlan.kind === 'menu') {
+            const labelToValue = new Map(
+              ticketPlan.options.map((o) => [o.label, o.value]),
+            )
+            const picked = await ctx.ui.select(
+              'Ready ticket — start a flow:',
+              ticketPlan.options.map((o) => o.label),
+            )
+            if (picked === undefined) {
+              ticketPlan = planTicketPickerOutcome(
+                ctx.hasUI,
+                gates.length > 0,
+                tickets,
+                { stage: 'ticket-cancelled' },
+              )
+            } else {
+              ticketPlan = planTicketPickerOutcome(
+                ctx.hasUI,
+                gates.length > 0,
+                tickets,
+                { stage: 'ticket-picked', ref: labelToValue.get(picked) ?? '' },
+              )
+            }
+          }
+          if (ticketPlan.kind === 'fallback') {
+            for (const line of ticketPlan.lines) {
+              ctx.ui.notify(line, 'info')
+            }
+            return
+          }
+          if (ticketPlan.kind === 'none') {
+            ctx.ui.notify(ticketPlan.line, 'info')
+            return
+          }
+          if (ticketPlan.kind === 'failed') {
+            const detail = lastAvenResolutionFailure() ?? 'aven unavailable'
+            ctx.ui.notify(
+              `pi-flow: could not list ready tickets (${detail}) — run \`aven list --ready\` to inspect, then /flow <ref> manually`,
+              'warning',
+            )
+            return
+          }
+          if (ticketPlan.kind === 'run') {
+            // AIDEV-NOTE (PMR-3E1Z): picked refs join the run path exactly
+            // like a typed /flow <aven-ref> — parsed reassigned, block falls
+            // through. 'aven' never matches the 'jira' branch below, so
+            // picked refs skip Jira resolution like typed aven refs.
+            parsed = { kind: 'aven', ref: ticketPlan.ref }
+          } else {
+            // 'silent' (cancel / lookup miss): notify nothing.
+            return
+          }
+        } else if (plan.kind === 'fallback') {
           for (const line of plan.lines) {
             ctx.ui.notify(line, 'info')
           }
           return
-        }
-        if (plan.kind === 'empty') {
-          // Distinguish "nothing open" from "user cancelled / unknown ref":
-          // the former notifies once, the latter notifies nothing.
-          if (gates.length === 0) {
-            ctx.ui.notify('No open gates.', 'info')
-          }
+        } else if (plan.kind === 'empty') {
+          // 'empty' is purely silent now (PMR-3E1Z): zero-gate invocations
+          // return 'tickets' before this branch, so it only covers user
+          // cancel / lookup miss — notify nothing.
           return
-        }
-        if (plan.kind === 'print-command') {
+        } else if (plan.kind === 'print-command') {
           ctx.ui.notify(
             `/flow answer ${plan.ref} ${plan.choices.join('|')}`,
             'info',
           )
           return
-        }
-        if (plan.kind === 'answer') {
+        } else if (plan.kind === 'answer') {
           await executeFlowAnswer(
             { ref: plan.ref, choice: plan.choice },
             makeAnswerDeps(ctx),
           )
+          return
         }
-        return
       }
       if (parsed.kind === 'help') {
         // Fix round 2: non-zero-arg /flow keeps the pre-picker usage notify —
