@@ -844,9 +844,26 @@ function resolveResultPresentation(
 export function recoveryGuidanceFor(
   running: { id: string; sessionFile?: string },
   root?: string,
+  options?: { verifiedFailure?: boolean },
 ): string | undefined {
   const record = readAssignment(running.id, root)
-  if (!record) return undefined
+  if (!record) {
+    // AIDEV-NOTE (PMR-PCF7): a verified agent-error exit settles (removes)
+    // the assignment record inside watchSubagent BEFORE runWatcher reads
+    // guidance, so the dominant provider-error path used to find no record
+    // and stay silent. When the exit was VERIFIED (never crash-inferred)
+    // fall back to the watcher's authoritative sessionFile — the exact path
+    // pollForExit observed, matched against nothing because the record is
+    // gone — but only when it exists on disk. Every other case fails closed.
+    if (
+      options?.verifiedFailure !== true ||
+      !running.sessionFile ||
+      !existsSync(running.sessionFile)
+    ) {
+      return undefined
+    }
+    return `Recovery: subagent_resume({ sessionPath: "${running.sessionFile}" }).`
+  }
   const hint = deriveResumeHint(record)
   if (!hint) return undefined
   // The re-issue-spawn branch needs no session file to be valid.
@@ -874,6 +891,10 @@ export interface SubagentResult {
   /** Provider/agent error message when auto-retry exhausted (overload, rate limit, etc.). */
   errorMessage?: string
   ping?: { name: string; message: string }
+  /** Set when a VERIFIED completion signal (.exit/sentinel) ended the poll —
+   * never by crash inference. Gates the settled-record recovery fallback in
+   * recoveryGuidanceFor (PMR-PCF7). */
+  verifiedExit?: boolean
   /** Session-accumulated token/cost totals (PMR-874G); absent when the
    * session's usage was unavailable — never a guessed zero. */
   usage?: UsageTotals
@@ -2878,6 +2899,7 @@ async function watchSubagent(
         summary,
         exitCode: result.exitCode,
         elapsed,
+        ...(verifiedExit ? { verifiedExit: true } : {}),
         ...(sessionId ? { claudeSessionId: sessionId } : {}),
       }
     }
@@ -2911,6 +2933,7 @@ async function watchSubagent(
       exitCode: result.exitCode,
       elapsed,
       ping: result.ping,
+      ...(verifiedExit ? { verifiedExit: true } : {}),
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
       ...(settledUsage ? { usage: settledUsage } : {}),
     }
@@ -3099,16 +3122,28 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
           result = { ...result, summary }
         }
 
-        let presentation = resolveResultPresentation(result, running.name)
+        // AIDEV-NOTE (PMR-PCF7): failure notices carry a recovery action
+        // derived from the durable assignment record (or, for verified
+        // agent-error exits whose record was already settled, from the
+        // watcher's authoritative sessionFile). Guidance is injected through
+        // resolveResultPresentation's recoveryHint param — the single
+        // injection point. Delivery-side reads stay best-effort: a guidance
+        // read failure must never block the result itself.
+        let presentation: string
         if (result.exitCode !== 0 || result.errorMessage) {
-          // AIDEV-NOTE (PMR-PCF7): failure notices carry a recovery action
-          // derived from the durable assignment record; delivery stays
-          // best-effort — a guidance read failure must never block the
-          // result itself.
+          let guidance: string | undefined
           try {
-            const guidance = recoveryGuidanceFor(running)
-            if (guidance) presentation += `\n\n${guidance}`
+            guidance = recoveryGuidanceFor(running, undefined, {
+              verifiedFailure: result.verifiedExit === true,
+            })
           } catch {}
+          presentation = resolveResultPresentation(
+            result,
+            running.name,
+            guidance,
+          )
+        } else {
+          presentation = resolveResultPresentation(result, running.name)
         }
         if (running.worktree) {
           // AIDEV-NOTE: durable result references the worktree (PMR-11TD) —
@@ -3179,18 +3214,19 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
       // AIDEV-NOTE (PMR-PCF7): the watcher itself failed without a verified
       // outcome — stopping the child (if it is still alive) is the safe
       // action; resuming an unverified session is not.
+      const message = err instanceof Error ? err.message : String(err)
       const stopHint = `\n\nIf the child is still running, stop it with subagent_interrupt(id: "${running.id}") — do not resume this session without verifying its state.`
       try {
         updateWidget()
         pi.sendMessage(
           {
             customType: 'subagent_result',
-            content: `Sub-agent "${running.name}" error: ${err instanceof Error ? err.message : String(err)}${stopHint}`,
+            content: `Sub-agent "${running.name}" error: ${message}${stopHint}`,
             display: true,
             details: {
               name: running.name,
               task: running.task,
-              error: err?.message,
+              error: message,
             },
           },
           { triggerTurn: true, deliverAs: 'steer' },

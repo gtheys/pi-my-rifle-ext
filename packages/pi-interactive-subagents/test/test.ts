@@ -3016,9 +3016,54 @@ describe('subagent interruption', () => {
       cwd: '/tmp',
       status: 'working' as const,
       claim: { pid: process.pid, id: 'parent-session-1' },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       ...overrides,
     }
   }
+
+  it('recoveryGuidanceFor: verified agent-error exit falls back to the watcher sessionFile', () => {
+    const testApi = (subagentsModule as any).__test__
+    const isolated = join(
+      mkdtempSync(join(tmpdir(), 'guidance-')),
+      'pi-subagents',
+    )
+    mkdirSync(isolated, { recursive: true })
+    try {
+      const sessionFile = join(isolated, 'session.jsonl')
+      writeFileSync(sessionFile, '{}')
+      // The dominant failure: a verified agent-error exit settles (removes)
+      // the record before guidance is read — no record on disk.
+      assert.equal(
+        testApi.recoveryGuidanceFor({ id: 'g-settled', sessionFile }, isolated),
+        undefined,
+      )
+      const guidance = testApi.recoveryGuidanceFor(
+        { id: 'g-settled', sessionFile },
+        isolated,
+        { verifiedFailure: true },
+      )
+      assert.ok(guidance)
+      assert.match(guidance, /Recovery: subagent_resume\(\{ sessionPath:/)
+      // Fail closed: verified flag alone is not enough — a session file that
+      // does not exist on disk must not produce a resume command.
+      assert.equal(
+        testApi.recoveryGuidanceFor(
+          { id: 'g-settled', sessionFile: '/tmp/g-settled-missing.jsonl' },
+          isolated,
+          { verifiedFailure: true },
+        ),
+        undefined,
+      )
+      // Crash-inferred endings (verifiedFailure unset) stay silent.
+      assert.equal(
+        testApi.recoveryGuidanceFor({ id: 'g-settled', sessionFile }, isolated),
+        undefined,
+      )
+    } finally {
+      rmSync(isolated, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('subagent status renderer', () => {
