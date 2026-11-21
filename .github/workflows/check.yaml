@@ -3,7 +3,7 @@
 # proposed change. Modeled on the mavam/pi-agents check.yaml pattern.
 # Bun version is pinned to match mise.toml; bump both together.
 # The FULL test suite runs ungated: nothing is host-dependent-skipped; the
-# suite's own fixtures (compiled test binaries, real git) are CI-compatible.
+# suite's own fixtures (shell-script shims written at runtime, real git) are CI-compatible.
 name: Check
 
 on:
