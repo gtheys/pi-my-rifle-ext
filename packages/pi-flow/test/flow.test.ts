@@ -474,15 +474,23 @@ function sessionStartCtx(
   }
 }
 
-// AIDEV-NOTE: PMR-YG2N 4.2 — bounded setImmediate-chaining drain; the sweep
-// chain involves multiple awaited execs, so poll until the check passes. No
-// timers/sleeps — the event loop itself is the clock.
+// AIDEV-NOTE: PMR-YG2N 4.2 — bounded drain; the sweep chain involves
+// multiple awaited execs (including real fake-aven subprocess shells), so
+// poll until the check passes. AIDEV-NOTE: PMR-EVSR — the original budget
+// was 1000 setImmediate turns ("the event loop itself is the clock"), but
+// the subprocess spawns only progress in WALL-CLOCK time while the turn
+// budget burned through in microseconds under parallel full-suite load —
+// the sweep tests then flaked with "drain budget" expirations (observed on
+// PMR-SWEEP1 under 3× concurrent workspace runs). Time-bounded instead:
+// short sleeps keep yielding to the event loop and the deadline is a
+// generous wall-clock 10s; the condition check itself is unchanged.
 async function drainUntil(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 1000; i++) {
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
     if (check()) return
-    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setTimeout(resolve, 10))
   }
-  assert.fail('drainUntil: condition not met within the drain budget')
+  assert.fail('drainUntil: condition not met within the 10s drain budget')
 }
 
 async function settle(amount: number): Promise<void> {
