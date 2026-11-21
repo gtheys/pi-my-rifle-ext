@@ -248,7 +248,7 @@ Child side-effect tools are replay-safe across interrupted runs: each call is ke
 
 - `ask_owner` — replays the **original askId**; no second ask record, no misleading outstanding-ask error. After a formal resume wipe, the fresh ask carries an explicit orphan notice naming the dead askId.
 - `caller_ping` / `subagent_done` — the original `.exit` payload is preserved verbatim; identical replays don't rewrite it, and a conflicting payload is reported explicitly, never overwritten.
-- `message_owner` / `message_peer` — a memo hit or durable inbox evidence means the message is reported as already delivered, never sent twice; a send with no durable evidence is re-sent fresh with the normal delivery text (the explicit interrupted-or-conflict report exists only for the exit tools above).
+- `message_owner` / `message_peer` — a memo hit or durable inbox evidence means the message is reported as already delivered, never sent twice; a send with no durable evidence is re-sent fresh with the normal delivery text (the explicit interrupted-or-conflict report exists only for the exit tools above). Additionally, a `message_peer` send durably binds its resolved recipient (childId + session file) **before** the inbox write (`peer-bindings/`), so a replay never retargets a reused peer name: if the bound recipient has died or been superseded by a new generation, the send fails closed instead of delivering to the wrong child, and a failed first write retries against the original recipient.
 
 Replay matches **exactly**: a rephrased message or a differently-spelled peer is a new logical effect, not a replay.
 
