@@ -58,6 +58,11 @@ import {
 } from './flow/answer.ts'
 import { type FlowArgs, parseFlowArgs } from './flow/args.ts'
 import { spawnJournalTarget } from './flow/attribution.ts'
+import {
+  type HealResult,
+  healFlowBinding,
+  recoveryCommand,
+} from './flow/binding-heal.ts'
 import { pushToGateway } from './flow/cost.ts'
 import { createCostAutoPush } from './flow/cost-autopush.ts'
 import {
@@ -159,7 +164,10 @@ import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
 import { registerTelemetry } from './telemetry/index.ts'
-import { registerCodeReviewTool } from './tools/code-review.ts'
+import {
+  productionReviewDeps,
+  registerCodeReviewTool,
+} from './tools/code-review.ts'
 import { buildCodeReviewGatePrompt } from './tools/code-review-parse.ts'
 import { registerDeviationReviewTool } from './tools/deviation.ts'
 import { registerFlowSubmitTool } from './tools/flow-submit.ts'
@@ -238,7 +246,20 @@ function notifyDashboardOutcome(
   }
 }
 
-export default function (pi: ExtensionAPI) {
+export interface DurableRebindDeps {
+  deriveRefs: () => Promise<string[]>
+  heal: (ref: string, cwd: string) => Promise<HealResult>
+}
+
+// AIDEV-NOTE: PMR-DRKH — injectable IO seam for the session_start durable
+// rebind (plan 3.1). Production defaults resolve the session gitRoot and
+// scan the pending-run records (same construction as the worktreeExtension
+// deriveFlowRefs wiring); tests inject fakes via the optional second
+// parameter on the extension factory.
+export default function (
+  pi: ExtensionAPI,
+  durableRebindDeps?: DurableRebindDeps,
+) {
   // AIDEV-NOTE: PMR-XTQQ — runServer.enabled kill switch (default true).
   // Synced from config at session_start (deviation JKD6RFC0MYY3N29C: the
   // switch must be live from extension init, not only from the first /flow,
@@ -275,6 +296,30 @@ export default function (pi: ExtensionAPI) {
         pi.sendUserMessage(message, { expandPromptTemplates: true })
       },
     }
+  }
+  // AIDEV-NOTE: PMR-DRKH — production derive/heal IO for the session_start
+  // durable rebind. Same deriveFlowRefs construction as the worktreeExtension
+  // wiring below; heal goes through the shared productionReviewDeps so the
+  // resolver's verification chain (binding → aven note → herdr) is identical
+  // to /code-review. Overridable via the extension factory's second param.
+  const durableRebind: DurableRebindDeps = durableRebindDeps ?? {
+    deriveRefs: async () => {
+      const gitRoot = await resolveSessionRepoRoot(pi)
+      if (gitRoot === null) {
+        return []
+      }
+      return deriveFlowRefs({
+        agentDir: getAgentDir(),
+        pendingDir: pendingDirPath(getAgentDir()),
+        io: {
+          readdir: (dir) => readdir(dir),
+          readFile: (p) => fs.readFile(p, 'utf8'),
+        },
+        readRunEvents: (agentDir, ref, io) => readRunEvents(agentDir, ref, io),
+        gitRoot,
+      })
+    },
+    heal: (ref, cwd) => healFlowBinding(ref, productionReviewDeps(pi, cwd)),
   }
   const writer: EventWriter = createEventWriter(
     getAgentDir(),
@@ -628,6 +673,67 @@ export default function (pi: ExtensionAPI) {
           // best-effort init; /flow re-syncs per start
         }
         await resumeParkedRun(resumeConsumerDeps(savedRef))
+      })()
+    } else {
+      // AIDEV-NOTE: PMR-DRKH — durable rebind when the PMR-PJM0 branch walk
+      // restored nothing (no pi-flow-binding entry on the leaf path). Derive
+      // candidate refs from the pending-run records; exactly one → restore a
+      // bare binding + best-effort eager heal (success re-binds the worktree
+      // and persists via the binding-change listener registered below, which
+      // the async continuation always observes). Zero → nothing; multiple →
+      // notify-only, never guess across refs. A restored candidate runs the
+      // same config-sync + resumeParkedRun sequence as the PMR-PJM0 block
+      // above (config read BEFORE the consumer, JKD6RFC0MYY3N29C). No /flow
+      // message injection happens here — only the pre-existing parked
+      // consumer path may inject.
+      void (async () => {
+        let candidates: string[]
+        try {
+          candidates = await durableRebind.deriveRefs()
+        } catch {
+          return
+        }
+        if (candidates.length === 0) {
+          return
+        }
+        if (candidates.length > 1) {
+          const lines = candidates.map((ref) => `- ${recoveryCommand(ref)}`)
+          notifyUser(
+            `pi-flow: multiple candidate flow refs found for this repo — rerun one explicitly:\n${lines.join('\n')}`,
+            'warning',
+          )
+          return
+        }
+        const ref = candidates[0]
+        if (ref === undefined) return
+        restoreFlowBinding({ ref, worktree: null })
+        boundRef = ref
+        try {
+          const healed = await durableRebind.heal(ref, ctx.cwd)
+          if (healed.ok) {
+            notifyUser(
+              `pi-flow: restored flow binding for ${ref} from the pending-run record. The /flow loop itself is not resumed — recover with ${recoveryCommand(ref)} if needed.`,
+              'info',
+            )
+          } else {
+            notifyUser(
+              `pi-flow: restored flow binding for ${ref}, but the worktree heal failed (${healed.reason}). Recover with ${recoveryCommand(ref)}.`,
+              'warning',
+            )
+          }
+        } catch {
+          notifyUser(
+            `pi-flow: restored flow binding for ${ref}. Recover with ${recoveryCommand(ref)}.`,
+            'info',
+          )
+        }
+        try {
+          const config = await loadConfig(ctx.cwd)
+          runServerEnabled = resolveRunServerEnabled(config)
+        } catch {
+          // best-effort init; /flow re-syncs per start
+        }
+        await resumeParkedRun(resumeConsumerDeps(ref))
       })()
     }
     setBindingChangeListener((snapshot) => {
