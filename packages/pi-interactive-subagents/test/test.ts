@@ -3905,6 +3905,78 @@ describe('interrupt watermark (PMR-J3WY replay-safe interrupts)', () => {
     }
   })
 
+  // PMR-TR96: the two remaining watermark-gate branches — a throwing claim
+  // degrades fail-open to the legacy send (same precedent as the control
+  // record write), and a lost claim race re-reads the winner and suppresses.
+  it('degrades to the legacy send when the watermark claim throws (fail-open)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-'))
+    const written: ControlRecord[] = []
+    const io = {
+      ...makeWatermarkIo(root, written),
+      claimInterruptWatermark: () => {
+        throw new Error('disk full')
+      },
+    }
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    let sent = 0
+    runningMap.clear()
+
+    try {
+      runningMap.set('a1', makeRunning())
+      const result = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        () => {
+          sent++
+        },
+        io,
+        'tc-1',
+      )
+
+      assert.equal(sent, 1, 'a claim throw must not block the Escape')
+      assert.equal(result.details.status, 'interrupt_requested')
+      assert.equal(written.length, 1)
+    } finally {
+      runningMap.clear()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('lost claim race re-reads the winner watermark and suppresses the send', () => {
+    const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-'))
+    const written: ControlRecord[] = []
+    const io = {
+      ...makeWatermarkIo(root, written),
+      // A concurrent claimer always wins.
+      claimInterruptWatermark: () => false,
+    }
+    const testApi = (subagentsModule as any).__test__
+    const runningMap = testApi.runningSubagents as Map<string, any>
+    let sent = 0
+    runningMap.clear()
+
+    try {
+      // Pre-seed the winner's watermark (matching identity).
+      claimInterruptWatermark(makeWatermark(), root)
+      runningMap.set('a1', makeRunning())
+      const result = testApi.handleSubagentInterrupt(
+        { id: 'a1' },
+        () => {
+          sent++
+        },
+        io,
+        'tc-1',
+      )
+
+      assert.equal(sent, 0)
+      assert.equal(result.details.status, 'interrupt_replayed')
+      assert.equal(written.length, 0)
+    } finally {
+      runningMap.clear()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('watermark primitives claim once, round trip, and fail closed on malformed files', () => {
     const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-'))
     try {
