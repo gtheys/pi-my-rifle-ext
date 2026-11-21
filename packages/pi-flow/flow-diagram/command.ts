@@ -15,7 +15,7 @@ import { parseRefKind } from '../flow/ref-kind.ts'
 import { isValidRef } from '../herdr/viewer.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 import { renderDiagramHtml } from './assemble.ts'
-import { buildDiagram } from './translate.ts'
+import { buildDiagram, selectSegment } from './translate.ts'
 import type { HpRenderer } from './vendor/harness-profiler/load.ts'
 
 export interface FlowDiagramDeps {
@@ -85,16 +85,18 @@ export function parseDiagramArgs(args: string): ParsedDiagramArgs {
  * renderer, journal, session reads, translate, write, open. Session files
  * that fail to read are counted and summarized in ONE info notify (never one
  * per file); a missing session only means that lane lacks token totals.
+ * AIDEV-NOTE (PMR-GPQJ): `events` is the SELECTED run segment, not the whole
+ * journal — reads and the unreadable count stay scoped to that run.
  */
 async function collectSessionEntries(
   ref: string,
-  events: readonly FlowRunEvent[],
+  segment: readonly FlowRunEvent[],
   deps: FlowDiagramDeps,
   notify: (message: string, level: 'info' | 'warning') => void,
 ): Promise<Map<string, readonly unknown[]>> {
   const wanted = new Set<string>()
-  for (const file of collectMainSessionFiles(events)) wanted.add(file)
-  const notes = collectSpawnNotes(events)
+  for (const file of collectMainSessionFiles(segment)) wanted.add(file)
+  const notes = collectSpawnNotes(segment)
   for (const note of notes) {
     if (note.sessionFile !== null) wanted.add(note.sessionFile)
   }
@@ -150,9 +152,28 @@ export async function runFlowDiagram(
     )
     return
   }
+  // AIDEV-NOTE (PMR-GPQJ): select the run segment BEFORE collecting session
+  // entries so only the selected run's session files are read and the
+  // unreadable summary counts that subset (multi-run journals previously
+  // read every run's files journal-wide).
+  const selection = selectSegment(events, run)
+  if (selection.kind === 'out-of-range') {
+    notify(
+      `/flow-diagram ${ref}: run ${run} out of range — journal has ${selection.runCount} run(s).`,
+      'warning',
+    )
+    return
+  }
+  if (selection.kind === 'no-records') {
+    notify(
+      `/flow-diagram ${ref}: nothing to diagram — no run segments or records in the journal.`,
+      'warning',
+    )
+    return
+  }
   const sessionEntriesByFile = await collectSessionEntries(
     ref,
-    events,
+    selection.segment,
     deps,
     notify,
   )

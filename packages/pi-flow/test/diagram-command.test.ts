@@ -372,6 +372,83 @@ test('handler: unreadable session files -> exactly one summary notify', async ()
   assert.match(summaries[0].message, /2 session files unreadable/)
 })
 
+// AIDEV-NOTE (PMR-GPQJ): multi-run fixture pins that session reads and the
+// unreadable summary are scoped to the SELECTED run, not the whole journal.
+test('handler: session reads are scoped to the selected run', async () => {
+  const commands = new Map<string, Handler>()
+  const events: FlowRunEvent[] = [
+    {
+      kind: 'run-start',
+      at: '2026-11-07T01:00:00Z',
+      ref: 'PMR-DIA',
+      mode: 'personal',
+    },
+    {
+      kind: 'spawn-record',
+      at: '2026-11-07T01:00:01Z',
+      ref: 'PMR-DIA',
+      childId: 'c1',
+      name: 'scout',
+      spawnKind: 'spawn',
+      sessionFile: '/run1-missing.jsonl',
+    },
+    {
+      kind: 'run-start',
+      at: '2026-11-07T02:00:00Z',
+      ref: 'PMR-DIA',
+      mode: 'personal',
+    },
+    {
+      kind: 'main-session',
+      at: '2026-11-07T02:00:00Z',
+      ref: 'PMR-DIA',
+      sessionFile: '/run2-main.jsonl',
+    },
+  ]
+  const readFiles: string[] = []
+  registerFlowDiagramCommand(stubPi(commands), {
+    ...noopDeps,
+    loadRenderer: () => ({ renderHtml: () => '<html></html>' }),
+    readRunEvents: async () => events,
+    readSessionFile: (file: string) => {
+      readFiles.push(file)
+      if (file === '/run2-main.jsonl') return `${assistantEntry(100)}\n`
+      return null
+    },
+    writeDiagram: async () => '/tmp/diagram.html',
+    openDiagram: async () => true,
+  })
+  const handler = commands.get('flow-diagram')
+  assert.ok(handler !== undefined)
+  const notifications: Notif[] = []
+  const ctx = {
+    ui: {
+      notify: (m: string, l: string) =>
+        notifications.push({ message: m, level: l }),
+    },
+  }
+
+  // Selecting run 2 must not touch run 1's session file at all.
+  await handler('PMR-DIA 2', ctx)
+  assert.deepEqual(readFiles, ['/run2-main.jsonl'])
+  assert.equal(
+    notifications.filter((n) => /session files unreadable/.test(n.message))
+      .length,
+    0,
+  )
+
+  // Selecting run 1 reads only run 1's file and counts only that subset.
+  readFiles.length = 0
+  notifications.length = 0
+  await handler('PMR-DIA 1', ctx)
+  assert.deepEqual(readFiles, ['/run1-missing.jsonl'])
+  const summaries = notifications.filter((n) =>
+    /session files unreadable/.test(n.message),
+  )
+  assert.equal(summaries.length, 1)
+  assert.match(summaries[0].message, /1 session files unreadable/)
+})
+
 test('diagramStamp produces YYYYMMDD-HHmmss', () => {
   // 2026-11-07 01:02:03 local — construct via Date components to stay TZ-safe
   const d = new Date()

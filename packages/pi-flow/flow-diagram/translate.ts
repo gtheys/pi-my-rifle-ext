@@ -196,6 +196,35 @@ export function segmentRuns(events: readonly FlowRunEvent[]): FlowRunEvent[][] {
   return segments
 }
 
+/**
+ * AIDEV-NOTE (PMR-GPQJ): segment selection is exported so callers
+ * (command.ts) can scope session-file reads to the SELECTED run instead of
+ * reading every run's sessions journal-wide. buildDiagram consumes the same
+ * selection, so both paths agree on the index/runCount math.
+ */
+export type SegmentSelection =
+  | { kind: 'ok'; segment: FlowRunEvent[]; index: number; runCount: number }
+  /** No run-start events at all — nothing segmentable in the journal. */
+  | { kind: 'no-records' }
+  | { kind: 'out-of-range'; runCount: number }
+
+export function selectSegment(
+  events: readonly FlowRunEvent[],
+  runIndex: number | null | undefined,
+): SegmentSelection {
+  const segments = segmentRuns(events)
+  const runCount = segments.length
+  let index: number
+  if (runIndex === null || runIndex === undefined) {
+    index = runCount
+  } else {
+    index = runIndex
+  }
+  if (runCount === 0) return { kind: 'no-records' }
+  if (index < 1 || index > runCount) return { kind: 'out-of-range', runCount }
+  return { kind: 'ok', segment: segments[index - 1], index, runCount }
+}
+
 const NAME_LIMIT = 60
 
 function clip(text: string): string {
@@ -728,18 +757,12 @@ export function buildDiagram(
   assignments: readonly AssignmentRecord[],
   sessionEntriesByFile: ReadonlyMap<string, readonly unknown[]>,
 ): DiagramResult {
-  const segments = segmentRuns(events)
-  const runCount = segments.length
-  let index: number
-  if (runIndex === null || runIndex === undefined) {
-    index = runCount
-  } else {
-    index = runIndex
+  const selection = selectSegment(events, runIndex)
+  if (selection.kind === 'no-records') return { kind: 'no-records' }
+  if (selection.kind === 'out-of-range') {
+    return { kind: 'out-of-range', runCount: selection.runCount }
   }
-  if (runCount === 0) return { kind: 'no-records' }
-  if (index < 1 || index > runCount) return { kind: 'out-of-range', runCount }
-
-  const segment = segments[index - 1]
+  const { segment, index, runCount } = selection
   const runStart = segment.find((event) => event.kind === 'run-start')
   if (runStart === undefined || runStart.kind !== 'run-start') {
     return { kind: 'no-records' }
