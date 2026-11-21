@@ -1129,10 +1129,15 @@ export default function (pi: ExtensionAPI) {
 
       let text = guidanceText
       if (orphaned !== null) {
+        // AIDEV-NOTE: PMR-TC54 — cause-neutral wording: the orphan branch
+        // fires whenever a memo exists while live record/sidecar are gone,
+        // which ALSO happens when an identical ask was answered+acked and
+        // the child deliberately re-asks byte-identically — naming "resume"
+        // as the cause could nudge the model to disregard that answer.
         const orphanNotice =
           `Note: an earlier ask_owner with this exact question already ran ` +
-          `(askId ${orphaned.result.askId}) but is no longer live (records ` +
-          'cleared by resume); a fresh ask was created — treat this askId as ' +
+          `(askId ${orphaned.result.askId}) but is no longer live (its ` +
+          'records are gone); a fresh ask was created — treat this askId as ' +
           'the active one. '
         text = `${orphanNotice}${guidanceText}`
       }

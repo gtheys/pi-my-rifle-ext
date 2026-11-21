@@ -7722,6 +7722,9 @@ describe('subagent-done.ts ask_owner replay windows (PMR-1006 / PMR-ZJCP)', () =
             'result text must name the dead askId',
           )
           assert.match(fresh.content[0].text, /no longer live/)
+          // PMR-TC54: the notice must be cause-neutral (the orphan branch
+          // also fires for a byte-identical re-ask after an acked answer).
+          assert.match(fresh.content[0].text, /records are gone/)
 
           const record = readAskRecord(childId, root)
           assert.equal(record?.askId, freshAskId)
