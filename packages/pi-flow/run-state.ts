@@ -7,6 +7,7 @@
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import type { AnswerChoice } from './aven/client.ts'
 import { isFullSha, sha256Hex } from './validate/gate-target.ts'
 
@@ -1027,6 +1028,19 @@ export async function readRunState(
   } catch {
     return null
   }
+}
+
+/**
+ * AIDEV-NOTE: yolo plan 3.1 — is the run for this ref journaled as yolo?
+ * Reads the restored projection (input.yolo === true). Fail-closed: absent
+ * projection or any read failure returns false. Unlike the agent-writable
+ * oneshot label (PMR-J6TW), the yolo bit is journaled from the human's CLI
+ * invocation, so gate exemptions keyed on it cannot be self-granted.
+ */
+export async function isYoloRun(ref: string): Promise<boolean> {
+  const state = await readRunState(getAgentDir(), ref)
+  if (state === null) return false
+  return state.input?.yolo === true
 }
 
 /**

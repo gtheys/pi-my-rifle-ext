@@ -128,7 +128,10 @@ function memReceipts(options?: {
   }
 }
 
-function phaseCompleteExecute(receipts?: ReceiptJournal): PhaseCompleteExecute {
+function phaseCompleteExecute(
+  receipts?: ReceiptJournal,
+  isYoloRun?: (ref: string) => Promise<boolean>,
+): PhaseCompleteExecute {
   let execute: PhaseCompleteExecute | undefined
   const mockPi = {
     registerTool: (options: { execute: PhaseCompleteExecute }) => {
@@ -143,6 +146,8 @@ function phaseCompleteExecute(receipts?: ReceiptJournal): PhaseCompleteExecute {
     registerPhaseCompleteTool(
       mockPi as unknown as Parameters<typeof registerPhaseCompleteTool>[0],
       receipts,
+      undefined,
+      isYoloRun,
     )
   }
   if (!execute) throw new Error('flow_phase_complete tool not registered')
@@ -385,6 +390,56 @@ test('plan fresh path: non-oneshot labels keep the receipt gate', async () => {
     assert.equal(result.isError, true)
     assert.match(result.content[0].text, /\/flow answer PMR-TEST approve/)
     assert.doesNotMatch(readFileSync(LABEL_STATE, 'utf8'), /planned/)
+  })
+})
+
+// AIDEV-NOTE: yolo plan 3.1 — the isYoloRun exemption. A ref journaled with
+// input.yolo === true (from the human's CLI invocation, restored by the run
+// projection) completes the plan write WITHOUT a receipt — unlike the
+// agent-writable oneshot label, the yolo bit cannot be self-granted by the
+// agent, so it is safe to key the exemption on it. Fail-closed: an absent
+// projection (readRunState null) or any read failure means NOT yolo, and a
+// non-yolo ref keeps the full gate.
+test('plan fresh path: yolo-journaled ref skips the receipt gate', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  rmSync(ANSWER_FILE, { force: true })
+  const receipts = memReceipts({ requireLabelWritten: true })
+  const execute = phaseCompleteExecute(receipts, async () => true)
+  await withFakeAven(async () => {
+    const result = await execute('y1', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text, /planned/)
+    assert.match(readFileSync(LABEL_STATE, 'utf8'), /planned/)
+    assert.equal(receipts.entries.length, 1)
+  })
+})
+
+test('plan fresh path: non-yolo ref keeps the receipt gate', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  rmSync(ANSWER_FILE, { force: true })
+  const receipts = memReceipts()
+  const execute = phaseCompleteExecute(receipts, async () => false)
+  await withFakeAven(async () => {
+    const result = await execute('y2', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /\/flow answer PMR-TEST approve/)
+    assert.equal(existsSync(LABEL_STATE), false)
+  })
+})
+
+test('plan fresh path: yolo read failure refuses (fail-closed via default reader)', async () => {
+  rmSync(LABEL_STATE, { force: true })
+  rmSync(ANSWER_FILE, { force: true })
+  const receipts = memReceipts()
+  // No injected reader: the production default isYoloRun reads the real
+  // projection; this ref has none, so it must resolve false and refuse.
+  const execute = phaseCompleteExecute(receipts)
+  await withFakeAven(async () => {
+    const result = await execute('y3', { ref: 'PMR-TEST', phase: 'plan' })
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text, /\/flow answer PMR-TEST approve/)
+    assert.equal(receipts.entries.length, 0)
+    assert.equal(existsSync(LABEL_STATE), false)
   })
 })
 

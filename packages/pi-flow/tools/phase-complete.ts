@@ -24,7 +24,11 @@ import {
 } from '../aven/client.ts'
 import { checkPhaseCompletion } from '../flow/label-gate.ts'
 import { PHASE_LABEL, type Phase } from '../flow/orchestrate.ts'
-import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
+import {
+  createReceiptJournal,
+  isYoloRun,
+  type ReceiptJournal,
+} from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
 import { toolResult } from './result.ts'
 
@@ -63,6 +67,9 @@ export function registerPhaseCompleteTool(
   // receipt writes route through it (journal-only while the daemon owns the
   // projection); absent = today's exact full-writer behavior.
   writer?: EventWriter,
+  // AIDEV-NOTE: yolo plan 3.1 — injectable for tests; production default
+  // reads the real run projection (fail-closed).
+  isYoloRunFn: (ref: string) => Promise<boolean> = isYoloRun,
 ): void {
   let effectiveReceipts = receipts
   if (writer !== undefined) {
@@ -159,7 +166,20 @@ export function registerPhaseCompleteTool(
       // personal mode where the human drives the session, and aven's ticket
       // history makes a rogue self-label auditable after the fact. Revisit
       // this seam if the trust model ever needs enforced label provenance.
-      if (params.phase === 'plan' && !labels.includes('oneshot')) {
+      // AIDEV-NOTE: yolo plan 3.1 — third exemption path beside the oneshot
+      // label (PMR-ZWX8): input.yolo === true is journaled by the run server
+      // from the human's CLI invocation (--yolo), not from any agent-writable
+      // label or metadata, so a yolo ref cannot be self-granted by the agent
+      // and may complete the plan write without the approval receipt. The
+      // isYoloRun read is fail-closed (absent projection / read failure =
+      // not yolo → full gate). The receiptMetadataMutation bash interceptor
+      // in index.ts stays untouched: the exemption is this explicit branch
+      // in the gate check, never a forged receipt.
+      if (
+        params.phase === 'plan' &&
+        !labels.includes('oneshot') &&
+        !(await isYoloRunFn(params.ref))
+      ) {
         const answer = await readGateAnswer(params.ref, 'spec')
         if (answer !== 'approve') {
           let found: string
