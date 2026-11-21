@@ -96,6 +96,7 @@ import {
 import {
   type DashboardToggleOutcome,
   initFlowWidget,
+  refreshAfterSettle,
   refreshFlowWidget,
   toggleFlowDashboardPin,
   type WidgetAssignment,
@@ -806,15 +807,27 @@ export default function (pi: ExtensionAPI) {
   // The loop re-reads aven labels and either injects the next phase prompt
   // or halts — advancement is code, not model.
   pi.on('agent_settled', () => {
-    void loop.onSettled()
+    // AIDEV-NOTE: PMR-2KH5 — the refresh must run AFTER the loop's settle
+    // work: phase-complete/phase-start are journaled only inside onSettled
+    // (after an aven readLabels shell-out) and the widget projects
+    // currentPhase solely from journal events, so the old concurrent refresh
+    // read the pre-transition journal and re-set the stale phase (footer a
+    // turn behind; done/halt never refreshed). refreshAfterSettle chains the
+    // refresh onto the settle promise. Still fire-and-forget: the extension
+    // runner awaits handlers, so awaiting the shell-out here would stall
+    // pi's idle resolution; the onSettled rejection stays unhandled, as
+    // before (fail-noisy).
+    void refreshAfterSettle(() => loop.onSettled())
     // AIDEV-NOTE (PMR-ZGPY 3.2): pull-based widget refresh — no fs.watch in
     // the flow process (ISC-A-3); the widget updates on settle signals.
-    void refreshFlowWidget()
     // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — belt-and-braces consumer path. A
     // parked record for the restored binding is consumed + re-presented here
     // when session_start's check found nothing (e.g. the daemon parked the
     // run moments later). No-ops unless a binding exists; the consumer
     // itself guards loop-active / disabled / latch / nothing-pending.
+    // PMR-2KH5 decision: resumeParkedRun stays CONCURRENT with the settle
+    // refresh — it re-presents a parked prompt and never journals phase
+    // events, so it cannot race the widget's journal read.
     const resumeRef = boundRef
     if (resumeRef !== null) {
       void resumeParkedRun(resumeConsumerDeps(resumeRef))

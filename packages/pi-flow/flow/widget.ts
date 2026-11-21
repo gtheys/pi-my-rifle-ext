@@ -342,10 +342,26 @@ async function updateWidgetUnsafe(): Promise<void> {
   unregisterWidget(ctx)
 }
 
-/** Pull-based refresh — index.ts calls this from agent_settled and the
- * onFlowSpawn hook. Never throws (ISC-A-2). */
+/** Pull-based refresh — index.ts calls this from the onFlowSpawn hook and
+ * (via refreshAfterSettle) from agent_settled. Never throws (ISC-A-2). */
 export async function refreshFlowWidget(): Promise<void> {
   await updateWidget()
+}
+
+/** PMR-2KH5: settle-ordered refresh for the agent_settled handler. Phase
+ * truth (phase-complete / phase-start) is journaled only inside the loop's
+ * onSettled — after an aven readLabels shell-out — while the widget projects
+ * currentPhase solely from journal events. Firing the refresh concurrently
+ * with onSettled read the pre-transition journal, re-set the stale footer
+ * phase, and left nothing to correct it until the next settle (footer a turn
+ * behind; done/halt never refreshed). Chaining the refresh on the settle
+ * promise fixes the ordering; finally() guarantees the refresh still runs
+ * when onSettled rejects. The rejection itself propagates to the caller
+ * (fail-noisy, unchanged from the old bare `void loop.onSettled()`). */
+export function refreshAfterSettle(
+  onSettled: () => Promise<void>,
+): Promise<void> {
+  return onSettled().finally(() => refreshFlowWidget())
 }
 
 export type DashboardToggleOutcome = 'pinned' | 'hidden' | 'no-content'

@@ -7,10 +7,11 @@ import type {
 import type { OpenGate } from '../flow/gates.ts'
 import {
   initFlowWidget,
+  refreshAfterSettle,
   refreshFlowWidget,
   toggleFlowDashboardPin,
 } from '../flow/widget.ts'
-import type { FlowRunState } from '../run-state.ts'
+import type { FlowPhase, FlowRunState } from '../run-state.ts'
 
 // Mock scaffolding: capture the session_start handler and the ctx.ui.setWidget
 // calls so the widget lifecycle is exercised WITHOUT a TUI.
@@ -531,5 +532,97 @@ describe('flow widget flash + pin (PMR-C3B6)', () => {
     const calls = h.statusCalls()
     assert.equal(calls.length, 3)
     assert.deepEqual(calls[calls.length - 1], ['flow', '📋 PMR-ZGPY 📝 plan'])
+  })
+})
+
+describe('settle-ordered refresh (PMR-2KH5)', () => {
+  // The agent_settled handler wires loop.onSettled through refreshAfterSettle
+  // (packages/pi-flow/index.ts). These tests pin the ordering contract that
+  // fixes the stale footer: the loop journals phase-complete/phase-start only
+  // inside onSettled, and the widget's footer text projects solely from
+  // journal events.
+
+  it('refresh reads the journal only after onSettled lands the phase events', async () => {
+    let journaledPhase: FlowPhase | null = 'plan'
+    const order: Array<'journal' | 'read'> = []
+    const h = makeHarness({
+      readState: async () => {
+        order.push('read')
+        return makeState({ currentPhase: journaledPhase })
+      },
+    })
+    h.fireSessionStart()
+    await settle()
+    order.length = 0
+    await refreshAfterSettle(async () => {
+      // Models the loop: an aven readLabels shell-out delays the journal
+      // writes past the point where a concurrent refresh would have read.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      journaledPhase = 'implement'
+      order.push('journal')
+    })
+    // The widget's read happened after the journal write — the footer ends
+    // on the NEW phase (the raced refresh used to re-set the old one).
+    assert.deepEqual(order, ['journal', 'read'])
+    assert.deepEqual(h.statusCalls()[h.statusCalls().length - 1], [
+      'flow',
+      '📋 PMR-ZGPY 🔨 implement',
+    ])
+  })
+
+  it('refresh still runs when onSettled rejects; the rejection propagates', async () => {
+    const h = makeHarness({
+      readState: async () => makeState({ currentPhase: 'plan' }),
+    })
+    h.fireSessionStart()
+    await settle()
+    await assert.rejects(
+      refreshAfterSettle(async () => {
+        throw new Error('aven shell-out failed')
+      }),
+      /aven shell-out failed/,
+    )
+    // finally() ran the refresh despite the rejection — the footer was not
+    // skipped; the error itself stays fail-noisy for the caller.
+    assert.deepEqual(h.statusCalls()[h.statusCalls().length - 1], [
+      'flow',
+      '📋 PMR-ZGPY 📝 plan',
+    ])
+  })
+
+  it('post-settle done/halt: the now-running refresh clears the stale footer', async () => {
+    // Deliberate PMR-2KH5 behavior change: at done/halt the loop's activeRef
+    // is null, the ordered refresh runs, and the footer is CLEARED — instead
+    // of the last phase text surviving indefinitely with no refresh entry.
+    let state: FlowRunState | null = makeState({ currentPhase: 'validate' })
+    const h = makeHarness({ readState: async () => state })
+    h.fireSessionStart()
+    await settle()
+    state = null
+    await refreshAfterSettle(async () => {})
+    const calls = h.statusCalls()
+    assert.deepEqual(calls[calls.length - 1], ['flow', undefined])
+  })
+
+  it('one settle transition arms the flash exactly once', async () => {
+    let journaledPhase: FlowPhase | null = 'plan'
+    const h = makeHarness({
+      readState: async () =>
+        journaledPhase === null
+          ? null
+          : makeState({ currentPhase: journaledPhase }),
+    })
+    h.fireSessionStart()
+    await settle()
+    await refreshAfterSettle(async () => {
+      journaledPhase = 'implement'
+    })
+    // Exactly one refresh ran, so exactly one transition was detected: one
+    // registration + one 4000 ms flash one-shot. A stray second refresh
+    // (or a re-read) must not double-arm it.
+    assert.equal(h.setWidgetCalls().length, 1)
+    const armed = h.armedTimeouts()
+    assert.equal(armed.length, 1)
+    assert.equal(armed[0].ms, 4000)
   })
 })
