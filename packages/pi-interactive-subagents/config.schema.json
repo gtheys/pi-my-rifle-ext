@@ -61,6 +61,11 @@
           "description": "Dead-turn deadline for provider/tool/turn/unknown scopes and sustained snapshot loss in ms (default 1800000)."
         }
       }
+    },
+    "retentionDays": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Opt-in (PMR-KT90): prune inactive subagent data-root records (results, retired payloads, dead assignments/presence, drained markers) whose newest activity is older than this many days. Live, current, and resumable state is never pruned. Absent = legacy no-pruning behavior. Runs automatically at session start and via /subagent prune."
     }
   }
 }

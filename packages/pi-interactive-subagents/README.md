@@ -283,6 +283,7 @@ Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on
 | `watchdog.enabled` | boolean | `true` | Dead-turn stall watchdog: age frozen present+active snapshots into `stalled` and escalate dead child turns. `false` restores the legacy never-age behavior |
 | `watchdog.streamStallAfterMs` | number | `150000` | Deadline (ms) for the frozen `streaming` scope — silence there means the model turn died mid-generation |
 | `watchdog.quietStallAfterMs` | number | `1800000` | Deadline (ms) for `provider`/`tool`/`turn`/unknown scopes and sustained snapshot loss. `provider` is deliberately long-bucket: pre-first-token silence (large prompt processing, 429/529 retry backoff) emits no events, so a short provider deadline false-kills healthy children mid-request |
+| `retentionDays` | integer | unset (no pruning) | Opt-in: prune inactive subagent data-root records whose newest activity is older than this many days. Live, current, and resumable state is never pruned. Runs automatically at session start and on demand via `/subagent prune` |
 
 ```json
 {
@@ -299,6 +300,15 @@ Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on
     "streamStallAfterMs": 150000,
     "quietStallAfterMs": 1800000
   }
+}
+```
+
+`retentionDays` is opt-in and intentionally absent from the shipped defaults — add it to enable pruning:
+
+```json
+{
+  "$schema": "https://json-schema.org/schema",
+  "retentionDays": 30
 }
 ```
 
