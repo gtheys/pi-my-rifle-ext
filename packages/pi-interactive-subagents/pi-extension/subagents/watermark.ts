@@ -57,7 +57,12 @@ export function interruptWatermarkPath(
   )
 }
 
-/** Read a watermark; returns null when missing, malformed, or not an object. */
+// AIDEV-NOTE: the watermark filename is a lossy sanitized key (non-
+// [A-Za-z0-9._-] chars map to `_`, so distinct ids collide) — filename
+// equality is NOT id equality. The stored toolCallId is the primary key and
+// must match the requested id, otherwise the read fails closed (null).
+/** Read a watermark; returns null when missing, malformed, not an object, or
+ * naming a different toolCallId than requested. */
 export function readInterruptWatermark(
   toolCallId: string,
   root?: string,
@@ -73,6 +78,7 @@ export function readInterruptWatermark(
     if (parsed == null || typeof parsed !== 'object') return null
     const record = parsed as Record<string, unknown>
     if (typeof record.toolCallId !== 'string') return null
+    if (record.toolCallId !== toolCallId) return null
     if (typeof record.childId !== 'string') return null
     if (typeof record.sessionFile !== 'string') return null
     if (typeof record.requestId !== 'string') return null

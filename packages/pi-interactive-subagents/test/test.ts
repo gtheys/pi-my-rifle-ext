@@ -3934,6 +3934,24 @@ describe('interrupt watermark (PMR-J3WY replay-safe interrupts)', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('readInterruptWatermark fails closed when the stored toolCallId differs from the filename key', () => {
+    // The filename is a lossy sanitized key: a stale or colliding file must
+    // not be trusted as this call's watermark (PMR-DYQN).
+    const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-id-'))
+    try {
+      // `a/b` and `a c` both sanitize to `a_b.json`; claim `a/b` first, then
+      // write a record whose stored id is the colliding `a c`.
+      writeFileSync(
+        interruptWatermarkPath('a/b', root),
+        JSON.stringify(makeWatermark({ toolCallId: 'a c' })),
+      )
+      assert.equal(readInterruptWatermark('a/b', root), null)
+      assert.equal(readInterruptWatermark('a c', root), null)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('asks.ts (PMR-WXG0 blocking ask_owner)', () => {
