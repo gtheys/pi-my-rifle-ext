@@ -40,6 +40,7 @@ import {
 } from '../pi-extension/subagents/asks.ts'
 import {
   assignmentPath,
+  deriveResumeHint,
   findAssignmentByBranch,
   findStartingAssignment,
   hasLiveAssignmentForParent,
@@ -2874,6 +2875,150 @@ describe('subagent interruption', () => {
     assert.match(presentation, /Resume: pi --session/)
     assert.doesNotMatch(presentation, /ignored when errorMessage is present/)
   })
+
+  it('appends recovery guidance to failure presentations (PMR-PCF7)', () => {
+    const testApi = (subagentsModule as any).__test__
+    const presentation = testApi.resolveResultPresentation(
+      {
+        exitCode: 1,
+        elapsed: 10,
+        summary: 'Sub-agent exited with code 1',
+        sessionFile: '/tmp/worker.jsonl',
+      },
+      'Worker',
+      'Recovery: subagent_resume({ sessionPath: "/tmp/worker.jsonl" }).',
+    )
+    assert.match(presentation, /failed \(exit code 1\)/)
+    assert.match(
+      presentation,
+      /Recovery: subagent_resume\(\{ sessionPath: "\/tmp\/worker\.jsonl" \}\)\./,
+    )
+  })
+
+  it('keeps successful presentations unchanged even with guidance available', () => {
+    const testApi = (subagentsModule as any).__test__
+    const presentation = testApi.resolveResultPresentation(
+      {
+        exitCode: 0,
+        elapsed: 10,
+        summary: 'All done',
+        sessionFile: '/tmp/worker.jsonl',
+      },
+      'Worker',
+      'Recovery: subagent_resume({ sessionPath: "/tmp/worker.jsonl" }).',
+    )
+    assert.match(presentation, /completed \(10s\)/)
+    assert.doesNotMatch(presentation, /Recovery:/)
+  })
+
+  it('recoveryGuidanceFor: resume hint for a verified session path', () => {
+    const testApi = (subagentsModule as any).__test__
+    const isolated = join(
+      mkdtempSync(join(tmpdir(), 'guidance-')),
+      'pi-subagents',
+    )
+    mkdirSync(isolated, { recursive: true })
+    try {
+      const sessionFile = join(isolated, 'session.jsonl')
+      writeFileSync(sessionFile, '{}')
+      writeAssignment(draftGuidance('g-resume', { sessionFile }), isolated)
+      const guidance = testApi.recoveryGuidanceFor(
+        { id: 'g-resume', sessionFile },
+        isolated,
+      )
+      assert.ok(guidance)
+      assert.match(guidance, /Recovery: subagent_resume\(\{ sessionPath:/)
+    } finally {
+      rmSync(isolated, { recursive: true, force: true })
+    }
+  })
+
+  it('recoveryGuidanceFor: re-spawn guidance for a starting record with no pane', () => {
+    const testApi = (subagentsModule as any).__test__
+    const isolated = join(
+      mkdtempSync(join(tmpdir(), 'guidance-')),
+      'pi-subagents',
+    )
+    try {
+      writeAssignment(
+        draftGuidance('g-respawn', { status: 'starting' }),
+        isolated,
+      )
+      const guidance = testApi.recoveryGuidanceFor(
+        { id: 'g-respawn' },
+        isolated,
+      )
+      assert.ok(guidance)
+      assert.match(guidance, /re-issue the same spawn/)
+      assert.doesNotMatch(guidance, /subagent_resume/)
+    } finally {
+      rmSync(isolated, { recursive: true, force: true })
+    }
+  })
+
+  it('recoveryGuidanceFor: fails closed with no guessed resume command', () => {
+    const testApi = (subagentsModule as any).__test__
+    const isolated = join(
+      mkdtempSync(join(tmpdir(), 'guidance-')),
+      'pi-subagents',
+    )
+    try {
+      // missing record
+      assert.equal(
+        testApi.recoveryGuidanceFor({ id: 'g-none' }, isolated),
+        undefined,
+      )
+      // sessionFile mismatch between record and watcher-observed path
+      writeAssignment(draftGuidance('g-mismatch'), isolated)
+      assert.equal(
+        testApi.recoveryGuidanceFor(
+          { id: 'g-mismatch', sessionFile: '/tmp/other.jsonl' },
+          isolated,
+        ),
+        undefined,
+      )
+      // record path that does not exist on disk
+      assert.equal(
+        testApi.recoveryGuidanceFor(
+          { id: 'g-mismatch', sessionFile: '/tmp/g-mismatch.jsonl' },
+          isolated,
+        ),
+        undefined,
+      )
+    } finally {
+      rmSync(isolated, { recursive: true, force: true })
+    }
+  })
+
+  it('deriveResumeHint: re-issue-spawn for starting records without a pane, resume otherwise', () => {
+    const starting = draftGuidance('hint-1', { status: 'starting' })
+    assert.match(deriveResumeHint(starting) ?? '', /re-issue the same spawn/)
+    const withPane = draftGuidance('hint-2', {
+      status: 'starting',
+      paneId: 'p1',
+    })
+    assert.match(
+      deriveResumeHint(withPane) ?? '',
+      /subagent_resume\(\{ sessionPath: "\/tmp\/hint-2\.jsonl" \}\)/,
+    )
+    assert.equal(deriveResumeHint({ ...starting, sessionFile: '' }), undefined)
+  })
+
+  function draftGuidance(
+    childId: string,
+    overrides?: Partial<Parameters<typeof writeAssignment>[0]>,
+  ) {
+    return {
+      childId,
+      name: `agent-${childId}`,
+      task: 'do the thing',
+      sessionFile: `/tmp/${childId}.jsonl`,
+      cwd: '/tmp',
+      status: 'working' as const,
+      claim: { pid: process.pid, id: 'parent-session-1' },
+      ...overrides,
+    }
+  }
 })
 
 describe('subagent status renderer', () => {

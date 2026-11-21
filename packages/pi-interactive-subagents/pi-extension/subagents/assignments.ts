@@ -258,25 +258,32 @@ export function listAssignments(root?: string): AssignmentView[] {
       state: 'orphaned',
       record,
     }
-    if (record.sessionFile) {
-      // AIDEV-NOTE (PMR-YKAC): a 'starting' record with no paneId is a spawn
-      // that crashed between record-write and tab-create — its session file
-      // likely never started, so a resume hint would point at nothing. Tell
-      // the parent to re-issue the spawn; allocateSpawnIdentity will reuse
-      // this record.
-      if (record.status === 'starting' && !record.paneId) {
-        view.resumeHint =
-          'spawn crashed before tab create — re-issue the same spawn; the record will be reused'
-      } else {
-        view.resumeHint = `subagent_resume({ sessionPath: "${record.sessionFile}" })`
-      }
-    }
+    // AIDEV-NOTE (PMR-YKAC): a 'starting' record with no paneId is a spawn
+    // that crashed between record-write and tab-create — deriveResumeHint
+    // tells the parent to re-issue the spawn; allocateSpawnIdentity will
+    // reuse this record.
+    view.resumeHint = deriveResumeHint(record)
     views.push(view)
   }
   views.sort((a, b) => a.childId.localeCompare(b.childId))
   return views
 }
 
+// AIDEV-NOTE (PMR-PCF7): assignment-derived guidance extracted from
+// listAssignments so failure notices can reuse the same branches. Derived
+// ONLY from durable record fields — never guessed state. A 'starting'
+// record with no paneId cannot support a resume (the session likely never
+// started) and yields re-issue-spawn guidance; anything else with a
+// non-empty sessionFile yields the resume command. Callers that need a
+// VERIFIED session path must additionally check the file exists (see
+// recoveryGuidanceFor in index.ts).
+export function deriveResumeHint(record: AssignmentRecord): string | undefined {
+  if (!record.sessionFile) return undefined
+  if (record.status === 'starting' && !record.paneId) {
+    return 'spawn crashed before tab create — re-issue the same spawn; the record will be reused'
+  }
+  return `subagent_resume({ sessionPath: "${record.sessionFile}" })`
+}
 /**
  * True while the given parent pid has at least one in-flight child: an
  * assignment record owned by that pid with a status other than 'lost'.

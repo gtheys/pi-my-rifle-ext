@@ -40,8 +40,10 @@ import {
   type AssignmentRecord,
   type AssignmentStatus,
   assignmentPath,
+  deriveResumeHint,
   listAssignments,
   pidAlive,
+  readAssignment,
   recordAssignmentUsage,
   removeAssignment,
   updateAssignmentStatus,
@@ -803,10 +805,15 @@ function resolveResultPresentation(
     'exitCode' | 'elapsed' | 'summary' | 'sessionFile' | 'errorMessage'
   >,
   name: string,
+  recoveryHint?: string,
 ): string {
   const sessionRef = result.sessionFile
     ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
     : ''
+  // AIDEV-NOTE (PMR-PCF7): failure notices pair the agent identification
+  // with a concrete recovery action derived from the durable assignment
+  // record. Success results keep their exact current shape.
+  const guidance = recoveryHint ? `\n\n${recoveryHint}` : ''
 
   if (result.errorMessage) {
     // Auto-retry exhausted or other agent-loop error. The subagent did not
@@ -818,13 +825,38 @@ function resolveResultPresentation(
       `(provider/agent error — auto-retry exhausted).\n\n` +
       `Error: ${result.errorMessage}\n\n` +
       `The subagent did not produce a result. You can retry by spawning a new ` +
-      `subagent or resume the session with subagent_resume.${sessionRef}`
+      `subagent or resume the session with subagent_resume.${sessionRef}${guidance}`
     )
   }
 
-  return result.exitCode !== 0
-    ? `Sub-agent "${name}" failed (exit code ${result.exitCode}).\n\n${result.summary}${sessionRef}`
-    : `Sub-agent "${name}" completed (${formatElapsed(result.elapsed)}).\n\n${result.summary}${sessionRef}`
+  if (result.exitCode !== 0) {
+    return `Sub-agent "${name}" failed (exit code ${result.exitCode}).\n\n${result.summary}${sessionRef}${guidance}`
+  }
+  return `Sub-agent "${name}" completed (${formatElapsed(result.elapsed)}).\n\n${result.summary}${sessionRef}`
+}
+
+// AIDEV-NOTE (PMR-PCF7): recovery guidance for failure notices, derived from
+// the durable assignment record — never from guessed state. Fail closed:
+// a missing record, a sessionFile that does not match what the watcher
+// observed, or a session file that does not exist on disk yield NO guidance
+// rather than a guessed resume command. Reuses deriveResumeHint so this
+// stays in lockstep with the orphan resume hints in subagents_list.
+export function recoveryGuidanceFor(
+  running: { id: string; sessionFile?: string },
+  root?: string,
+): string | undefined {
+  const record = readAssignment(running.id, root)
+  if (!record) return undefined
+  const hint = deriveResumeHint(record)
+  if (!hint) return undefined
+  // The re-issue-spawn branch needs no session file to be valid.
+  if (record.status === 'starting' && !record.paneId) {
+    return `Recovery: ${hint}.`
+  }
+  if (!running.sessionFile) return undefined
+  if (record.sessionFile !== running.sessionFile) return undefined
+  if (!existsSync(record.sessionFile)) return undefined
+  return `Recovery: ${hint}.`
 }
 
 /**
@@ -2098,6 +2130,7 @@ export const __test__ = {
   handleSubagentInterrupt,
   defaultInterruptControlIo,
   resolveResultPresentation,
+  recoveryGuidanceFor,
   resolveResumeLaunchBehavior,
   makeCheckStall,
   getWatchdogThresholds,
@@ -3067,6 +3100,16 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
         }
 
         let presentation = resolveResultPresentation(result, running.name)
+        if (result.exitCode !== 0 || result.errorMessage) {
+          // AIDEV-NOTE (PMR-PCF7): failure notices carry a recovery action
+          // derived from the durable assignment record; delivery stays
+          // best-effort — a guidance read failure must never block the
+          // result itself.
+          try {
+            const guidance = recoveryGuidanceFor(running)
+            if (guidance) presentation += `\n\n${guidance}`
+          } catch {}
+        }
         if (running.worktree) {
           // AIDEV-NOTE: durable result references the worktree (PMR-11TD) —
           // the worktree outlives the child; removal is manual, never auto.
@@ -3132,13 +3175,17 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
         )
       } catch {}
     })
-    .catch((err) => {
+    .catch((err: unknown) => {
+      // AIDEV-NOTE (PMR-PCF7): the watcher itself failed without a verified
+      // outcome — stopping the child (if it is still alive) is the safe
+      // action; resuming an unverified session is not.
+      const stopHint = `\n\nIf the child is still running, stop it with subagent_interrupt(id: "${running.id}") — do not resume this session without verifying its state.`
       try {
         updateWidget()
         pi.sendMessage(
           {
             customType: 'subagent_result',
-            content: `Sub-agent "${running.name}" error: ${err?.message ?? String(err)}`,
+            content: `Sub-agent "${running.name}" error: ${err instanceof Error ? err.message : String(err)}${stopHint}`,
             display: true,
             details: {
               name: running.name,
@@ -4322,6 +4369,11 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
         // Clean summary (remove session ref and leading label for display)
         const summary = rawContent
+          // AIDEV-NOTE (PMR-PCF7): recovery guidance lines are stripped from
+          // the displayed summary — the box already carries the header; the
+          // guidance stays in the steered message content for the turn.
+          .replace(/\n\nIf the child is still running[^\n]*$/, '')
+          .replace(/\n\nRecovery: .+$/, '')
           .replace(/\n\nSession: .+\nResume: .+$/, '')
           .replace(`Sub-agent "${name}" completed (${elapsed}).\n\n`, '')
           .replace(
