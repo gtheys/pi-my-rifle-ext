@@ -374,7 +374,10 @@ async function bindFlow(
     // survivor (SINGLE-CANDIDATE-ONLY rule in flow/durable-refs.ts);
     // zero/absent seam keeps the original refusal byte-for-byte (worktree
     // tests assert it), multiple lists a per-ref recovery command.
-    const candidates = deps?.deriveFlowRefs ? await deps.deriveFlowRefs() : []
+    let candidates: string[] = []
+    if (deps?.deriveFlowRefs) {
+      candidates = await deps.deriveFlowRefs()
+    }
     if (candidates.length === 0) {
       return errorResult(
         `No active flow ref — nothing to bind to. ${NO_ACTIVE_FLOW_WARNING}`,
