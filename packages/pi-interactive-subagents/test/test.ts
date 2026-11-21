@@ -3940,14 +3940,15 @@ describe('interrupt watermark (PMR-J3WY replay-safe interrupts)', () => {
     // not be trusted as this call's watermark (PMR-DYQN).
     const root = mkdtempSync(join(tmpdir(), 'subagents-watermark-id-'))
     try {
-      // `a/b` and `a c` both sanitize to `a_b.json`; claim `a/b` first, then
-      // write a record whose stored id is the colliding `a c`.
+      // `a/b` and `a b` both sanitize to `a_b.json` (every
+      // non-[A-Za-z0-9._-] char maps to `_`); claim `a/b`'s file first, then
+      // write a record whose stored id is the genuinely colliding twin `a b`.
       writeFileSync(
         interruptWatermarkPath('a/b', root),
-        JSON.stringify(makeWatermark({ toolCallId: 'a c' })),
+        JSON.stringify(makeWatermark({ toolCallId: 'a b' })),
       )
       assert.equal(readInterruptWatermark('a/b', root), null)
-      assert.equal(readInterruptWatermark('a c', root), null)
+      assert.notEqual(readInterruptWatermark('a b', root), null)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
