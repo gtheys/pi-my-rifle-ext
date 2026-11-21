@@ -3409,6 +3409,47 @@ describe('config.ts', () => {
     )
   })
 
+  it('accepts optional integer retentionDays, opt-IN (PMR-KT90)', () => {
+    // Absent ⇒ absent in the typed config (legacy no-pruning behavior).
+    const absent = validateSubagentsConfig({ status: { enabled: true } }, 't')
+    assert.equal(absent.retentionDays, undefined)
+    assert.equal('retentionDays' in DEFAULT_SUBAGENTS_CONFIG, false)
+    // Present ⇒ passes through.
+    assert.deepEqual(
+      validateSubagentsConfig(
+        { status: { enabled: true }, retentionDays: 30 },
+        't',
+      ),
+      { status: { enabled: true }, retentionDays: 30 },
+    )
+    // Rejects 0, negatives, floats, strings, and unknown siblings.
+    for (const bad of [0, -5, 1.5, '30']) {
+      assert.throws(
+        () =>
+          validateSubagentsConfig(
+            { status: { enabled: true }, retentionDays: bad },
+            't',
+          ),
+        /Invalid subagents config in t/,
+      )
+    }
+    assert.throws(
+      () =>
+        validateSubagentsConfig(
+          { status: { enabled: true }, retentionDays: 30, nope: 1 },
+          't',
+        ),
+      /Invalid subagents config in t/,
+    )
+    // Scaffold never writes the key into new configs.
+    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    scaffoldGlobalSubagentsConfig(agentDir)
+    const onDisk = JSON.parse(
+      readFileSync(globalSubagentsConfigPath(agentDir), 'utf8'),
+    )
+    assert.equal('retentionDays' in onDisk, false)
+  })
+
   it('scaffolds the global config only when missing and never overwrites', () => {
     const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
     const path = globalSubagentsConfigPath(agentDir)

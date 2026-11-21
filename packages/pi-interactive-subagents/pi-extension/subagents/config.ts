@@ -50,6 +50,9 @@ const SubagentsConfigSchema = Type.Object(
     // config = watchdog on. `enabled: false` restores the legacy never-age
     // behavior (present+active snapshots never classify as stalled and the
     // poll loop never escalates on the stall deadline).
+    // AIDEV-NOTE (PMR-KT90): opt-IN retention — absent config = legacy
+    // no-pruning behavior; setting a positive integer age enables pruning.
+    retentionDays: Type.Optional(Type.Integer({ minimum: 1 })),
     watchdog: Type.Optional(
       Type.Object(
         {
@@ -111,6 +114,9 @@ export function validateSubagentsConfig(
   const config: SubagentsConfig = { status: raw.status }
   if (raw.contextRetirement !== undefined) {
     config.contextRetirement = raw.contextRetirement
+  }
+  if (raw.retentionDays !== undefined) {
+    config.retentionDays = raw.retentionDays
   }
   if (raw.watchdog !== undefined) {
     config.watchdog = raw.watchdog
