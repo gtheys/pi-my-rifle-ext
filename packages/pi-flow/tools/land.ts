@@ -616,13 +616,18 @@ export function registerLandTool(
     name: 'flow_land',
     label: 'flow land',
     description:
-      'Gate a flow landing: verifies the review-passed label (and an optional review artifact verdict) for the ref. route=pr (work) then authorizes git push / gh pr create for it; route=merge-main (personal) does NOT authorize a push — merge the branch into main locally instead. Direct git push / gh pr create are blocked while the flow is active, and stay blocked for route=merge-main.',
+      'Gate a flow landing: verifies the review-passed label (and an optional review artifact verdict) for the ref. route=pr (work) then authorizes git push / gh pr create for it; route=merge-main (personal) does NOT authorize a push — merge the branch into main locally instead. Direct git push / gh pr create are blocked while the flow is active, and stay blocked for route=merge-main. It runs the land test suite itself before authorizing: landTestCommand config wins if set; otherwise repo-signal detection in fixed order (bun.lock/bunfig.toml → Cargo.toml → package-lock.json → pnpm-lock.yaml); otherwise bun run test as the last fallback. A red suite refuses the landing with the failing output.',
     promptSnippet:
       'Gated landing for PIV flow runs — call before pushing the branch or creating the PR.',
     promptGuidelines: [
+      // AIDEV-NOTE: PMR-AC49 — the suite-resolution text below MUST stay in
+      // sync with the LAND_TEST_SIGNALS table order (bun.lock/bunfig.toml →
+      // Cargo.toml → package-lock.json → pnpm-lock.yaml, bun fallback) and
+      // the defaultSuiteRunner doc comment. Agents read this string to
+      // predict which command the gate runs.
       'Call flow_land AFTER flow_phase_complete(phase="validate") and BEFORE git push / gh pr create — direct landing commands are blocked until it returns ok.',
       'For route=merge-main (personal), collect the human pass first — via the code_review tool (in-session) or the human-only /flow answer <ref> pass (durable, accepted cross-session) — flow_land refuses until one of them has passed for the ref. After ok, flow_land resolves the main checkout and landing branch itself and returns the EXACT pinned merge command — run that command verbatim. NEVER push.',
-      'flow_land runs the test suite itself before authorizing (landTestCommand config, default bun run test) — a red suite refuses the landing with the failing output. Never claim tests are green to skip it; the gate does not read claims.',
+      'flow_land runs the test suite itself before authorizing: landTestCommand config wins if set; otherwise repo-signal detection in fixed order (bun.lock/bunfig.toml → Cargo.toml → package-lock.json → pnpm-lock.yaml); otherwise bun run test as the last fallback. The run summary names the command and its source (config vs detected signal file), so refusals are explainable. A red suite refuses the landing with the failing output. Never claim tests are green to skip it; the gate does not read claims.',
       'A refusal carries the gate reason (missing review-passed label, blockers in the artifact, missing human code-review pass, red test suite); fix the cause, do not retry the call.',
     ],
     parameters: Type.Object({
