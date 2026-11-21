@@ -22,6 +22,8 @@
 export interface PlanPromptInput {
   mode: 'work' | 'personal'
   ref: string
+  /** /flow --yolo run: gates are skipped and the agent acts autonomously. */
+  yolo?: boolean
 }
 
 // AIDEV-NOTE: PMR-R5VB — approval is a HUMAN action (/flow answer <ref>
@@ -64,6 +66,9 @@ resumes via /flow once the tree exists.`
 
 export function buildPlanPrompt(input: PlanPromptInput): string {
   const header = `Plan phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
+  if (input.mode === 'personal' && input.yolo === true) {
+    return yoloPersonalPrompt(input.ref)
+  }
   // PMR-C0YV review P1 — the closing-message contract covers both delivery
   // paths: the loop injects implement itself; standalone /plan arms no loop,
   // so there the human must be told to run /flow <ref> instead.
@@ -121,4 +126,57 @@ Personal aven flow. Steps:
    order — it never reads plan-state — so call flow_phase_complete only
    after the receipt-gated spec_approve has succeeded.
 ${APPROVAL_SUFFIX}`
+}
+
+// AIDEV-NOTE: yolo plan 4.1 — yolo variant of the personal plan prompt. The
+// size-check verdict is applied AUTOMATICALLY (no ask_user_question step),
+// the verdict + reasons go into an aven note, and on a 'plan' verdict the
+// agent writes the plan and calls spec_approve ITSELF (the yolo exemption in
+// tools/spec-approve.ts makes it receipt-free) before flow_phase_complete in
+// the SAME turn — so the loop pause at plan-state=review (flow/loop.ts) is
+// never reached. Oneshot keeps today's flow_phase_complete(plan) behavior.
+function yoloPersonalPrompt(ref: string): string {
+  return `Plan phase (PIV flow). Mode: personal. Ref: ${ref}. YOLO run: gates are skipped — act autonomously, no human confirmation steps.
+Personal aven flow (yolo variant). Steps:
+
+1. Fetch ticket ${ref} and any aven notes on it (extra info) with
+   "aven show ${ref}" and "aven context ${ref} --full" (there is no
+   "aven notes" subcommand; "aven note" only appends).
+2. Run the size check (classifySize heuristic) on the ticket title and
+   description:
+   - single-file / one-module change with one test surface → 'oneshot'
+   - anything touching the data model, cross-package, or with multi-step
+     test implications → 'plan'
+   Apply the verdict AUTOMATICALLY — NO ask_user_question, NO human
+   confirmation. Immediately append an aven note recording the verdict and
+   the reasons (or "no signals" for oneshot), e.g.
+   "aven note ${ref} "size-check: <verdict> — <reasons>"".
+3. If the verdict is oneshot:
+   - set the type label "oneshot" on the ticket (no epic),
+   - enrich the description with any useful aven-note context,
+   - the plan for this ticket IS its description; skip writing a plan file,
+   - set the ticket status to "todo",
+   - skip spec approval ENTIRELY. Call the flow_phase_complete tool with
+     ref=${ref} and phase="plan" right away — its result confirms the
+     "planned" label landed. Skip the rest.
+4. If the verdict is plan:
+   - invoke the user's existing feature-plan-aven skill
+     (engineering:feature-plan-aven) for ${ref} and follow its workflow
+     (pickup, interview, scout, planner, plan.md, aven phase/subtask
+     hierarchy). Where the skill would pause for human plan review, DO NOT
+     wait: this is a yolo run — spec approval is self-serve.
+   - write the plan, then call the spec_approve tool YOURSELF — in a yolo
+     run it is receipt-exempt and succeeds without a human
+     "/flow answer" receipt. Do NOT wait for the human to approve.
+   - then, in the SAME turn, set the ticket status to "todo" and call the
+     flow_phase_complete tool with ref=${ref} and phase="plan" — its
+     result confirms the "planned" label landed. Completing all of this in
+     one turn means the flow never pauses at plan-state "review".
+When the label lands: the /flow loop advances ${ref} into the implement
+phase automatically (advancement is code, not model) — it injects the
+implement prompt into this session, and your closing message must say the
+implement phase starts automatically and that no action is needed. If this
+phase was started by the standalone /plan command, no loop is armed — tell
+the human to run /flow ${ref} to start the implement phase.
+Direct aven label edits on lifecycle labels are blocked.`
 }

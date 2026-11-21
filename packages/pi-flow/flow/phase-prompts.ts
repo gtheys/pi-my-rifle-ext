@@ -139,7 +139,11 @@ async function brainstormPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
 function planPrompt(input: PhasePromptInput): PhasePrompt {
   return {
     kind: 'send',
-    prompt: buildPlanPrompt({ mode: input.mode, ref: input.ref }),
+    prompt: buildPlanPrompt({
+      mode: input.mode,
+      ref: input.ref,
+      yolo: input.yolo,
+    }),
   }
 }
 
