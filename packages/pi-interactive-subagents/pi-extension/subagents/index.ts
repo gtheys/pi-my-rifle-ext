@@ -69,6 +69,7 @@ import { applyFlowEnv, emitFlowSpawn, isValidFlowValue } from './flow-env.ts'
 import { herdrAgentFocus, herdrAgentGet, herdrPreflight } from './herdr.ts'
 import { coalesceOwnerMessages, removeOwnerMessage } from './inbox.ts'
 import { sendPeerMessage } from './peers.ts'
+import { type PruneReport, pruneSubagentsData } from './retention.ts'
 import {
   retireSettledSubagentPayloads,
   shouldArmRetirement,
@@ -698,6 +699,17 @@ function getStatusConfig(): StatusConfig {
 const RETIREMENT_ENABLED_KEY = Symbol.for('pi-subagents/retirement-enabled')
 const RETIREMENT_ARMED_KEY = Symbol.for('pi-subagents/retirement-armed')
 
+// AIDEV-NOTE (PMR-KT90): retentionDays rides the status-config cache like the
+// other globalThis-Symbol values so an extension /reload keeps it; undefined
+// means the user never configured retention and no auto-prune may run.
+const RETENTION_DAYS_KEY = Symbol.for('pi-subagents/retention-days')
+
+function getRetentionDays(): number | undefined {
+  const stored = (globalThis as Record<symbol, unknown>)[RETENTION_DAYS_KEY]
+  if (stored === undefined) return undefined
+  return stored as number
+}
+
 function getRetirementEnabled(): boolean {
   return (
     (globalThis as Record<symbol, unknown>)[RETIREMENT_ENABLED_KEY] === true
@@ -719,6 +731,8 @@ function loadAndCacheStatusConfig(cwd: string | undefined): StatusConfig {
   ;(globalThis as Record<symbol, unknown>)[STATUS_CONFIG_KEY] = config
   ;(globalThis as Record<symbol, unknown>)[RETIREMENT_ENABLED_KEY] =
     loaded.config.contextRetirement?.enabled === true
+  ;(globalThis as Record<symbol, unknown>)[RETENTION_DAYS_KEY] =
+    loaded.config.retentionDays
   ;(globalThis as Record<symbol, unknown>)[WATCHDOG_THRESHOLDS_KEY] =
     watchdogThresholdsFromConfig(loaded.config.watchdog)
   return config
@@ -3231,6 +3245,21 @@ function runWatcher(pi: ExtensionAPI, running: RunningSubagent): void {
     })
 }
 
+// AIDEV-NOTE (PMR-KT90): total across per-class prune counters for the
+// session-start summary notify.
+function sumPruneCounts(counts: PruneReport['removed']): number {
+  let total = 0
+  for (const value of Object.values(counts)) {
+    total += value ?? 0
+  }
+  return total
+}
+
+function describePruneError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
 export default function subagentsExtension(pi: ExtensionAPI) {
   // Capture the UI context for widget updates
   latestPi = pi
@@ -3256,6 +3285,31 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     // AIDEV-NOTE: load per session so a project override written mid-run is
     // honored on the next session. Throws on invalid config — fail fast.
     loadAndCacheStatusConfig(ctx.cwd)
+    // AIDEV-NOTE (PMR-KT90): retention sweep. Only runs when retentionDays is
+    // configured (absent config ⇒ zero behavior change). The whole sweep is
+    // try/caught — pruning must NEVER abort session startup; a thrown error is
+    // reported as a warning notify at most (which itself is failure-tolerant).
+    const retentionDays = getRetentionDays()
+    if (retentionDays !== undefined) {
+      try {
+        const report = pruneSubagentsData({ retentionDays })
+        const removedTotal = sumPruneCounts(report.removed)
+        const skippedTotal = sumPruneCounts(report.skipped)
+        if (removedTotal > 0 || skippedTotal > 0) {
+          ctx.ui.notify(
+            `Retention sweep (>${retentionDays}d): removed ${removedTotal}, skipped ${skippedTotal}`,
+            'info',
+          )
+        }
+      } catch (error) {
+        try {
+          ctx.ui.notify(
+            `Retention sweep failed: ${describePruneError(error)}`,
+            'warning',
+          )
+        } catch {}
+      }
+    }
     // AIDEV-NOTE (PMR-AD0H): reconcile widget registration with the actual
     // map after a session switch/reload — nothing else fires while idle, so
     // a stale "Subagents · 0 running" box would otherwise persist.

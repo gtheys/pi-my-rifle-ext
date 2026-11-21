@@ -10048,3 +10048,112 @@ describe('retention.ts (PMR-KT90 prune sweep)', () => {
     assert.equal(report.skipped['spawn-seq'], undefined)
   })
 })
+
+// AIDEV-NOTE (PMR-KT90): session_start auto-prune wiring — real config file +
+// real data root (withIsolatedAgentEnv isolates PI_CODING_AGENT_DIR), so the
+// sweep runs its default path exactly like production startup does.
+describe('session_start retention auto-prune (PMR-KT90)', () => {
+  interface NotifyCall {
+    message: string
+    level: string
+  }
+
+  function notifyingCtx() {
+    const notifications: NotifyCall[] = []
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify(message: string, level: string) {
+          notifications.push({ message, level })
+        },
+        setWidget() {},
+        setStatus() {},
+      },
+    }
+    return { ctx, notifications }
+  }
+
+  function seedRetiredRecord(
+    agentDir: string,
+    name: string,
+    retiredAt: string,
+  ) {
+    const dir = join(agentDir, 'pi-subagents', 'retired')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, name), JSON.stringify({ retiredAt }))
+    return join(dir, name)
+  }
+
+  function writeRetentionConfig(projectDir: string, retentionDays: number) {
+    const configDir = join(projectDir, '.pi', 'pi-subagents')
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(
+      join(configDir, 'config.json'),
+      JSON.stringify({
+        status: { enabled: true, hideWhenIdle: true },
+        retentionDays,
+      }),
+    )
+  }
+
+  function fireSessionStart(
+    api: any,
+    eventHandlers: Map<string, Array<(event: any, ctx: any) => void>>,
+    ctx: Record<string, unknown>,
+    projectDir: string,
+  ) {
+    const handlers = eventHandlers.get('session_start') ?? []
+    assert.equal(handlers.length, 1)
+    handlers[0](
+      {},
+      {
+        ...ctx,
+        cwd: projectDir,
+        sessionManager: { getSessionId: () => 'retention-session' },
+      },
+    )
+  }
+
+  it('absent config: no sweep, no notify (PMR-KT90)', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, globalDir }) => {
+      const oldRecord = seedRetiredRecord(
+        globalDir,
+        'old.json',
+        '2020-01-01T00:00:00.000Z',
+      )
+      const { api, eventHandlers } = createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+      const { ctx, notifications } = notifyingCtx()
+      fireSessionStart(api, eventHandlers, ctx, projectDir)
+
+      assert.equal(existsSync(oldRecord), true)
+      assert.equal(notifications.length, 0)
+    })
+  })
+
+  it('configured: sweep removes aged record, fresh record kept, ONE summary notify (PMR-KT90)', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, globalDir }) => {
+      writeRetentionConfig(projectDir, 7)
+      const oldRecord = seedRetiredRecord(
+        globalDir,
+        'old.json',
+        '2020-01-01T00:00:00.000Z',
+      )
+      const freshRecord = seedRetiredRecord(
+        globalDir,
+        'fresh.json',
+        new Date().toISOString(),
+      )
+      const { api, eventHandlers } = createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+      const { ctx, notifications } = notifyingCtx()
+      fireSessionStart(api, eventHandlers, ctx, projectDir)
+
+      assert.equal(existsSync(oldRecord), false)
+      assert.equal(existsSync(freshRecord), true)
+      assert.equal(notifications.length, 1)
+      assert.equal(notifications[0].level, 'info')
+      assert.match(notifications[0].message, /removed 1/)
+    })
+  })
+})
