@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { loadConfig } from '../config.ts'
+import { loadConfig, loadConfigWithOrigins } from '../config.ts'
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
@@ -199,6 +199,36 @@ test('PMR-BF8W: invalid main checkout config in worktree cwd → clear throw, no
     )
     await withAgentDir(scenario.agentDir, async () => {
       await assert.rejects(loadConfig(scenario.worktree), /invalid/)
+    })
+  } finally {
+    cleanup(scenario)
+  }
+})
+
+test('PMR-1QKY: loadConfigWithOrigins names the winning layer per key', async () => {
+  const scenario = makeScenario()
+  try {
+    writeGlobalConfig(scenario.agentDir, {
+      workRoots: [],
+      landTestCommand: ['cargo', 'test'],
+    })
+    // Correct command present only in the MAIN checkout's project config —
+    // the middle layer wins the landTestCommand key.
+    writeProjectConfig(scenario.mainRepo, {
+      workRoots: [],
+      landTestCommand: ['echo', 'main-cfg'],
+    })
+    // The worktree-local file carries only workRoots, so per-key provenance
+    // must keep landTestCommand pointed at the main-checkout layer.
+    writeProjectConfig(scenario.worktree, { workRoots: ['/tmp/other'] })
+    await withAgentDir(scenario.agentDir, async () => {
+      const { config, origins } = await loadConfigWithOrigins(scenario.worktree)
+      assert.deepEqual(config.landTestCommand, ['echo', 'main-cfg'])
+      assert.equal(origins.landTestCommand, 'main checkout project')
+      assert.equal(origins.workRoots, 'project')
+      // Plain checkout (no linked worktree): project wins over global.
+      const main = await loadConfigWithOrigins(scenario.mainRepo)
+      assert.equal(main.origins.landTestCommand, 'project')
     })
   } finally {
     cleanup(scenario)

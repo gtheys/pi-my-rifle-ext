@@ -236,7 +236,7 @@ test('precedence: explicit config wins over repo detection', async () => {
     assert.equal(run.ok, true)
     assert.match(
       run.summary,
-      /land test command: echo project-cfg \(landTestCommand config\)/,
+      /land test command: echo project-cfg \(landTestCommand config \(project\)\)/,
     )
   })
 })
@@ -251,7 +251,7 @@ test('precedence: global config wins over repo detection', async () => {
     const run = await defaultSuiteRunner(repo)
     assert.equal(run.ok, true)
     assert.match(run.summary, /echo global-cfg/)
-    assert.match(run.summary, /landTestCommand config/)
+    assert.match(run.summary, /landTestCommand config \(global\)/)
   })
 })
 
@@ -269,6 +269,8 @@ test('precedence: project config wins over global config (loadConfig per-key mer
     const run = await defaultSuiteRunner(repo)
     assert.equal(run.ok, true)
     assert.match(run.summary, /echo project-cfg/)
+    // PMR-1QKY: the label names the winning FILE, not just the key.
+    assert.match(run.summary, /landTestCommand config \(project\)/)
     assert.doesNotMatch(run.summary, /global-cfg/)
   })
 })

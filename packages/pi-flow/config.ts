@@ -228,7 +228,38 @@ export function resolveRunServerEnabled(config: PiFlowConfig): boolean {
   return config.runServer?.enabled !== false
 }
 
-export async function loadConfig(cwd: string): Promise<PiFlowConfig> {
+/**
+ * AIDEV-NOTE: PMR-1QKY — provenance-preserving loadConfig variant: records
+ * which config layer (global / main checkout project / project) LAST supplied
+ * each merged key, so flow_land can name the winning file in the land-test
+ * source label. Merge order and semantics are identical to loadConfig (see
+ * the PMR-BF8W note below); the layer strings double as the label fragments
+ * shown to the user, so keep them human-readable.
+ */
+export type ConfigOrigin = 'global' | 'main checkout project' | 'project'
+
+export interface LoadedConfig {
+  config: PiFlowConfig
+  /** Layer that last supplied each key (Object.assign last-writer-wins). */
+  origins: Partial<Record<keyof PiFlowConfig, ConfigOrigin>>
+}
+
+/** One Object.assign layer of the loadConfig merge, with provenance. */
+function mergeLayer(
+  merged: PiFlowConfig,
+  origins: LoadedConfig['origins'],
+  origin: ConfigOrigin,
+  layer: Partial<PiFlowConfig>,
+): void {
+  Object.assign(merged, layer)
+  for (const key of Object.keys(layer) as Array<keyof PiFlowConfig>) {
+    origins[key] = origin
+  }
+}
+
+export async function loadConfigWithOrigins(
+  cwd: string,
+): Promise<LoadedConfig> {
   const globalPath = path.join(getAgentDir(), 'pi-flow', 'config.json')
   const projectPath = path.join(cwd, CONFIG_DIR_NAME, 'pi-flow', 'config.json')
   const mainRoot = await mainCheckoutRoot(cwd)
@@ -236,12 +267,22 @@ export async function loadConfig(cwd: string): Promise<PiFlowConfig> {
   if (mainRoot === undefined) mainPath = undefined
   else mainPath = path.join(mainRoot, CONFIG_DIR_NAME, 'pi-flow', 'config.json')
   const merged: PiFlowConfig = { workRoots: [] }
-  Object.assign(merged, await readConfigFile(globalPath))
+  const origins: LoadedConfig['origins'] = {}
+  mergeLayer(merged, origins, 'global', await readConfigFile(globalPath))
   if (mainPath !== undefined) {
-    Object.assign(merged, await readConfigFile(mainPath))
+    mergeLayer(
+      merged,
+      origins,
+      'main checkout project',
+      await readConfigFile(mainPath),
+    )
   }
-  Object.assign(merged, await readConfigFile(projectPath))
-  return merged
+  mergeLayer(merged, origins, 'project', await readConfigFile(projectPath))
+  return { config: merged, origins }
+}
+
+export async function loadConfig(cwd: string): Promise<PiFlowConfig> {
+  return (await loadConfigWithOrigins(cwd)).config
 }
 
 export async function resolveMode(

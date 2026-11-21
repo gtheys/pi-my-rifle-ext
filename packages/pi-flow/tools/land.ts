@@ -17,7 +17,7 @@ import type {
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { readAvenLabels } from '../aven/client.ts'
-import { loadConfig } from '../config.ts'
+import { loadConfigWithOrigins } from '../config.ts'
 import { DEFAULT_RECIPES } from '../flow/effect-gate.ts'
 import { landDecision } from '../flow/land-gate.ts'
 import { getFlowWorktree } from '../flow/worktree-context.ts'
@@ -289,12 +289,21 @@ export function suiteSummary(output: string): string {
  * source so landing refusals are explainable.
  */
 export async function defaultSuiteRunner(cwd: string): Promise<SuiteRun> {
-  const config = await loadConfig(cwd)
+  const { config, origins } = await loadConfigWithOrigins(cwd)
   let command: readonly string[]
   let source: string
   if (config.landTestCommand !== undefined) {
     command = config.landTestCommand
-    source = 'landTestCommand config'
+    // PMR-1QKY: name WHICH config file won the per-key merge (global /
+    // main checkout project / project) so precedence surprises are
+    // explainable without inspecting both files by hand. The undefined
+    // fallback keeps the old bare label if provenance is ever lost.
+    const origin = origins.landTestCommand
+    if (origin === undefined) {
+      source = 'landTestCommand config'
+    } else {
+      source = `landTestCommand config (${origin})`
+    }
   } else {
     const scan = await detectLandTestCommand(cwd)
     if (scan.detected !== null) {
