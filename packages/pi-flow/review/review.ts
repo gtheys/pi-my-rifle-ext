@@ -2115,6 +2115,25 @@ ${result.summary}`
       )
       return
     }
+    // AIDEV-NOTE: PMR-3P3T — the human /review commit path resolves the
+    // same VERIFIED flow-worktree seam as the review tool (PMR-0KMQ).
+    // Without it, a commit review started from a main-checkout-rooted
+    // session pinned and re-checked HEAD against main and reported the
+    // misleading 'stale' verdict PMR-0KMQ eliminated for the tool path.
+    // Fail closed with the tool path's wording on a checkout mismatch;
+    // shas off the flow branch keep the session checkout.
+    let cwdOverride: string | undefined
+    if (target.type === 'commit' && getActiveFlowRef() !== null) {
+      const commitCwd = await resolveCommitReviewCwd(pi, ctx.cwd, target.sha)
+      if (!commitCwd.ok) {
+        ctx.ui.notify(
+          `Review refused: checkout mismatch — ${commitCwd.reason}. Pinning commit ${target.sha} from ${ctx.cwd} would re-check HEAD against the wrong checkout and report a misleading 'stale' verdict. Fix or re-bind the flow worktree (run /flow <ref> to resume so the flow loop session holds the worktree context), then re-run the review.`,
+          'error',
+        )
+        return
+      }
+      cwdOverride = commitCwd.cwd
+    }
     // AIDEV-NOTE: PMR-7TPN — warn when the review runs from a checkout with
     // no active flow while linked flow worktrees exist elsewhere.
     if (
@@ -2125,12 +2144,16 @@ ${result.summary}`
       const warn = await unboundWorktreeWarningFor(pi, ctx.cwd)
       if (warn !== null) ctx.ui.notify(warn, 'info')
     }
-    const fullPrompt = await buildFullReviewPrompt(pi, target, ctx.cwd)
+    const fullPrompt = await buildFullReviewPrompt(
+      pi,
+      target,
+      cwdOverride ?? ctx.cwd,
+    )
     const hint = getUserFacingHint(target)
 
     // Subagent path — preferred whenever a mux is available. Runs before the
     // branch machinery so a mux present means no session-tree branch is created.
-    const spawned = await spawnReviewJobs(ctx, target, fullPrompt)
+    const spawned = await spawnReviewJobs(ctx, target, fullPrompt, cwdOverride)
     if (spawned.status !== 'failed') {
       return
     }

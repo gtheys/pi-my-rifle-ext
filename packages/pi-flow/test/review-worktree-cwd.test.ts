@@ -5,7 +5,7 @@
 // merge-base --is-ancestor ancestor check; aven/herdr probes fail so the
 // fallback sources fail honestly.
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -39,6 +39,11 @@ interface MockScript {
   ancestorExit?: number
 }
 
+type CommandHandler = (
+  args: string,
+  ctx: Record<string, unknown>,
+) => Promise<void>
+
 function makeGitMockPi(script: MockScript = {}) {
   const tools: {
     name: string
@@ -54,13 +59,19 @@ function makeGitMockPi(script: MockScript = {}) {
       details?: unknown
     }>
   }[] = []
+  const commands = new Map<string, CommandHandler>()
+  const sentUserMessages: string[] = []
   const mockPi = {
-    registerCommand: () => {},
+    registerCommand: (name: string, def: { handler: CommandHandler }) => {
+      commands.set(name, def.handler)
+    },
     registerTool: (options: unknown) => {
       tools.push(options as (typeof tools)[number])
     },
     sendMessage: async () => {},
-    sendUserMessage: async () => {},
+    sendUserMessage: async (text: string) => {
+      sentUserMessages.push(text)
+    },
     exec: async (_cmd: string, args: string[]) => {
       if (args.includes('--git-common-dir')) {
         let dir = COMMON_DIR
@@ -75,13 +86,33 @@ function makeGitMockPi(script: MockScript = {}) {
       if (args.includes('--is-ancestor')) {
         return execResult(script.ancestorExit ?? 0, '')
       }
+      if (args.includes('--git-dir')) {
+        return execResult(0, '.git\n')
+      }
       return execResult(1, '')
     },
     on: () => () => {},
     appendEntry: async () => {},
     getActiveTools: () => [],
   } as unknown as ExtensionAPI
-  return { tools, mockPi }
+  return { tools, commands, sentUserMessages, mockPi }
+}
+
+interface Notif {
+  message: string
+  level: string
+}
+
+function commandCtx(cwd: string, notifications: Notif[]) {
+  return {
+    hasUI: true,
+    cwd,
+    ui: {
+      notify: (m: string, l: string) =>
+        notifications.push({ message: m, level: l }),
+    },
+    sessionManager: { getEntries: () => [] },
+  }
 }
 
 test('resolveCommitReviewCwd: verified binding + sha on the flow branch → worktree cwd', async () => {
@@ -217,4 +248,108 @@ test('review tool: commit target with no active flow keeps the session checkout 
   const text = result.content[0]?.text ?? ''
   assert.equal(/checkout mismatch/.test(text), false)
   assert.equal(result.isError, true)
+})
+
+// --- PMR-3P3T: the /review COMMAND path resolves the same commit cwd seam ---
+
+test('/review commit with an active flow runs against the verified worktree', async () => {
+  const { commands, sentUserMessages, mockPi } = makeGitMockPi({
+    ancestorExit: 0,
+  })
+  reviewExtension(mockPi)
+  const handler = commands.get('review')
+  assert.ok(handler, 'review command registered')
+  // A worktree carrying project review guidelines; their presence in the
+  // sent prompt proves the prompt was built with the worktree cwd.
+  const wt = mkdtempSync(path.join(tmpdir(), 'rev-cmd-wt-'))
+  mkdirSync(path.join(wt, '.pi'), { recursive: true })
+  // loadProjectReviewGuidelines: .pi marks the project root; the file sits
+  // NEXT to it, not inside it.
+  writeFileSync(
+    path.join(wt, 'REVIEW_GUIDELINES.md'),
+    'WORKTREE-GUIDELINES-MARKER',
+  )
+  setActiveFlowRef('PMR-T')
+  setFlowWorktree(wt, BRANCH)
+  const notifications: Notif[] = []
+  try {
+    await handler(`commit ${SHA}`, commandCtx(SESSION_CWD, notifications))
+  } finally {
+    setActiveFlowRef(null)
+  }
+  assert.equal(
+    notifications.filter((n) => /checkout mismatch/.test(n.message)).length,
+    0,
+  )
+  assert.equal(sentUserMessages.length, 1)
+  assert.match(sentUserMessages[0], /WORKTREE-GUIDELINES-MARKER/)
+})
+
+test('/review commit with an unverifiable flow worktree refuses with the tool-path wording', async () => {
+  const { commands, sentUserMessages, mockPi } = makeGitMockPi({
+    commonDirCode: 1,
+  })
+  reviewExtension(mockPi)
+  const handler = commands.get('review')
+  assert.ok(handler, 'review command registered')
+  setActiveFlowRef('PMR-T')
+  setFlowWorktree(WORKTREE, BRANCH)
+  const notifications: Notif[] = []
+  try {
+    await handler(`commit ${SHA}`, commandCtx(SESSION_CWD, notifications))
+  } finally {
+    setActiveFlowRef(null)
+  }
+  assert.equal(sentUserMessages.length, 0)
+  const refusals = notifications.filter((n) =>
+    /checkout mismatch/.test(n.message),
+  )
+  assert.equal(refusals.length, 1)
+  assert.equal(refusals[0].level, 'error')
+  assert.match(refusals[0].message, /stale/)
+  assert.match(refusals[0].message, /\/flow <ref>/)
+})
+
+test('/review commit with no active flow keeps the session checkout', async () => {
+  const { commands, sentUserMessages, mockPi } = makeGitMockPi({
+    ancestorExit: 0,
+  })
+  reviewExtension(mockPi)
+  const handler = commands.get('review')
+  assert.ok(handler, 'review command registered')
+  const notifications: Notif[] = []
+  await handler(`commit ${SHA}`, commandCtx(SESSION_CWD, notifications))
+  assert.equal(
+    notifications.filter((n) => /checkout mismatch/.test(n.message)).length,
+    0,
+  )
+  assert.equal(sentUserMessages.length, 1)
+  assert.equal(/WORKTREE-GUIDELINES-MARKER/.test(sentUserMessages[0]), false)
+})
+
+test('/review commit with the sha off the flow branch keeps the session checkout', async () => {
+  const { commands, sentUserMessages, mockPi } = makeGitMockPi({
+    ancestorExit: 1,
+  })
+  reviewExtension(mockPi)
+  const handler = commands.get('review')
+  assert.ok(handler, 'review command registered')
+  const wt = mkdtempSync(path.join(tmpdir(), 'rev-cmd-wt-off-'))
+  mkdirSync(path.join(wt, '.pi'), { recursive: true })
+  // loadProjectReviewGuidelines: .pi marks the project root; the file sits
+  // NEXT to it, not inside it.
+  writeFileSync(
+    path.join(wt, 'REVIEW_GUIDELINES.md'),
+    'WORKTREE-GUIDELINES-MARKER',
+  )
+  setActiveFlowRef('PMR-T')
+  setFlowWorktree(wt, BRANCH)
+  const notifications: Notif[] = []
+  try {
+    await handler(`commit ${SHA}`, commandCtx(SESSION_CWD, notifications))
+  } finally {
+    setActiveFlowRef(null)
+  }
+  assert.equal(sentUserMessages.length, 1)
+  assert.equal(/WORKTREE-GUIDELINES-MARKER/.test(sentUserMessages[0]), false)
 })
