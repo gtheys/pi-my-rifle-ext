@@ -18,7 +18,6 @@ const noopDeps: FlowDiagramDeps = {
   listAssignmentRecords: () => [],
   readSessionFile: () => null,
   loadRenderer: () => null,
-  now: () => 0,
   writeDiagram: async () => '/tmp/diagram.html',
   openDiagram: async () => true,
 }

@@ -909,7 +909,6 @@ export default function (pi: ExtensionAPI) {
       }
     },
     loadRenderer: () => loadHpRenderer(),
-    now: nowMs,
     writeDiagram: async (ref, runIndex, html) => {
       const dir = join(getAgentDir(), 'pi-flow', 'diagrams')
       await fs.mkdir(dir, { recursive: true })

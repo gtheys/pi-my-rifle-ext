@@ -27,8 +27,6 @@ export interface FlowDiagramDeps {
   readSessionFile: (file: string) => string | null
   /** Vendored renderer; null aborts the command (fail-graceful load). */
   loadRenderer: () => HpRenderer | null
-  /** Wall clock, injected so tests can pin the filename stamp. */
-  now: () => number
   /**
    * Write the self-contained HTML as
    * `pi-flow/diagrams/<ref>.run<k>.<YYYYMMDD-HHmmss>.html` under the agent
