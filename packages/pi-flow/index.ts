@@ -296,6 +296,92 @@ export default function (pi: ExtensionAPI) {
   // handler's context, structurally narrowed. Lives inside the extension
   // closure so appendJournal routes through the mode-aware writer seam
   // (journal-only while the durable run server owns the projection).
+  // AIDEV-NOTE (yolo plan 1.2): shared ready-ticket picker IO for both the
+  // zero-arg /flow picker ('tickets' plan) and the '/flow --yolo' shortcut.
+  // Same planner (planTicketPickerOutcome), same select, same notify
+  // outcomes; the callers differ only in the yolo bit they put on the
+  // reassigned parsed ref. Returns the picked ref, or undefined when every
+  // non-run outcome (fallback / none / failed / silent) already notified or
+  // stayed silent and the handler must return.
+  async function pickReadyTicketRef(
+    ctx: {
+      hasUI: boolean
+      ui: {
+        notify(message: string, level: 'info' | 'warning' | 'error'): void
+        select(title: string, options: string[]): Promise<string | undefined>
+      }
+    },
+    hadGates: boolean,
+  ): Promise<string | undefined> {
+    const tickets = await listReadyTickets()
+    let ticketPlan = planTicketPickerOutcome(ctx.hasUI, hadGates, tickets)
+    if (ticketPlan.kind === 'menu') {
+      const labelToValue = new Map(
+        ticketPlan.options.map((o) => [o.label, o.value]),
+      )
+      const picked = await ctx.ui.select(
+        'Ready ticket — start a flow:',
+        ticketPlan.options.map((o) => o.label),
+      )
+      if (picked === undefined) {
+        ticketPlan = planTicketPickerOutcome(ctx.hasUI, hadGates, tickets, {
+          stage: 'ticket-cancelled',
+        })
+      } else {
+        ticketPlan = planTicketPickerOutcome(ctx.hasUI, hadGates, tickets, {
+          stage: 'ticket-picked',
+          ref: labelToValue.get(picked) ?? '',
+        })
+      }
+    }
+    if (ticketPlan.kind === 'fallback') {
+      for (const line of ticketPlan.lines) {
+        ctx.ui.notify(line, 'info')
+      }
+      return undefined
+    }
+    if (ticketPlan.kind === 'none') {
+      ctx.ui.notify(ticketPlan.line, 'info')
+      return undefined
+    }
+    if (ticketPlan.kind === 'failed') {
+      const detail = lastAvenResolutionFailure() ?? 'aven unavailable'
+      ctx.ui.notify(
+        `pi-flow: could not list ready tickets (${detail}) — run \`aven list --ready\` to inspect, then /flow <ref> manually`,
+        'warning',
+      )
+      return undefined
+    }
+    if (ticketPlan.kind === 'run') {
+      return ticketPlan.ref
+    }
+    // 'silent' (cancel / lookup miss): notify nothing.
+    return undefined
+  }
+
+  // AIDEV-NOTE (yolo plan 1.2): gate collection with the fail-closed warn
+  // shared by the zero-arg picker and the /flow --yolo shortcut. Returns
+  // null after warning when the runs dir / aven list read failed.
+  async function collectGatesOrWarn(ctx: {
+    ui: { notify(message: string, level: 'info' | 'warning' | 'error'): void }
+  }): Promise<OpenGate[] | null> {
+    let gates: OpenGate[] = []
+    let failed = false
+    try {
+      gates = await collectOpenGates(createGateDeps(getAgentDir()))
+    } catch {
+      failed = true
+    }
+    if (failed) {
+      ctx.ui.notify(
+        'pi-flow: could not read open gates (runs dir / aven list failed) — run /flow answer <ref> <choice> manually',
+        'warning',
+      )
+      return null
+    }
+    return gates
+  }
+
   function makeAnswerDeps(ctx: {
     cwd: string
     ui: {
@@ -1148,19 +1234,11 @@ export default function (pi: ExtensionAPI) {
         // sendUserMessage / spawn / resume here (PMR-W60H / ISC-A-1):
         // falling through IS the flow start.
         let gates: OpenGate[] = []
-        let gatesFailed = false
-        try {
-          gates = await collectOpenGates(createGateDeps(getAgentDir()))
-        } catch {
-          gatesFailed = true
-        }
-        if (gatesFailed) {
-          ctx.ui.notify(
-            'pi-flow: could not read open gates (runs dir / aven list failed) — run /flow answer <ref> <choice> manually',
-            'warning',
-          )
+        const collected = await collectGatesOrWarn(ctx)
+        if (collected === null) {
           return
         }
+        gates = collected
         let plan = planPickerOutcome(ctx.hasUI, gates)
         if (plan.kind === 'menu') {
           const labelToValue = new Map(
@@ -1218,68 +1296,19 @@ export default function (pi: ExtensionAPI) {
           }
         }
         if (plan.kind === 'tickets') {
-          // PMR-3E1Z 3.1: ready-ticket picker step. Same IO pattern as the
-          // gate step: pure planner + ctx.ui.select. Only 'run' falls
-          // through (parsed reassigned below); everything else notifies or
-          // stays silent and returns.
-          const tickets = await listReadyTickets()
-          let ticketPlan = planTicketPickerOutcome(
-            ctx.hasUI,
-            gates.length > 0,
-            tickets,
-          )
-          if (ticketPlan.kind === 'menu') {
-            const labelToValue = new Map(
-              ticketPlan.options.map((o) => [o.label, o.value]),
-            )
-            const picked = await ctx.ui.select(
-              'Ready ticket — start a flow:',
-              ticketPlan.options.map((o) => o.label),
-            )
-            if (picked === undefined) {
-              ticketPlan = planTicketPickerOutcome(
-                ctx.hasUI,
-                gates.length > 0,
-                tickets,
-                { stage: 'ticket-cancelled' },
-              )
-            } else {
-              ticketPlan = planTicketPickerOutcome(
-                ctx.hasUI,
-                gates.length > 0,
-                tickets,
-                { stage: 'ticket-picked', ref: labelToValue.get(picked) ?? '' },
-              )
-            }
-          }
-          if (ticketPlan.kind === 'fallback') {
-            for (const line of ticketPlan.lines) {
-              ctx.ui.notify(line, 'info')
-            }
+          // PMR-3E1Z 3.1 / yolo plan 1.2: ready-ticket picker step, shared
+          // with the /flow --yolo shortcut via pickReadyTicketRef. Only
+          // 'run' falls through (parsed reassigned below); everything else
+          // notifies or stays silent and returns.
+          const ticketRef = await pickReadyTicketRef(ctx, gates.length > 0)
+          if (ticketRef === undefined) {
             return
           }
-          if (ticketPlan.kind === 'none') {
-            ctx.ui.notify(ticketPlan.line, 'info')
-            return
-          }
-          if (ticketPlan.kind === 'failed') {
-            const detail = lastAvenResolutionFailure() ?? 'aven unavailable'
-            ctx.ui.notify(
-              `pi-flow: could not list ready tickets (${detail}) — run \`aven list --ready\` to inspect, then /flow <ref> manually`,
-              'warning',
-            )
-            return
-          }
-          if (ticketPlan.kind === 'run') {
-            // AIDEV-NOTE (PMR-3E1Z): picked refs join the run path exactly
-            // like a typed /flow <aven-ref> — parsed reassigned, block falls
-            // through. 'aven' never matches the 'jira' branch below, so
-            // picked refs skip Jira resolution like typed aven refs.
-            parsed = { kind: 'aven', ref: ticketPlan.ref, yolo: false }
-          } else {
-            // 'silent' (cancel / lookup miss): notify nothing.
-            return
-          }
+          // AIDEV-NOTE (PMR-3E1Z): picked refs join the run path exactly
+          // like a typed /flow <aven-ref> — parsed reassigned, block falls
+          // through. 'aven' never matches the 'jira' branch below, so
+          // picked refs skip Jira resolution like typed aven refs.
+          parsed = { kind: 'aven', ref: ticketRef, yolo: false }
         } else if (plan.kind === 'fallback') {
           for (const line of plan.lines) {
             ctx.ui.notify(line, 'info')
@@ -1311,14 +1340,23 @@ export default function (pi: ExtensionAPI) {
         }
       }
       if (parsed.kind === 'picker') {
-        // AIDEV-NOTE (yolo plan 1.1): bare '/flow --yolo' opens the yolo
-        // picker in a later phase (plan 1.2) — for now it stays a conservative
-        // usage stop so the flag can never slide into the run path below.
-        ctx.ui.notify(
-          'Usage: /flow <ref> [--yolo]. Bare --yolo picker is not wired yet.',
-          'info',
-        )
-        return
+        // AIDEV-NOTE (yolo plan 1.2): bare '/flow --yolo' skips the
+        // gate-answering select — a yolo run never waits on gates — and
+        // lands directly on the ready-ticket picker. The picked ref is
+        // reassigned with yolo: true and falls through into the standard
+        // run path below, exactly like the zero-arg picker's 'run'
+        // outcome. Gate collection stays because the ticket picker
+        // suppresses its no-gates message while gates are open; a gate
+        // read failure warns fail-closed and returns, never starts a run.
+        const collected = await collectGatesOrWarn(ctx)
+        if (collected === null) {
+          return
+        }
+        const yoloRef = await pickReadyTicketRef(ctx, collected.length > 0)
+        if (yoloRef === undefined) {
+          return
+        }
+        parsed = { kind: 'aven', ref: yoloRef, yolo: true }
       }
       if (parsed.kind === 'help') {
         // Fix round 2: non-zero-arg /flow keeps the pre-picker usage notify —

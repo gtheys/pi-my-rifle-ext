@@ -417,6 +417,15 @@ if [ "$1" = "show" ]; then
   echo "$2 status=todo title=x"
   exit 0
 fi
+if [ "$1" = "list" ]; then
+  for a in "$@"; do
+    if [ "$a" = "--ready" ]; then
+      printf '%s' 'YLO_TICKETS_JSON'
+      exit 0
+    fi
+  done
+  exit 1
+fi
 if [ "$1" = "edit" ]; then
   echo "updated $2"
   exit 0
@@ -426,6 +435,20 @@ if [ "$1" = "note" ]; then
 fi
 exit 1
 `,
+)
+chmodSync(path.join(HANDLER_BIN, 'aven'), 0o755)
+// yolo plan 1.2: serve a canned ready-ticket list for `aven list --ready
+// --json` so the picker handler tests drive both plain /flow and
+// /flow --yolo to a real picked-ref run path.
+writeFileSync(
+  path.join(HANDLER_BIN, 'aven'),
+  readFileSync(path.join(HANDLER_BIN, 'aven'), 'utf8').replace(
+    'YLO_TICKETS_JSON',
+    JSON.stringify([
+      { ref: 'YLO-1', title: 'Yolo ticket one' },
+      { ref: 'YLO-2', title: 'Yolo ticket two' },
+    ]),
+  ),
 )
 chmodSync(path.join(HANDLER_BIN, 'aven'), 0o755)
 
@@ -635,6 +658,7 @@ function captureFlowCommand(execOverride?: FlowExec): FlowCallCtx & {
 
 function flowCtx(
   notifications: Array<{ message: string; level: string }>,
+  select?: (title: string, options: string[]) => Promise<string | undefined>,
 ): unknown {
   return {
     cwd: HANDLER_WS,
@@ -646,9 +670,110 @@ function flowCtx(
     ui: {
       notify: (message: string, level: string) =>
         notifications.push({ message, level }),
+      select,
     },
   }
 }
+
+/** Pick the menu label whose value/label carries the given ref. */
+function pickLabel(options: string[], ref: string): string | undefined {
+  return options.find((o) => o.startsWith(ref))
+}
+
+test('flow handler: --yolo extra keeps the usage notify, no picker, no aven calls', async () => {
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    const selects: Array<[string, string[]]> = []
+    await handler(
+      '--yolo extra',
+      flowCtx(notifications, async (title, options) => {
+        selects.push([title, options])
+        return undefined
+      }),
+    )
+    assert.equal(sent.length, 0)
+    assert.equal(selects.length, 0)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'info')
+    assert.match(notifications[0].message, /Usage: \/flow/)
+    assert.equal(readFileSync(HANDLER_LOG, 'utf8'), '')
+  })
+})
+
+test('flow handler: /flow --yolo goes straight to the ready-ticket picker and runs the picked ref', async () => {
+  await withHandlerEnv(async () => {
+    // mode=error so the run path stops at the fail-closed labels read —
+    // proves the picked ref entered the run path without spawning a run.
+    writeFileSync(HANDLER_MODE, 'error')
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    const selects: Array<[string, string[]]> = []
+    await handler(
+      '--yolo',
+      flowCtx(notifications, async (title, options) => {
+        selects.push([title, options])
+        return pickLabel(options, 'YLO-1')
+      }),
+    )
+    writeFileSync(HANDLER_MODE, 'ok')
+    assert.equal(sent.length, 0)
+    // AIDEV-NOTE (yolo plan 1.2): EXACTLY one select — the gate-answering
+    // step is skipped; the yolo shortcut lands directly on the
+    // ready-ticket picker.
+    assert.equal(selects.length, 1)
+    assert.equal(selects[0]?.[0], 'Ready ticket — start a flow:')
+    assert.ok(pickLabel(selects[0]?.[1] ?? [], 'YLO-1') !== undefined)
+    assert.equal(notifications.length, 1)
+    assert.equal(notifications[0].level, 'warning')
+    assert.match(notifications[0].message, /cannot read aven labels/)
+    const calls = readFileSync(HANDLER_LOG, 'utf8')
+    assert.match(calls, /show YLO-1/)
+    assert.doesNotMatch(calls, /edit YLO-1/)
+    assert.doesNotMatch(calls, /note YLO-1/)
+  })
+})
+
+test('flow handler: /flow --yolo cancel at the ticket select stays silent, no run path', async () => {
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler(
+      '--yolo',
+      flowCtx(notifications, async () => undefined),
+    )
+    assert.equal(sent.length, 0)
+    assert.equal(notifications.length, 0)
+    // Gate/list aven calls happen before the select; the run path must not.
+    assert.doesNotMatch(readFileSync(HANDLER_LOG, 'utf8'), /show YLO-/)
+  })
+})
+
+test('flow handler: plain /flow keeps the ready-ticket picker and run path (unchanged)', async () => {
+  await withHandlerEnv(async () => {
+    writeFileSync(HANDLER_MODE, 'error')
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    const selects: Array<[string, string[]]> = []
+    await handler(
+      '',
+      flowCtx(notifications, async (title, options) => {
+        selects.push([title, options])
+        return pickLabel(options, 'YLO-2')
+      }),
+    )
+    writeFileSync(HANDLER_MODE, 'ok')
+    assert.equal(sent.length, 0)
+    assert.equal(selects.length, 1)
+    assert.equal(selects[0]?.[0], 'Ready ticket — start a flow:')
+    assert.equal(notifications.length, 1)
+    assert.match(notifications[0].message, /cannot read aven labels/)
+    const calls = readFileSync(HANDLER_LOG, 'utf8')
+    assert.match(calls, /show YLO-2/)
+    assert.doesNotMatch(calls, /edit YLO-2/)
+    assert.doesNotMatch(calls, /note YLO-2/)
+  })
+})
 
 test('flow handler: answer routes to answer path, never sendUserMessage', async () => {
   await withHandlerEnv(async () => {
