@@ -8193,3 +8193,316 @@ describe('subagent-done.ts message tools replay windows (PMR-JBEX / PMR-ZJCP)', 
     )
   })
 })
+
+// --- Handler-level tests: exit tools replay windows (aven PMR-G9J4 / PMR-ZJCP) ---
+// AIDEV-NOTE (PMR-G9J4): sibling of the ask_owner/message replay suites above;
+// same per-test env harness pattern. The `.exit` sidecar is the durable record
+// for caller_ping and subagent_done, so cases hand-write payloads directly and
+// assert the never-overwrite behavior. The ctx mock counts shutdown calls per
+// execute invocation, as exit tools always terminate the session.
+describe('subagent-done.ts exit tools replay windows (PMR-G9J4 / PMR-ZJCP)', () => {
+  const EXIT_ENV_NAMES = [
+    'PI_SUBAGENT_ID',
+    'PI_SUBAGENT_SESSION',
+    'PI_SUBAGENT_NAME',
+    'PI_SUBAGENT_PARENT_SESSION',
+    'PI_SUBAGENT_ACTIVITY_FILE',
+    'PI_CODING_AGENT_DIR',
+  ] as const
+
+  interface ExitToolHarness {
+    exitFile: string
+    pingTool: {
+      execute: (
+        toolCallId: string,
+        params: any,
+        signal: any,
+        onUpdate: any,
+        ctx: any,
+      ) => Promise<any>
+    }
+    doneTool: {
+      execute: (
+        toolCallId: string,
+        params: any,
+        signal: any,
+        onUpdate: any,
+        ctx: any,
+      ) => Promise<any>
+    }
+  }
+
+  interface ShutdownCtx {
+    calls: number
+    shutdown(): void
+  }
+
+  function makeShutdownCtx(): ShutdownCtx {
+    const ctx: ShutdownCtx = {
+      calls: 0,
+      shutdown() {
+        ctx.calls += 1
+      },
+    }
+    return ctx
+  }
+
+  async function withExitToolsEnv<T>(
+    dir: string,
+    run: (harness: ExitToolHarness) => Promise<T>,
+  ): Promise<T> {
+    const previous = new Map(
+      EXIT_ENV_NAMES.map((name) => [name, process.env[name]] as const),
+    )
+    const sessionFile = join(dir, 'child-session.jsonl')
+    process.env.PI_SUBAGENT_ID = 'exit-tools-child'
+    process.env.PI_SUBAGENT_SESSION = sessionFile
+    process.env.PI_SUBAGENT_NAME = 'exit-tools-child'
+    process.env.PI_SUBAGENT_PARENT_SESSION = join(dir, 'parent-session.jsonl')
+    process.env.PI_SUBAGENT_ACTIVITY_FILE = join(dir, 'activity.json')
+    process.env.PI_CODING_AGENT_DIR = join(dir, 'agent')
+    try {
+      const mock = createMockExtensionApi()
+      subagentDoneExtension(mock.api)
+      const pingTool = mock.registeredTools.find(
+        (t) => t.name === 'caller_ping',
+      )
+      const doneTool = mock.registeredTools.find(
+        (t) => t.name === 'subagent_done',
+      )
+      assert.ok(pingTool, 'child extension must register caller_ping')
+      assert.ok(doneTool, 'child extension must register subagent_done')
+      return await run({ exitFile: `${sessionFile}.exit`, pingTool, doneTool })
+    } finally {
+      for (const [name, value] of previous) {
+        restoreEnvVar(name, value)
+      }
+    }
+  }
+
+  function callPing(pingTool: ExitToolHarness['pingTool'], message: string) {
+    const ctx = makeShutdownCtx()
+    const result = pingTool.execute(
+      'call-1',
+      { message },
+      undefined,
+      undefined,
+      ctx,
+    )
+    return { ctx, result }
+  }
+
+  function callDone(doneTool: ExitToolHarness['doneTool']) {
+    const ctx = makeShutdownCtx()
+    const result = doneTool.execute('call-1', {}, undefined, undefined, ctx)
+    return { ctx, result }
+  }
+
+  it('(a) caller_ping execute → identical execute: .exit unchanged, shutdown twice, replay text', async () => {
+    await withTempDirAsync((dir) =>
+      withExitToolsEnv(dir, async ({ exitFile, pingTool }) => {
+        const first = await callPing(pingTool, 'need help with X')
+        const firstResult = await first.result
+        assert.equal(first.ctx.calls, 1)
+        assert.equal(
+          firstResult.content[0].text,
+          'Ping sent. Session will exit and parent will be notified.',
+        )
+        const original = readFileSync(exitFile, 'utf8')
+        const parsedOriginal = JSON.parse(original)
+        assert.equal(parsedOriginal.type, 'ping')
+        assert.equal(parsedOriginal.message, 'need help with X')
+
+        const second = await callPing(pingTool, 'need help with X')
+        const secondResult = await second.result
+        assert.equal(second.ctx.calls, 1)
+        assert.match(
+          secondResult.content[0].text,
+          /Replay of an interrupted call/,
+        )
+        assert.match(
+          secondResult.content[0].text,
+          /Ping already recorded from the previous run/,
+        )
+        assert.equal(readFileSync(exitFile, 'utf8'), original)
+      }),
+    )
+  })
+
+  it('(b) caller_ping with pre-existing ping payload: preserved, conflict named, shutdown', async () => {
+    await withTempDirAsync((dir) =>
+      withExitToolsEnv(dir, async ({ exitFile, pingTool }) => {
+        const preExisting = { type: 'ping', name: 'x', message: 'other' }
+        writeFileSync(exitFile, JSON.stringify(preExisting))
+
+        const call = await callPing(pingTool, 'help')
+        const result = await call.result
+        assert.equal(call.ctx.calls, 1)
+        assert.match(result.content[0].text, /.exit sidecar already records/)
+        assert.match(result.content[0].text, /'ping'/)
+        assert.match(result.content[0].text, /preserved/)
+        assert.deepEqual(
+          JSON.parse(readFileSync(exitFile, 'utf8')),
+          preExisting,
+        )
+      }),
+    )
+  })
+
+  it('(c) caller_ping with pre-existing error payload: preserved, conflict named, shutdown', async () => {
+    await withTempDirAsync((dir) =>
+      withExitToolsEnv(dir, async ({ exitFile, pingTool }) => {
+        const preExisting = {
+          type: 'error',
+          errorMessage: 'provider overload',
+          stopReason: 'error',
+        }
+        writeFileSync(exitFile, JSON.stringify(preExisting))
+
+        const call = await callPing(pingTool, 'help')
+        const result = await call.result
+        assert.equal(call.ctx.calls, 1)
+        assert.match(result.content[0].text, /.exit sidecar already records/)
+        assert.match(result.content[0].text, /'error'/)
+        assert.deepEqual(
+          JSON.parse(readFileSync(exitFile, 'utf8')),
+          preExisting,
+        )
+      }),
+    )
+  })
+
+  it('(d) caller_ping with invalid JSON .exit: overwritten with fresh ping payload', async () => {
+    await withTempDirAsync((dir) =>
+      withExitToolsEnv(dir, async ({ exitFile, pingTool }) => {
+        writeFileSync(exitFile, 'definitely not valid json')
+
+        const call = await callPing(pingTool, 'help me recover')
+        const result = await call.result
+        assert.equal(call.ctx.calls, 1)
+        assert.equal(
+          result.content[0].text,
+          'Ping sent. Session will exit and parent will be notified.',
+        )
+        const parsed = JSON.parse(readFileSync(exitFile, 'utf8'))
+        assert.equal(parsed.type, 'ping')
+        assert.equal(parsed.message, 'help me recover')
+      }),
+    )
+  })
+
+  it('(e) caller_ping without PI_SUBAGENT_SESSION throws', async () => {
+    const previous = process.env.PI_SUBAGENT_SESSION
+    delete process.env.PI_SUBAGENT_SESSION
+    try {
+      const mock = createMockExtensionApi()
+      subagentDoneExtension(mock.api)
+      const pingTool = mock.registeredTools.find(
+        (t) => t.name === 'caller_ping',
+      )
+      assert.ok(pingTool)
+      const ctx = makeShutdownCtx()
+      await assert.rejects(
+        pingTool.execute(
+          'call-1',
+          { message: 'help' },
+          undefined,
+          undefined,
+          ctx,
+        ),
+        /PI_SUBAGENT_SESSION environment variable is not set/,
+      )
+      assert.equal(ctx.calls, 0)
+    } finally {
+      restoreEnvVar('PI_SUBAGENT_SESSION', previous)
+    }
+  })
+
+  it('(f) subagent_done execute → execute: {type:done} payload stable, no throw', async () => {
+    await withTempDirAsync((dir) =>
+      withExitToolsEnv(dir, async ({ exitFile, doneTool }) => {
+        const first = await callDone(doneTool)
+        const firstResult = await first.result
+        assert.equal(first.ctx.calls, 1)
+        assert.equal(
+          firstResult.content[0].text,
+          'Shutting down subagent session.',
+        )
+        const original = readFileSync(exitFile, 'utf8')
+        assert.equal(JSON.parse(original).type, 'done')
+
+        const second = await callDone(doneTool)
+        const secondResult = await second.result
+        assert.equal(second.ctx.calls, 1)
+        assert.match(
+          secondResult.content[0].text,
+          /Replay of an interrupted call/,
+        )
+        assert.match(
+          secondResult.content[0].text,
+          /Done already recorded from the previous run/,
+        )
+        assert.equal(readFileSync(exitFile, 'utf8'), original)
+      }),
+    )
+  })
+
+  it('(g) subagent_done with pre-existing ping payload: preserved, reported, shutdown', async () => {
+    await withTempDirAsync((dir) =>
+      withExitToolsEnv(dir, async ({ exitFile, doneTool }) => {
+        const preExisting = {
+          type: 'ping',
+          name: 'exit-tools-child',
+          message: 'waiting on parent',
+        }
+        writeFileSync(exitFile, JSON.stringify(preExisting))
+
+        const call = await callDone(doneTool)
+        const result = await call.result
+        assert.equal(call.ctx.calls, 1)
+        assert.match(result.content[0].text, /.exit sidecar already records/)
+        assert.match(result.content[0].text, /'ping'/)
+        assert.match(result.content[0].text, /preserved/)
+        assert.deepEqual(
+          JSON.parse(readFileSync(exitFile, 'utf8')),
+          preExisting,
+        )
+      }),
+    )
+  })
+
+  it('(h) subagent_done without PI_SUBAGENT_SESSION: recorder runs, no .exit write', async () => {
+    const previous = process.env.PI_SUBAGENT_SESSION
+    delete process.env.PI_SUBAGENT_SESSION
+    try {
+      const mock = createMockExtensionApi()
+      subagentDoneExtension(mock.api)
+      const doneTool = mock.registeredTools.find(
+        (t) => t.name === 'subagent_done',
+      )
+      assert.ok(doneTool)
+      const ctx = makeShutdownCtx()
+      const result = await doneTool.execute(
+        'call-1',
+        {},
+        undefined,
+        undefined,
+        ctx,
+      )
+      assert.equal(ctx.calls, 1)
+      assert.equal(result.content[0].text, 'Shutting down subagent session.')
+    } finally {
+      restoreEnvVar('PI_SUBAGENT_SESSION', previous)
+    }
+    // No session env means no session file path, so no `.exit` sibling was
+    // ever written — verified indirectly: with a restored env, a fresh execute
+    // takes the fresh path and writes its own payload.
+    await withTempDirAsync((dir) =>
+      withExitToolsEnv(dir, async ({ exitFile, doneTool: freshTool }) => {
+        assert.ok(!existsSync(exitFile))
+        await callDone(freshTool)
+        assert.equal(JSON.parse(readFileSync(exitFile, 'utf8')).type, 'done')
+      }),
+    )
+  })
+})
