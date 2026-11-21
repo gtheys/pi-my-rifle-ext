@@ -75,6 +75,7 @@
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "@earendil-works/pi-tui": "*",
+        "@mariozechner/pi-tui": "*",
         "typebox": "*",
       },
     },

@@ -3,7 +3,7 @@
 // encode prior intent and are not modified.
 
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, test } from 'node:test'
@@ -576,6 +576,33 @@ test('worktree prune: a different pane still defers', async () => {
     if (previous === undefined) delete process.env.HERDR_PANE_ID
     else process.env.HERDR_PANE_ID = previous
   }
+})
+
+test('worktree prune: non-ENOENT stat error skips the workspace (PMR-SK1W)', async () => {
+  const base = await makeDanglingBase()
+  // Self-referential symlink: stat() fails with ELOOP, not ENOENT — the
+  // checkout is NOT proven missing, so the workspace must be skipped with
+  // the error named (fail-closed: unknown-means-live).
+  const loop = path.join(base, 'loop')
+  await symlink(loop, loop)
+  const { execute, herdrCalls } = makePruneTool({
+    workspaces: [danglingWorkspace(loop)],
+  })
+  const result = await execute(
+    'call-p-symlink',
+    { action: 'prune' },
+    new AbortController().signal,
+    undefined,
+    pruneCtx,
+  )
+  assert.deepEqual(
+    herdrCalls,
+    [],
+    'no close when the checkout cannot be statted',
+  )
+  const entries = pruneEntries(result.details)
+  assert.equal(entries[0].outcome, 'skipped')
+  assert.match(entries[0].reason, /cannot stat checkout path/)
 })
 
 test('worktree prune: workspace list failure aborts the run fail-closed', async () => {

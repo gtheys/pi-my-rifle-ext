@@ -1069,9 +1069,23 @@ async function pruneFlow(
       entries.push(entry)
       continue
     }
-    // (b) the checkout must be gone from disk.
-    const stat = await fs.stat(ws.checkoutPath).catch(() => null)
-    if (stat !== null) {
+    // (b) the checkout must be gone from disk. AIDEV-NOTE: PMR-SK1W —
+    // only ENOENT proves the checkout is missing; EACCES/ELOOP/transient
+    // stat errors mean it MAY still exist, so skip with the error named
+    // (fail-closed: unknown-means-live, never close an unstatable path).
+    let checkoutMissing = false
+    try {
+      await fs.stat(ws.checkoutPath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        checkoutMissing = true
+      } else {
+        entry.reason = `cannot stat checkout path (${(error as Error).message}) — treating as live`
+        entries.push(entry)
+        continue
+      }
+    }
+    if (!checkoutMissing) {
       entry.reason = 'checkout path exists on disk'
       entries.push(entry)
       continue
