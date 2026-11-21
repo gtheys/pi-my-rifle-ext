@@ -36,11 +36,19 @@ import { ensureSubagentsDataDir } from './dataroot.ts'
 import { hasDelivered, markDelivered } from './delivered.ts'
 import { readOwnerInbox, sendOwnerMessage } from './inbox.ts'
 import {
+  type PeerRecipientBinding,
+  readPeerBinding,
+  touchPeerBinding,
+  writePeerBinding,
+} from './peer-bindings.ts'
+import {
   type ChildIdentity,
   inboxDir,
   listLivePeers,
+  presenceIsLive,
   publishPresence,
   readInbox,
+  readPresence,
   removeInboxEntry,
   resolvePeer,
   sendPeerMessage,
@@ -664,77 +672,174 @@ export default function (pi: ExtensionAPI) {
           details: { messageId: memo.result.messageId, path: memo.result.path },
         }
       }
-      const target = resolvePeer(params.peer, identity)
-      if (target.self) {
-        throw new Error('Cannot message yourself — just continue working.')
+      // AIDEV-NOTE (PMR-77KT): bind-before-send discipline. Every logical
+      // send is durably bound (first write wins) to the recipient resolved at
+      // bind time — childId + sessionFile. Replays never re-resolve the peer
+      // name: if the bound recipient has died or been superseded, the send
+      // fails closed (throw, no retarget) rather than delivering to a new
+      // generation under the same name. The inbox evidence scan is the
+      // send→memo crash-window recovery (PMR-ZJCP); the binding is the
+      // recipient-pinning mechanism that makes it safe across generations.
+      const boundRequestMatches = (binding: PeerRecipientBinding): boolean => {
+        const sameResultRef =
+          (binding.request.resultRef || undefined) ===
+          (params.resultRef || undefined)
+        return (
+          binding.request.peer === params.peer &&
+          binding.request.message === params.message &&
+          sameResultRef
+        )
       }
-      const sentText = `Message delivered to ${target.name} (${target.childId}). You can keep working — the peer will pick it up as its next turn.`
-      // AIDEV-NOTE (PMR-ZJCP): W1 crash-window evidence scan — the inbox is
-      // the source of truth when a send happened but the memo write was
-      // interrupted. Matches sender childId + byte-exact message + exact
-      // resultRef (undefined never matches ''). Note the fingerprint keys on
-      // the RAW `params.peer` string: a replay that spells the recipient
-      // differently (name vs childId) misses the memo and sends fresh.
-      const delivered = readInbox(target.childId).find(
-        (entry) =>
-          entry.message.from.childId === identity.childId &&
-          entry.message.message === params.message &&
-          (entry.message.resultRef || undefined) ===
-            (params.resultRef || undefined),
-      )
-      if (delivered !== undefined) {
+      const deliverViaBinding = (
+        binding: PeerRecipientBinding,
+      ): {
+        content: { type: 'text'; text: string }[]
+        details: { messageId: string; path: string }
+      } => {
+        if (binding.toChildId === identity.childId) {
+          throw new Error(
+            `Peer binding conflict: the binding record names yourself ` +
+              `(${binding.toChildId}) as the recipient, which is corrupt. ` +
+              `Message NOT delivered; no retarget — the binding is never ` +
+              `overwritten and must be investigated.`,
+          )
+        }
+        if (!boundRequestMatches(binding)) {
+          throw new Error(
+            `Peer binding conflict: this logical send is already bound to ` +
+              `${binding.toName} (${binding.toChildId}) with a different ` +
+              `request payload. Message NOT delivered; no retarget — the ` +
+              `binding is never overwritten.`,
+          )
+        }
+        // AIDEV-NOTE (PMR-ZJCP): W1 crash-window evidence scan — the inbox
+        // is the source of truth when a send happened but the memo write was
+        // interrupted. Matches sender childId + byte-exact message + exact
+        // resultRef (undefined never matches ''). The scan runs against the
+        // BOUND recipient's inbox, so prior delivery is provable even when
+        // the recipient has since died. Prior to the binding (PMR-77KT)
+        // this scanned whichever recipient the name re-resolved to.
+        const delivered = readInbox(binding.toChildId).find(
+          (entry) =>
+            entry.message.from.childId === identity.childId &&
+            entry.message.message === params.message &&
+            (entry.message.resultRef || undefined) ===
+              (params.resultRef || undefined),
+        )
+        if (delivered !== undefined) {
+          writeEffectMemo({
+            version: 1,
+            childId: identity.childId,
+            tool: 'message_peer',
+            fingerprint,
+            createdAt: new Date().toISOString(),
+            result: {
+              messageId: delivered.message.messageId,
+              path: delivered.path,
+            },
+          })
+          touchPeerBinding(binding)
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `An identical message was already delivered to ${binding.toName} ` +
+                  `(${binding.toChildId}) earlier (messageId ` +
+                  `${delivered.message.messageId}); no duplicate send was made.`,
+              },
+            ],
+            details: {
+              messageId: delivered.message.messageId,
+              path: delivered.path,
+            },
+          }
+        }
+        // Liveness gate on the BOUND identity — never resolvePeer. A dead or
+        // superseded recipient fails closed: no send, no inbox mutation, no
+        // retarget under a reused name.
+        const presence = readPresence(binding.toChildId)
+        const boundPeerIsLive =
+          presence !== null &&
+          presence.sessionFile === binding.toSessionFile &&
+          presenceIsLive(presence)
+        if (!boundPeerIsLive) {
+          throw new Error(
+            `Bound recipient ${binding.toName} (${binding.toChildId}, ` +
+              `session ${binding.toSessionFile}) is no longer live — it has ` +
+              `died or been superseded. Message NOT delivered; no retarget — ` +
+              `this logical send stays pinned to its original recipient.`,
+          )
+        }
+        const sent = sendPeerMessage({
+          toChildId: binding.toChildId,
+          from: identity,
+          message: params.message,
+          resultRef: params.resultRef,
+        })
+        // AIDEV-NOTE (PMR-ZJCP): mark-after-effect — memo written only after
+        // the send is durable, so a memo hit is trustworthy evidence. The
+        // send→memo crash window is covered by the bound-inbox evidence scan.
         writeEffectMemo({
           version: 1,
           childId: identity.childId,
           tool: 'message_peer',
           fingerprint,
           createdAt: new Date().toISOString(),
-          result: {
-            messageId: delivered.message.messageId,
-            path: delivered.path,
-          },
+          result: { messageId: sent.messageId, path: sent.path },
         })
+        touchPeerBinding(binding)
         return {
           content: [
             {
               type: 'text',
-              text:
-                `An identical message was already delivered to ${target.name} ` +
-                `(${target.childId}) earlier (messageId ` +
-                `${delivered.message.messageId}); no duplicate send was made.`,
+              text: `Message delivered to ${binding.toName} (${binding.toChildId}). You can keep working — the peer will pick it up as its next turn.`,
             },
           ],
-          details: {
-            messageId: delivered.message.messageId,
-            path: delivered.path,
-          },
+          details: { messageId: sent.messageId, path: sent.path },
         }
       }
-      const sent = sendPeerMessage({
-        toChildId: target.childId,
-        from: identity,
-        message: params.message,
-        resultRef: params.resultRef,
-      })
-      // AIDEV-NOTE (PMR-ZJCP): mark-after-effect — memo written only after
-      // the send is durable, so a memo hit is trustworthy evidence.
-      writeEffectMemo({
+      const existingBinding = readPeerBinding(identity.childId, fingerprint)
+      if (existingBinding !== null) {
+        return deliverViaBinding(existingBinding)
+      }
+      const target = resolvePeer(params.peer, identity)
+      if (target.self) {
+        throw new Error('Cannot message yourself — just continue working.')
+      }
+      // AIDEV-NOTE (PMR-77KT): durable-first — the binding is written BEFORE
+      // any inbox scan or send. A send we cannot durably pin does not happen
+      // (write failures propagate). EEXIST means another writer (or a prior
+      // crashed attempt) won the bind: re-read and join the bound path with
+      // full request-identity validation instead of overwriting.
+      const now = new Date().toISOString()
+      const binding: PeerRecipientBinding = {
         version: 1,
         childId: identity.childId,
-        tool: 'message_peer',
         fingerprint,
-        createdAt: new Date().toISOString(),
-        result: { messageId: sent.messageId, path: sent.path },
-      })
-      return {
-        content: [
-          {
-            type: 'text',
-            text: sentText,
-          },
-        ],
-        details: { messageId: sent.messageId, path: sent.path },
+        toChildId: target.childId,
+        toSessionFile: target.sessionFile,
+        toName: target.name,
+        request: {
+          peer: params.peer,
+          message: params.message,
+          resultRef: params.resultRef,
+        },
+        createdAt: now,
+        lastActivityAt: now,
       }
+      const wrote = writePeerBinding(binding)
+      if (!wrote) {
+        const winner = readPeerBinding(identity.childId, fingerprint)
+        if (winner === null) {
+          throw new Error(
+            `Peer binding write raced with an unreadable record for ` +
+              `fingerprint ${fingerprint}. Message NOT delivered; no retarget.`,
+          )
+        }
+        return deliverViaBinding(winner)
+      }
+      return deliverViaBinding(binding)
     },
   })
 
