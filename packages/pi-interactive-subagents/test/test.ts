@@ -11,11 +11,12 @@ import {
   rmdirSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { after, before, describe, it } from 'node:test'
+import { after, afterEach, before, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { visibleWidth } from '@mariozechner/pi-tui'
@@ -3248,6 +3249,10 @@ import {
   resolvePeer,
   sendPeerMessage,
 } from '../pi-extension/subagents/peers.ts'
+import {
+  type PruneReport,
+  pruneSubagentsData,
+} from '../pi-extension/subagents/retention.ts'
 import {
   buildAggregateSnapshot,
   defaultSnapshotReadIo,
@@ -9352,5 +9357,635 @@ describe('subagent-done.ts exit tools replay windows (PMR-G9J4 / PMR-ZJCP)', () 
         assert.equal(JSON.parse(readFileSync(exitFile, 'utf8')).type, 'done')
       }),
     )
+  })
+})
+
+// --- retention.ts (PMR-KT90) ---
+
+describe('retention.ts (PMR-KT90 prune sweep)', () => {
+  const DEAD_PID = 0x400000
+  const RETENTION_NOW = new Date('2026-06-01T00:00:00.000Z')
+  // Cutoff with retentionDays: 7 is 2026-05-25. OLD is well before it,
+  // RECENT is after it but before NOW.
+  const OLD_ISO = '2020-01-01T00:00:00.000Z'
+  const RECENT_ISO = '2026-05-31T00:00:00.000Z'
+  const OLD_MS = Date.parse(OLD_ISO)
+
+  let root: string
+  let agentDir: string
+  let sessionsDir: string
+
+  function freshFixture(): void {
+    agentDir = mkdtempSync(join(tmpdir(), 'retention-agentdir-'))
+    root = join(agentDir, 'pi-subagents')
+    sessionsDir = join(agentDir, 'sessions')
+  }
+
+  function prune(): PruneReport {
+    return pruneSubagentsData({
+      retentionDays: 7,
+      now: (): Date => RETENTION_NOW,
+      root,
+      agentDir,
+    })
+  }
+
+  function sessionFileInAgentDir(name: string): string {
+    // A real .jsonl under the injected agentDir's sessions tree; prune's
+    // owner-inbox scan and existsSync-based resumability both see it.
+    const path = join(sessionsDir, name.slice(0, 2), name)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, '')
+    return path
+  }
+
+  function writeJson(path: string, value: unknown): void {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, JSON.stringify(value))
+  }
+
+  function writeRaw(path: string, contents: string): void {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, contents)
+  }
+
+  interface FixtureAssignment {
+    childId: string
+    sessionFile: string
+    pid: number
+    updatedAt: string
+  }
+
+  function assignmentFixture(
+    params: FixtureAssignment,
+  ): Record<string, unknown> {
+    return {
+      version: 1,
+      childId: params.childId,
+      name: params.childId,
+      task: 'test task',
+      sessionFile: params.sessionFile,
+      cwd: '/tmp',
+      status: 'lost',
+      claim: { pid: params.pid, id: randomUUID() },
+      createdAt: params.updatedAt,
+      updatedAt: params.updatedAt,
+    }
+  }
+
+  function writeAssignmentFixture(params: FixtureAssignment): void {
+    writeJson(
+      join(root, 'assignments', `${params.childId}.json`),
+      assignmentFixture(params),
+    )
+  }
+
+  interface FixturePresence {
+    childId: string
+    sessionFile: string
+    pid: number
+    updatedAt: string
+  }
+
+  function presenceFixture(params: FixturePresence): Record<string, unknown> {
+    return {
+      version: 1,
+      childId: params.childId,
+      sessionId: params.childId,
+      sessionFile: params.sessionFile,
+      name: params.childId,
+      cwd: '/tmp',
+      claim: { pid: params.pid, id: randomUUID() },
+      updatedAt: params.updatedAt,
+    }
+  }
+
+  /**
+   * Publish a presence lock whose claim pid is provably dead (no PID can
+   * ever be 2^22+), so readProcessLockStatus reports live:false instead of
+   * throwing "Unable to verify". Returns a cleanup function — the lock dir
+   * lives in the shared keyed temp root.
+   */
+  function publishDeadPresenceLock(sessionFile: string): () => void {
+    const lockPath = peerLockPath(sessionFile)
+    const claim = { pid: DEAD_PID, id: randomUUID() }
+    mkdirSync(lockPath, { recursive: true, mode: 0o700 })
+    writeFileSync(
+      join(lockPath, `${claim.pid}-${claim.id}`),
+      JSON.stringify(claim),
+    )
+    return () => rmSync(lockPath, { recursive: true, force: true })
+  }
+
+  function effectMemoFixture(params: {
+    childId: string
+    createdAt: string
+  }): Record<string, unknown> {
+    return {
+      version: 1,
+      childId: params.childId,
+      tool: 'message_peer',
+      fingerprint: `fp-${params.childId}`,
+      createdAt: params.createdAt,
+      result: {},
+    }
+  }
+
+  function peerBindingFixture(params: {
+    childId: string
+    activityAt: string
+  }): Record<string, unknown> {
+    return {
+      version: 1,
+      childId: params.childId,
+      fingerprint: `fp-${params.childId}`,
+      toChildId: `${params.childId}-peer`,
+      toSessionFile: '/nonexistent/peer.jsonl',
+      toName: 'peer',
+      request: { peer: 'peer', message: 'hello' },
+      createdAt: params.activityAt,
+      lastActivityAt: params.activityAt,
+    }
+  }
+
+  afterEach(() => {
+    rmSync(agentDir, { recursive: true, force: true })
+  })
+
+  it('prunes old results and retired payloads, keeps recent ones', () => {
+    freshFixture()
+    writeJson(join(root, 'results', 'old.json'), { createdAt: OLD_ISO })
+    writeJson(join(root, 'results', 'recent.json'), { createdAt: RECENT_ISO })
+    writeRaw(join(root, 'results', 'garbage.json'), 'not-json')
+    writeJson(join(root, 'results', 'notimestamp.json'), { childId: 'x' })
+    writeJson(join(root, 'retired', 'aaa.json'), { retiredAt: OLD_ISO })
+    writeJson(join(root, 'retired', 'bbb.json'), { retiredAt: RECENT_ISO })
+
+    const report = prune()
+
+    assert.ok(!existsSync(join(root, 'results', 'old.json')))
+    assert.ok(existsSync(join(root, 'results', 'recent.json')))
+    assert.ok(existsSync(join(root, 'results', 'garbage.json')))
+    assert.ok(existsSync(join(root, 'results', 'notimestamp.json')))
+    assert.ok(!existsSync(join(root, 'retired', 'aaa.json')))
+    assert.ok(existsSync(join(root, 'retired', 'bbb.json')))
+    assert.equal(report.removed.results, 1)
+    assert.equal(report.removed.retired, 1)
+    assert.equal(report.skipped.results, 3)
+    assert.equal(report.skipped.retired, 1)
+  })
+
+  it('prunes old interrupts only when the replay session file is gone', () => {
+    freshFixture()
+    const live = sessionFileInAgentDir('live.jsonl')
+    writeJson(join(root, 'interrupts', 'replayable.json'), {
+      toolCallId: 'replayable',
+      childId: 'a',
+      sessionFile: live,
+      requestId: 'r1',
+      sentAt: OLD_ISO,
+    })
+    writeJson(join(root, 'interrupts', 'orphaned.json'), {
+      toolCallId: 'orphaned',
+      childId: 'b',
+      sessionFile: join(agentDir, 'sessions', 'gone.jsonl'),
+      requestId: 'r2',
+      sentAt: OLD_ISO,
+    })
+    writeJson(join(root, 'interrupts', 'fresh.json'), {
+      toolCallId: 'fresh',
+      childId: 'c',
+      sessionFile: join(agentDir, 'sessions', 'gone.jsonl'),
+      requestId: 'r3',
+      sentAt: RECENT_ISO,
+    })
+
+    const report = prune()
+
+    assert.ok(existsSync(join(root, 'interrupts', 'replayable.json')))
+    assert.ok(!existsSync(join(root, 'interrupts', 'orphaned.json')))
+    assert.ok(existsSync(join(root, 'interrupts', 'fresh.json')))
+    assert.equal(report.removed.interrupts, 1)
+    assert.equal(report.skipped.interrupts, 2)
+  })
+
+  it('keeps delivered markers whose source record still exists', () => {
+    freshFixture()
+    // Old marker with a live owner-inbox source record → keep.
+    writeJson(join(root, 'inbox', 'parent-1', 'msg.json'), {
+      version: 1,
+      messageId: 'req-1',
+      from: { childId: 'c1' },
+      message: 'hi',
+      sentAt: RECENT_ISO,
+    })
+    const keptMarker = join(root, 'delivered', 'parent-1', 'req-1')
+    writeRaw(keptMarker, '')
+    utimesSync(keptMarker, new Date(OLD_MS), new Date(OLD_MS))
+    // Old marker with no source anywhere → prunable.
+    const goneMarker = join(root, 'delivered', 'parent-2', 'req-2')
+    writeRaw(goneMarker, '')
+    utimesSync(goneMarker, new Date(OLD_MS), new Date(OLD_MS))
+    // Fresh marker → keep regardless of source.
+    const freshMarker = join(root, 'delivered', 'parent-3', 'req-3')
+    writeRaw(freshMarker, '')
+
+    const report = prune()
+
+    assert.ok(existsSync(keptMarker))
+    assert.ok(!existsSync(goneMarker))
+    assert.ok(existsSync(freshMarker))
+    assert.equal(report.removed.delivered, 1)
+    assert.equal(report.skipped.delivered, 2)
+    // Negative space: the source mailbox record is untouched.
+    assert.ok(existsSync(join(root, 'inbox', 'parent-1', 'msg.json')))
+  })
+
+  it('prunes tool-effects only when the child session file is gone', () => {
+    freshFixture()
+    const resumableSession = sessionFileInAgentDir('resumable.jsonl')
+    // Old memo, child session file still on disk → keep.
+    writeAssignmentFixture({
+      childId: 'alive',
+      sessionFile: resumableSession,
+      pid: DEAD_PID,
+      updatedAt: OLD_ISO,
+    })
+    writeJson(
+      join(root, 'tool-effects', 'alive', 'message_peer-fp.json'),
+      effectMemoFixture({ childId: 'alive', createdAt: OLD_ISO }),
+    )
+    // Old memo, session file gone → prunable.
+    writeAssignmentFixture({
+      childId: 'gone',
+      sessionFile: join(agentDir, 'sessions', 'gone.jsonl'),
+      pid: DEAD_PID,
+      updatedAt: OLD_ISO,
+    })
+    writeJson(
+      join(root, 'tool-effects', 'gone', 'message_peer-fp.json'),
+      effectMemoFixture({ childId: 'gone', createdAt: OLD_ISO }),
+    )
+    // Old memo, no identity record at all → unresolvable, keep.
+    writeJson(
+      join(root, 'tool-effects', 'orphan', 'message_peer-fp.json'),
+      effectMemoFixture({ childId: 'orphan', createdAt: OLD_ISO }),
+    )
+    // Recent memo, session file gone → age keeps it.
+    writeJson(
+      join(root, 'tool-effects', 'fresh', 'message_peer-fp.json'),
+      effectMemoFixture({ childId: 'fresh', createdAt: RECENT_ISO }),
+    )
+
+    const report = prune()
+
+    assert.ok(existsSync(join(root, 'tool-effects', 'alive')))
+    assert.ok(!existsSync(join(root, 'tool-effects', 'gone')))
+    assert.ok(existsSync(join(root, 'tool-effects', 'orphan')))
+    assert.ok(existsSync(join(root, 'tool-effects', 'fresh')))
+    assert.equal(report.removed['tool-effects'], 1)
+    assert.equal(report.skipped['tool-effects'], 3)
+    // Negative space: the assignments feeding the resolution are untouched
+    // (assignments prune runs after tool-effects and their session files /
+    // pids keep them prunable-proof).
+    assert.ok(existsSync(join(root, 'assignments', 'alive.json')))
+  })
+
+  it('prunes peer-bindings only when the child session file is gone', () => {
+    freshFixture()
+    const resumableSession = sessionFileInAgentDir('resumable.jsonl')
+    writeAssignmentFixture({
+      childId: 'alive',
+      sessionFile: resumableSession,
+      pid: DEAD_PID,
+      updatedAt: OLD_ISO,
+    })
+    writeJson(
+      join(root, 'peer-bindings', 'alive', 'fp.json'),
+      peerBindingFixture({ childId: 'alive', activityAt: OLD_ISO }),
+    )
+    writeAssignmentFixture({
+      childId: 'gone',
+      sessionFile: join(agentDir, 'sessions', 'gone.jsonl'),
+      pid: DEAD_PID,
+      updatedAt: OLD_ISO,
+    })
+    writeJson(
+      join(root, 'peer-bindings', 'gone', 'fp.json'),
+      peerBindingFixture({ childId: 'gone', activityAt: OLD_ISO }),
+    )
+    writeJson(
+      join(root, 'peer-bindings', 'fresh', 'fp.json'),
+      peerBindingFixture({ childId: 'fresh', activityAt: RECENT_ISO }),
+    )
+
+    const report = prune()
+
+    assert.ok(existsSync(join(root, 'peer-bindings', 'alive')))
+    assert.ok(!existsSync(join(root, 'peer-bindings', 'gone')))
+    assert.ok(existsSync(join(root, 'peer-bindings', 'fresh')))
+    assert.equal(report.removed['peer-bindings'], 1)
+    assert.equal(report.skipped['peer-bindings'], 2)
+  })
+
+  it('keeps live-claim assignments and resumable ones, prunes dead+aged', () => {
+    freshFixture()
+    // Live claim pid → keep even though ancient.
+    writeAssignmentFixture({
+      childId: 'live',
+      sessionFile: join(agentDir, 'sessions', 'live.jsonl'),
+      pid: process.pid,
+      updatedAt: OLD_ISO,
+    })
+    // Dead pid but session file on disk (resumable) → keep.
+    const resumable = sessionFileInAgentDir('resumable.jsonl')
+    writeAssignmentFixture({
+      childId: 'resumable',
+      sessionFile: resumable,
+      pid: DEAD_PID,
+      updatedAt: OLD_ISO,
+    })
+    // Dead pid, session file gone, aged → prune.
+    writeAssignmentFixture({
+      childId: 'gone',
+      sessionFile: join(agentDir, 'sessions', 'gone.jsonl'),
+      pid: DEAD_PID,
+      updatedAt: OLD_ISO,
+    })
+    // Dead pid, session file gone, but recent → age keeps it.
+    writeAssignmentFixture({
+      childId: 'fresh',
+      sessionFile: join(agentDir, 'sessions', 'gone.jsonl'),
+      pid: DEAD_PID,
+      updatedAt: RECENT_ISO,
+    })
+    // Malformed JSON → keep, count as skipped.
+    writeRaw(join(root, 'assignments', 'garbage.json'), 'not-json')
+    // Missing updatedAt → keep, count as skipped.
+    writeJson(join(root, 'assignments', 'notimestamp.json'), {
+      childId: 'notimestamp',
+      sessionFile: '/nonexistent.jsonl',
+      claim: { pid: DEAD_PID, id: randomUUID() },
+    })
+
+    const report = prune()
+
+    assert.ok(existsSync(join(root, 'assignments', 'live.json')))
+    assert.ok(existsSync(join(root, 'assignments', 'resumable.json')))
+    assert.ok(!existsSync(join(root, 'assignments', 'gone.json')))
+    assert.ok(existsSync(join(root, 'assignments', 'fresh.json')))
+    assert.ok(existsSync(join(root, 'assignments', 'garbage.json')))
+    assert.ok(existsSync(join(root, 'assignments', 'notimestamp.json')))
+    assert.equal(report.removed.assignments, 1)
+    assert.equal(report.skipped.assignments, 5)
+    const reasons = report.skipReasons.join('\n')
+    assert.match(reasons, /assignments: live claim pid/)
+    assert.match(
+      reasons,
+      /assignments: session file still exists \(resumable\)/,
+    )
+    assert.match(reasons, /assignments: malformed record/)
+    assert.match(reasons, /assignments: missing\/unparseable updatedAt/)
+  })
+
+  it('keeps live/resumable/undrained peers, prunes dead+aged ones', () => {
+    freshFixture()
+    // Live presence lock → keep.
+    const liveSession = join(agentDir, 'sessions', 'live.jsonl')
+    const liveLease = acquireProcessLock(peerLockPath(liveSession))
+    writeJson(join(root, 'peers', 'live.json'), {
+      ...presenceFixture({
+        childId: 'live',
+        sessionFile: liveSession,
+        pid: liveLease.claim.pid,
+        updatedAt: OLD_ISO,
+      }),
+      claim: liveLease.claim,
+    })
+    try {
+      // Dead pid, session file on disk (resumable) → keep.
+      const resumable = sessionFileInAgentDir('resumable.jsonl')
+      writeJson(
+        join(root, 'peers', 'resumable.json'),
+        presenceFixture({
+          childId: 'resumable',
+          sessionFile: resumable,
+          pid: DEAD_PID,
+          updatedAt: OLD_ISO,
+        }),
+      )
+      const deadCleanup = publishDeadPresenceLock(resumable)
+      try {
+        // Dead pid, session file gone, aged, with an inbox → prune all of it.
+        const goneSession = join(agentDir, 'sessions', 'gone.jsonl')
+        writeJson(
+          join(root, 'peers', 'gone.json'),
+          presenceFixture({
+            childId: 'gone',
+            sessionFile: goneSession,
+            pid: DEAD_PID,
+            updatedAt: OLD_ISO,
+          }),
+        )
+        const deadGoneCleanup = publishDeadPresenceLock(goneSession)
+        try {
+          writeJson(join(root, 'peers', 'gone', 'inbox', 'm1.json'), {
+            version: 1,
+            messageId: 'm1',
+            from: { childId: 'someone' },
+            message: 'hello',
+            sentAt: OLD_ISO,
+          })
+          // Recent inbox message → newest activity keeps the whole peer.
+          writeJson(
+            join(root, 'peers', 'fresh.json'),
+            presenceFixture({
+              childId: 'fresh',
+              sessionFile: join(agentDir, 'sessions', 'fresh-gone.jsonl'),
+              pid: DEAD_PID,
+              updatedAt: OLD_ISO,
+            }),
+          )
+          writeJson(join(root, 'peers', 'fresh', 'inbox', 'm2.json'), {
+            version: 1,
+            messageId: 'm2',
+            from: { childId: 'someone' },
+            message: 'hello',
+            sentAt: RECENT_ISO,
+          })
+          // Dead pid but no lock dir at all → liveness unverifiable → keep.
+          writeJson(
+            join(root, 'peers', 'nolock.json'),
+            presenceFixture({
+              childId: 'nolock',
+              sessionFile: join(agentDir, 'sessions', 'nolock.jsonl'),
+              pid: DEAD_PID,
+              updatedAt: OLD_ISO,
+            }),
+          )
+
+          const report = prune()
+
+          assert.ok(existsSync(join(root, 'peers', 'live.json')))
+          assert.ok(existsSync(join(root, 'peers', 'resumable.json')))
+          assert.ok(!existsSync(join(root, 'peers', 'gone.json')))
+          assert.ok(!existsSync(join(root, 'peers', 'gone')))
+          assert.ok(existsSync(join(root, 'peers', 'fresh.json')))
+          assert.ok(
+            existsSync(join(root, 'peers', 'fresh', 'inbox', 'm2.json')),
+          )
+          assert.ok(existsSync(join(root, 'peers', 'nolock.json')))
+          assert.equal(report.removed.peers, 1)
+          assert.equal(report.skipped.peers, 4)
+          const reasons = report.skipReasons.join('\n')
+          assert.match(reasons, /peers: live presence lock/)
+          assert.match(
+            reasons,
+            /peers: session file still exists \(resumable\)/,
+          )
+          assert.match(reasons, /peers: liveness inspection failed/)
+        } finally {
+          deadGoneCleanup()
+        }
+      } finally {
+        deadCleanup()
+      }
+    } finally {
+      liveLease.release()
+    }
+  })
+
+  it('keeps asks of live/blocked children, prunes dead+aged candidates', () => {
+    freshFixture()
+    // Live claim pid behind the ask → keep.
+    writeAssignmentFixture({
+      childId: 'livechild',
+      sessionFile: join(agentDir, 'sessions', 'live.jsonl'),
+      pid: process.pid,
+      updatedAt: OLD_ISO,
+    })
+    writeJson(join(root, 'asks', 'livechild.json'), {
+      askId: 'ask-live',
+      childId: 'livechild',
+      question: 'q',
+      sessionFile: join(agentDir, 'sessions', 'live.jsonl'),
+      createdAt: OLD_ISO,
+    })
+    // Session file on disk (blocked child waiting) → keep.
+    const blocked = sessionFileInAgentDir('blocked.jsonl')
+    writeJson(join(root, 'asks', 'blocked.json'), {
+      askId: 'ask-blocked',
+      childId: 'blocked',
+      question: 'q',
+      sessionFile: blocked,
+      createdAt: OLD_ISO,
+    })
+    // Dead child, session file gone, aged → prune ask + reply + control.
+    const goneSession = join(agentDir, 'sessions', 'gone.jsonl')
+    writeJson(join(root, 'asks', 'gone.json'), {
+      askId: 'ask-gone',
+      childId: 'gone',
+      question: 'q',
+      sessionFile: goneSession,
+      createdAt: OLD_ISO,
+    })
+    writeJson(join(root, 'asks', 'gone.reply.json'), {
+      askId: 'ask-gone',
+      message: 'answer',
+      repliedAt: OLD_ISO,
+    })
+    writeJson(join(root, 'asks', 'gone.control.json'), {
+      requestId: 'ctl-gone',
+      kind: 'interrupt',
+    })
+    // Old ask but recent reply → newest activity keeps it.
+    writeJson(join(root, 'asks', 'recentreply.json'), {
+      askId: 'ask-recent',
+      childId: 'recentreply',
+      question: 'q',
+      sessionFile: join(agentDir, 'sessions', 'recent-gone.jsonl'),
+      createdAt: OLD_ISO,
+    })
+    writeJson(join(root, 'asks', 'recentreply.reply.json'), {
+      askId: 'ask-recent',
+      message: 'answer',
+      repliedAt: RECENT_ISO,
+    })
+
+    const report = prune()
+
+    assert.ok(existsSync(join(root, 'asks', 'livechild.json')))
+    assert.ok(existsSync(join(root, 'asks', 'blocked.json')))
+    assert.ok(!existsSync(join(root, 'asks', 'gone.json')))
+    assert.ok(!existsSync(join(root, 'asks', 'gone.reply.json')))
+    assert.ok(!existsSync(join(root, 'asks', 'gone.control.json')))
+    assert.ok(existsSync(join(root, 'asks', 'recentreply.json')))
+    assert.ok(existsSync(join(root, 'asks', 'recentreply.reply.json')))
+    assert.equal(report.removed.asks, 1)
+    assert.equal(report.skipped.asks, 3)
+    const reasons = report.skipReasons.join('\n')
+    assert.match(reasons, /asks: live claim pid/)
+    assert.match(reasons, /asks: session file still exists \(resumable\)/)
+  })
+
+  it('prunes owner inbox only when the parent session file is gone', () => {
+    freshFixture()
+    // Parent session file exists under agentDir/sessions → keep.
+    sessionFileInAgentDir('parent-live.jsonl')
+    writeJson(join(root, 'inbox', 'parent-live', 'm1.json'), {
+      version: 1,
+      messageId: 'm1',
+      from: { childId: 'c1' },
+      message: 'hi',
+      sentAt: OLD_ISO,
+    })
+    // Parent session file gone, aged → prune.
+    writeJson(join(root, 'inbox', 'parent-gone', 'm2.json'), {
+      version: 1,
+      messageId: 'm2',
+      from: { childId: 'c2' },
+      message: 'hi',
+      sentAt: OLD_ISO,
+    })
+    // Recent message → keep.
+    writeJson(join(root, 'inbox', 'parent-fresh', 'm3.json'), {
+      version: 1,
+      messageId: 'm3',
+      from: { childId: 'c3' },
+      message: 'hi',
+      sentAt: RECENT_ISO,
+    })
+
+    const report = prune()
+
+    assert.ok(existsSync(join(root, 'inbox', 'parent-live', 'm1.json')))
+    assert.ok(!existsSync(join(root, 'inbox', 'parent-gone')))
+    assert.ok(existsSync(join(root, 'inbox', 'parent-fresh', 'm3.json')))
+    assert.equal(report.removed.inbox, 1)
+    assert.equal(report.skipped.inbox, 2)
+  })
+
+  it('never touches result-ref-reservations or spawn-seq, even ancient', () => {
+    freshFixture()
+    const reservation = join(root, 'result-ref-reservations', 'review', '1')
+    writeRaw(reservation, 'canonical-1')
+    utimesSync(reservation, new Date(OLD_MS), new Date(OLD_MS))
+    const spawnSeq = join(root, 'spawn-seq', 'parent-session', '1')
+    writeRaw(spawnSeq, '')
+    utimesSync(spawnSeq, new Date(OLD_MS), new Date(OLD_MS))
+
+    const report = pruneSubagentsData({
+      retentionDays: 1,
+      now: (): Date => RETENTION_NOW,
+      root,
+      agentDir,
+    })
+
+    assert.equal(readFileSync(reservation, 'utf8'), 'canonical-1')
+    assert.ok(existsSync(spawnSeq))
+    assert.equal(report.removed['result-ref-reservations'], undefined)
+    assert.equal(report.removed['spawn-seq'], undefined)
+    assert.equal(report.skipped['result-ref-reservations'], undefined)
+    assert.equal(report.skipped['spawn-seq'], undefined)
   })
 })
