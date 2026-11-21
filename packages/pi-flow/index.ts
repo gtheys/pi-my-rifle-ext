@@ -1302,6 +1302,12 @@ export default function (pi: ExtensionAPI) {
             makeAnswerDeps(ctx),
           )
           return
+        } else {
+          // AIDEV-NOTE: PMR-P3MB — catch-all safety net. Every current
+          // PickerPlan kind is handled above (a hypothetical miss would land
+          // on the benign parsed {kind:'help'} path), but a FUTURE variant
+          // must never slide into the flow-start path below.
+          return
         }
       }
       if (parsed.kind === 'help') {
