@@ -3293,6 +3293,15 @@ describe('dataroot.ts', () => {
     assert.ok(statSync(dir).isDirectory())
     assert.equal(modeOf(dir), 0o700)
   })
+
+  it("includes 'peer-bindings' in the data dir names and creates it 0700", () => {
+    assert.ok(SUBAGENTS_DATA_DIR_NAMES.includes('peer-bindings'))
+    const root = mkdtempSync(join(tmpdir(), 'subagents-dataroot-'))
+    const dir = ensureSubagentsDataDir('peer-bindings', root)
+    assert.equal(dir, join(root, 'peer-bindings'))
+    assert.ok(statSync(dir).isDirectory())
+    assert.equal(modeOf(dir), 0o700)
+  })
 })
 
 describe('config.ts', () => {
