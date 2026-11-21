@@ -50,7 +50,10 @@ type Execute = (
 // AIDEV-NOTE: PMR-XTQQ 4.2 — capture helper + fake-aven scoping so the new
 // two-sessions tests can run against a temp agentDir without touching the
 // real one and with isolated note counts.
-function captureTool(ledger?: Parameters<typeof registerRunAttemptTool>[1]) {
+function captureTool(
+  ledger?: Parameters<typeof registerRunAttemptTool>[1],
+  deps?: Parameters<typeof registerRunAttemptTool>[2],
+) {
   let execute: Execute | undefined
   registerRunAttemptTool(
     {
@@ -59,6 +62,7 @@ function captureTool(ledger?: Parameters<typeof registerRunAttemptTool>[1]) {
       },
     } as unknown as ExtensionAPI,
     ledger,
+    deps,
   )
   assert.ok(execute)
   return execute
@@ -272,6 +276,62 @@ test('exhausted budget refuses further attempts without a second note', async ()
     process.env.PATH = previousPath
     setAvenSessionCwd(undefined)
   }
+})
+
+// AIDEV-NOTE: yolo 5.2 — escalation applies the `error` label for yolo-journaled
+// refs only; non-yolo refs escalate without any label call; a label failure never
+// changes the escalation result (isError/status identical, suffix appended).
+test('escalation on a yolo ref applies the error label', async () => {
+  const labels: string[] = []
+  const execute = captureTool(undefined, {
+    isYoloRunFn: async () => true,
+    applyErrorLabel: async (ref) => {
+      labels.push(ref)
+      return true
+    },
+  })
+  const statuses: string[] = []
+  for (let i = 0; i < 3; i++) {
+    const r = await execute(`y${i}`, { ref: 'PMR-YOLO', result: FAIL })
+    statuses.push(r.details?.status ?? '')
+  }
+  assert.deepEqual(statuses, ['retry', 'retry', 'escalate'])
+  assert.deepEqual(labels, ['PMR-YOLO'])
+})
+
+test('escalation on a non-yolo ref does not apply the error label', async () => {
+  let labelCalls = 0
+  const execute = captureTool(undefined, {
+    isYoloRunFn: async () => false,
+    applyErrorLabel: async () => {
+      labelCalls += 1
+      return true
+    },
+  })
+  for (let i = 0; i < 3; i++) {
+    const r = await execute(`n${i}`, { ref: 'PMR-PLAIN', result: FAIL })
+    assert.equal(r.details?.status, i < 2 ? 'retry' : 'escalate')
+    assert.equal(r.isError === true, i === 2)
+  }
+  assert.equal(labelCalls, 0)
+})
+
+test('label failure does not change the escalation result', async () => {
+  const execute = captureTool(undefined, {
+    isYoloRunFn: async () => true,
+    applyErrorLabel: async () => false,
+  })
+  for (let i = 0; i < 2; i++) {
+    await execute(`f${i}`, { ref: 'PMR-LABELFAIL', result: FAIL })
+  }
+  const escalated = await execute('f2', { ref: 'PMR-LABELFAIL', result: FAIL })
+  assert.equal(escalated.isError, true)
+  assert.equal(escalated.details?.status, 'escalate')
+  assert.match(
+    escalated.content[0]?.text ?? '',
+    /error label write FAILED/,
+    'escalation still reports the failed label write',
+  )
 })
 
 after(() => rmSync(ROOT, { recursive: true, force: true }))

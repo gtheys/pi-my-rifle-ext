@@ -19,7 +19,7 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { writeAvenNote } from '../aven/client.ts'
+import { applyAvenErrorLabel, writeAvenNote } from '../aven/client.ts'
 import {
   type AttemptResult,
   MAX_ATTEMPTS,
@@ -29,6 +29,7 @@ import {
 } from '../implement/retry.ts'
 import {
   type FlowRunEvent,
+  isYoloRun,
   readRunEvents,
   recordRunEvent,
 } from '../run-state.ts'
@@ -115,7 +116,18 @@ export function createAttemptLedger(
 export function registerRunAttemptTool(
   pi: ExtensionAPI,
   ledger: AttemptLedger = createAttemptLedger(getAgentDir()),
+  // AIDEV-NOTE: yolo 5.2 — injectable seams (production defaults), mirroring
+  // the 3.1/3.2 pattern in phase-complete/spec-approve: tests stub both the
+  // yolo read and the label write. `error` is a type label, outside
+  // lifecycleLabelMutation, applied on yolo escalations only; a label
+  // failure never changes the escalation result.
+  deps: {
+    isYoloRunFn?: (ref: string) => Promise<boolean>
+    applyErrorLabel?: (ref: string) => Promise<boolean>
+  } = {},
 ): void {
+  const isYoloRunFn = deps.isYoloRunFn ?? isYoloRun
+  const applyErrorLabel = deps.applyErrorLabel ?? applyAvenErrorLabel
   const retryStates = new Map<string, RetryState>()
   pi.registerTool({
     name: 'flow_run_attempt',
@@ -213,13 +225,35 @@ export function registerRunAttemptTool(
       const e = transition.escalation
       const note = `escalated after ${MAX_ATTEMPTS} failed attempts — commands: ${e.commands.join(' ; ') || 'none recorded'}; last error: ${e.lastError}; hypothesis: ${e.hypothesis}`
       const noted = await writeAvenNote(params.ref, note)
+      // AIDEV-NOTE: yolo 5.2 — best-effort `error` label on the escalation
+      // path, yolo runs only. Mirrors 5.1: never throws, failure only adds a
+      // suffix and never changes the escalation result; further attempts stay
+      // refused as before.
+      let labelSuffix = ''
+      let yolo = false
+      try {
+        yolo = await isYoloRunFn(params.ref)
+      } catch {
+        yolo = false
+      }
+      if (yolo) {
+        let labeled = false
+        try {
+          labeled = await applyErrorLabel(params.ref)
+        } catch {
+          labeled = false
+        }
+        if (!labeled) {
+          labelSuffix = ' (error label write FAILED — record this manually)'
+        }
+      }
       await journalOutcome('escalate', MAX_ATTEMPTS)
       // Keep the exhausted state so further reports keep escalating instead
       // of silently restarting the budget.
       retryStates.set(params.ref, { attempts: MAX_ATTEMPTS })
-      let suffix = ''
+      let suffix = labelSuffix
       if (!noted) {
-        suffix = ' (aven note write FAILED — record this manually)'
+        suffix += ' (aven note write FAILED — record this manually)'
       }
       return toolResult(
         `flow_run_attempt: retry budget exhausted for ${params.ref} — ESCALATE to the human. ${note}${suffix}`,
