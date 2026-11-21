@@ -632,6 +632,33 @@ export async function listOpenTicketRefs(): Promise<string[] | null> {
 }
 
 /**
+ * Ref+title pairs of aven tickets ready for pickup, in the session cwd's
+ * project scope. One batched `aven list --ready --json` call. Returns null
+ * when aven failed in ANY way — spawn/timeout, or (classifyReadyTickets)
+ * exit-0 domain errors, non-JSON output, or schema drift. [] only from a
+ * successfully parsed empty array.
+ */
+// AIDEV-NOTE: PMR-3E1Z — override-only workspace routing. Unlike per-ref
+// avenArgsWithWorkspace calls, a ref-less list cannot resolve a project per
+// ref, so routing relies solely on the session cwd (avenSessionCwd) plus
+// the avenWorkspace config override tail. Like discoverAvenPrefixes, this
+// uses execFileAsync with cwd (not avenExec, which sets no cwd) because the
+// list is cwd-scoped.
+export async function listReadyTickets(): Promise<ReadyTicket[] | null> {
+  try {
+    const out = await execFileAsync(
+      'aven',
+      ['list', '--ready', '--json', ...(await avenOverrideArg())],
+      { timeout: AVEN_TIMEOUT_MS, cwd: avenSessionCwd },
+    )
+    return classifyReadyTickets(out.stdout, out.stderr)
+  } catch (error: unknown) {
+    recordAvenFailure(error)
+    return null
+  }
+}
+
+/**
  * `jira-ref` metadata of a local aven epic (the Jira key it mirrors), or null
  * when absent/unreadable. Used so work-mode runs started from the aven epic
  * ref are still tracked by their Jira key. Best-effort: never throws.
