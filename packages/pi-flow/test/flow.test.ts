@@ -27,12 +27,12 @@ import flowExtension, { setAvenSessionCwd } from '../index.ts'
 
 test('parseFlowArgs: aven ref', () => {
   const parsed = parseFlowArgs('PMR-abc123')
-  assert.deepEqual(parsed, { kind: 'aven', ref: 'PMR-abc123' })
+  assert.deepEqual(parsed, { kind: 'aven', ref: 'PMR-abc123', yolo: false })
 })
 
 test('parseFlowArgs: jira ref normalizes', () => {
   const parsed = parseFlowArgs('dp-71')
-  assert.deepEqual(parsed, { kind: 'jira', jiraId: 'DP-71' })
+  assert.deepEqual(parsed, { kind: 'jira', jiraId: 'DP-71', yolo: false })
 })
 
 test('parseFlowArgs: empty is help', () => {
@@ -49,8 +49,47 @@ test('parseFlowArgs: bare help token is usage, not an aven ref (PMR-N0W6)', () =
   assert.equal(parseFlowArgs('HELP').kind, 'help')
   assert.equal(parseFlowArgs('Help').kind, 'help')
   // Only the exact token is reserved — similar strings still parse as refs.
-  assert.deepEqual(parseFlowArgs('helpme'), { kind: 'aven', ref: 'helpme' })
-  assert.deepEqual(parseFlowArgs('PMR-help'), { kind: 'aven', ref: 'PMR-help' })
+  assert.deepEqual(parseFlowArgs('helpme'), {
+    kind: 'aven',
+    ref: 'helpme',
+    yolo: false,
+  })
+  assert.deepEqual(parseFlowArgs('PMR-help'), {
+    kind: 'aven',
+    ref: 'PMR-help',
+    yolo: false,
+  })
+})
+
+test('parseFlowArgs: <ref> --yolo keeps the ref kind with yolo on', () => {
+  assert.deepEqual(parseFlowArgs('PMR-abc123 --yolo'), {
+    kind: 'aven',
+    ref: 'PMR-abc123',
+    yolo: true,
+  })
+  assert.deepEqual(parseFlowArgs('dp-71 --yolo'), {
+    kind: 'jira',
+    jiraId: 'DP-71',
+    yolo: true,
+  })
+  assert.deepEqual(parseFlowArgs('aven:DP-71 --yolo'), {
+    kind: 'aven',
+    ref: 'DP-71',
+    yolo: true,
+  })
+})
+
+test('parseFlowArgs: bare --yolo is the picker, never a ref', () => {
+  assert.deepEqual(parseFlowArgs('--yolo'), { kind: 'picker', yolo: true })
+})
+
+test('parseFlowArgs: malformed --yolo shapes are help', () => {
+  // Flag-first is not a recognized shape.
+  assert.equal(parseFlowArgs('--yolo PMR-abc123').kind, 'help')
+  // More than one positional plus the flag is still usage.
+  assert.equal(parseFlowArgs('a b --yolo').kind, 'help')
+  // 'help' stays reserved in every shape.
+  assert.equal(parseFlowArgs('help --yolo').kind, 'help')
 })
 
 // --- nextPhase (pure resolver, mapping table; PIV lifecycle, PMR-Z2K7) ---
@@ -142,10 +181,12 @@ test('parseFlowArgs: kind prefixes force the kind (PMR-PCVK)', () => {
   assert.deepEqual(parseFlowArgs('aven:DP-71'), {
     kind: 'aven',
     ref: 'DP-71',
+    yolo: false,
   })
   assert.deepEqual(parseFlowArgs('jira:DP-71'), {
     kind: 'jira',
     jiraId: 'DP-71',
+    yolo: false,
   })
 })
 

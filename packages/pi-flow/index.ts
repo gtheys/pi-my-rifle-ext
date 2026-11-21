@@ -1275,7 +1275,7 @@ export default function (pi: ExtensionAPI) {
             // like a typed /flow <aven-ref> — parsed reassigned, block falls
             // through. 'aven' never matches the 'jira' branch below, so
             // picked refs skip Jira resolution like typed aven refs.
-            parsed = { kind: 'aven', ref: ticketPlan.ref }
+            parsed = { kind: 'aven', ref: ticketPlan.ref, yolo: false }
           } else {
             // 'silent' (cancel / lookup miss): notify nothing.
             return
@@ -1309,6 +1309,16 @@ export default function (pi: ExtensionAPI) {
           // must never slide into the flow-start path below.
           return
         }
+      }
+      if (parsed.kind === 'picker') {
+        // AIDEV-NOTE (yolo plan 1.1): bare '/flow --yolo' opens the yolo
+        // picker in a later phase (plan 1.2) — for now it stays a conservative
+        // usage stop so the flag can never slide into the run path below.
+        ctx.ui.notify(
+          'Usage: /flow <ref> [--yolo]. Bare --yolo picker is not wired yet.',
+          'info',
+        )
+        return
       }
       if (parsed.kind === 'help') {
         // Fix round 2: non-zero-arg /flow keeps the pre-picker usage notify —
