@@ -3000,6 +3000,7 @@ import {
 } from '../pi-extension/subagents/config.ts'
 import {
   ensureSubagentsDataDir,
+  SUBAGENTS_DATA_DIR_NAMES,
   subagentsDataRoot,
 } from '../pi-extension/subagents/dataroot.ts'
 import {
@@ -3046,6 +3047,14 @@ import {
   nextSpawnSeq,
 } from '../pi-extension/subagents/spawnseq.ts'
 import {
+  type ChildToolEffectMemo,
+  effectFingerprint,
+  effectMemoPath,
+  readEffectMemo,
+  rewriteEffectMemo,
+  writeEffectMemo,
+} from '../pi-extension/subagents/tool-effects.ts'
+import {
   childGitEnv,
   createSubagentWorktree,
   deriveWorktreeBranch,
@@ -3072,6 +3081,15 @@ describe('dataroot.ts', () => {
     assert.equal(modeOf(root), 0o700)
     assert.equal(modeOf(dir), 0o700)
     assert.equal(ensureSubagentsDataDir('results', root), dir)
+  })
+
+  it("includes 'tool-effects' in the data dir names and creates it 0700 (PMR-ZJCP)", () => {
+    assert.ok(SUBAGENTS_DATA_DIR_NAMES.includes('tool-effects'))
+    const root = mkdtempSync(join(tmpdir(), 'subagents-dataroot-'))
+    const dir = ensureSubagentsDataDir('tool-effects', root)
+    assert.equal(dir, join(root, 'tool-effects'))
+    assert.ok(statSync(dir).isDirectory())
+    assert.equal(modeOf(dir), 0o700)
   })
 })
 
@@ -7047,6 +7065,216 @@ describe('delivered.ts exactly-once dedup (PMR-KY0E)', () => {
     assert.equal(fresh.length, 1) // duplicate delivered once
     for (const entry of entries) removeOwnerMessage(entry.path)
     assert.equal(readOwnerInbox('parent-s', root).length, 0)
+  })
+})
+
+describe('child tool-effect replay memo (PMR-ZJCP)', () => {
+  let root: string
+
+  before(() => {
+    root = join(mkdtempSync(join(tmpdir(), 'effectmemo-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function memo(overrides?: Partial<ChildToolEffectMemo>): ChildToolEffectMemo {
+    return {
+      version: 1,
+      childId: 'child-a',
+      tool: 'message_peer',
+      fingerprint: effectFingerprint('message_peer', 'child-a', { to: 'b' }),
+      createdAt: new Date().toISOString(),
+      result: { ok: true, deliveredTo: 'b' },
+      ...overrides,
+    }
+  }
+
+  it('round-trips a write through readEffectMemo', () => {
+    const written = memo()
+    assert.equal(writeEffectMemo(written, root), true)
+    const read = readEffectMemo(
+      written.childId,
+      written.tool,
+      written.fingerprint,
+      root,
+    )
+    assert.ok(read)
+    assert.deepEqual(read, written)
+  })
+
+  it('writeEffectMemo is exclusive-create: second write returns false, file unchanged', () => {
+    const first = memo({ childId: 'child-dup' })
+    assert.equal(writeEffectMemo(first, root), true)
+    const path = effectMemoPath(
+      first.childId,
+      first.tool,
+      first.fingerprint,
+      root,
+    )
+    const before = readFileSync(path, 'utf8')
+    const second = memo({
+      childId: 'child-dup',
+      result: { ok: false, tampered: true },
+    })
+    assert.equal(writeEffectMemo(second, root), false)
+    assert.equal(readFileSync(path, 'utf8'), before)
+    const read = readEffectMemo(
+      first.childId,
+      first.tool,
+      first.fingerprint,
+      root,
+    )
+    assert.deepEqual(read?.result, { ok: true, deliveredTo: 'b' })
+  })
+
+  it('fails closed (null, no throw) on malformed JSON and missing/mistyped fields', () => {
+    const fp = effectFingerprint('caller_ping', 'child-bad', {})
+    const dir = effectMemoPath('child-bad', 'caller_ping', fp, root)
+    const parent = dirname(dir)
+    const cases: Record<string, unknown>[] = [
+      {},
+      { version: 2 },
+      { version: 1 },
+      { version: 1, childId: 7 },
+      { version: 1, childId: 'c', tool: 'ask_owner' },
+      {
+        version: 1,
+        childId: 'c',
+        tool: 'not_a_tool',
+        fingerprint: fp,
+        createdAt: 'now',
+        result: {},
+      },
+      {
+        version: 1,
+        childId: 'c',
+        tool: 'ask_owner',
+        fingerprint: 42,
+        createdAt: 'now',
+        result: {},
+      },
+      {
+        version: 1,
+        childId: 'c',
+        tool: 'ask_owner',
+        fingerprint: fp,
+        createdAt: 1,
+        result: {},
+      },
+      {
+        version: 1,
+        childId: 'c',
+        tool: 'ask_owner',
+        fingerprint: fp,
+        createdAt: 'now',
+      },
+      {
+        version: 1,
+        childId: 'c',
+        tool: 'ask_owner',
+        fingerprint: fp,
+        createdAt: 'now',
+        result: [],
+      },
+      {
+        version: 1,
+        childId: 'c',
+        tool: 'ask_owner',
+        fingerprint: fp,
+        createdAt: 'now',
+        result: 'nope',
+      },
+    ]
+    mkdirSync(parent, { recursive: true })
+    writeFileSync(dir, '{nope', 'utf8')
+    assert.equal(readEffectMemo('child-bad', 'caller_ping', fp, root), null)
+    for (const [index, value] of cases.entries()) {
+      writeFileSync(dir, JSON.stringify(value), 'utf8')
+      assert.equal(
+        readEffectMemo('child-bad', 'caller_ping', fp, root),
+        null,
+        `case ${index} should fail closed`,
+      )
+    }
+  })
+
+  it('fingerprints are stable across key order and undefined, and distinct for [] vs absent', () => {
+    const a = effectFingerprint('ask_owner', 'c', { x: 1, y: 2 })
+    const reordered = effectFingerprint('ask_owner', 'c', { y: 2, x: 1 })
+    assert.equal(a, reordered)
+
+    const withUndefined = effectFingerprint('ask_owner', 'c', {
+      x: 1,
+      extra: undefined,
+    })
+    assert.equal(withUndefined, effectFingerprint('ask_owner', 'c', { x: 1 }))
+
+    const emptyArray = effectFingerprint('ask_owner', 'c', { list: [] })
+    const absent = effectFingerprint('ask_owner', 'c', {})
+    assert.notEqual(emptyArray, absent)
+  })
+
+  it('fingerprints differ across tool, childId, and params', () => {
+    const base = effectFingerprint('ask_owner', 'child-1', { q: 'go?' })
+    assert.notEqual(
+      base,
+      effectFingerprint('caller_ping', 'child-1', { q: 'go?' }),
+    )
+    assert.notEqual(
+      base,
+      effectFingerprint('ask_owner', 'child-2', { q: 'go?' }),
+    )
+    assert.notEqual(
+      base,
+      effectFingerprint('ask_owner', 'child-1', { q: 'stop?' }),
+    )
+  })
+
+  it('sanitizes hostile childIds out of memo paths', () => {
+    const hostile = '../../etc/passwd'
+    const written = memo({ childId: hostile })
+    assert.equal(writeEffectMemo(written, root), true)
+    const path = effectMemoPath(
+      written.childId,
+      written.tool,
+      written.fingerprint,
+      root,
+    )
+    const rel = relative(join(root, 'tool-effects'), path)
+    assert.ok(!rel.split(sep).includes('..'))
+    assert.ok(
+      readEffectMemo(written.childId, written.tool, written.fingerprint, root),
+    )
+  })
+
+  it('rewriteEffectMemo replaces content atomically with no tmp residue', () => {
+    const original = memo({ childId: 'child-rewrite' })
+    writeEffectMemo(original, root)
+    const replaced = memo({
+      childId: 'child-rewrite',
+      result: { ok: true, replaced: true },
+    })
+    rewriteEffectMemo(replaced, root)
+    const path = effectMemoPath(
+      replaced.childId,
+      replaced.tool,
+      replaced.fingerprint,
+      root,
+    )
+    assert.equal(readFileSync(path, 'utf8'), JSON.stringify(replaced))
+    const read = readEffectMemo(
+      replaced.childId,
+      replaced.tool,
+      replaced.fingerprint,
+      root,
+    )
+    assert.deepEqual(read?.result, { ok: true, replaced: true })
+    const childDir = join(root, 'tool-effects', 'child-rewrite')
+    const residue = readdirSync(childDir).filter((name) =>
+      name.endsWith('.tmp'),
+    )
+    assert.deepEqual(residue, [])
   })
 })
 
