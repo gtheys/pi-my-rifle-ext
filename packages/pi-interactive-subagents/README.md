@@ -124,6 +124,9 @@ Requires [herdr](https://github.com/pi-edubot/herdr) >= 0.9.1 (tested against 0.
 herdr pi
 ```
 
+> [!CAUTION]
+> **This extension only runs inside a herdr session.** Children live in herdr panes, so pi must be started via `herdr pi` with `herdr` on PATH and the herdr server running (version >= **0.9.1** — the preflight gate). Without that, pane and worktree operations (`subagent()`, `subagent_resume`, `subagent_interrupt`, `worktree: true`) refuse with an actionable `herdr preflight failed` error result — there is no fallback mode and nothing is silently degraded. See [Requirements](#requirements) and the version-gate row in the [Feature tour](#feature-tour).
+
 ---
 
 ## Reference
