@@ -116,3 +116,34 @@ test('saveViewerPlacement → readConfigFile → decidePlacement: second run no 
   const decision = decidePlacement(undefined, cfg.viewerPlacement)
   assert.deepEqual(decision, { kind: 'placement', placement: 'above' })
 })
+
+// AIDEV-NOTE: yolo plan 6.1 — config-level yolo default; --yolo flag wins via
+// `parsed.yolo || config.yolo` wiring in the /flow handler (index.ts).
+test('readConfigFile: yolo absent → undefined (wired as false default)', async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-flow-yolo-'))
+  t.after(async () => await rm(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'config.json')
+  await writeFile(file, JSON.stringify({ workRoots: [] }))
+  const cfg = await readConfigFile(file)
+  assert.equal(cfg.yolo, undefined)
+  // The /flow wiring `parsed.yolo || config.yolo` on an absent flag resolves
+  // to `undefined`, which downstream only treats as true when === true.
+  assert.equal(false || cfg.yolo === true, false)
+})
+
+test('readConfigFile: yolo accepted and read back', async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-flow-yolo-'))
+  t.after(async () => await rm(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'config.json')
+  await writeFile(file, JSON.stringify({ workRoots: [], yolo: true }))
+  const cfg = await readConfigFile(file)
+  assert.equal(cfg.yolo, true)
+})
+
+test('readConfigFile: malformed yolo value → clear throw mentioning the property', async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-flow-yolo-'))
+  t.after(async () => await rm(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'config.json')
+  await writeFile(file, JSON.stringify({ workRoots: [], yolo: 'yes' }))
+  await assert.rejects(readConfigFile(file), /yolo/)
+})

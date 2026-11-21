@@ -34,6 +34,12 @@ const PiFlowConfigSchema = Type.Object({
         'Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and search fallback)',
     }),
   ),
+  yolo: Type.Optional(
+    Type.Boolean({
+      description:
+        'Run /flow phases without confirmation gates. Only applies when the --yolo flag is absent on the /flow invocation — an explicit flag wins over config',
+    }),
+  ),
   viewerPlacement: Type.Optional(
     Type.Union(
       [

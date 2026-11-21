@@ -1513,16 +1513,17 @@ export default function (pi: ExtensionAPI) {
         await readRunEvents(getAgentDir(), ref),
         (p) => existsSync(p),
       )
-      // AIDEV-NOTE (yolo plan 2.1/2.2): thread --yolo BEFORE mergeSeedInput —
-      // the journaled seed wins for yolo (flag-less resume of a yolo run
-      // stays yolo; --yolo cannot upgrade a running non-yolo seed).
+      // AIDEV-NOTE (yolo plan 2.1/2.2, 6.1): thread --yolo BEFORE
+      // mergeSeedInput — the journaled seed wins for yolo (flag-less resume of
+      // a yolo run stays yolo; --yolo cannot upgrade a running non-yolo seed).
+      // Config yolo only fills a FRESH start: absent flag (false) || config.
       let promptInput = {
         ...(await commandPhaseInput(pi, {
           mode,
           ref,
           cwd: ctx.cwd,
         })),
-        yolo: parsed.yolo,
+        yolo: parsed.yolo || config.yolo,
       }
       promptInput = mergeSeedInput(promptInput, seed)
       const yolo = promptInput.yolo === true

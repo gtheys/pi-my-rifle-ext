@@ -19,6 +19,10 @@
       "type": "string",
       "description": "Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and the search fallback)."
     },
+    "yolo": {
+      "type": "boolean",
+      "description": "Run /flow phases without confirmation gates. Only applies when the --yolo flag is absent on the /flow invocation — an explicit flag wins over config"
+    },
     "viewerPlacement": {
       "type": "string",
       "enum": ["right", "below", "left", "above", "tab"],

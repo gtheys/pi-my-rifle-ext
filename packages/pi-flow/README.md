@@ -124,6 +124,7 @@ checkout) instead of machine-wide.
 | --- | --- | --- | --- |
 | `workRoots` | `string[]` | `[]` | Absolute path prefixes; a git toplevel under any prefix is `work` mode |
 | `avenWorkspace` | `string` | unset | Aven workspace name or key forced on every aven call pi-flow makes (skips cwd inference and the search fallback) |
+| `yolo` | `boolean` | `false` | Run `/flow` phases without confirmation gates. Only applies when the `--yolo` flag is absent on the invocation — an explicit flag wins over config |
 | `landTestCommand` | `string[]` | detected, else `["bun","run","test"]` | Argv of the test command `flow_land` runs itself before authorizing a landing — the gate never trusts a claimed-green suite. When unset, the command is detected from repo signals in a fixed order: `bun.lock`/`bunfig.toml` → `bun run test`, `Cargo.toml` → `cargo test`, `package-lock.json` → `npm test`, `pnpm-lock.yaml` → `pnpm test`. The summary of every run names the command and its source (config / detection / default) |
 | `telemetry.enabled` | `boolean` | `false` | Master switch for OTLP telemetry. `false` or a missing `telemetry` block = the session probe subscribes to nothing, allocates nothing, makes no network calls |
 | `telemetry.otlpEndpoint` | `string` | unset (required with `telemetry`) | OTLP/HTTP base URL (e.g. `https://host:4478`); spans POST to `<endpoint>/v1/traces` |
@@ -140,6 +141,7 @@ checkout) instead of machine-wide.
     "/home/geert/Code/salaryhero"
   ],
   "avenWorkspace": "personal",
+  "yolo": false,
   "landTestCommand": ["bun", "run", "test"],
   "runServer": {
     "enabled": true
