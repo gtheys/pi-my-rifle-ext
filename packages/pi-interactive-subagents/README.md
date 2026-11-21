@@ -32,6 +32,21 @@ The widget above your input tracks every run — click a row to open that agent'
 
 States: `starting` → `active` (with the current tool and elapsed time) → `waiting`, plus `stalled` when a child's heartbeat goes silent — and a steer to the parent so it can react. Status comes from a child-written snapshot file, never from watching screen pixels.
 
+### Prompt cache stability
+
+Repeated spawns of the same role are shaped to keep the prompt prefix stable so provider-side prompt caching can latch onto it:
+
+- **Role identity** rides the system prompt via `--append-system-prompt` flag files — stable per role and byte-identical across spawns of that role.
+- **The first user message** is `modeHint + task + summaryInstruction`. It is dynamic, but spawns of the same role diverge only at the task text, after an identical `modeHint` prefix.
+- **aven-context is gated off** in child sessions, so no per-spawn aven blob lands at the front of the message stream, and role identity is no longer inlined into the dynamic first message.
+
+Known remaining sources of prefix divergence, both benign:
+
+- The trailing `cwd` section of the system prompt differs per worktree spawn — this is pi-core behavior and out of scope here.
+- `/skill:` follow-up prompts trail the task text, so the stable prefix ahead of them is preserved.
+
+This contract is enforced by the request-composition tests in `test/task-composition.test.ts` (the "request composition" describe block).
+
 ## The flows
 
 ### Parallel scouting
