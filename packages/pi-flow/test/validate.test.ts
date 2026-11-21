@@ -547,3 +547,23 @@ test('buildValidatePrompt: personal mode pins BASE_SHA to the recorded flow base
   // legacy fallback without a recorded SHA stays merge-base against the base
   assert.ok(p.includes('git merge-base HEAD <base>'))
 })
+
+// --- PMR-DQ7Z: personal step 7 targets the pinned BASE_SHA, not a branch name ---
+
+test('buildValidatePrompt: personal step 7 passes the pinned BASE_SHA as the review target (PMR-DQ7Z)', () => {
+  const personal = buildValidatePrompt({
+    mode: 'personal',
+    ref: 'PMR-DQ7Z',
+    scriptsDir: null,
+  })
+  // Any-ref target: the pinned SHA keeps the reviewer range identical to 6a
+  // even on a legacy worktree (a branch-NAME target would re-resolve via
+  // <base>@{upstream}, which lags in personal mode).
+  assert.ok(personal.includes('branch: BASE_SHA'))
+  const work = buildValidatePrompt({
+    mode: 'work',
+    ref: 'PMR-DQ7Z',
+    scriptsDir: null,
+  })
+  assert.ok(!work.includes('branch: BASE_SHA'))
+})

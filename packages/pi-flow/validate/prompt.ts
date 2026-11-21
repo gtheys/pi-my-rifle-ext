@@ -96,7 +96,13 @@ Review gate (part 1: review tool + blockers) — run ONLY after validation has
 fully passed:
 
 ${buildBasePinStep(mode)}
-7. Call the review tool on this change (the fresh-context reviewer). When it returns,
+7. Call the review tool on this change (the fresh-context reviewer) with target
+   { type: "branch", branch: BASE_SHA } — the tool accepts any ref, and the
+   pinned SHA keeps the reviewer range identical to 6a even on a legacy
+   worktree without a recorded flow base (a branch-NAME target would
+   re-resolve through the base's upstream ref, which lags local main in
+   personal mode — PMR-DQ7Z).
+   When it returns,
    write the review artifact's verdict as machine-readable lines — exactly
    one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
    0 when clean) plus one "- blocker: <description>" line per blocker:
