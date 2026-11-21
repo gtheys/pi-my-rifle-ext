@@ -315,6 +315,18 @@ Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on
 }
 ```
 
+### Data retention policy
+
+When `retentionDays` is set, a maintenance sweep runs automatically at session start and on demand via `/subagent prune`, removing inactive data-root records whose **newest relevant activity** is older than the configured age. The sweep reports what it removed and never aborts session startup.
+
+Safety rules:
+
+- **Never pruned:** `result-ref-reservations/` and `spawn-seq/` — monotonic counters; pruning them would silently reuse result refs and childIds.
+- **Age-eligible:** `results/`, `retired/` — removed once older than the cutoff.
+- **Session-checked:** `assignments/`, `peers/`, `asks/`, `inbox/`, `delivered/`, `interrupts/`, `tool-effects/`, `peer-bindings/` — pruned only when aged out **and** liveness is verifiably dead **and** the resume-source session file no longer exists. Live, current, resumable, unreadable, or unverifiable records are always kept; any inspection failure skips the record.
+- **Loud expiry:** pruned `results/` records never leave a silently dangling `result:<name>#<n>` ref — `inspectResultRef` reports `expired` ("result expired by retention policy") because reservation markers are never pruned and their target identity is immutable.
+- pi-flow run journals are never touched.
+
 ## Requirements
 
 - [pi](https://github.com/badlogic/pi-mono) — the coding agent
