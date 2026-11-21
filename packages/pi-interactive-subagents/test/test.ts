@@ -85,8 +85,10 @@ import * as spawnModule from '../pi-extension/subagents/spawn.ts'
 import {
   __storeInternals__,
   allocateSemanticRef,
+  inspectResultRef,
   MAX_RESULT_RECORD_BYTES,
   parseSemanticRef,
+  RESULT_REF_EXPIRED_MESSAGE,
   type ResultRefBinding,
   readResultRecord,
   resolveResultRef,
@@ -3708,6 +3710,63 @@ describe('store.ts durable result store', () => {
   it('fails closed on unknown or malformed ref resolution', () => {
     assert.equal(resolveResultRef('result:never#99999', storeRoot), null)
     assert.equal(resolveResultRef('garbage', storeRoot), null)
+  })
+})
+
+describe('inspectResultRef tri-state (PMR-KT90)', () => {
+  let storeRoot: string
+  before(() => {
+    storeRoot = mkdtempSync(join(tmpdir(), 'pi-subagents-inspect-'))
+  })
+  after(() => {
+    rmSync(storeRoot, { recursive: true, force: true })
+  })
+
+  it('returns the record path for a live record', () => {
+    const written = writeResultRecord(
+      {
+        childId: 'c-1',
+        name: 'worker',
+        summary: 'done',
+        sessionFile: null,
+      },
+      storeRoot,
+    )
+    const ref = allocateSemanticRef('worker', storeRoot, written.canonicalId)
+    assert.deepEqual(inspectResultRef(ref, storeRoot), {
+      kind: 'path',
+      path: written.path,
+    })
+  })
+
+  it('returns expired when the marker survives but the record is pruned', () => {
+    // Marker with a canonicalId that has no results record on disk — the only
+    // state results-pruning can newly produce.
+    const ref = allocateSemanticRef('worker', storeRoot, randomUUID())
+    assert.deepEqual(inspectResultRef(ref, storeRoot), { kind: 'expired' })
+  })
+
+  it('returns missing for absent and empty markers', () => {
+    assert.deepEqual(inspectResultRef('result:worker#99999', storeRoot), {
+      kind: 'missing',
+    })
+    const emptyRef = allocateSemanticRef('worker', storeRoot)
+    assert.deepEqual(inspectResultRef(emptyRef, storeRoot), {
+      kind: 'missing',
+    })
+  })
+
+  it('returns missing for garbage refs', () => {
+    assert.deepEqual(inspectResultRef('garbage', storeRoot), {
+      kind: 'missing',
+    })
+  })
+
+  it('exports the expired message verbatim', () => {
+    assert.equal(
+      RESULT_REF_EXPIRED_MESSAGE,
+      'result expired by retention policy',
+    )
   })
 })
 

@@ -202,16 +202,36 @@ function highestExistingN(dir: string): number {
 // AIDEV-NOTE: the marker content is the canonicalId, which is what lets a bare
 // semantic ref resolve back to its record path without a separate index.
 export function resolveResultRef(ref: string, root?: string): string | null {
-  const parsed = parseSemanticRef(ref)
-  if (!parsed) return null
-  const marker = reservationPath(parsed.name, parsed.n, root)
-  if (!existsSync(marker)) return null
-  const canonicalId = readFileSync(marker, 'utf8').trim()
-  if (canonicalId === '') return null
-  const path = resultRecordPath(canonicalId, root)
-  if (!existsSync(path)) return null
-  return path
+  const inspection = inspectResultRef(ref, root)
+  if (inspection.kind !== 'path') return null
+  return inspection.path
 }
+
+// AIDEV-NOTE (PMR-KT90): markers are never pruned and marker content (the
+// canonicalId) is immutable, so a ref can never silently resolve to different
+// content — it can only loudly expire once its results record is pruned.
+export type ResultRefInspection =
+  | { kind: 'path'; path: string }
+  | { kind: 'expired' }
+  | { kind: 'missing' }
+
+export function inspectResultRef(
+  ref: string,
+  root?: string,
+): ResultRefInspection {
+  const parsed = parseSemanticRef(ref)
+  if (!parsed) return { kind: 'missing' }
+  const marker = reservationPath(parsed.name, parsed.n, root)
+  if (!existsSync(marker)) return { kind: 'missing' }
+  const canonicalId = readFileSync(marker, 'utf8').trim()
+  if (canonicalId === '') return { kind: 'missing' }
+  const path = resultRecordPath(canonicalId, root)
+  if (!existsSync(path)) return { kind: 'expired' }
+  return { kind: 'path', path }
+}
+
+export const RESULT_REF_EXPIRED_MESSAGE =
+  'result expired by retention policy' as const
 
 /** Remove an obsolete tmp sibling left behind by a crashed write. */
 export function cleanupTmpRecord(canonicalId: string, root?: string): void {
