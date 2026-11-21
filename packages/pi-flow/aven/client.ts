@@ -525,6 +525,71 @@ export function classifyOpenTicketRefs(
   return extractListRefs(parsed)
 }
 
+// AIDEV-NOTE (PMR-3E1Z): classifier for the ready-ticket picker's
+// `aven list --ready` output. Same fail-closed convention as
+// classifyOpenTicketRefs (PMR-384R): aven exits 0 on errors, so classify
+// by text; any anomaly (error text, stderr error line, non-JSON, non-array
+// schema drift) returns null and records its reason via
+// recordAvenFailure — [] is reserved for a successfully parsed empty
+// array. The tail keeps ref+title pairs and SKIPS entries lacking either
+// non-empty string, mirroring extractListRefs' skip rule.
+export interface ReadyTicket {
+  ref: string
+  title: string
+}
+
+export function classifyReadyTickets(
+  stdout: string,
+  stderr: string,
+): ReadyTicket[] | null {
+  const errorText = avenErrorText(stdout, stderr)
+  if (errorText !== null) {
+    recordAvenFailure(
+      `aven list output contains error text: ${errorText.trim().split('\n')[0]?.slice(0, 200) ?? '(empty)'}`,
+    )
+    return null
+  }
+  const stderrErrorLine = stderr
+    .split('\n')
+    .find((line) => /^error\b/.test(line.trim()))
+  if (stderrErrorLine !== undefined) {
+    recordAvenFailure(
+      `aven list stderr reported an error: ${stderrErrorLine.trim().slice(0, 200)}`,
+    )
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    recordAvenFailure(
+      'aven list stdout was not valid JSON — ready-ticket universe unverifiable',
+    )
+    return null
+  }
+  if (!Array.isArray(parsed)) {
+    recordAvenFailure(
+      'aven list stdout JSON is not an array (schema drift) — ready-ticket universe unverifiable',
+    )
+    return null
+  }
+  const tickets: ReadyTicket[] = []
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const ref = (entry as { ref?: unknown }).ref
+    const title = (entry as { title?: unknown }).title
+    if (
+      typeof ref === 'string' &&
+      ref.length > 0 &&
+      typeof title === 'string' &&
+      title.length > 0
+    ) {
+      tickets.push({ ref, title })
+    }
+  }
+  return tickets
+}
+
 export async function listPlansAtReviewRefs(): Promise<string[]> {
   try {
     const out = await avenExec([
