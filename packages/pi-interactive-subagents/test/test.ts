@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -8403,6 +8404,20 @@ describe('subagent-done.ts message tools replay windows (PMR-JBEX / PMR-ZJCP)', 
     })
   }
 
+  // Name-based variant: the binding/replay defect is about name re-resolution,
+  // so these fingerprints key on the display name, not the childId.
+  function peerFingerprintByName(
+    childId: string,
+    message: string,
+    peerName: string,
+  ): string {
+    return effectFingerprint('message_peer', childId, {
+      peer: peerName,
+      message,
+      resultRef: undefined,
+    })
+  }
+
   function removeMemo(
     childId: string,
     tool: 'message_owner' | 'message_peer',
@@ -8677,6 +8692,286 @@ describe('subagent-done.ts message tools replay windows (PMR-JBEX / PMR-ZJCP)', 
           }
         },
       ),
+    )
+  })
+
+  it('(i) name replay across generations binds to gen-1: already-delivered from bound inbox, gen-2 untouched', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
+        const releaseGen1 = publishPresence(
+          {
+            childId: 'peer-b-1',
+            sessionFile: join(dir, 'peer-b-1-session.jsonl'),
+            name: 'Peer B',
+            cwd: dir,
+          },
+          root,
+        )
+        let first: any
+        try {
+          first = await callMessage(messagePeerTool, {
+            peer: 'Peer B',
+            message: PEER_TEXT,
+          })
+        } finally {
+          releaseGen1()
+        }
+        assert.equal(typeof first.details.messageId, 'string')
+
+        // Erase the memo so the replay must take the binding + evidence-scan
+        // path, NOT the memo-hit path.
+        removeMemo(
+          childId,
+          'message_peer',
+          peerFingerprintByName(childId, PEER_TEXT, 'Peer B'),
+          root,
+        )
+
+        // A newer generation under the same name appears before the replay.
+        const releaseGen2 = publishPresence(
+          {
+            childId: 'peer-b-2',
+            sessionFile: join(dir, 'peer-b-2-session.jsonl'),
+            name: 'Peer B',
+            cwd: dir,
+          },
+          root,
+        )
+        try {
+          const replay = await callMessage(messagePeerTool, {
+            peer: 'Peer B',
+            message: PEER_TEXT,
+          })
+          assert.equal(replay.details.messageId, first.details.messageId)
+          assert.ok(
+            replay.content[0].text.includes('already delivered'),
+            'replay must name the earlier delivery to the bound recipient',
+          )
+
+          // The bound (gen-1) inbox holds the original delivery; gen-2 got nothing.
+          const gen1Inbox = readInbox('peer-b-1', root)
+          assert.equal(gen1Inbox.length, 1)
+          assert.equal(gen1Inbox[0].message.messageId, first.details.messageId)
+          assert.equal(readInbox('peer-b-2', root).length, 0)
+
+          // The scan path re-memoizes the original messageId.
+          const memo = readEffectMemo(
+            childId,
+            'message_peer',
+            peerFingerprintByName(childId, PEER_TEXT, 'Peer B'),
+            root,
+          )
+          assert.ok(memo)
+          assert.equal(memo.result.messageId, first.details.messageId)
+        } finally {
+          releaseGen2()
+        }
+      }),
+    )
+  })
+
+  it('(j) first-write failure then replay delivers to bound gen-1 despite same-name gen-2', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
+        const releaseGen1 = publishPresence(
+          {
+            childId: 'peer-b-1',
+            sessionFile: join(dir, 'peer-b-1-session.jsonl'),
+            name: 'Peer B',
+            cwd: dir,
+          },
+          root,
+        )
+        try {
+          chmodSync(inboxDir('peer-b-1', root), 0o500)
+          let firstError: unknown
+          try {
+            await callMessage(messagePeerTool, {
+              peer: 'Peer B',
+              message: PEER_TEXT,
+            })
+          } catch (error) {
+            firstError = error
+          }
+          assert.ok(firstError, 'first execute must reject (EACCES on inbox)')
+
+          // A newer same-name generation appears while the first send failed.
+          const releaseGen2 = publishPresence(
+            {
+              childId: 'peer-b-2',
+              sessionFile: join(dir, 'peer-b-2-session.jsonl'),
+              name: 'Peer B',
+              cwd: dir,
+            },
+            root,
+          )
+          try {
+            chmodSync(inboxDir('peer-b-1', root), 0o700)
+
+            const replay = await callMessage(messagePeerTool, {
+              peer: 'Peer B',
+              message: PEER_TEXT,
+            })
+            assert.equal(typeof replay.details.messageId, 'string')
+            assert.ok(
+              replay.content[0].text.includes('Message delivered to Peer B'),
+            )
+
+            // Delivered exactly once, to the BOUND generation, not gen-2.
+            const gen1Inbox = readInbox('peer-b-1', root)
+            assert.equal(gen1Inbox.length, 1)
+            assert.equal(
+              gen1Inbox[0].message.messageId,
+              replay.details.messageId,
+            )
+            assert.equal(gen1Inbox[0].message.message, PEER_TEXT)
+            assert.equal(readInbox('peer-b-2', root).length, 0)
+
+            // Memo written and binding lastActivityAt advanced by the touch.
+            const memo = readEffectMemo(
+              childId,
+              'message_peer',
+              peerFingerprintByName(childId, PEER_TEXT, 'Peer B'),
+              root,
+            )
+            assert.ok(memo)
+            assert.equal(memo.result.messageId, replay.details.messageId)
+            const binding = readPeerBinding(
+              childId,
+              peerFingerprintByName(childId, PEER_TEXT, 'Peer B'),
+              root,
+            )
+            assert.ok(binding)
+            assert.equal(binding.toChildId, 'peer-b-1')
+            assert.ok(
+              binding.lastActivityAt >= binding.createdAt,
+              'binding lastActivityAt must have been touched',
+            )
+          } finally {
+            releaseGen2()
+          }
+        } finally {
+          // Always restore so temp-dir cleanup works even on failure.
+          try {
+            chmodSync(inboxDir('peer-b-1', root), 0o700)
+          } catch {}
+          releaseGen1()
+        }
+      }),
+    )
+  })
+
+  it('(k) dead bound recipient fails closed: replay throws, no retarget to same-name gen-2', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
+        const releaseGen1 = publishPresence(
+          {
+            childId: 'peer-b-1',
+            sessionFile: join(dir, 'peer-b-1-session.jsonl'),
+            name: 'Peer B',
+            cwd: dir,
+          },
+          root,
+        )
+        try {
+          chmodSync(inboxDir('peer-b-1', root), 0o500)
+          let firstError: unknown
+          try {
+            await callMessage(messagePeerTool, {
+              peer: 'Peer B',
+              message: PEER_TEXT,
+            })
+          } catch (error) {
+            firstError = error
+          }
+          assert.ok(firstError, 'first execute must reject (EACCES on inbox)')
+
+          // Release gen-1 BEFORE restoring perms: the bound recipient is now
+          // dead, and a same-name gen-2 is live — the replay must NOT retarget.
+          releaseGen1()
+          const releaseGen2 = publishPresence(
+            {
+              childId: 'peer-b-2',
+              sessionFile: join(dir, 'peer-b-2-session.jsonl'),
+              name: 'Peer B',
+              cwd: dir,
+            },
+            root,
+          )
+          try {
+            await assert.rejects(
+              callMessage(messagePeerTool, {
+                peer: 'Peer B',
+                message: PEER_TEXT,
+              }),
+              /no longer live.*no retarget/s,
+            )
+
+            // No delivery anywhere: bound inbox stays empty, gen-2 gets nothing,
+            // and no memo was written for the failed logical send.
+            assert.equal(readInbox('peer-b-1', root).length, 0)
+            assert.equal(readInbox('peer-b-2', root).length, 0)
+            assert.equal(
+              readEffectMemo(
+                childId,
+                'message_peer',
+                peerFingerprintByName(childId, PEER_TEXT, 'Peer B'),
+                root,
+              ),
+              null,
+            )
+          } finally {
+            releaseGen2()
+          }
+        } finally {
+          try {
+            chmodSync(inboxDir('peer-b-1', root), 0o700)
+          } catch {}
+          // releaseGen1 already called above; presence may be gone — unlink in
+          // release() is best-effort, so a second call here is safe to skip.
+        }
+      }),
+    )
+  })
+
+  it('(l) hand-written binding with mismatched request throws binding-conflict, no delivery', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
+        const fingerprint = peerFingerprintByName(childId, PEER_TEXT, 'Peer B')
+        writePeerBinding(
+          {
+            version: 1,
+            childId,
+            fingerprint,
+            toChildId: 'peer-b-1',
+            toSessionFile: join(dir, 'peer-b-1-session.jsonl'),
+            toName: 'Peer B',
+            request: {
+              peer: 'Peer B',
+              message: 'A DIFFERENT earlier message body',
+              resultRef: undefined,
+            },
+            createdAt: new Date().toISOString(),
+            lastActivityAt: new Date().toISOString(),
+          },
+          root,
+        )
+
+        await assert.rejects(
+          callMessage(messagePeerTool, {
+            peer: 'Peer B',
+            message: PEER_TEXT,
+          }),
+          /Peer binding conflict/,
+        )
+
+        // No delivery, no memo: the conflict fails closed before any send.
+        assert.equal(readInbox('peer-b-1', root).length, 0)
+        assert.equal(
+          readEffectMemo(childId, 'message_peer', fingerprint, root),
+          null,
+        )
+      }),
     )
   })
 })
