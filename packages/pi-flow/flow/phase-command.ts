@@ -75,6 +75,10 @@ export async function commandPhaseInput(
     gitRoot: stdout.trim(),
     workRoots: config.workRoots,
     labels: input.labels ?? [],
+    // AIDEV-NOTE: PMR-C0YV review P1 — commands deliver prompts without an
+    // armed loop: standalone /plan must hand the human the /flow <ref>
+    // resume instruction instead of narrating loop auto-advance.
+    deliveredBy: 'command',
     // AIDEV-NOTE: read-only ticket lookup for ticket brainstorming — jira-ref epic
     // first (labels land there, /flow resumes clean), then the jira-key synced
     // ticket (no acli needed). Neither → acli branch, announced via
