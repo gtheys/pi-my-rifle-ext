@@ -12,7 +12,7 @@
 // that actually fast-forwards main to the flow branch head.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -136,7 +136,14 @@ function setupRepo(): { repo: string; flowWt: string } {
     ['-c', 'user.name=t', '-c', 'user.email=t@t', 'rebase', '-q', 'main'],
     { cwd: flowWt },
   )
-  return { repo, flowWt }
+  // AIDEV-NOTE: PMR-RGA0 — git worktree list (which defaultResolveMainRepo
+  // parses) prints REALPATH'd paths. On macOS, tmpdir() lives under
+  // /var/folders (a symlink to /private/var/folders), so the raw fixture
+  // paths would break the byte-strict exact-command assertion even though
+  // the resolver behavior is correct. Normalizing the fixture (not the
+  // assertion) keeps the pin strict; on Linux realpath is an identity and
+  // the assertion is unchanged.
+  return { repo: realpathSync(repo), flowWt: realpathSync(flowWt) }
 }
 
 function withCwd(cwd: string, fn: () => Promise<void>): Promise<void> {
