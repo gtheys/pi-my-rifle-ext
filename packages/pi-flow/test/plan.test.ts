@@ -129,7 +129,10 @@ test('buildPlanPrompt: personal mode keeps size check + confirm gate', () => {
 
 // AIDEV-NOTE: PMR-T6KF — both modes share the same approval suffix: the
 // "planned" label lands ONLY after approval + tree; flow_phase_complete runs
-// at the end, never before.
+// at the end, never before. PMR-C0YV — the suffix must also state the loop's
+// auto-advance (closing message: implement starts automatically, no action
+// needed, never claim a halt) and phrase the unapproved route as a graceful
+// pause, matching loop.ts's pause notify.
 test('buildPlanPrompt: personal plan route shares the approval suffix', () => {
   const personal = buildPlanPrompt(PERSONAL)
   const work = buildPlanPrompt({
@@ -143,6 +146,13 @@ test('buildPlanPrompt: personal plan route shares the approval suffix', () => {
       /flow_phase_complete tool with ref=<ticket ref> and\s+phase="plan"/,
     )
     assert.match(prompt, /plan-state "review" WITHOUT\s+the "planned" label/)
+    assert.match(
+      prompt,
+      /loop advances <ticket ref> into the\s+implement phase automatically/,
+    )
+    assert.match(prompt, /never claim the flow halts/)
+    assert.match(prompt, /the flow pauses at plan/)
+    assert.ok(!prompt.includes('halts here'), 'no false halt narration')
   }
 })
 
@@ -150,6 +160,9 @@ test('buildPlanPrompt: personal plan route shares the approval suffix', () => {
 // gate: no plan-state=review, no spec_approve wait; the prompt closes the
 // phase via flow_phase_complete right after the human confirms the split.
 // Only the plan route keeps the PMR-QRJA review gate (via the skill).
+// PMR-C0YV — the oneshot block must also announce the loop's auto-advance
+// into implement (no action needed) and must not instruct the human to run
+// /implement or claim a halt: the loop injects the next phase itself.
 test('buildPlanPrompt: personal oneshot route skips the spec-approval gate', () => {
   const prompt = buildPlanPrompt(PERSONAL)
   const oneshotIdx = prompt.indexOf('If confirmed as oneshot')
@@ -165,6 +178,19 @@ test('buildPlanPrompt: personal oneshot route skips the spec-approval gate', () 
   assert.match(
     oneshotBlock,
     /flow_phase_complete tool\s+with ref=PMR-F7YM and phase="plan"/,
+  )
+  assert.match(
+    oneshotBlock,
+    /advances PMR-F7YM\s+into the implement phase automatically/,
+  )
+  assert.match(oneshotBlock, /no action is needed/)
+  assert.ok(
+    !oneshotBlock.includes('halts here'),
+    'oneshot block must not claim the flow halts',
+  )
+  assert.ok(
+    !/run \/implement/.test(oneshotBlock),
+    'oneshot block must not tell the human to run /implement',
   )
 })
 

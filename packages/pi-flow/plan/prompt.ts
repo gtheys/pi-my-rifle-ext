@@ -7,6 +7,13 @@
 // ends in plan-state=review; flow_phase_complete (and the "planned" label)
 // runs only after spec approval (PMR-QRJA) — the skill's resume ladder owns
 // all resume states, so there is no tree-refresh or plan-state parsing here.
+// PMR-C0YV — the prompt must describe the loop's post-label behavior: once
+// the "planned" label lands, flow/loop.ts injects the implement prompt
+// itself ("advancement is code, not model"), so the session's closing
+// message must say the implement phase starts automatically and needs no
+// action — never a halt claim or a manual next-phase instruction. The
+// unapproved plan route is a graceful pause (loop.ts pauses at plan), not a
+// halt.
 
 export interface PlanPromptInput {
   mode: 'work' | 'personal'
@@ -18,6 +25,9 @@ export interface PlanPromptInput {
 // the agent's spec_approve tool is receipt-gated and refuses without it.
 // Raw aven plan-state edits are forbidden in flow context. flow_phase_complete
 // instructions and the planned-label consequences are unchanged.
+// PMR-C0YV — the suffix also carries the auto-advance/closing-message
+// contract below, and the unapproved route says "pauses" (not "halts"),
+// matching loop.ts's graceful-pause notify.
 const APPROVAL_SUFFIX = `
 Approval is recorded by the HUMAN, not the agent: the human runs
 "/flow answer <ticket ref> approve" (a human-only slash command — it starts
@@ -29,13 +39,19 @@ When the receipt exists and the skill workflow is FULLY complete — including
 the aven phase/subtask hierarchy — set the ticket status to
 "todo" and call the flow_phase_complete tool with ref=<ticket ref> and
 phase="plan" — it applies the "planned" label after re-checking the gates,
-and its result confirms the label landed. The "planned" label lands
+and its result confirms the label landed.
+When the label lands, the /flow loop advances <ticket ref> into the
+implement phase automatically (advancement is code, not model): it
+injects the implement prompt into this session. Your closing message must
+say the implement phase starts automatically and that no action is needed
+— never claim the flow halts or ask the human to start the next phase
+manually. The "planned" label lands
 ONLY after approval: /implement routes oneshot vs plan from the type labels,
 and a premature "planned" would misroute the run. Direct aven label edits on
 lifecycle labels are blocked. If the user does not
 approve during this phase, leave the ticket at plan-state "review" WITHOUT
-the "planned" label and end the phase — the flow halts and resumes at plan
-via /flow once the tree exists.`
+the "planned" label and end the phase — the flow pauses at plan and
+resumes via /flow once the tree exists.`
 
 export function buildPlanPrompt(input: PlanPromptInput): string {
   const header = `Plan phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
@@ -67,8 +83,10 @@ Personal aven flow. Steps:
    - skip spec approval ENTIRELY: do NOT send the ticket into spec review
      (no plan-state metadata, no spec_approve or /spec-review wait). Call
      the flow_phase_complete tool with ref=${input.ref} and phase="plan"
-     right away — its result confirms the "planned" label landed — then end
-     the phase. Skip step 5.
+     right away — its result confirms the "planned" label landed. In your
+     closing message tell the human the /flow loop advances ${input.ref}
+     into the implement phase automatically and that no action is needed —
+     never claim the flow halts. Skip step 5.
 5. If confirmed as plan:
    Invoke the user's existing feature-plan-aven skill
    (engineering:feature-plan-aven) for the personal aven ticket ${input.ref}.
