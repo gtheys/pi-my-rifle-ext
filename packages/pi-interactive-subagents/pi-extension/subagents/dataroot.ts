@@ -13,6 +13,7 @@ export type SubagentsDataDirName =
   | 'interrupts'
   | 'spawn-seq'
   | 'retired'
+  | 'tool-effects'
 
 export const SUBAGENTS_DATA_DIR_NAMES: readonly SubagentsDataDirName[] = [
   'results',
@@ -25,6 +26,7 @@ export const SUBAGENTS_DATA_DIR_NAMES: readonly SubagentsDataDirName[] = [
   'interrupts',
   'spawn-seq',
   'retired',
+  'tool-effects',
 ]
 
 /** Durable data root for pi-interactive-subagents: <agentDir>/pi-subagents/. */
