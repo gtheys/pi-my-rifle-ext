@@ -41,6 +41,12 @@ import {
   resolvePeer,
   sendPeerMessage,
 } from './peers.ts'
+import {
+  effectFingerprint,
+  readEffectMemo,
+  rewriteEffectMemo,
+  writeEffectMemo,
+} from './tool-effects.ts'
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted
@@ -842,14 +848,67 @@ export default function (pi: ExtensionAPI) {
         )
       }
 
+      const guidanceText =
+        'Question delivered to the owner. End your turn NOW — do not ' +
+        'call any other tool. The answer will arrive as your next user ' +
+        'message and you continue this same session afterwards.'
+
+      const fingerprint = effectFingerprint('ask_owner', childId, {
+        question: params.question,
+        files: params.files,
+      })
+
+      const live = readAskRecord(childId)
+      const sidecar = readAskSidecar(sessionFile)
+      let liveIsReplay = false
+      if (
+        live !== null &&
+        live.sessionFile === sessionFile &&
+        effectFingerprint('ask_owner', childId, {
+          question: live.question,
+          files: live.files,
+        }) === fingerprint
+      ) {
+        liveIsReplay = true
+      }
+
+      // AIDEV-NOTE (PMR-ZJCP): replay of an interrupted ask_owner — the live
+      // ask record IS the evidence (written durably before the result could
+      // persist). Return the original askId; never a second ask, never the
+      // misleading outstanding-ask error. Sidecar heal writes the RECORD's
+      // askId, never a new one.
+      if (liveIsReplay && live !== null) {
+        if (sidecar === null || sidecar.askId !== live.askId) {
+          writeAskSidecar(sessionFile, live.askId)
+        }
+        writeEffectMemo({
+          version: 1,
+          childId,
+          tool: 'ask_owner',
+          fingerprint,
+          createdAt: new Date().toISOString(),
+          result: { askId: live.askId },
+        })
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `[Replay of an interrupted call] ${guidanceText}`,
+            },
+          ],
+          details: { askId: live.askId },
+        }
+      }
+
       // One outstanding ask per child — fail closed on a second call.
-      const pending = readAskSidecar(sessionFile)
-      if (pending || readAskRecord(childId)) {
+      if (sidecar || live) {
         throw new Error(
           "You already have an outstanding ask. Wait for the owner's answer " +
             '(it arrives as your next user message) before asking again.',
         )
       }
+
+      const orphaned = readEffectMemo(childId, 'ask_owner', fingerprint)
 
       const askId = randomUUID()
       const record = {
@@ -865,16 +924,40 @@ export default function (pi: ExtensionAPI) {
       // sidecar, so it can only observe a fully-written record.
       writeAskRecord(record)
       writeAskSidecar(sessionFile, askId)
+      // AIDEV-NOTE (PMR-ZJCP): orphan branch — an earlier identical ask ran
+      // but its records were cleared by a formal resume, so its askId is dead.
+      // Mark-after-effect: memo written only after the fresh ask is durable.
+      // A stale memo from the wiped run is atomically replaced (rewrite).
+      const memo = {
+        version: 1 as const,
+        childId,
+        tool: 'ask_owner' as const,
+        fingerprint,
+        createdAt: new Date().toISOString(),
+        result: { askId },
+      }
+      if (orphaned === null) {
+        writeEffectMemo(memo)
+      } else {
+        rewriteEffectMemo(memo)
+      }
       recorder.blockedAsking()
+
+      let text = guidanceText
+      if (orphaned !== null) {
+        const orphanNotice =
+          `Note: an earlier ask_owner with this exact question already ran ` +
+          `(askId ${orphaned.result.askId}) but is no longer live (records ` +
+          'cleared by resume); a fresh ask was created — treat this askId as ' +
+          'the active one. '
+        text = `${orphanNotice}${guidanceText}`
+      }
 
       return {
         content: [
           {
             type: 'text',
-            text:
-              'Question delivered to the owner. End your turn NOW — do not ' +
-              'call any other tool. The answer will arrive as your next user ' +
-              'message and you continue this same session afterwards.',
+            text,
           },
         ],
         details: { askId },
