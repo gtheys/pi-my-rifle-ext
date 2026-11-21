@@ -3228,6 +3228,14 @@ import {
   readProcessLockStatus,
 } from '../pi-extension/subagents/lock.ts'
 import {
+  isPeerRecipientBinding,
+  type PeerRecipientBinding,
+  peerBindingPath,
+  readPeerBinding,
+  touchPeerBinding,
+  writePeerBinding,
+} from '../pi-extension/subagents/peer-bindings.ts'
+import {
   type ChildIdentity,
   inboxDir,
   listLivePeers,
@@ -7577,6 +7585,192 @@ describe('child tool-effect replay memo (PMR-ZJCP)', () => {
       name.endsWith('.tmp'),
     )
     assert.deepEqual(residue, [])
+  })
+})
+
+describe('peer-bindings.ts (PMR-77KT)', () => {
+  let root: string
+
+  before(() => {
+    root = join(mkdtempSync(join(tmpdir(), 'peerbindings-')), 'pi-subagents')
+  })
+  after(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function binding(
+    overrides?: Partial<PeerRecipientBinding>,
+  ): PeerRecipientBinding {
+    return {
+      version: 1,
+      childId: 'child-a',
+      fingerprint: 'fp-a',
+      toChildId: 'child-b',
+      toSessionFile: '/tmp/peer-b.session.json',
+      toName: 'Peer B',
+      request: { peer: 'Peer B', message: 'hello' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      lastActivityAt: '2026-01-01T00:00:00.000Z',
+      ...overrides,
+    }
+  }
+
+  it('round-trips a write through readPeerBinding', () => {
+    const written = binding({ childId: 'child-round', fingerprint: 'fp-round' })
+    assert.equal(writePeerBinding(written, root), true)
+    const read = readPeerBinding(written.childId, written.fingerprint, root)
+    assert.ok(read)
+    assert.deepEqual(read, written)
+  })
+
+  it('writePeerBinding is exclusive-create: second write returns false, file unchanged', () => {
+    const first = binding({ childId: 'child-dup', fingerprint: 'fp-dup' })
+    assert.equal(writePeerBinding(first, root), true)
+    const path = peerBindingPath(first.childId, first.fingerprint, root)
+    const before = readFileSync(path, 'utf8')
+    const second = binding({
+      childId: 'child-dup',
+      fingerprint: 'fp-dup',
+      toChildId: 'child-hijack',
+    })
+    assert.equal(writePeerBinding(second, root), false)
+    assert.equal(readFileSync(path, 'utf8'), before)
+    const read = readPeerBinding(first.childId, first.fingerprint, root)
+    assert.equal(read?.toChildId, 'child-b')
+  })
+
+  it('fails closed (null, no throw) on malformed JSON and missing/mistyped fields', () => {
+    const cases: Record<string, unknown>[] = [
+      {},
+      { version: 2 },
+      { version: 1 },
+      { version: 1, childId: 7 },
+      { version: 1, childId: 'c', fingerprint: 'fp' },
+      {
+        version: 1,
+        childId: 'c',
+        fingerprint: 'fp',
+        toChildId: 'b',
+        toSessionFile: 's',
+      },
+      {
+        version: 1,
+        childId: 'c',
+        fingerprint: 'fp',
+        toChildId: 'b',
+        toSessionFile: 's',
+        toName: 42,
+        request: { peer: 'p', message: 'm' },
+        createdAt: 'now',
+        lastActivityAt: 'now',
+      },
+      {
+        version: 1,
+        childId: 'c',
+        fingerprint: 'fp',
+        toChildId: 'b',
+        toSessionFile: 's',
+        toName: 'n',
+        request: { peer: 'p' },
+        createdAt: 'now',
+        lastActivityAt: 'now',
+      },
+      {
+        version: 1,
+        childId: 'c',
+        fingerprint: 'fp',
+        toChildId: 'b',
+        toSessionFile: 's',
+        toName: 'n',
+        request: { peer: 'p', message: 'm', resultRef: 3 },
+        createdAt: 'now',
+        lastActivityAt: 'now',
+      },
+      {
+        version: 1,
+        childId: 'c',
+        fingerprint: 'fp',
+        toChildId: 'b',
+        toSessionFile: 's',
+        toName: 'n',
+        request: 'nope',
+        createdAt: 'now',
+        lastActivityAt: 'now',
+      },
+      {
+        version: 1,
+        childId: 'c',
+        fingerprint: 'fp',
+        toChildId: 'b',
+        toSessionFile: 's',
+        toName: 'n',
+        request: { peer: 'p', message: 'm' },
+        lastActivityAt: 'now',
+      },
+      {
+        version: 1,
+        childId: 'c',
+        fingerprint: 'fp',
+        toChildId: 'b',
+        toSessionFile: 's',
+        toName: 'n',
+        request: { peer: 'p', message: 'm' },
+        createdAt: 'now',
+      },
+      {
+        version: 1,
+        childId: 'c',
+        fingerprint: 'fp',
+        toChildId: 'b',
+        toSessionFile: 's',
+        toName: 'n',
+        request: { peer: 'p', message: 'm' },
+        createdAt: 1,
+        lastActivityAt: 'now',
+      },
+    ]
+    for (const [index, value] of cases.entries()) {
+      assert.equal(
+        isPeerRecipientBinding(value),
+        false,
+        `case ${index} should fail closed`,
+      )
+    }
+    const dir = dirname(peerBindingPath('child-bad', 'fp-bad', root))
+    mkdirSync(dir, { recursive: true })
+    const path = peerBindingPath('child-bad', 'fp-bad', root)
+    writeFileSync(path, '{nope', 'utf8')
+    assert.equal(readPeerBinding('child-bad', 'fp-bad', root), null)
+  })
+
+  it('touchPeerBinding advances lastActivityAt atomically with no tmp residue', () => {
+    const original = binding({
+      childId: 'child-touch',
+      fingerprint: 'fp-touch',
+    })
+    writePeerBinding(original, root)
+    touchPeerBinding(original, root)
+    const path = peerBindingPath(original.childId, original.fingerprint, root)
+    const read = readPeerBinding(original.childId, original.fingerprint, root)
+    assert.ok(read)
+    assert.notEqual(read.lastActivityAt, original.lastActivityAt)
+    assert.equal(read.createdAt, original.createdAt)
+    assert.deepEqual(read.request, original.request)
+    assert.equal(read.toChildId, original.toChildId)
+    for (const entry of readdirSync(dirname(path))) {
+      assert.ok(!entry.endsWith('.tmp'), `tmp residue: ${entry}`)
+    }
+    assert.equal(JSON.parse(readFileSync(path, 'utf8')).version, 1)
+  })
+
+  it('sanitizes hostile childIds out of binding paths', () => {
+    const hostile = '../../etc/passwd'
+    const written = binding({ childId: hostile, fingerprint: 'fp-hostile' })
+    assert.equal(writePeerBinding(written, root), true)
+    const path = peerBindingPath(written.childId, written.fingerprint, root)
+    const rel = relative(join(root, 'peer-bindings'), path)
+    assert.ok(!rel.split(sep).includes('..'))
+    assert.ok(readPeerBinding(written.childId, written.fingerprint, root))
   })
 })
 
