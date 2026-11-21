@@ -1,0 +1,53 @@
+# AIDEV-NOTE: Repository quality gate (PMR-71YV) — runs the existing local
+# `check` script (Biome lint + tsc typecheck + workspace test suite) on every
+# proposed change. Modeled on the mavam/pi-agents check.yaml pattern.
+# Bun version is pinned to match mise.toml; bump both together.
+# The FULL test suite runs ungated: nothing is host-dependent-skipped; the
+# suite's own fixtures (compiled test binaries, real git) are CI-compatible.
+name: Check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Lint, typecheck, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun (pinned in mise.toml)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies (fails on lockfile drift)
+        run: bun install --frozen-lockfile
+
+      - name: Run checks
+        run: bun run check
+
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Run actionlint
+        run: >-
+          docker run --rm -v "$PWD:/repo" -w /repo
+          rhysd/actionlint:latest -color
