@@ -283,10 +283,11 @@ export function suiteSummary(output: string): string {
 
 /**
  * Suite command resolution (PMR-H5ST), in order: explicit `landTestCommand`
- * from pi-flow config (global or project — loadConfig merges, project wins
- * per key), then repo-signal detection, then `bun run test`. Fail-closed: a
- * spawn error or timeout is a red run. The summary names the command and its
- * source so landing refusals are explainable.
+ * from pi-flow config (global, main checkout project, or project —
+ * loadConfig merges, nearest wins per key), then repo-signal detection, then
+ * `bun run test`. Fail-closed: a spawn error or timeout is a red run. The
+ * summary names the command and its source so landing refusals are
+ * explainable.
  */
 export async function defaultSuiteRunner(cwd: string): Promise<SuiteRun> {
   const { config, origins } = await loadConfigWithOrigins(cwd)
