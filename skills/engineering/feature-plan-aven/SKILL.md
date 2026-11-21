@@ -1,6 +1,6 @@
 ---
 name: feature-plan-aven
-description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — pulled into the repo's aven project as a local epic via the find-or-create pull-in, `jira-ref` metadata, dep-linked to the synced ticket), or phrases like "plan this aven ticket", "aven feature plan". Always plan in the aven workspace routed to the current directory (salaryhero / personal).
+description: Plan a local feature tracked as an aven ticket — pickup the ticket, interview, scout, interactive planner agent, plan.md artifact, and — only after explicit user approval of the plan — an aven phase/subtask hierarchy. Plans carry a plan-state gate (draft → review → approved); re-triggering on the same ref resumes at the right stage. Trigger on an aven ref (e.g. PMR-ZTVG), a Jira ID of an aven-synced ticket (e.g. DP-71 — pulled into the repo's aven project as a local epic via the find-or-create pull-in, `jira-ref` metadata, dep-linked to the synced ticket), or phrases like "plan this aven ticket", "aven feature plan". Always plan in the aven workspace routed to the current directory (salaryhero / projects — verify with aven itself, see Workspaces below).
 ---
 
 # Feature Plan (Aven)
@@ -24,11 +24,22 @@ be the user's. `implement-plan-aven` (sibling) executes the resulting tree.
 Grouping is native aven **epic membership**: the feature ticket becomes the
 epic container, phases and subtasks are its children.
 
-Workspaces: personal projects live in the aven `personal` workspace, work in
-`salaryhero`. Aven infers the workspace from the cwd via its config routes —
-run aven commands from the repo root; pass `--workspace <name>` only when
-targeting another workspace. Verify routing with `aven doctor` if refs fail
-with `unknown-ref`.
+Workspaces: local personal projects live in the aven `projects` workspace,
+work in `salaryhero`. Aven infers the workspace from the cwd via its config
+routes — run aven commands from the repo root; pass `--workspace <name>` only
+when targeting another workspace.
+
+**Verify routing with aven itself BEFORE creating or planning anything** —
+never infer it from repo location or memory:
+
+```bash
+aven doctor                # "Workspace" section → ok active workspace <name>
+aven list 2>&1 | head -1   # scope line (stderr): scope: project <key> …
+aven project list          # confirm the repo's project exists there
+```
+
+If the resolved target is not where this feature belongs, pass explicit
+`--workspace`/`--project` on every aven call for this ticket.
 
 ## Flow
 
@@ -70,16 +81,17 @@ aven show <INPUT> --json || true   # aven ref? (ref lookup only — JSON omits m
 
 **Workspace → flow mapping.** aven's two workspaces map to the two origins:
 
-- **personal** — local features; free-text `/plan` lands here. The aven
+- **projects** — local features; free-text `/plan` lands here. The aven
   ticket is the source of truth; no Jira involvement.
 - **salaryhero** — Jira-synced tickets. Jira stays the system of record;
   execution happens on a **local epic in the repo's aven project**, pulled
   in and dep-linked to the synced ticket (below). The synced aven copy is
   context only.
 
-The workspace resolves from the cwd route automatically (`aven doctor` to
-verify). Never plan a salaryhero-routed feature into the personal workspace
-or vice versa — the ref lookup is workspace-scoped.
+Confirm the mapping with aven itself (`aven doctor` active-workspace line +
+the `scope:` line from `aven list`) before creating anything. Never plan a
+salaryhero-routed feature into the projects workspace or vice versa — the
+ref lookup is workspace-scoped.
 
 **Jira pull-in (find-or-create epic)** — run from the repo root BEFORE any
 other pickup step; `<REF>` for the rest of this skill is the local epic:

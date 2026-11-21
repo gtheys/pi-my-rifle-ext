@@ -42,7 +42,13 @@ Iterate as long as the user has questions. Correcting a wrong memory →
 
 Draft a description that stands alone — what, why, done-when, plus the
 file:line pointers gathered during exploration (this is what makes the
-oneshot path work later; a vague ticket fails its sanity check):
+oneshot path work later; a vague ticket fails its sanity check).
+
+Verify the destination with aven itself before creating — never infer the
+workspace/project from repo location or memory (`aven doctor` active-workspace
+line; `scope:` line from `aven list 2>&1 | head -1`; `aven project list` to
+confirm the project). Pass `--workspace`/`--project` explicitly when aven's
+resolved target differs from where the ticket belongs:
 
 ```bash
 aven add "<title, sentence case>" --status todo --description-stdin <<'EOF'

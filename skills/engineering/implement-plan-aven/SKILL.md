@@ -58,11 +58,11 @@ aven dep add $EPIC_REF $JIRA_REF   # epic blocked-by synced ticket; deps survive
 The epic is a local task — sync never touches it. The synced ticket is
 context + upstream record only.
 
-### Workspace selection — personal vs salaryhero
+### Workspace selection — projects vs salaryhero
 
 The ref's workspace decides the flavor of the run, not the mechanics:
 
-| | **personal** | **salaryhero** |
+| | **projects** | **salaryhero** |
 |---|---|---|
 | Comes from | free-text `/plan` (local feature) | Jira ticket pulled in as a local epic (`jira-ref` metadata, dep-linked to the synced ticket) |
 | Source of truth | the aven ticket itself | Jira; execution on the local epic (sync never touches it), spec context from the synced ticket |
@@ -70,8 +70,9 @@ The ref's workspace decides the flavor of the run, not the mechanics:
 | PR | optional (pushing to a personal remote directly is fine) | required — PR review is the gate |
 
 Both workspaces run the same execution loop; only branch/PR behavior differs.
-The workspace comes from aven's cwd routing — verify with `aven doctor` if a
-lookup unexpectedly misses.
+The workspace comes from aven's cwd routing — verify it with aven itself
+BEFORE acting (`aven doctor` active-workspace line; `scope:` line from
+`aven list 2>&1 | head -1`), not only after a lookup misses.
 
 The feature ticket carries `plan-path` metadata and heads the phase/subtask
 tree.
