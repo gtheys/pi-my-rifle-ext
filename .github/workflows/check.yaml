@@ -33,6 +33,15 @@ jobs:
         with:
           bun-version: 1.3.14
 
+      # AIDEV-NOTE: Node is pinned to match mise.toml (PMR-XCAE) — the
+      # ubuntu runner default (22.x) drifts from the local toolchain and
+      # node-24-only behavior would redden CI without local reproduction.
+      # Bump alongside the mise.toml node pin.
+      - name: Set up Node (pinned in mise.toml)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Install dependencies (fails on lockfile drift)
         run: bun install --frozen-lockfile
 
