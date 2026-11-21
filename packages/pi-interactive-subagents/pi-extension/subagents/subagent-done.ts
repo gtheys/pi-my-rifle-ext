@@ -2,6 +2,10 @@
  * Extension loaded into sub-agents.
  * - Shows agent identity + available tools as a styled widget above the editor (toggle with Alt+J)
  * - Provides a `subagent_done` tool for autonomous agents to self-terminate
+ * - Replay discipline (PMR-ZJCP): child side-effect tools consult the durable
+ *   effect memo (tool-effects/) and their own records (ask record, inbox,
+ *   .exit payload) so an interrupted run replays the original askId/payload
+ *   instead of duplicating the send
  */
 
 import { randomUUID } from 'node:crypto'

@@ -239,6 +239,20 @@ subagent_resume({ sessionPath: "…", message: "Use v2 — v1 is deprecated" });
 
 Unlike `ask_owner` (blocks, stays alive), `caller_ping` ends the session — use it when the child is done until further notice.
 
+### Replay safety for child side-effect tools
+
+Child side-effect tools are replay-safe across interrupted runs: each call is keyed by a durable effect memo (`tool-effects/`) plus the effect's own records (ask record, recipient inbox, `.exit` payload). On replay after a crash:
+
+- `ask_owner` — replays the **original askId**; no second ask record, no misleading outstanding-ask error. After a formal resume wipe, the fresh ask carries an explicit orphan notice naming the dead askId.
+- `caller_ping` / `subagent_done` — the original `.exit` payload is preserved verbatim; identical replays don't rewrite it, and a conflicting payload is reported explicitly, never overwritten.
+- `message_owner` / `message_peer` — a memo hit or durable inbox evidence means the message is reported as already delivered, never sent twice; interrupted-but-unconfirmed sends are reported explicitly as interrupted-or-conflict.
+
+Replay matches **exactly**: a rephrased message or a differently-spelled peer is a new logical effect, not a replay.
+
+Boundary: **generic tools (Bash, file edits) have no exactly-once protection.** A crash after a generic side effect may replay it — keep non-idempotent shell work out of interruptible children.
+
+Receive-side delivery dedup (`delivered` sentinels) is a separate mechanism (PMR-KY0E) and is unchanged by this.
+
 ## Configuration
 
 Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on first run).
