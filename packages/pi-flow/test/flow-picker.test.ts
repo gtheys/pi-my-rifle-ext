@@ -380,3 +380,117 @@ test('planPickerOutcome: no-UI zero gates → tickets (ready-ticket picker)', ()
   const plan = planPickerOutcome(false, [])
   assert.equal(plan.kind, 'tickets')
 })
+
+// ---------------------------------------------------------------------------
+// PMR-3E1Z 2.2 — ready-ticket picker outcome matrix.
+
+import type { ReadyTicket } from '../aven/client.ts'
+import {
+  buildTicketFallbackLines,
+  buildTicketMenuOptions,
+  planTicketPickerOutcome,
+  type TicketSelection,
+} from '../flow/picker.ts'
+
+const tickets: ReadyTicket[] = [
+  { ref: 'PMR-X', title: 'add a ready ticket picker' },
+  { ref: 'PMR-Y', title: 'another ready ticket' },
+]
+
+test('planTicketPickerOutcome: null tickets → failed', () => {
+  assert.equal(planTicketPickerOutcome(true, true, null).kind, 'failed')
+  assert.equal(planTicketPickerOutcome(false, false, null).kind, 'failed')
+})
+
+test('planTicketPickerOutcome: empty with gates → none "No ready tickets."', () => {
+  const plan = planTicketPickerOutcome(true, true, [])
+  assert.deepEqual(plan, { kind: 'none', line: 'No ready tickets.' })
+})
+
+test('planTicketPickerOutcome: empty without gates → none "No open gates or ready tickets."', () => {
+  const plan = planTicketPickerOutcome(true, false, [])
+  assert.deepEqual(plan, {
+    kind: 'none',
+    line: 'No open gates or ready tickets.',
+  })
+})
+
+test('planTicketPickerOutcome: null beats !hasUI and selection (no menu to render)', () => {
+  assert.equal(planTicketPickerOutcome(false, true, null).kind, 'failed')
+  const selection: TicketSelection = { stage: 'ticket-picked', ref: 'PMR-X' }
+  assert.equal(
+    planTicketPickerOutcome(true, true, null, selection).kind,
+    'failed',
+  )
+})
+
+test('planTicketPickerOutcome: empty beats selection', () => {
+  const selection: TicketSelection = { stage: 'ticket-cancelled' }
+  assert.equal(planTicketPickerOutcome(true, true, [], selection).kind, 'none')
+})
+
+test('planTicketPickerOutcome: !hasUI → fallback with numbered lines and /flow start hints', () => {
+  const plan = planTicketPickerOutcome(false, true, tickets)
+  assert.equal(plan.kind, 'fallback')
+  if (plan.kind !== 'fallback') return
+  assert.deepEqual(plan.lines, [
+    '1. PMR-X — add a ready ticket picker',
+    '   start with: /flow PMR-X',
+    '2. PMR-Y — another ready ticket',
+    '   start with: /flow PMR-Y',
+  ])
+})
+
+test('planTicketPickerOutcome: hasUI, no selection → menu with REF — title labels, ref values', () => {
+  const plan = planTicketPickerOutcome(true, true, tickets)
+  assert.equal(plan.kind, 'menu')
+  if (plan.kind !== 'menu') return
+  assert.deepEqual(plan.options, [
+    { label: 'PMR-X — add a ready ticket picker', value: 'PMR-X' },
+    { label: 'PMR-Y — another ready ticket', value: 'PMR-Y' },
+  ])
+})
+
+test('planTicketPickerOutcome: ticket-cancelled → silent', () => {
+  const plan = planTicketPickerOutcome(true, true, tickets, {
+    stage: 'ticket-cancelled',
+  })
+  assert.deepEqual(plan, { kind: 'silent' })
+})
+
+test('planTicketPickerOutcome: ticket-picked present ref → run', () => {
+  const plan = planTicketPickerOutcome(true, true, tickets, {
+    stage: 'ticket-picked',
+    ref: 'PMR-Y',
+  })
+  assert.deepEqual(plan, { kind: 'run', ref: 'PMR-Y' })
+})
+
+test('planTicketPickerOutcome: ticket-picked unknown ref → silent (lookup miss)', () => {
+  const plan = planTicketPickerOutcome(true, true, tickets, {
+    stage: 'ticket-picked',
+    ref: 'PMR-ZZZ',
+  })
+  assert.deepEqual(plan, { kind: 'silent' })
+})
+
+test('buildTicketMenuOptions: labels unique when refs unique', () => {
+  const options = buildTicketMenuOptions(tickets)
+  const labels = new Set(options.map((o) => o.label))
+  assert.equal(labels.size, options.length)
+})
+
+test('buildTicketMenuOptions: single-line labels (no embedded newlines)', () => {
+  for (const option of buildTicketMenuOptions(tickets)) {
+    assert.ok(!option.label.includes('\n'))
+  }
+})
+
+test('buildTicketFallbackLines: numbered title + start-with hint per ticket', () => {
+  assert.deepEqual(buildTicketFallbackLines(tickets), [
+    '1. PMR-X — add a ready ticket picker',
+    '   start with: /flow PMR-X',
+    '2. PMR-Y — another ready ticket',
+    '   start with: /flow PMR-Y',
+  ])
+})

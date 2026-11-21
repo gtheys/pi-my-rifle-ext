@@ -6,7 +6,7 @@
 // explicitly NOT this module's job (independent of T6). No IO here; the
 // ctx.ui.select dispatch wiring lives in 4.2.
 
-import type { AnswerChoice } from '../aven/client.ts'
+import type { AnswerChoice, ReadyTicket } from '../aven/client.ts'
 import type { OpenGate } from './gates.ts'
 
 const ANSWER_CHOICES: readonly AnswerChoice[] = [
@@ -217,4 +217,96 @@ export function planPickerOutcome(
     }
   }
   return { kind: 'answer', ref: gate.ref, choice: selection.choice }
+}
+
+// AIDEV-NOTE (PMR-3E1Z 2.2; PMR-W60H / ISC-A-1 picker invariants): pure
+// decision table for the ready-ticket picker — the 'run' kind only RETURNS a
+// ref for the handler to start the flow with; this module never resumes a
+// paused run or emits messages (PMR-W60H / ISC-A-1 picker invariants).
+
+// ---------------------------------------------------------------------------
+// PMR-3E1Z 2.2: ready-ticket picker (the 'tickets' handoff from above).
+
+export type TicketSelection =
+  | { stage: 'ticket-cancelled' }
+  | { stage: 'ticket-picked'; ref: string }
+
+export type TicketPickerPlan =
+  | { kind: 'fallback'; lines: string[] }
+  | { kind: 'none'; line: string }
+  | { kind: 'failed' }
+  | { kind: 'menu'; options: PickerOption[] }
+  | { kind: 'silent' }
+  | { kind: 'run'; ref: string }
+
+/** One select option per ready ticket; value is the ref itself so the
+ * handler's Map resolves label→ref without slicing (refs are unique here —
+ * unlike gates, tickets have no per-ref kind collision). */
+export function buildTicketMenuOptions(
+  tickets: readonly ReadyTicket[],
+): PickerOption[] {
+  const options: PickerOption[] = []
+  for (const ticket of tickets) {
+    options.push({
+      label: `${ticket.ref} — ${ticket.title}`,
+      value: ticket.ref,
+    })
+  }
+  return options
+}
+
+/** Numbered plain-text fallback mirroring buildGateFallbackLines: one title
+ * line + one start-with line per ticket. */
+export function buildTicketFallbackLines(
+  tickets: readonly ReadyTicket[],
+): string[] {
+  const lines: string[] = []
+  for (let i = 0; i < tickets.length; i++) {
+    const ticket = tickets[i]
+    lines.push(`${i + 1}. ${ticket.ref} — ${ticket.title}`)
+    lines.push(`   start with: /flow ${ticket.ref}`)
+  }
+  return lines
+}
+
+/** Pure decision table for the ready-ticket picker. Null/empty checks come
+ * FIRST — a null/empty list has no menu to render regardless of selection
+ * state; the handler re-calls with the selection only after a valid menu
+ * resolved. Unknown-ref picked → 'silent', mirroring the gate lookup-miss
+ * rule above. */
+export function planTicketPickerOutcome(
+  hasUI: boolean,
+  hadGates: boolean,
+  tickets: ReadyTicket[] | null,
+  selection?: TicketSelection,
+): TicketPickerPlan {
+  // classifyReadyTickets signals aven failure with null — the handler warns.
+  if (tickets === null) {
+    return { kind: 'failed' }
+  }
+  if (tickets.length === 0) {
+    // Notify once; the message depends on whether the user came from an
+    // empty gate menu or a bare /flow invocation.
+    if (hadGates) {
+      return { kind: 'none', line: 'No ready tickets.' }
+    }
+    return { kind: 'none', line: 'No open gates or ready tickets.' }
+  }
+  if (!hasUI) {
+    return { kind: 'fallback', lines: buildTicketFallbackLines(tickets) }
+  }
+  if (selection === undefined) {
+    return { kind: 'menu', options: buildTicketMenuOptions(tickets) }
+  }
+  if (selection.stage === 'ticket-cancelled') {
+    // Cancel at the ticket select: notify nothing.
+    return { kind: 'silent' }
+  }
+  const ticket = tickets.find((t) => t.ref === selection.ref)
+  if (ticket === undefined) {
+    // Lookup miss (stale list between menu render and pick): stay silent,
+    // same fail-closed rule as the gate picker.
+    return { kind: 'silent' }
+  }
+  return { kind: 'run', ref: ticket.ref }
 }
