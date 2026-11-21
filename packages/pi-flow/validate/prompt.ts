@@ -292,11 +292,124 @@ export interface ValidatePromptInput {
   // AIDEV-NOTE: personal mode only — a oneshot ticket has no plan.md, so the
   // deviation gate resolves the spec from the ticket description instead.
   oneshot?: boolean
+  // AIDEV-NOTE: /flow --yolo run: gates are skipped and the agent acts
+  // autonomously. Personal-only — the work-mode prompt ignores this bit.
+  yolo?: boolean
+}
+
+// AIDEV-NOTE: yolo 4.2 — yolo variant of the personal validate prompt. The
+// human test gate is replaced by the agent running the suite itself via the
+// run_tests tool (pi-test-runner), the human code-review gate
+// (buildPersonalCodeReviewGate) is skipped ENTIRELY, deviations_count > 0
+// ALWAYS routes back to implement via the blocker-retry loop (never
+// auto-accept — there is no human to accept), and the landing is
+// flow_land(route=pr) with feedback handled by the feedback phase — no local
+// merge-main, no code_review. flow_phase_complete(validate) runs after the
+// review gate returns 0 blockers AND the deviation review passes. The
+// reviewed-at marker contract (PMR-69V8) is kept on every fail path so the
+// loop can re-inject implement.
+function yoloPersonalValidatePrompt(ref: string, oneshot: boolean): string {
+  const specSource = oneshot
+    ? `This is a personal-mode oneshot with no plan: the spec is the
+   ticket description itself, read from \`aven show ${ref} --full\`.`
+    : `Read the plan: run \`aven show ${ref} --full\` and trust ONLY
+   the \`metadata field_id=... key=plan-path\` / value<<EOF heredoc blocks
+   (same parsing as spec-review/aven-spec.ts). NEVER use \`aven show --json\`
+   for metadata — aven 0.1.39 omits it. Read plan.md from the resolved
+   plan-path. If the plan-path metadata is missing or the plan file is
+   unreadable: STOP — never invent a spec, never proceed without one.`
+  return `Validate phase (PIV flow). Mode: personal. Ref: ${ref}. YOLO run: gates are skipped — act autonomously, no human confirmation steps.
+Personal-mode validation (yolo variant): there is no cluster — you run the
+tests yourself. Do NOT run the work-mode gate (no cluster tools, no devctl,
+no acli). There is NO human code-review gate in a yolo run.
+
+1. Locate the ticket's plan/research artifacts for ${ref}: run
+   \`aven show ${ref} --full\` and look for a \`metadata ... key=research-path\`
+   block (set by /brainstorm on confirmed aven tickets). If present, read
+   that file for the research findings. If absent, that is NORMAL — most
+   tickets are never brainstormed; skip the research-findings section and
+   continue (do NOT fail or stop because of it). Extract from the remaining
+   artifacts (plan-path metadata): what changed, and the plan's validation
+   notes.
+2. Compose concrete runnable test instructions from those sections using the
+   rules in validate/personal.ts (composeHumanTest): numbered steps with the
+   expected outcome. If ALL sections are empty, STOP — the artifacts are
+   missing; never invent generic filler steps.
+3. Run the tests YOURSELF via the run_tests tool (pi-test-runner) in the
+   flow worktree — this is a yolo run: there is no human test gate and no
+   human pass/fail question. On failure: record the failing output as
+   an aven note on ${ref} (append "reviewed-at: <git rev-parse HEAD>") and
+   STOP — the flow loop re-runs implement automatically. On pass: record an
+   aven note on ${ref} reading "validated by agent (yolo), <today's date>"
+   and continue to the review gate.
+
+Review gate — run ONLY after the tests have passed:
+
+${buildBasePinStep('personal')}
+7. Call the review tool on this change (the fresh-context reviewer) with target
+   { type: "branch", branch: BASE_SHA } — the pinned SHA keeps the reviewer
+   range identical to 6a even on a legacy worktree without a recorded flow
+   base. When it returns, write the review artifact's verdict as
+   machine-readable lines — exactly one line "blockers_count: <N>" (N =
+   number of must-fix blockers, integer, 0 when clean) plus one
+   "- blocker: <description>" line per blocker:
+${REVIEW_CONTRACT_PROMPT}
+${buildDeltaReviewStep(ref)}
+8. Read the count. NEVER treat a missing or malformed count as 0 — a
+   malformed artifact means call the review tool again, not silent landing.
+   On blockers_count > 0: record each blocker as an aven note on ${ref}
+   (append "reviewed-at: <git rev-parse HEAD>" to the note) and STOP — the
+   flow loop re-runs implement automatically (retry budget applies); do not
+   run implement yourself. When blockers_count is 0, the deviation gate
+   below runs next.
+
+Deviation gate — run ONLY after the review gate returned blockers_count: 0.
+Steps, in order:
+
+D1. Resolve the spec source. ${specSource}
+D2. Mine the why-inputs: recent aven notes on ${ref} via
+   "aven context ${ref} --full" (interview note, worktree note, oneshot
+   outcome, escalation notes). Commit messages are resolved by the tool
+   itself.
+D3. Run the deviation reviewer: call the deviation_review tool with
+   mode="personal", the resolved spec text (D1) and the mined aven notes
+   (D2). Do NOT pass a diff or commit messages: the tool resolves the base,
+   diff and commits itself in the flow worktree and reports the base SHA and
+   range in its result. Compare that base SHA to BASE_SHA (6a); if it
+   differs, or the tool errors on a missing base / empty range, STOP. Await
+   its result.
+D4. Read the tool result. The tool already parses the artifact STRICTLY
+   (deviations_count contract). An ERROR tool result (spawn failure or
+   malformed artifact) means re-run deviation_review — NEVER treat it as 0
+   deviations, never silent landing. On ok, continue with the returned
+deviations_count.
+D5. Route on the returned deviations_count:
+   - 0 deviations: record an aven note on ${ref} reading
+     "no deviation from spec", then call the flow_phase_complete tool with
+     ref=${ref} and phase="validate" — it applies the "review-passed" label
+     after re-checking the gates. Do NOT land here: the flow advances to
+     the feedback phase automatically, and feedback lands via
+     flow_land(route=pr) — there is NO local merge into main and no human
+     review-tool step in a yolo run.
+   - more than 0: record the full deviation report as an aven note on
+     ${ref} (append "reviewed-at: <git rev-parse HEAD>") and STOP — do not
+     land. In a yolo run deviations ALWAYS route back to implement via the
+     blocker-retry loop; never auto-accept, never ask a human (there is no
+     human gate in yolo).`
 }
 
 export function buildValidatePrompt(input: ValidatePromptInput): string {
   const header = `Validate phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
   if (input.mode === 'personal') {
+    if (input.yolo === true) {
+      let isOneshotYolo: boolean
+      if (input.oneshot === true) {
+        isOneshotYolo = true
+      } else {
+        isOneshotYolo = false
+      }
+      return yoloPersonalValidatePrompt(input.ref, isOneshotYolo)
+    }
     let isOneshot: boolean
     if (input.oneshot === true) {
       isOneshot = true

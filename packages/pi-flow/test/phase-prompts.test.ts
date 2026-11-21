@@ -250,3 +250,194 @@ test('yolo plan: prompt auto-applies classifySize and self-approves (yolo 4.1)',
   assert.match(p, /flow_phase_complete/)
   assert.match(p, /SAME turn/)
 })
+
+// AIDEV-NOTE: yolo 4.2 — byte-pin the non-yolo personal validate prompt so
+// the yolo branch can never leak into it.
+const NON_YOLO_PERSONAL_VALIDATE_PROMPT = `Validate phase (PIV flow). Mode: personal. Ref: TP-1.
+Personal-mode validation: there is no cluster — the human is the test
+environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli).
+
+1. Locate the ticket's plan/research artifacts for TP-1: run
+   \`aven show TP-1 --full\` and look for a \`metadata ... key=research-path\`
+   block (set by /brainstorm on confirmed aven tickets). If present, read
+   that file for the research findings. If absent, that is NORMAL — most
+   tickets are never brainstormed; skip the research-findings section and
+   continue (do NOT fail or stop because of it). Extract from the remaining
+   artifacts (plan-path metadata): what changed, and the plan's validation
+   notes.
+2. Compose concrete runnable test instructions from those sections using the
+   rules in validate/personal.ts (composeHumanTest): numbered steps the human
+   can literally run, plus the expected outcome. If ALL sections are empty,
+   STOP and tell the human the artifacts are missing — never invent generic
+   filler steps.
+3. Present the instructions to the human via ask_user_question with exactly
+   two options: "pass" and "fail". WAIT for the answer — do not proceed until
+   the human has run the steps and replied.
+4. On "pass": record an aven note on TP-1 reading
+   "validated by human, <today's date>" and report validation complete (the
+   review gate runs next).
+5. On "fail": ask the human for a short failure description, record it as an
+   aven note on TP-1 (append "reviewed-at: <git rev-parse HEAD>") and
+   STOP — the flow loop re-runs implement automatically.
+
+Review gate (part 1: review tool + blockers) — run ONLY after validation has
+fully passed:
+
+6a. Pin the diff base ONCE, before the review gate: BASE_SHA is the
+   flow base recorded at worktree create — read it with
+   \`git config branch.$(git branch --show-current).flowbasesha\` (this is the
+   same base the deviation gate resolves, so the two gates agree by
+   construction). NEVER resolve against the base's upstream ref: personal
+   mode never pushes, so the upstream lags local main and would sweep
+   unrelated commits into the review. If flowbasesha is unset (legacy worktree), fall
+   back to \`git merge-base HEAD <base>\` where <base> is the recorded flow
+   base branch (\`git config branch.$(git branch --show-current).flowbase\`).
+   Record the SHA as BASE_SHA, then run \`git log BASE_SHA..HEAD --oneline\`
+   and \`git diff --stat BASE_SHA..HEAD\`. Use this BASE_SHA for the review
+   (7). The deviation gate resolves its own range (base recorded at worktree
+   create) and reports the base SHA: if it differs from BASE_SHA, or the
+   range the reviewer describes differs from the recorded one, ASK the human
+   — never call it a reviewer or tool error. If <base> cannot be resolved
+   unambiguously, STOP and ask the human.
+7. Call the review tool on this change (the fresh-context reviewer) with target
+   { type: "branch", branch: BASE_SHA } — the tool accepts any ref, and the
+   pinned SHA keeps the reviewer range identical to 6a even on a legacy
+   worktree without a recorded flow base (a branch-NAME target would
+   re-resolve through the base's upstream ref, which lags local main in
+   personal mode — PMR-DQ7Z).
+   When it returns,
+   write the review artifact's verdict as machine-readable lines — exactly
+   one line "blockers_count: <N>" (N = number of must-fix blockers, integer,
+   0 when clean) plus one "- blocker: <description>" line per blocker:
+   blockers_count: 0
+   - blocker: <description> (omit this line entirely when N is 0)
+7a. Fix round? Check the aven notes on TP-1 (read via "aven context TP-1 --full") for a prior review-blockers
+   note carrying "reviewed-at: <sha>" (use the MOST RECENT one). If none, the step 7 full review stands.
+   If one exists, run the review as a DELTA instead: call the review tool with custom
+   instructions containing (i) the recorded blockers and (ii) the output of
+   "git diff <sha>..HEAD". The reviewer must verify each recorded blocker is
+   resolved (an unresolved one counts as a blocker) and scan the fix diff for
+   new blockers, then emit the same blockers_count verdict as above. If the
+   sha is missing or unresolvable, or the diff is empty, run the full review.
+8. Read the count. NEVER treat a missing or malformed count as 0 — a
+   malformed artifact means call the review tool again, not silent landing.
+   On blockers_count > 0: record each blocker as an aven note on TP-1
+   (append "reviewed-at: <git rev-parse HEAD>" to the note) and STOP — the
+   flow loop re-runs implement automatically (retry budget applies); do not
+   run implement yourself. When
+   blockers_count is 0, the deviation gate below runs next, THEN the human
+   code-review gate at the end of this prompt.
+
+Deviation gate — run ONLY after the review gate returned blockers_count: 0,
+and BEFORE the code_review call named in review-gate
+   step 9. Steps, in order:
+
+D1. Resolve the spec source. Read the plan: run \`aven show TP-1 --full\` and trust ONLY
+   the \`metadata field_id=... key=plan-path\` / value<<EOF heredoc blocks
+   (same parsing as spec-review/aven-spec.ts). NEVER use \`aven show --json\`
+   for metadata — aven 0.1.39 omits it. Read plan.md from the resolved
+   plan-path. If the plan-path metadata is missing or the plan file is
+   unreadable: STOP and report to the human — never invent a spec, never
+   proceed without one.
+D2. Mine the why-inputs: recent aven notes on TP-1 via
+   "aven context TP-1 --full" (interview note, worktree note, oneshot outcome,
+   escalation notes). Commit messages are resolved by the tool itself.
+D3. Run the deviation reviewer: call the deviation_review tool with
+   mode="personal", the resolved spec text (D1) and the mined aven notes (D2).
+   Do NOT pass a diff or commit messages: the tool resolves the base, diff
+   and commits itself in the flow worktree and reports the base SHA and
+   range in its result. Compare that base SHA to BASE_SHA (6a); if it
+   differs, or the tool errors on a missing base / empty range, STOP and ask
+   the human. Await its result.
+D4. Read the tool result. The tool already parses the artifact STRICTLY
+   (deviations_count contract). An ERROR tool result (spawn failure or
+   malformed artifact) means re-run deviation_review — NEVER treat it as 0
+   deviations, never silent landing. On ok, continue with the returned
+deviations_count.
+D5. Route on the returned deviations_count:
+   - 0 deviations: record an aven note on TP-1 reading
+     "no deviation from spec", then continue to the human code-review gate
+     (review-gate step 9: the code_review tool with ref=TP-1).
+   - more than 0: present the full deviation report to the human via
+     ask_user_question with exactly two options: "accept" and "fix". WAIT
+     for the answer. Record the human decision as an aven note on TP-1
+     either way. On "accept": proceed to the human code-review gate
+     (review-gate step 9). On "fix": record the deviation
+     report as an aven note on TP-1 (append "reviewed-at: <git rev-parse
+     HEAD>") and STOP — do not land. The flow loop re-runs implement
+     automatically and points the agent at that note.
+
+Human code-review gate — run ONLY after the deviation gate returned
+0 deviations (or the human accepted the deviations):
+
+9. Call the code_review tool with ref=TP-1 — it opens tuicr on the flow
+   worktree and waits for the human's pass/fail.
+   On pass: call the flow_phase_complete tool with ref=TP-1 and
+   phase="validate" — it applies the "review-passed" label after
+   re-checking the gates; without it the flow halts at validate. Then call
+   the flow_land tool with ref=TP-1 and the route (merge-main). After it
+   returns ok, merge the flow branch into main LOCALLY: first run
+   \`git worktree list\` — its first entry is the MAIN (non-worktree)
+   checkout — then run \`git -C <main repo path> merge --ff-only <branch>\`
+   ALONE, nothing appended: flow_land pinned that exact command and a
+   compound command (e.g. appending && git log) is refused.
+   NEVER push; git push stays blocked for the whole flow. No PR, no Jira
+   link step. If the ff-only merge fails, STOP and ask the human — do not
+   force, reset or rebase. After the merge succeeds, the flow loop advances
+   TP-1 into its personal feedback phase (wrap-up: outcome summary,
+   review-feedback tickets, done — PMR-81SX); do not do that close-out here.
+10. On fail: the code_review tool already recorded the tuicr findings as an
+   aven note on TP-1. Add your own note on TP-1 containing
+   "reviewed-at: <git rev-parse HEAD>" and STOP — do not land. The flow loop
+   re-runs implement automatically (retry budget applies).`
+
+test('validate: non-yolo personal prompt is byte-identical to the pre-yolo text (yolo 4.2)', async () => {
+  const result = await buildPhasePrompt('validate', BASE)
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  assert.equal(result.prompt, NON_YOLO_PERSONAL_VALIDATE_PROMPT)
+})
+
+test('yolo validate: agent runs tests itself, no human gates (yolo 4.2)', async () => {
+  const result = await buildPhasePrompt('validate', { ...BASE, yolo: true })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  const p = result.prompt
+  assert.match(p, /run_tests/)
+  assert.doesNotMatch(p, /ask_user_question/)
+  assert.doesNotMatch(p, /code_review/)
+  assert.doesNotMatch(p, /tuicr/)
+  assert.doesNotMatch(p, /merge --ff-only/)
+  // spec-source resolution still works in yolo (plan-path for planned runs)
+  const gate = p.slice(p.indexOf('Deviation gate'))
+  assert.match(gate, /plan-path/)
+})
+
+test('yolo validate: deviations always fix, lands via flow_land route=pr (yolo 4.2)', async () => {
+  const result = await buildPhasePrompt('validate', { ...BASE, yolo: true })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  const p = result.prompt
+  assert.match(p, /never auto-accept/)
+  assert.match(p, /flow_phase_complete/)
+  assert.match(p, /flow_land/)
+  assert.match(p, /route=pr/)
+  // landing happens in the feedback phase, not in validate (double-authorize guard)
+  assert.match(p, /feedback lands via/)
+  assert.match(p, /Do NOT land here/)
+  // fail paths keep the loop's reviewed-at marker contract
+  assert.match(p, /reviewed-at/)
+})
+
+test('yolo validate: oneshot label names ticket description as spec source (yolo 4.2)', async () => {
+  const result = await buildPhasePrompt('validate', {
+    ...BASE,
+    yolo: true,
+    labels: ['oneshot'],
+  })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  const gate = result.prompt.slice(result.prompt.indexOf('Deviation gate'))
+  assert.match(gate, /ticket description/)
+  assert.doesNotMatch(gate, /plan-path/)
+})

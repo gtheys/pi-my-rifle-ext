@@ -191,6 +191,8 @@ function validatePrompt(input: PhasePromptInput): PhasePrompt {
   }
   // AIDEV-NOTE: personal oneshot tickets have no plan.md, so the deviation
   // gate must name the ticket description as the spec source, not plan-path.
+  // Yolo rides along (yolo 4.2); work mode keeps its prompt unchanged even
+  // when yolo is set (yolo is personal-only).
   return {
     kind: 'send',
     prompt: buildValidatePrompt({
@@ -198,6 +200,7 @@ function validatePrompt(input: PhasePromptInput): PhasePrompt {
       ref: input.ref,
       scriptsDir: null,
       oneshot: input.labels.includes('oneshot'),
+      yolo: input.yolo,
     }),
   }
 }
