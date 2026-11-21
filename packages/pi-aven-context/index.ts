@@ -24,6 +24,8 @@ const CUSTOM_TYPE = 'aven-context'
 const PRIMER_MARKER = '## Local Conventions'
 const AVEN_TIMEOUT_MS = 5_000
 
+// AIDEV-NOTE: cache boundary — a dynamic blob at the front of a child's
+// message stream defeats provider prompt caching, so children never inject.
 // AIDEV-NOTE: prime output = static CLI primer + live workspace sections.
 // Only the tail from "## Local Conventions" onward belongs in session context.
 export function stripPrimer(primeOutput: string): string {
@@ -32,46 +34,81 @@ export function stripPrimer(primeOutput: string): string {
   return primeOutput.slice(idx).trim()
 }
 
+// AIDEV-NOTE: pure gate so it is testable without touching process.env.
+export function isChildSession(
+  env: Record<string, string | undefined>,
+): boolean {
+  const value = env.PI_SUBAGENT_ID
+  return typeof value === 'string' && value !== ''
+}
+
+export interface MaybeInjectAvenContextDeps {
+  env: Record<string, string | undefined>
+  runPrime: () => Promise<string>
+  branchHasAvenContext: () => boolean
+  sendCustomMessage: (content: string) => void
+}
+
+export async function maybeInjectAvenContext(
+  deps: MaybeInjectAvenContextDeps,
+): Promise<boolean> {
+  if (isChildSession(deps.env)) return false
+  if (deps.branchHasAvenContext()) return false
+
+  let primeOutput: string
+  try {
+    primeOutput = await deps.runPrime()
+  } catch {
+    // aven missing, db locked, or timed out — context injection never
+    // blocks or breaks session startup.
+    return false
+  }
+
+  const context = stripPrimer(primeOutput)
+  if (!context) return false
+
+  const content = [
+    'Aven workspace state (live, from `aven prime`):',
+    '',
+    context,
+    '',
+    'Aven CLI reference: see the aven skill.',
+  ].join('\n')
+  deps.sendCustomMessage(content)
+  return true
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on('session_start', async (_event, ctx) => {
     // AIDEV-NOTE: getBranch() walks leaf→root, so this also covers sessions
     // resumed/forked from a session that already had context injected.
-    const alreadyInjected = ctx.sessionManager
-      .getBranch()
-      .some((e) => e.type === 'custom_message' && e.customType === CUSTOM_TYPE)
-    if (alreadyInjected) return
-
-    let primeOutput: string
-    try {
-      const r = await execFileAsync('aven', ['prime'], {
-        cwd: ctx.cwd,
-        timeout: AVEN_TIMEOUT_MS,
-      })
-      primeOutput = r.stdout
-    } catch {
-      // aven missing, db locked, or timed out — context injection never
-      // blocks or breaks session startup.
-      return
-    }
-
-    const context = stripPrimer(primeOutput)
-    if (!context) return
-
-    // AIDEV-NOTE: pi.sendMessage appends a custom_message entry (participates
-    // in LLM context); triggerTurn:false keeps injection passive — no agent run.
-    pi.sendMessage(
-      {
-        customType: CUSTOM_TYPE,
-        content: [
-          'Aven workspace state (live, from `aven prime`):',
-          '',
-          context,
-          '',
-          'Aven CLI reference: see the aven skill.',
-        ].join('\n'),
-        display: false,
+    await maybeInjectAvenContext({
+      env: process.env,
+      runPrime: async () => {
+        const r = await execFileAsync('aven', ['prime'], {
+          cwd: ctx.cwd,
+          timeout: AVEN_TIMEOUT_MS,
+        })
+        return r.stdout
       },
-      { triggerTurn: false },
-    )
+      branchHasAvenContext: () =>
+        ctx.sessionManager
+          .getBranch()
+          .some(
+            (e) => e.type === 'custom_message' && e.customType === CUSTOM_TYPE,
+          ),
+      // AIDEV-NOTE: pi.sendMessage appends a custom_message entry (participates
+      // in LLM context); triggerTurn:false keeps injection passive — no agent run.
+      sendCustomMessage: (content) => {
+        pi.sendMessage(
+          {
+            customType: CUSTOM_TYPE,
+            content,
+            display: false,
+          },
+          { triggerTurn: false },
+        )
+      },
+    })
   })
 }
