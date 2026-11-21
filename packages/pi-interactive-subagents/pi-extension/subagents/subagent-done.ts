@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { ExtensionAPI } from '@mariozechner/pi-coding-agent'
 import { Box, Text } from '@mariozechner/pi-tui'
 import { Type } from '@sinclair/typebox'
@@ -47,6 +47,34 @@ import {
   rewriteEffectMemo,
   writeEffectMemo,
 } from './tool-effects.ts'
+
+// AIDEV-NOTE (PMR-ZJCP): parse the `.exit` sidecar defensively — a missing
+// file or malformed JSON means "no prior payload" and callers proceed with the
+// fresh-write path; only a well-formed payload can trigger replay/conflict.
+function parseExitPayload(
+  exitFile: string,
+): { type: string; message?: string } | null {
+  if (!existsSync(exitFile)) {
+    return null
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(exitFile, 'utf8'))
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return null
+  }
+  const record = parsed as Record<string, unknown>
+  if (typeof record.type !== 'string') {
+    return null
+  }
+  if (typeof record.message === 'string') {
+    return { type: record.type, message: record.message }
+  }
+  return { type: record.type }
+}
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
   return agentStarted
@@ -878,19 +906,88 @@ export default function (pi: ExtensionAPI) {
       }
 
       recorder.callerPing()
-      const exitData = {
-        type: 'ping' as const,
-        name: process.env.PI_SUBAGENT_NAME ?? 'subagent',
+      // Memo identity falls back to the session file — caller_ping has never
+      // required PI_SUBAGENT_ID, and availability is unchanged.
+      const memoIdentity = process.env.PI_SUBAGENT_ID ?? sessionFile
+      const fingerprint = effectFingerprint('caller_ping', memoIdentity, {
         message: params.message,
-      }
-      writeFileSync(`${sessionFile}.exit`, JSON.stringify(exitData))
+      })
+      const exitFile = `${sessionFile}.exit`
+      const parsed = parseExitPayload(exitFile)
 
+      if (parsed === null) {
+        // AIDEV-NOTE (PMR-ZJCP): fresh path — no prior `.exit` payload, so
+        // write it, memo the effect, and exit. Mirrors the auto-exit
+        // never-overwrite convention (see agent_end handler): an existing
+        // sidecar payload is never clobbered.
+        const exitData = {
+          type: 'ping' as const,
+          name: process.env.PI_SUBAGENT_NAME ?? 'subagent',
+          message: params.message,
+        }
+        writeFileSync(exitFile, JSON.stringify(exitData))
+        writeEffectMemo({
+          version: 1,
+          childId: memoIdentity,
+          tool: 'caller_ping',
+          fingerprint,
+          createdAt: new Date().toISOString(),
+          result: {},
+        })
+        ctx.shutdown()
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Ping sent. Session will exit and parent will be notified.',
+            },
+          ],
+          details: {},
+        }
+      }
+
+      if (parsed.type === 'ping' && parsed.message === params.message) {
+        // AIDEV-NOTE (PMR-ZJCP): replay of an interrupted caller_ping — the
+        // identical `.exit` payload IS the durable record of the earlier
+        // ping (auto-exit never-overwrite convention). Leave the file
+        // byte-identical; only ensure the effect memo exists.
+        writeEffectMemo({
+          version: 1,
+          childId: memoIdentity,
+          tool: 'caller_ping',
+          fingerprint,
+          createdAt: new Date().toISOString(),
+          result: {},
+        })
+        ctx.shutdown()
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                '[Replay of an interrupted call] Ping already recorded from ' +
+                'the previous run; exiting now.',
+            },
+          ],
+          details: {},
+        }
+      }
+
+      // AIDEV-NOTE (PMR-ZJCP): conflict path — the `.exit` sidecar already
+      // holds a different payload from an interrupted run. Per the auto-exit
+      // never-overwrite convention we preserve it: overwriting would lose
+      // that record. The session exits with the preserved payload and the
+      // parent consumes it.
       ctx.shutdown()
       return {
         content: [
           {
             type: 'text',
-            text: 'Ping sent. Session will exit and parent will be notified.',
+            text:
+              `The .exit sidecar already records a '${parsed.type}' payload ` +
+              'from an interrupted run; it was preserved (overwriting it ' +
+              'would lose that record). This session exits with it and the ' +
+              'parent will consume that payload.',
           },
         ],
         details: {},
@@ -1178,12 +1275,62 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const sessionFile = process.env.PI_SUBAGENT_SESSION
       recorder.subagentDone()
+      // AIDEV-NOTE (PMR-ZJCP): the result text reports the exit-effect
+      // outcome explicitly (D5 — replay awareness returns results, never
+      // throws); the fresh path keeps today's text verbatim.
+      let text = 'Shutting down subagent session.'
       if (sessionFile) {
-        writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: 'done' }))
+        // Memo identity falls back to the session file; params are empty for
+        // this tool, so the fingerprint covers `{}`.
+        const memoIdentity = process.env.PI_SUBAGENT_ID ?? sessionFile
+        const fingerprint = effectFingerprint('subagent_done', memoIdentity, {})
+        const exitFile = `${sessionFile}.exit`
+        const parsed = parseExitPayload(exitFile)
+
+        if (parsed === null) {
+          // AIDEV-NOTE (PMR-ZJCP): fresh path — no prior `.exit` payload;
+          // write it and memo the effect (auto-exit never-overwrite
+          // convention: an existing sidecar is never clobbered).
+          writeFileSync(exitFile, JSON.stringify({ type: 'done' }))
+          writeEffectMemo({
+            version: 1,
+            childId: memoIdentity,
+            tool: 'subagent_done',
+            fingerprint,
+            createdAt: new Date().toISOString(),
+            result: {},
+          })
+        } else if (parsed.type === 'done') {
+          // AIDEV-NOTE (PMR-ZJCP): replay of an interrupted subagent_done —
+          // the identical `.exit` payload IS the durable record of the
+          // earlier done (auto-exit never-overwrite convention). Leave the
+          // file byte-identical; only ensure the effect memo exists.
+          writeEffectMemo({
+            version: 1,
+            childId: memoIdentity,
+            tool: 'subagent_done',
+            fingerprint,
+            createdAt: new Date().toISOString(),
+            result: {},
+          })
+          text =
+            '[Replay of an interrupted call] Done already recorded from the ' +
+            'previous run; exiting now.'
+        } else {
+          // AIDEV-NOTE (PMR-ZJCP): conflict path — a different payload is
+          // already recorded from an interrupted run; preserve it per the
+          // auto-exit never-overwrite convention. The parent consumes that
+          // payload when the session exits.
+          text =
+            `The .exit sidecar already records a '${parsed.type}' payload ` +
+            'from an interrupted run; it was preserved (overwriting it ' +
+            'would lose that record). This session exits with it and the ' +
+            'parent will consume that payload.'
+        }
       }
       ctx.shutdown()
       return {
-        content: [{ type: 'text', text: 'Shutting down subagent session.' }],
+        content: [{ type: 'text', text }],
         details: {},
       }
     },
