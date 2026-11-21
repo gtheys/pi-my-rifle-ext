@@ -1,4 +1,5 @@
-// AIDEV-NOTE (PMR-ZGPY 4.1, D3/D10): pure picker helpers over OpenGate[] —
+// AIDEV-NOTE (PMR-ZGPY 4.1, D3/D10; 2.1 adds the ticket sentinel row and
+// the 'tickets' plan kind): pure picker helpers over OpenGate[] —
 // menu options, per-kind choice vocabularies (with a "show command instead"
 // escape), and numbered fallback lines. The picker only ANSWERS gates via
 // `/flow answer <ref> <choice>`; resuming paused runs is human-only and
@@ -55,6 +56,15 @@ export const COMMAND_ESCAPE_VALUE = '__command__'
 const COMMAND_ESCAPE_OPTION: PickerOption = {
   label: 'show command instead',
   value: COMMAND_ESCAPE_VALUE,
+}
+
+/** Sentinel value marking the ready-ticket picker row (2.1); the caller
+ * (2.2+) turns this selection into the ticket-picker flow. */
+export const TICKET_ROW_VALUE = '__tickets__'
+
+export const TICKET_ROW_OPTION: PickerOption = {
+  label: 'Start a flow on a ready ticket…',
+  value: TICKET_ROW_VALUE,
 }
 
 /** Choice vocabulary per gate kind (D5/D6): answer-gates default to approve/reject. */
@@ -115,6 +125,7 @@ export function buildGateFallbackLines(gates: readonly OpenGate[]): string[] {
  * resolve a different row sharing the same ref (fix round 2). */
 export type PickerSelection =
   | { stage: 'gate-cancelled' }
+  | { stage: 'ticket-row-picked' }
   | { stage: 'gate-picked'; gateRef: string; gateKind: string }
   | { stage: 'choice-cancelled'; gateRef: string; gateKind: string }
   | { stage: 'answered'; gateRef: string; gateKind: string; choice: string }
@@ -128,6 +139,7 @@ export type PickerSelection =
 export type PickerPlan =
   | { kind: 'fallback'; lines: string[] }
   | { kind: 'empty' }
+  | { kind: 'tickets' }
   | { kind: 'menu'; options: PickerOption[] }
   | {
       kind: 'choice-menu'
@@ -143,22 +155,28 @@ export function planPickerOutcome(
   gates: readonly OpenGate[],
   selection?: PickerSelection,
 ): PickerPlan {
-  // Zero gates → 'empty' regardless of UI mode (fix round 2, deviation 2):
-  // the no-UI fallback branch with zero lines printed NOTHING, swallowing the
-  // promised one-line notify. The handler's empty branch notifies once for
-  // both modes; a selection can never coexist with zero gates (the menu
-  // requires gates to render).
+  // Zero gates → 'tickets' (PMR-ZGPY 2.1): with no ready gates the bare
+  // /flow picker jumps straight to the ready-ticket picker (built in 2.2).
+  // Supersedes the fix-round-2 'empty' behavior; a selection can never
+  // coexist with zero gates (the menu requires gates to render).
   if (gates.length === 0) {
-    return { kind: 'empty' }
+    return { kind: 'tickets' }
   }
   if (!hasUI) {
     return { kind: 'fallback', lines: buildGateFallbackLines(gates) }
   }
   if (selection === undefined) {
-    // Zero gates cannot reach here: the hoisted guard above returns 'empty'
+    // Zero gates cannot reach here: the hoisted guard above returns 'tickets'
     // before any selection branch, and a selection can never coexist with
     // zero gates (the menu requires gates to render).
-    return { kind: 'menu', options: buildGateMenuOptions(gates) }
+    return {
+      kind: 'menu',
+      options: [...buildGateMenuOptions(gates), TICKET_ROW_OPTION],
+    }
+  }
+  if (selection.stage === 'ticket-row-picked') {
+    // Sentinel row chosen: hand off to the ready-ticket picker (2.2).
+    return { kind: 'tickets' }
   }
   if (selection.stage === 'gate-cancelled') {
     // Cancel at the first select: notify nothing.

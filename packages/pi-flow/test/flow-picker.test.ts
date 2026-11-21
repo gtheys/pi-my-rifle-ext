@@ -10,6 +10,8 @@ import {
   isPickerInvocation,
   planPickerOutcome,
   splitGateValue,
+  TICKET_ROW_OPTION,
+  TICKET_ROW_VALUE,
 } from '../flow/picker.ts'
 
 const gates: OpenGate[] = [
@@ -95,6 +97,8 @@ test('planPickerOutcome: picking each colliding row resolves its own vocabulary'
   if (menu.kind !== 'menu') return
   const options = menu.options
   for (const option of options) {
+    // 2.1: skip the ticket sentinel row — it is not a gate row.
+    if (option.value === TICKET_ROW_VALUE) continue
     const split = splitGateValue(option.value)
     const plan = planPickerOutcome(true, colliding, {
       stage: 'gate-picked',
@@ -210,17 +214,50 @@ test('planPickerOutcome: no UI → fallback lines (regardless of selection)', ()
   assert.equal(cancelled.kind, 'fallback')
 })
 
-test('planPickerOutcome: hasUI + empty gates → empty', () => {
+test('planPickerOutcome: hasUI + empty gates → tickets (ready-ticket picker)', () => {
   const plan = planPickerOutcome(true, [])
-  assert.equal(plan.kind, 'empty')
+  assert.equal(plan.kind, 'tickets')
 })
 
 test('planPickerOutcome: hasUI + no selection → menu with gate options', () => {
   const plan = planPickerOutcome(true, gates)
   assert.equal(plan.kind, 'menu')
   if (plan.kind === 'menu') {
-    assert.deepEqual(plan.options, buildGateMenuOptions(gates))
+    assert.deepEqual(plan.options, [
+      ...buildGateMenuOptions(gates),
+      TICKET_ROW_OPTION,
+    ])
   }
+})
+
+test('menu plan ends with the ticket sentinel row (2.1)', () => {
+  const plan = planPickerOutcome(true, gates)
+  assert.equal(plan.kind, 'menu')
+  if (plan.kind === 'menu') {
+    const last = plan.options[plan.options.length - 1]
+    assert.equal(last, TICKET_ROW_OPTION)
+    assert.equal(last.value, TICKET_ROW_VALUE)
+    assert.equal(last.label, 'Start a flow on a ready ticket…')
+  }
+})
+
+test('ticket sentinel row is absent from gate options and fallback lines', () => {
+  for (const option of buildGateMenuOptions(gates)) {
+    assert.notEqual(option.value, TICKET_ROW_VALUE)
+  }
+  for (const line of buildGateFallbackLines(gates)) {
+    assert.ok(!line.includes(TICKET_ROW_VALUE))
+  }
+})
+
+test('planPickerOutcome: ticket-row-picked → tickets (2.1)', () => {
+  const plan = planPickerOutcome(true, gates, { stage: 'ticket-row-picked' })
+  assert.equal(plan.kind, 'tickets')
+})
+
+test('planPickerOutcome: gate-cancelled → empty (unchanged by 2.1)', () => {
+  const plan = planPickerOutcome(true, gates, { stage: 'gate-cancelled' })
+  assert.equal(plan.kind, 'empty')
 })
 
 test('planPickerOutcome: gate picked → choice-menu for that gate', () => {
@@ -339,7 +376,7 @@ test('grep-proof: picker module has no sendUserMessage / pickup / spawn', async 
 // PMR-ZGPY fix round 2 (deviation 2): no-UI + zero gates must produce the
 // 'empty' plan so the handler notifies once — a fallback plan with zero
 // lines printed nothing (the reviewed deviation).
-test('planPickerOutcome: no-UI zero gates → empty (one-line notify path)', () => {
+test('planPickerOutcome: no-UI zero gates → tickets (ready-ticket picker)', () => {
   const plan = planPickerOutcome(false, [])
-  assert.equal(plan.kind, 'empty')
+  assert.equal(plan.kind, 'tickets')
 })
