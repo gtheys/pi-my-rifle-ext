@@ -28,6 +28,7 @@ import {
   createAdhocTracker,
 } from './adhoc/tracker.ts'
 import {
+  applyAvenErrorLabel,
   avenExec,
   discoverAvenPrefixes,
   ensureLabels,
@@ -449,6 +450,9 @@ export default function (pi: ExtensionAPI) {
     readPlanState: (ref) => readPlanState(ref),
     hasFreshBlockers: (ref, since) => readFreshBlockers(ref, since),
     avenNote: (ref, text) => writeAvenNote(ref, text),
+    // yolo 5.1 — best-effort `error` label on halted yolo runs (never
+    // rejects; the loop additionally catches, belt and braces).
+    avenLabel: (ref) => applyAvenErrorLabel(ref),
     // PMR-81SX 5.2 — wrapper never rejects (impl never throws either); the
     // loop additionally catches, belt and braces.
     onFlowDone: async (ref, mode, worktree) => {

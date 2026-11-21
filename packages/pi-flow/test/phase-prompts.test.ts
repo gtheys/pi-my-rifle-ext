@@ -468,7 +468,7 @@ test('yolo feedback: lands via flow_land route=pr then push, PR, verify, note, c
   const iNote = p.indexOf('aven note', iView)
   const iDone = p.indexOf('--status done')
   const iComplete = p.indexOf('flow_phase_complete')
-  for (const [name, i] of [
+  const orderProbes: [string, number][] = [
     ['flow_land', iLand],
     ['route=pr', iRoute],
     ['push', iPush],
@@ -477,7 +477,8 @@ test('yolo feedback: lands via flow_land route=pr then push, PR, verify, note, c
     ['note', iNote],
     ['done', iDone],
     ['complete', iComplete],
-  ]) {
+  ]
+  for (const [name, i] of orderProbes) {
     assert.ok(i >= 0, `missing ${name} in yolo feedback prompt`)
   }
   assert.ok(

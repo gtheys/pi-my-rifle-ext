@@ -267,6 +267,39 @@ export async function writeAvenNote(
   }
 }
 
+// AIDEV-NOTE: yolo 5.1 — best-effort `error` type-label application for
+// halted yolo runs. `error` is deliberately OUTSIDE lifecycleLabelMutation
+// (label-gate) — it marks the run's outcome type, not its lifecycle stage, so
+// the bash interceptor does not conflict. Bootstrap: `aven label create
+// error` first (an 'already exists' failure is fine to ignore), then `aven
+// edit <ref> --label error`. Never throws; false = the label was not applied.
+export async function applyAvenErrorLabel(ref: string): Promise<boolean> {
+  try {
+    const createArgs = await avenArgsWithWorkspace(
+      ['label', 'create', 'error'],
+      ref,
+    )
+    await execFileAsync('aven', createArgs, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+  } catch {
+    // already exists (or aven unavailable) — the edit below decides success
+  }
+  try {
+    const editArgs = await avenArgsWithWorkspace(
+      ['edit', ref, '--label', 'error'],
+      ref,
+    )
+    await execFileAsync('aven', editArgs, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    return true
+  } catch (error: unknown) {
+    recordAvenFailure(error)
+    return false
+  }
+}
+
 // AIDEV-NOTE: Structural input for the implement routing guard — an open
 // epic tree is plan-route work regardless of type labels. Fail-open on aven
 // errors (label-based routing stays the primary contract).

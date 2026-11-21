@@ -14,6 +14,9 @@ interface Harness {
   planState: string | null
   openChildren?: boolean
   inFlight?: boolean
+  errorLabels: { ref: string; label: string }[]
+  /** false = label write fails; 'throw' = the dep itself rejects. */
+  errorLabelResult?: boolean | 'throw'
 }
 
 function makeHarness(labels: string[] | null = []): Harness {
@@ -24,6 +27,7 @@ function makeHarness(labels: string[] | null = []): Harness {
     notifications: [],
     labels,
     planState: null,
+    errorLabels: [],
     deps: undefined as unknown as FlowLoopDeps,
   }
   h.deps = {
@@ -41,6 +45,14 @@ function makeHarness(labels: string[] | null = []): Harness {
     },
     epicHasOpenChildren: async () => h.openChildren ?? false,
     hasInFlightSubagent: () => h.inFlight ?? false,
+    avenLabel: async (ref, label) => {
+      if (h.errorLabelResult === 'throw') {
+        throw new Error('label write exploded')
+      }
+      const ok = h.errorLabelResult ?? true
+      if (ok) h.errorLabels.push({ ref, label })
+      return ok
+    },
     sendPrompt: (prompt) => {
       h.sent.push(prompt)
     },
@@ -60,6 +72,14 @@ function startInput() {
     ref: 'TP-1',
     phase: 'plan' as const,
     promptInput: { ...PROMPT_INPUT },
+  }
+}
+
+function startYoloInput() {
+  return {
+    ref: 'TP-1',
+    phase: 'plan' as const,
+    promptInput: { ...PROMPT_INPUT, yolo: true },
   }
 }
 
@@ -459,6 +479,58 @@ test('done: onFlowDone called once with (ref, mode, worktree), after onRunEnd', 
   ])
   assert.equal(loop.isActive(), false)
   setActiveFlowRef(null)
+})
+
+// yolo 5.1: yolo halt applies the `error` label before the terminal snapshot
+test('yolo halt: applies the error label before the terminal snapshot', async () => {
+  const h = makeHarness([])
+  const order: string[] = []
+  h.deps.journal = (event) => {
+    h.events.push(event)
+    if (event.kind === 'loop-state') order.push(`snapshot:${event.loop.status}`)
+  }
+  h.deps.avenLabel = async (ref, label) => {
+    order.push(`label:${label}:${ref}`)
+    h.errorLabels.push({ ref, label })
+    return true
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startYoloInput())
+  await loop.onSettled() // no label -> halt
+  assert.deepEqual(order.slice(-2), ['label:error:TP-1', 'snapshot:halted'])
+  assert.deepEqual(h.errorLabels, [{ ref: 'TP-1', label: 'error' }])
+  assert.equal(loop.isActive(), false)
+})
+
+test('non-yolo halt: never applies the error label', async () => {
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled() // no label -> halt
+  assert.deepEqual(h.errorLabels, [])
+  assert.equal(loop.isActive(), false)
+})
+
+test('yolo halt with failing label write: still halts cleanly', async () => {
+  const h = makeHarness([])
+  h.errorLabelResult = false
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startYoloInput())
+  await loop.onSettled()
+  assert.equal(loop.isActive(), false)
+  const last = h.events.at(-1)
+  if (last?.kind === 'loop-state') assert.equal(last.loop.status, 'halted')
+})
+
+test('yolo halt with throwing label dep: still halts cleanly', async () => {
+  const h = makeHarness([])
+  h.errorLabelResult = 'throw'
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startYoloInput())
+  await loop.onSettled()
+  assert.equal(loop.isActive(), false)
+  const last = h.events.at(-1)
+  if (last?.kind === 'loop-state') assert.equal(last.loop.status, 'halted')
 })
 
 test('halt: onRunEnd fires but onFlowDone is never called', async () => {

@@ -41,6 +41,13 @@ export interface FlowLoopDeps {
   /** Write an aven note on the ref; false = write failed. */
   avenNote(ref: string, text: string): Promise<boolean>
   /**
+   * yolo 5.1 — apply the `error` TYPE label on the ref (bootstrap included);
+   * false = write failed. Optional so existing tests/consumers need no
+   * changes. AIDEV-NOTE: `error` is a type label, deliberately outside
+   * lifecycleLabelMutation, applied only for yolo runs on halt.
+   */
+  avenLabel?(ref: string, label: string): Promise<boolean>
+  /**
    * PMR-69V8: true when an aven review-blockers note ("reviewed-at:") was
    * written at/after sinceIso. Optional + fail-closed: absent or false keeps
    * the plain halt, so a validate failure without blockers never retries.
@@ -333,6 +340,24 @@ class FlowLoopImpl implements FlowLoop {
     const ref = this.state?.ref ?? ''
     const text = `flow halted at ${phase}: ${reason}`
     await this.deps.avenNote(ref, text)
+    // AIDEV-NOTE: yolo 5.1 — halted yolo runs get the `error` type label,
+    // best-effort and BEFORE the terminal snapshot (the journal is the
+    // durable halt record; the label marks the outcome). `error` is a type
+    // label, deliberately outside lifecycleLabelMutation, and only applied
+    // for yolo runs. A failing/throwing label write never masks the halt:
+    // it is journaled and the loop continues tearing down.
+    if (this.state?.promptInput.yolo === true && this.deps.avenLabel) {
+      let labeled = false
+      try {
+        labeled = await this.deps.avenLabel(ref, 'error')
+      } catch {
+        labeled = false
+      }
+      if (!labeled) {
+        const note = `failed to apply the "error" label on ${ref} (non-fatal)`
+        this.deps.journal({ kind: 'note', at: now(), ref, text: note })
+      }
+    }
     this.deps.journal({ kind: 'note', at: now(), ref, text })
     this.deps.notify(`/flow ${ref}: ${text}`, 'warning')
     this.snapshot('halted')
