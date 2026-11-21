@@ -57,12 +57,6 @@ export interface PhasePromptInput {
    *  (an oneshot route over an open tree is always a misroute: the whole
    *  tree gets executed as one batch without per-task workers). */
   epicHasOpenChildren?: boolean
-  /** PMR-C0YV review P1 — how this prompt reaches the session: 'loop' when
-   *  the /flow loop injects it (the loop advances phases itself), 'command'
-   *  when a standalone command sent it (nothing advances by itself). Only
-   *  the plan prompt reads it today; planPrompt blocks when it is missing
-   *  instead of guessing the advancement wording. */
-  deliveredBy?: 'loop' | 'command'
   /** /brainstorm override: explicit kind + topic/symptom (flow defaults to feature+ref). */
   brainstorm?: BrainstormOverride
   /** Aven ticket lookup for ticket brainstorming (jira-ref epic, then jira-key
@@ -141,24 +135,9 @@ async function brainstormPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
 }
 
 function planPrompt(input: PhasePromptInput): PhasePrompt {
-  // AIDEV-NOTE: PMR-C0YV review P1 — the plan prompt's advancement wording
-  // is delivery-path-specific (loop auto-advance vs /plan command resume
-  // handoff). A caller that omits deliveredBy blocks loudly instead of
-  // guessing: the wrong path instructs a stall or a phantom auto-advance.
-  if (input.deliveredBy === undefined) {
-    return {
-      kind: 'block',
-      reason:
-        'plan prompt requires deliveredBy ("loop" | "command") — the advancement wording depends on the delivery path',
-    }
-  }
   return {
     kind: 'send',
-    prompt: buildPlanPrompt({
-      mode: input.mode,
-      ref: input.ref,
-      deliveredBy: input.deliveredBy,
-    }),
+    prompt: buildPlanPrompt({ mode: input.mode, ref: input.ref }),
   }
 }
 

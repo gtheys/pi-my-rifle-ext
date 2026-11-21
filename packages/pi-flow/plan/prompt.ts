@@ -15,19 +15,13 @@
 // unapproved plan route is a graceful pause (loop.ts pauses at plan), not a
 // halt. Review P1 — the prompt ALSO reaches the standalone /plan command
 // (phase-command.ts), which arms no loop: there nothing advances after the
-// label lands, so the advancement wording is parametrized by `deliveredBy`
-// (loop = auto-advance narration; command = /flow <ref> resume handoff).
-
-export type PlanDelivery = 'loop' | 'command'
+// label lands. The advancement wording therefore covers BOTH delivery paths
+// inline (prompt-only: no delivery-path input — the session knows which
+// command started it and picks the matching branch).
 
 export interface PlanPromptInput {
   mode: 'work' | 'personal'
   ref: string
-  /** How this prompt reaches the session — decides the advancement wording
-   *  (loop = the loop injects implement itself; command = the human must run
-   *  /flow <ref>, nothing advances by itself). Required: guessing the wrong
-   *  path instructs a stall or a phantom auto-advance (PMR-C0YV review P1). */
-  deliveredBy: PlanDelivery
 }
 
 // AIDEV-NOTE: PMR-R5VB — approval is a HUMAN action (/flow answer <ref>
@@ -38,24 +32,10 @@ export interface PlanPromptInput {
 // PMR-C0YV — the suffix also carries the auto-advance/closing-message
 // contract below, and the unapproved route says "pauses" (not "halts"),
 // matching loop.ts's graceful-pause notify. Review P1 — the advancement
-// paragraph is delivery-specific: loop = auto-advance narration; command =
-// /flow <ref> resume handoff (standalone /plan arms no loop).
-function approvalSuffix(deliveredBy: PlanDelivery): string {
-  let advancement: string
-  if (deliveredBy === 'command') {
-    advancement = `After the label lands the flow does NOT advance by itself:
-this phase was started by the standalone /plan command, which arms no flow
-loop. Tell the human to run /flow <ticket ref> to continue into the
-implement phase — until then the planned ticket simply waits.`
-  } else {
-    advancement = `When the label lands, the /flow loop advances <ticket ref> into the
-implement phase automatically (advancement is code, not model): it
-injects the implement prompt into this session. Your closing message must
-say the implement phase starts automatically and that no action is needed
-— never claim the flow halts or ask the human to start the next phase
-manually.`
-  }
-  return `
+// paragraph covers both delivery paths: the /flow loop advances by itself;
+// a standalone /plan command arms no loop, so there the human must run
+// /flow <ref> to continue.
+const APPROVAL_SUFFIX = `
 Approval is recorded by the HUMAN, not the agent: the human runs
 "/flow answer <ticket ref> approve" (a human-only slash command — it starts
 no model turn and writes the durable approval receipt). Your spec_approve
@@ -67,38 +47,39 @@ the aven phase/subtask hierarchy — set the ticket status to
 "todo" and call the flow_phase_complete tool with ref=<ticket ref> and
 phase="plan" — it applies the "planned" label after re-checking the gates,
 and its result confirms the label landed.
-${advancement} The "planned" label lands
+When the label lands: if this phase was started by the /flow loop, the loop
+advances <ticket ref> into the implement phase automatically (advancement is
+code, not model) — it injects the implement prompt into this session, and
+your closing message must say the implement phase starts automatically and
+that no action is needed. If instead this phase was started by the
+standalone /plan command, no flow loop is armed and nothing advances by
+itself — your closing message must tell the human to run /flow <ticket ref>
+to continue into the implement phase — never claim the flow halts. The "planned" label lands
 ONLY after approval: /implement routes oneshot vs plan from the type labels,
 and a premature "planned" would misroute the run. Direct aven label edits on
 lifecycle labels are blocked. If the user does not
 approve during this phase, leave the ticket at plan-state "review" WITHOUT
 the "planned" label and end the phase — the flow pauses at plan and
 resumes via /flow once the tree exists.`
-}
 
 export function buildPlanPrompt(input: PlanPromptInput): string {
   const header = `Plan phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}.`
-  // PMR-C0YV review P1 — the closing-message contract is delivery-specific:
-  // the loop injects implement itself; standalone /plan arms no loop, so the
-  // human must be told to run /flow <ref> instead.
-  let oneshotClosing: string
-  if (input.deliveredBy === 'command') {
-    oneshotClosing = `right away — its result confirms the "planned" label landed. In your
-     closing message tell the human to run /flow ${input.ref} to start the
-     implement phase: this /plan command arms no flow loop, so the flow
-     does not advance by itself. Skip step 5.`
-  } else {
-    oneshotClosing = `right away — its result confirms the "planned" label landed. In your
-     closing message tell the human the /flow loop advances ${input.ref}
-     into the implement phase automatically and that no action is needed —
-     never claim the flow halts. Skip step 5.`
-  }
+  // PMR-C0YV review P1 — the closing-message contract covers both delivery
+  // paths: the loop injects implement itself; standalone /plan arms no loop,
+  // so there the human must be told to run /flow <ref> instead.
+  const oneshotClosing = `right away — its result confirms the "planned" label landed. Closing
+     message: when this phase runs under the /flow loop, tell the human the
+     loop advances ${input.ref} into the implement phase automatically and
+     that no action is needed; when this phase was started by the standalone
+     /plan command, no loop is armed — tell the human to run /flow
+     ${input.ref} to start the implement phase — never claim the flow halts.
+     Skip step 5.`
   if (input.mode === 'work') {
     return `${header}
 Invoke the user's existing feature-plan-aven skill (engineering:feature-plan-aven)
 for the Jira ticket ${input.ref}. Follow its workflow exactly — pickup,
 interview, scout, planner, plan.md, aven phase/subtask hierarchy — unchanged.
-${approvalSuffix(input.deliveredBy)}`
+${APPROVAL_SUFFIX}`
   }
   return `${header}
 Personal aven flow. Steps:
@@ -139,5 +120,5 @@ Personal aven flow. Steps:
    unchanged). The flow_phase_complete gate checks only lifecycle-label
    order — it never reads plan-state — so call flow_phase_complete only
    after the receipt-gated spec_approve has succeeded.
-${approvalSuffix(input.deliveredBy)}`
+${APPROVAL_SUFFIX}`
 }

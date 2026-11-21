@@ -349,10 +349,6 @@ class FlowLoopImpl implements FlowLoop {
     const result = await buildPhasePrompt(phase, {
       ...this.state.promptInput,
       labels,
-      // AIDEV-NOTE: PMR-C0YV review P1 — the loop is authoritative for its
-      // own delivery path; it overrides any promptInput value so plan-prompt
-      // advancement wording always narrates the loop's real behavior.
-      deliveredBy: 'loop',
       ...(phase === 'implement'
         ? {
             epicHasOpenChildren: await this.deps.epicHasOpenChildren(

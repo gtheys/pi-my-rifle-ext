@@ -31,21 +31,10 @@ test('brainstorm: explicit debug override routes the debug flow', async () => {
 })
 
 test('plan: prompt carries the plan.md path from gitRoot', async () => {
-  const result = await buildPhasePrompt('plan', {
-    ...BASE,
-    deliveredBy: 'loop',
-  })
+  const result = await buildPhasePrompt('plan', BASE)
   assert.equal(result.kind, 'send')
   if (result.kind !== 'send') return
   assert.match(result.prompt, /plan\.md/)
-})
-
-// AIDEV-NOTE: PMR-C0YV — the plan prompt's advancement wording is specific
-// to the delivery path (loop auto-advance vs /plan command resume handoff);
-// a caller that omits deliveredBy blocks loudly instead of guessing.
-test('plan: blocks without deliveredBy — advancement wording is path-specific', async () => {
-  const result = await buildPhasePrompt('plan', BASE)
-  assert.equal(result.kind, 'block')
 })
 
 test('implement: refuses without the planned label', async () => {

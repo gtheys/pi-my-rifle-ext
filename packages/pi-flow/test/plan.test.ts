@@ -80,7 +80,6 @@ test('classifySize: multiple hits → multiple reasons', () => {
 const PERSONAL = {
   mode: 'personal',
   ref: 'PMR-F7YM',
-  deliveredBy: 'loop',
 } as const
 
 // Regression guard: work-mode route must hand off to the existing
@@ -89,7 +88,6 @@ test('buildPlanPrompt: work mode references feature-plan-aven + Jira ref', () =>
   const prompt = buildPlanPrompt({
     mode: 'work',
     ref: 'DP-123',
-    deliveredBy: 'loop',
   })
   assert.match(prompt, /feature-plan-aven/)
   assert.match(prompt, /DP-123/)
@@ -140,7 +138,6 @@ test('buildPlanPrompt: personal plan route shares the approval suffix', () => {
   const work = buildPlanPrompt({
     mode: 'work',
     ref: 'DP-123',
-    deliveredBy: 'loop',
   })
   for (const prompt of [personal, work]) {
     assert.match(prompt, /"planned" label lands\s+ONLY after approval/)
@@ -151,7 +148,7 @@ test('buildPlanPrompt: personal plan route shares the approval suffix', () => {
     assert.match(prompt, /plan-state "review" WITHOUT\s+the "planned" label/)
     assert.match(
       prompt,
-      /loop advances <ticket ref> into the\s+implement phase automatically/,
+      /loop\s+advances <ticket ref> into the\s+implement phase automatically/,
     )
     assert.match(prompt, /never claim the flow halts/)
     assert.match(prompt, /the flow pauses at plan/)
@@ -200,42 +197,44 @@ test('buildPlanPrompt: personal oneshot route skips the spec-approval gate', () 
   )
 })
 
-// AIDEV-NOTE: PMR-C0YV review P1 — standalone /plan arms no flow loop, so a
-// command-delivered plan prompt must NOT claim auto-advance (the flow would
-// stall with the human told to do nothing). It must hand the human the
-// resume instruction (/flow <ref>) instead — in both modes and in the
-// oneshot block.
-test('buildPlanPrompt: command delivery hands off via /flow instead of claiming auto-advance', () => {
-  const personal = buildPlanPrompt({ ...PERSONAL, deliveredBy: 'command' })
+// AIDEV-NOTE: PMR-C0YV review P1 — the plan prompt ALSO reaches the
+// standalone /plan command, which arms no flow loop. The advancement wording
+// is prompt-only (no delivery-path input): both modes must carry BOTH
+// branches — loop auto-advance AND the /flow <ref> resume handoff — so the
+// session picks the branch matching the command that started it. Neither
+// branch may claim a halt.
+test('buildPlanPrompt: advancement wording covers both delivery paths', () => {
+  const personal = buildPlanPrompt(PERSONAL)
   const work = buildPlanPrompt({
     mode: 'work',
     ref: 'DP-123',
-    deliveredBy: 'command',
   })
   for (const prompt of [personal, work]) {
-    assert.doesNotMatch(
-      prompt,
-      /advances <ticket ref> into the\s+implement phase automatically/,
-    )
-    assert.ok(!prompt.includes('no action is needed'))
     assert.match(
       prompt,
-      /run \/flow <ticket ref> to continue into the\s+implement phase/,
+      /loop\s+advances <ticket ref> into the\s+implement phase automatically/,
     )
+    assert.match(prompt, /no action is needed/)
+    assert.match(
+      prompt,
+      /run \/flow <ticket ref>\s+to continue into the implement phase/,
+    )
+    assert.match(prompt, /never claim the flow halts/i)
     assert.ok(!/halts and resumes/.test(prompt))
   }
   const oneshotIdx = personal.indexOf('If confirmed as oneshot')
   const planIdx = personal.indexOf('If confirmed as plan')
   const oneshotBlock = personal.slice(oneshotIdx, planIdx)
-  assert.doesNotMatch(
-    oneshotBlock,
-    /advances PMR-F7YM\s+into the implement phase automatically/,
-  )
-  assert.ok(!oneshotBlock.includes('no action is needed'))
   assert.match(
     oneshotBlock,
-    /run \/flow PMR-F7YM to start the\s+implement phase/,
+    /advances PMR-F7YM into the implement phase automatically/,
   )
+  assert.match(oneshotBlock, /no action is needed/)
+  assert.match(
+    oneshotBlock,
+    /run \/flow\s+PMR-F7YM to start the implement phase/,
+  )
+  assert.ok(!/halts and resumes/.test(oneshotBlock))
 })
 
 // AIDEV-NOTE: PMR-T6KF regression guard — the personal plan route must NOT
