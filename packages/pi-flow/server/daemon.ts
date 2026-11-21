@@ -239,7 +239,6 @@ export interface SerialQueue {
 
 export function createSerialQueue(): SerialQueue {
   let tail: Promise<void> = Promise.resolve()
-  const tracked: Array<Promise<void>> = []
   return {
     push(task: () => Promise<void>): Promise<void> {
       const run = tail.then(task, task)
@@ -250,12 +249,85 @@ export function createSerialQueue(): SerialQueue {
         () => undefined,
         () => undefined,
       )
-      tracked.push(run)
       return run
     },
     async drain(): Promise<void> {
-      await Promise.all(tracked)
+      // AIDEV-NOTE: awaiting the tail chain covers every task enqueued
+      // before the drain call. The previous implementation also kept every
+      // settled task promise in a `tracked` array forever — with ~100 tasks
+      // per 1s scan that is an unbounded memory leak that OOM-killed the
+      // daemon after ~38h (4.9GB heap). Do not reintroduce it.
+      await tail
     },
+  }
+}
+
+/**
+ * fs.watch event filter for the runs/ dir: only journal appends are external
+ * input worth reacting to. The daemon's own .json projection writes land in
+ * the watched dir on every productive scan — rescan-on-own-write turned the
+ * watcher into a self-triggering loop amplifier (see the scan model note in
+ * main()). A null filename (some platforms never report one) conservatively
+ * triggers a rescan — the 1s poll is the correctness backstop either way.
+ */
+export function isJournalWatchEvent(filename: string | null): boolean {
+  if (filename === null) return true
+  return filename.endsWith('.journal.jsonl')
+}
+
+/** Change signature for one ref's journal: `${size}:${mtimeMs}`. Pure data. */
+export interface ScanCacheEntry {
+  sig: string
+  state: FlowRunState
+}
+
+/**
+ * Per-ref journal change signatures so the 1s poll skips re-reading and
+ * re-parsing journals that have not been appended to since the last scan
+ * (~800KB across ~100 refs in practice, every second, forever). When the
+ * signature matches, pending maintenance still runs — derived from the
+ * cached projection, which is provably identical to a fresh reproject
+ * (same journal bytes → same projected state). Entries are dropped on
+ * error/no-journal so a deleted-then-recreated journal can never serve a
+ * stale cached state.
+ */
+export interface ScanCache {
+  get(ref: string): ScanCacheEntry | undefined
+  set(ref: string, sig: string, state: FlowRunState): void
+  delete(ref: string): void
+}
+
+export function createScanCache(): ScanCache {
+  const byRef = new Map<string, ScanCacheEntry>()
+  return {
+    get(ref: string): ScanCacheEntry | undefined {
+      return byRef.get(ref)
+    },
+    set(ref: string, sig: string, state: FlowRunState): void {
+      byRef.set(ref, { sig, state })
+    },
+    delete(ref: string): void {
+      byRef.delete(ref)
+    },
+  }
+}
+
+/**
+ * Stat-based change signature for one ref's journal; null when the journal
+ * is missing/unreadable (treated as "changed" — the task path handles the
+ * no-journal case and clears pending).
+ */
+async function journalSignature(
+  agentDir: string,
+  ref: string,
+): Promise<string | null> {
+  try {
+    const st = await fsp.stat(
+      path.join(runsDir(agentDir), `${ref}.journal.jsonl`),
+    )
+    return `${st.size}:${st.mtimeMs}`
+  } catch {
+    return null
   }
 }
 
@@ -271,8 +343,14 @@ function log(agentDir: string, message: string): void {
 }
 
 /** Scan the runs dir; per ref, reproject + maintain pending from one read,
- * and sweep consumed markers once per scan. */
-async function scanRuns(agentDir: string, queue: SerialQueue): Promise<void> {
+ * and sweep consumed markers once per scan. Journals whose size+mtime
+ * signature matches the previous scan skip the re-read entirely; pending
+ * maintenance still runs from the cached projection. */
+async function scanRuns(
+  agentDir: string,
+  queue: SerialQueue,
+  cache: ScanCache,
+): Promise<void> {
   const dir = runsDir(agentDir)
   let entries: string[]
   try {
@@ -287,12 +365,39 @@ async function scanRuns(agentDir: string, queue: SerialQueue): Promise<void> {
   }
   const pendingDir = pendingDirPath(agentDir)
   for (const ref of refs) {
+    const sig = await journalSignature(agentDir, ref)
+    let cached: ScanCacheEntry | undefined
+    if (sig !== null) {
+      cached = cache.get(ref)
+    }
+    if (sig !== null && cached !== undefined && cached.sig === sig) {
+      // AIDEV-NOTE: unchanged journal — skip the full re-read/parse and
+      // maintain pending from the cached projection (identical state →
+      // identical decision). Cache is dropped on failure so the next scan
+      // falls back to the full task path.
+      queue.push(async () => {
+        try {
+          await maintainPending(pendingDir, ref, cached.state)
+        } catch (err) {
+          cache.delete(ref)
+          log(agentDir, `scan maintenance failed for ${ref}: ${String(err)}`)
+        }
+      })
+      continue
+    }
     queue.push(async () => {
       try {
         const outcome = await reprojectRunDetailed(agentDir, ref)
         // Same journal read drives the pending decision (subtask 3.2).
         await maintainPending(pendingDir, ref, outcome.state)
+        const sigNow = await journalSignature(agentDir, ref)
+        if (outcome.state !== null && sigNow !== null) {
+          cache.set(ref, sigNow, outcome.state)
+        } else {
+          cache.delete(ref)
+        }
       } catch (err) {
+        cache.delete(ref)
         log(agentDir, `scan maintenance failed for ${ref}: ${String(err)}`)
       }
     })
@@ -313,6 +418,7 @@ function main(): void {
   }
 
   const queue = createSerialQueue()
+  const scanCache = createScanCache()
 
   // Pidfile: the extension's lifecycle module (subtask 1.2) uses pid +
   // version + startedAt + agentDir for liveness and version-mismatch respawn.
@@ -354,7 +460,15 @@ function main(): void {
   // AIDEV-NOTE: scan model (plan decision 8) — 1s stat-poll full scan is the
   // PERMANENT fallback and the correctness backstop (dir-watch does not
   // reliably report appends into existing files); fs.watch only buys latency
-  // for new journals, and its failure degrades silently to poll.
+  // for new journals (filtered to *.journal.jsonl — see isJournalWatchEvent),
+  // and its failure degrades silently to poll. The per-ref size+mtime scan
+  // cache (createScanCache) keeps an idle poll from re-reading every journal
+  // every second; a cache hit still runs pending maintenance from the cached
+  // projection. Hot-loop history: legacy out-of-vocabulary journals made
+  // projections fail the daemon's own guard, so every scan rewrote identical
+  // bytes inside the watched dir — CPU burn + watch churn + unbounded queue
+  // growth (see applyEvent's AIDEV-NOTE in run-state.ts and the drain note
+  // in createSerialQueue).
   // AIDEV-NOTE: KEEPALIVE — pollTimer is intentionally NOT unref'd. It is the
   // only guaranteed event-loop handle when fs.watch(runsDir) fails (runs/ may
   // not exist at startup); unref'ing it let the daemon exit milliseconds after
@@ -362,14 +476,14 @@ function main(): void {
   // this interval must remain ref'd or the daemon must gain an explicit
   // keepalive handle.
   const schedule = createDebouncedScheduler(() => {
-    void scanRuns(agentDir, queue)
+    void scanRuns(agentDir, queue, scanCache)
   }, DEBOUNCE_MS)
   const pollTimer = setInterval(() => {
-    void scanRuns(agentDir, queue)
+    void scanRuns(agentDir, queue, scanCache)
   }, POLL_INTERVAL_MS)
   try {
-    const watcher = watch(runsDir(agentDir), () => {
-      schedule()
+    const watcher = watch(runsDir(agentDir), (_event, filename) => {
+      if (isJournalWatchEvent(filename)) schedule()
     })
     watcher.on('error', () => {
       // Degrade silently to the poll scan.
@@ -398,7 +512,7 @@ function main(): void {
   process.on('SIGTERM', shutdown)
   process.on('SIGINT', shutdown)
 
-  void scanRuns(agentDir, queue)
+  void scanRuns(agentDir, queue, scanCache)
 }
 
 // AIDEV-NOTE: extracted so schedule() is constructible without io; same

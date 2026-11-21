@@ -75,7 +75,10 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
     assert.equal(projected?.currentPhase, null)
 
     // A journal append after spawn is picked up within the poll window.
-    const markerPhase = `probe${Math.random().toString(36).slice(2)}`
+    // Marker must be a guard-valid phase (PHASES vocabulary): the daemon's
+    // projection only surfaces vocabulary it can validate, so a junk string
+    // would never appear in currentPhase and the wait would time out.
+    const markerPhase = 'plan'
     appendFileSync(
       journalFile,
       `${JSON.stringify({
@@ -276,7 +279,10 @@ test('real daemon: no runs/ dir at startup → stays alive on poll, picks up lat
       'projection for post-startup journal (poll backstop)',
     )
 
-    const markerPhase = `late${Math.random().toString(36).slice(2)}`
+    // Marker must be a guard-valid phase (PHASES vocabulary) — same reason
+    // as the first daemon test above; junk strings never reach the
+    // projection's currentPhase.
+    const markerPhase = 'plan'
     appendFileSync(
       journalFile,
       `${JSON.stringify({

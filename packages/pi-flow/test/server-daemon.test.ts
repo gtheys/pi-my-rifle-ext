@@ -12,14 +12,17 @@ import { test } from 'node:test'
 import {
   type FlowRunEvent,
   type FlowRunState,
+  isFlowRunState,
   type LoopStateRecord,
   recordRunEvent,
   recordRunEventJournalOnly,
   runStatePath,
 } from '../run-state.ts'
 import {
+  createScanCache,
   createSerialQueue,
   decidePending,
+  isJournalWatchEvent,
   maintainPending,
   pendingDirPath,
   projectionChanged,
@@ -152,6 +155,126 @@ test('reprojectRun: torn tail lines are skipped', async () => {
   await fs.appendFile(journalPath, '{"kind":"run-start","ref":', 'utf8')
   const result = await reprojectRun(agentDir, ref)
   assert.equal(result, 'unchanged')
+})
+
+// AIDEV-NOTE: regression for the daemon hot loop (CPU burn + OOM respawn).
+// Legacy journals (Oct 2026) carry phases outside the current PHASES
+// vocabulary, e.g. 'research'. readRunEvents parses journal lines leniently,
+// so those events reach the projector; projecting them verbatim produced
+// states that failed isFlowRunState. The daemon then judged its own output
+// "changed" on every 1s scan and rewrote identical bytes forever (and every
+// rewrite re-triggered fs.watch inside runs/). The invariant under test: a
+// frozen journal must stabilize — one write, then 'unchanged' — and the
+// written projection must pass the daemon's own validation guard.
+test('reprojectRun: legacy unknown-phase journal stabilizes after one write', async () => {
+  const agentDir = await mkAgentDir()
+  const ref = 'PMR-DNMD7'
+  await recordRunEvent(agentDir, makeEvent(ref, 'run-start'))
+  const journalPath = (runStatePath(agentDir, ref) as string).replace(
+    '.json',
+    '.journal.jsonl',
+  )
+  // Raw legacy lines, exactly the shape readRunEvents sees from old journals
+  // (appended behind the writer's back, bypassing typed event constructors).
+  const legacy = [
+    {
+      kind: 'phase-start',
+      ref,
+      at: new Date().toISOString(),
+      phase: 'research',
+    },
+    {
+      kind: 'phase-complete',
+      ref,
+      at: new Date().toISOString(),
+      phase: 'research',
+    },
+    {
+      kind: 'phase-start',
+      ref,
+      at: new Date().toISOString(),
+      phase: 'plan',
+    },
+  ]
+  await fs.appendFile(
+    journalPath,
+    `${legacy.map((e) => JSON.stringify(e)).join('\n')}\n`,
+    'utf8',
+  )
+
+  const first = await reprojectRun(agentDir, ref)
+  assert.equal(first, 'written')
+  const statePath = runStatePath(agentDir, ref) as string
+  const written = JSON.parse(await fs.readFile(statePath, 'utf8'))
+  assert.ok(
+    isFlowRunState(written),
+    'written projection must pass its own validation guard',
+  )
+  assert.deepEqual(written.completedPhases, [])
+  assert.equal(written.currentPhase, 'plan')
+
+  const before = await fs.stat(statePath)
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  const second = await reprojectRun(agentDir, ref)
+  assert.equal(second, 'unchanged')
+  const after = await fs.stat(statePath)
+  assert.equal(after.mtimeMs, before.mtimeMs)
+})
+
+// --- fs.watch filter ---
+
+// AIDEV-NOTE: the watcher watches runs/, but the daemon itself writes the
+// .json projections into runs/ on every scan that changes something. Letting
+// those events rescan meant the daemon continuously re-triggered itself.
+// Only journal appends are external input worth reacting to.
+test('isJournalWatchEvent: journal files trigger a rescan', () => {
+  assert.equal(isJournalWatchEvent('PMR-ABC1.journal.jsonl'), true)
+})
+
+test('isJournalWatchEvent: projection writes do not trigger a rescan', () => {
+  assert.equal(isJournalWatchEvent('PMR-ABC1.json'), false)
+})
+
+test('isJournalWatchEvent: null filename is conservative (rescan)', () => {
+  // Some platforms do not report filenames on watch events.
+  assert.equal(isJournalWatchEvent(null), true)
+})
+
+// --- scan cache (mtime+size skip) ---
+
+// AIDEV-NOTE: the 1s poll re-derives every run from its journal. Without a
+// change signature that means reading + JSON.parsing ALL journals (~800KB
+// across ~100 refs in practice) every second, forever. The cache keys each
+// ref to its journal's size+mtime signature so an unchanged journal skips
+// the re-read; pending maintenance still runs from the cached projection
+// (identical state, identical decision).
+test('scan cache: stores and returns the entry for a ref', () => {
+  const cache = createScanCache()
+  const state = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+  } as FlowRunState
+  cache.set('PMR-1', '120:1000', state)
+  const entry = cache.get('PMR-1')
+  assert.ok(entry !== undefined)
+  assert.equal(entry.sig, '120:1000')
+  assert.equal(entry.state, state)
+})
+
+test('scan cache: miss returns undefined', () => {
+  const cache = createScanCache()
+  assert.equal(cache.get('PMR-NOPE'), undefined)
+})
+
+test('scan cache: delete drops the entry', () => {
+  const cache = createScanCache()
+  const state = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-2',
+  } as FlowRunState
+  cache.set('PMR-2', '10:5', state)
+  cache.delete('PMR-2')
+  assert.equal(cache.get('PMR-2'), undefined)
 })
 
 // --- pending maintenance (subtask 3.2) ---

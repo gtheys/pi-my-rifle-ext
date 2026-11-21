@@ -444,6 +444,20 @@ export function projectRunState(
   return state
 }
 
+/**
+ * AIDEV-NOTE: hot-loop scar tissue — journals are parsed leniently
+ * (readRunEvents casts JSON.parse output as FlowRunEvent), so event fields
+ * can hold values outside the CURRENT type vocabulary, e.g. the dropped
+ * 'research' phase in Oct-2026 journals. Projecting those verbatim produced
+ * states that failed isFlowRunState, and the durable daemon then judged its
+ * own projection "changed" on every 1s scan — rewriting identical bytes
+ * forever while every rewrite re-triggered fs.watch inside runs/ (CPU burn
+ * + unbounded serial-queue growth). Invariant: applyEvent must only emit
+ * guard-valid state; events whose vocabulary the guard constrains are
+ * validated HERE and ignored when out-of-vocabulary. The journal remains
+ * authoritative (events are never dropped from it). If you add a new event
+ * field that isFlowRunState validates, constrain it in this switch too.
+ */
 export function applyEvent(
   state: FlowRunState | null,
   event: FlowRunEvent,
@@ -464,12 +478,14 @@ export function applyEvent(
     case 'phase-start': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
+      if (!PHASES.includes(event.phase)) return state
       if (state.currentPhase === event.phase) return state
       return { ...state, currentPhase: event.phase, updatedAt: event.at }
     }
     case 'phase-complete': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
+      if (!PHASES.includes(event.phase)) return state
       const completed = state.completedPhases.includes(event.phase)
         ? state.completedPhases
         : [...state.completedPhases, event.phase]
@@ -609,6 +625,10 @@ export function applyEvent(
     case 'loop-state': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
+      // loop.phase/loop.status are guard-validated — same drift risk as the
+      // phase events above (see the applyEvent AIDEV-NOTE).
+      if (!PHASES.includes(event.loop.phase)) return state
+      if (!LOOP_STATUSES.includes(event.loop.status)) return state
       return {
         ...state,
         loop: event.loop,
