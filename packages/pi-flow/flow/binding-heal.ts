@@ -33,7 +33,12 @@ export async function healFlowBinding(
   try {
     resolved = await resolveReviewWorktree(ref, deps)
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
+    let reason: string
+    if (error instanceof Error) {
+      reason = error.message
+    } else {
+      reason = String(error)
+    }
     return { ok: false, reason, recovery: recoveryCommand(ref) }
   }
 
