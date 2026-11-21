@@ -898,3 +898,63 @@ test('run 2 diagram clips main lane to run 2 windows', () => {
   assert.deepEqual(mainToolCallIds(result), ['tc-run2'])
   assert.equal(mainSpendNew(result), 10)
 })
+
+// --- PMR-9CHQ: NaN/unparseable timestamps degrade, never throw ----------
+
+test('timestamp-less toolCall entry is skipped with a warning, render survives', () => {
+  // Child lanes are NOT window-clipped, so a timestamp-less assistant entry
+  // reaches the synthesizer; previously this produced at: '' which threw in
+  // the vendored renderer's clock().
+  const events: FlowRunEvent[] = [
+    runStart('2026-11-07T01:00:00Z'),
+    spawnRecordEvent({
+      at: '2026-11-07T01:02:00Z',
+      sessionFile: CHILD_SESSION,
+    }),
+  ]
+  const entries = [
+    // assistant entry with a toolCall but NO timestamp at all
+    {
+      type: 'message',
+      id: 'a1',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'tc-no-ts', name: 'read', arguments: {} },
+        ],
+      },
+    },
+  ]
+  const sessions = new Map([[CHILD_SESSION, entries]])
+  const result = buildDiagram('PMR-TEST', 1, events, [], sessions)
+  assert.equal(result.kind, 'ok')
+  if (result.kind !== 'ok') return
+  assert.equal(
+    result.records.filter(
+      (r) => 'tool_use_id' in r && r.tool_use_id === 'tc-no-ts',
+    ).length,
+    0,
+  )
+  // the spawn record itself (valid at) still renders
+  assert.equal(okSpawn(result).length, 1)
+  assert.equal(result.warnings.length, 1)
+  assert.match(result.warnings[0], /unparseable or missing timestamp/)
+})
+
+test('corrupted spawn note at is skipped with a warning, markers survive', () => {
+  const events: FlowRunEvent[] = [
+    runStart('2026-11-07T01:00:00Z'),
+    phaseStart('2026-11-07T01:01:00Z', 'plan'),
+    spawnRecordEvent({ at: 'not-a-date', sessionFile: undefined }),
+  ]
+  const result = buildDiagram('PMR-TEST', 1, events, [], new Map())
+  assert.equal(result.kind, 'ok')
+  if (result.kind !== 'ok') return
+  assert.equal(okSpawn(result).length, 0)
+  // the phase marker from the healthy journal event still renders
+  assert.ok(
+    result.records.some((r) => 'trigger' in r && r.trigger === 'phase plan'),
+  )
+  assert.equal(result.warnings.length, 1)
+  assert.match(result.warnings[0], /unparseable or missing timestamp/)
+})

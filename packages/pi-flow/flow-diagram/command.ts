@@ -198,6 +198,14 @@ export async function runFlowDiagram(
     )
     return
   }
+  // AIDEV-NOTE (PMR-9CHQ): skipped-record degradation is ONE summary
+  // warning (same style as the unreadable-session seam), never a throw.
+  if (result.warnings.length > 0) {
+    notify(
+      `/flow-diagram ${ref}: ${result.warnings.length} record(s) skipped — unparseable or missing timestamps.`,
+      'warning',
+    )
+  }
   const html = renderDiagramHtml(
     renderer,
     result.header,

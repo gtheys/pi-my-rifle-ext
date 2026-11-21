@@ -153,7 +153,13 @@ export type DiagramRecord =
   | MilestoneMarkerRecord
 
 export type DiagramResult =
-  | { kind: 'ok'; header: DiagramHeader; records: DiagramRecord[] }
+  | {
+      kind: 'ok'
+      header: DiagramHeader
+      records: DiagramRecord[]
+      /** AIDEV-NOTE (PMR-9CHQ): degradation warnings (skipped records). */
+      warnings: readonly string[]
+    }
   /** No run-start events at all — nothing segmentable in the journal. */
   | { kind: 'no-records' }
   /**
@@ -166,6 +172,11 @@ export interface DiagramContext {
   assignments: readonly AssignmentRecord[]
   /** Parsed session entries keyed by session file path. */
   sessionEntriesByFile: ReadonlyMap<string, readonly unknown[]>
+  /**
+   * AIDEV-NOTE (PMR-9CHQ): degradation warnings collected during synthesis
+   * (one per skipped record, capped) — surfaced by the caller, never thrown.
+   */
+  warnings: string[]
 }
 
 /**
@@ -730,6 +741,49 @@ function synthesizeSpawns(
  * AIDEV-NOTE (PMR-V392): 2.2 adds spawns; 2.3 layers toolCalls, spend
  * (SubagentStop) and marker records, then sorts the whole set by `at`.
  */
+/**
+ * AIDEV-NOTE (PMR-9CHQ): final backstop — any record whose `at` is missing
+ * or unparseable (timestamp-less toolCall fallback, corrupted spawn note or
+ * journal event) is SKIPPED with a warning instead of reaching the vendored
+ * renderer, where NaN timestamps throw inside clock() and blank the page.
+ */
+const SKIPPED_WARNING_CAP = 20
+
+function recordLabel(record: DiagramRecord): string {
+  if ('name' in record) return record.name
+  if ('trigger' in record) return record.trigger
+  return record.event
+}
+
+function dropUnplaceableRecords(
+  records: readonly DiagramRecord[],
+  warnings: string[],
+): DiagramRecord[] {
+  const kept: DiagramRecord[] = []
+  let skipped = 0
+  for (const record of records) {
+    if (
+      typeof record.at === 'string' &&
+      Number.isFinite(Date.parse(record.at))
+    ) {
+      kept.push(record)
+      continue
+    }
+    skipped += 1
+    if (warnings.length < SKIPPED_WARNING_CAP) {
+      warnings.push(
+        `skipped record "${recordLabel(record)}" (agent ${record.agent_id}) — unparseable or missing timestamp`,
+      )
+    }
+  }
+  if (skipped > SKIPPED_WARNING_CAP) {
+    warnings.push(
+      `…and ${skipped - SKIPPED_WARNING_CAP} more skipped record(s)`,
+    )
+  }
+  return kept
+}
+
 function synthesizeRecords(
   segment: readonly FlowRunEvent[],
   ctx: DiagramContext,
@@ -747,7 +801,7 @@ function synthesizeRecords(
     if (a.at > b.at) return 1
     return 0
   })
-  return records
+  return dropUnplaceableRecords(records, ctx.warnings)
 }
 
 export function buildDiagram(
@@ -791,16 +845,18 @@ export function buildDiagram(
   }
 
   const runId = `${runStart.ref} run ${index}`
+  const warnings: string[] = []
   const records = synthesizeRecords(
     segment,
     {
       assignments,
       sessionEntriesByFile,
+      warnings,
     },
     runId,
   )
   if (records.length === 0) return { kind: 'no-records' }
-  return { kind: 'ok', header, records }
+  return { kind: 'ok', header, records, warnings }
 }
 
 export type { PhaseDuration, PhaseWindow } from '../flow/cost.ts'
