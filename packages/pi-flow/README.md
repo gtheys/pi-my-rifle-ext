@@ -179,6 +179,14 @@ On-disk layout under `<agentDir>/pi-flow/`: `server.pid`, `server.log`,
   and aven directly), and a brand-new session in the same worktree without a
   restored binding is not re-presented (binding-scoped only).
 
+**Binding self-heal after resume**: when a resumed session has no replayable
+flow binding (cross-session resume, fork), the flow gate tools
+(`code_review`, `deviation_review`, `flow_land`, `worktree` bind) re-derive
+the worktree binding from durable state (aven `worktree:` note, herdr
+worktree list, pending-run records) and re-arm it themselves — no manual
+`/flow <ref>` re-arm needed. When derivation fails, every refusal names the
+exact recovery command (`/flow <ref>`) for that ref.
+
 ### Telemetry (OTLP traces)
 
 Optional and **disabled by default**. When enabled, every Pi session (the main session and each spawned worker, joined via the flow env stamps) exports spans to any OTLP/HTTP receiver (metadata only unless you opt in to content capture below) — Tempo, Alloy, the OTel collector, whatever speaks `/v1/traces`.

@@ -21,7 +21,10 @@ let lastWorktree: FlowWorktree | null = null
 
 // AIDEV-NOTE: PMR-PJM0 — module state dies on pi reload/restart. index.ts
 // persists every change as a session entry (appendEntry) and replays the last
-// one on session_start via restoreFlowBinding.
+// one on session_start via restoreFlowBinding. PMR-DRKH: when the replay
+// finds no entry (cross-session resume, fork, new session), session_start
+// re-derives the binding from durable pending-run records and the gate tools
+// self-heal on demand via flow/binding-heal.ts.
 export interface FlowBindingSnapshot {
   ref: string | null
   worktree: FlowWorktree | null
