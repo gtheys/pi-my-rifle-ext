@@ -507,8 +507,6 @@ for (const mode of ['personal', 'work'] as const) {
       scriptsDir: '/x/sh-devctl/scripts',
     })
     assert.ok(p.includes('6a. Pin the diff base ONCE'))
-    assert.ok(p.includes('<base>@{upstream}'))
-    assert.ok(p.includes('git merge-base HEAD <base>'))
     assert.ok(p.includes('git log BASE_SHA..HEAD --oneline'))
     assert.ok(p.includes('git diff --stat BASE_SHA..HEAD'))
     assert.ok(p.includes('Do NOT pass a diff or commit messages'))
@@ -519,3 +517,33 @@ for (const mode of ['personal', 'work'] as const) {
     assert.ok(p.indexOf('6a.') < p.indexOf('D2.'))
   })
 }
+
+test('buildValidatePrompt: work mode resolves the base via <base>@{upstream} (PMR-TPN7)', () => {
+  const p = buildValidatePrompt({
+    mode: 'work',
+    ref: 'PMR-TPN7',
+    scriptsDir: '/x/sh-devctl/scripts',
+  })
+  assert.ok(p.includes('<base>@{upstream}'))
+  assert.ok(p.includes('git merge-base HEAD <base>'))
+})
+
+// --- PMR-S87F: personal mode pins the review base to the recorded flow base ---
+
+test('buildValidatePrompt: personal mode pins BASE_SHA to the recorded flow base (PMR-S87F)', () => {
+  const p = buildValidatePrompt({
+    mode: 'personal',
+    ref: 'PMR-S87F',
+    scriptsDir: null,
+  })
+  // recorded at worktree create — the same base the deviation gate resolves
+  assert.ok(p.includes('flowbasesha'))
+  assert.ok(
+    p.includes('git config branch.$(git branch --show-current).flowbasesha'),
+  )
+  // personal mode never pushes, so upstream must never win
+  assert.ok(!p.includes('<base>@{upstream}'))
+  assert.ok(p.includes('never pushes'))
+  // legacy fallback without a recorded SHA stays merge-base against the base
+  assert.ok(p.includes('git merge-base HEAD <base>'))
+})
