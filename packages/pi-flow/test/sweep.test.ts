@@ -21,14 +21,19 @@ function sweepEvent(overrides: {
   outcome: 'removed' | 'noop' | 'kept-all' | 'deferred'
   detail?: string
 }): FlowRunEvent {
-  return {
+  const event: FlowRunEvent = {
     kind: 'worktree-sweep',
     at: overrides.at,
     ref: overrides.ref ?? 'PMR-1',
     source: overrides.source ?? 'sweep',
     outcome: overrides.outcome,
-    ...(overrides.detail !== undefined ? { detail: overrides.detail } : {}),
   }
+  // AIDEV-NOTE: if/else assignment instead of a spread-ternary (PMR-B8MQ);
+  // repo-wide rule forbids ternaries (PMR-YG2N constraint 4).
+  if (overrides.detail !== undefined) {
+    event.detail = overrides.detail
+  }
+  return event
 }
 
 function runStart(at: string, ref = 'PMR-1'): FlowRunEvent {
