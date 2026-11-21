@@ -15,7 +15,7 @@ renderer used by `/flow-diagram`.
 | File      | sha256                                                            |
 | --------- | ----------------------------------------------------------------- |
 | `hp.js`   | `acebfb79e9a8cb6a5d5143f06b181e5ed9904509fdd872420cd7b7b4fbda1532` |
-| `view.html` (forked) | `b2d6ed896655196546e5f21406a6315462c0b7ce1858aa06a40694c72a487b1b` |
+| `view.html` (forked) | `48eafbe04887d8d5275730b73511a16bb4b9e20b6897d2352eb43f42faa9ffeb` |
 | `LICENSE` | `0a83841ebb1c6be2a20e69d89ffe8f63a0c82ef22c9caeeb1af7b7e3e99392cd` |
 
 ## view.html fork (PMR-57HF)
@@ -27,7 +27,7 @@ directory (`hp.js` stays byte-identical to upstream; checksum-enforced).
   `b966a68ec83e4babecb4a2d58bc6ff5f9ab58aecba57df9b60f826191ed5f595`.
 - Forked sha256 (current, pinned in `test/vendor.test.ts` as
   `PINNED_VIEW_HTML_SHA256`):
-  `b2d6ed896655196546e5f21406a6315462c0b7ce1858aa06a40694c72a487b1b`.
+  `48eafbe04887d8d5275730b73511a16bb4b9e20b6897d2352eb43f42faa9ffeb`.
 - Why: `/flow-diagram` renders a per-ticket header band (ticket ref,
   trackRef/mode, run k of N, phase durations, commits per subtask,
   unattributed commits, PR url, generated-at) above the diagram. Upstream
@@ -44,6 +44,9 @@ directory (`hp.js` stays byte-identical to upstream; checksum-enforced).
      fills the band; absent fields are skipped, never blank rows. The slot
      literal is replaced by `assemble.ts` with `<`-escaped JSON (same
      technique as `hp.js`'s DATA slot replacement).
+  4. (PMR-BRSV) the `pr` row applies a scheme allowlist: only `http(s)`
+     URLs render as an `<a href>`; any other scheme renders as escaped
+     plain text so a crafted journal prUrl can never execute on click.
 
 ## Re-vendoring
 

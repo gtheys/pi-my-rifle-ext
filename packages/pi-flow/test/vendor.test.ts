@@ -31,7 +31,7 @@ const PINNED_HP_JS_SHA256 =
 // PIN.md's "view.html fork" section and update this constant + the PIN.md row
 // together. hp.js stays byte-identical to upstream (pin above, untouched).
 const PINNED_VIEW_HTML_SHA256 =
-  'b2d6ed896655196546e5f21406a6315462c0b7ce1858aa06a40694c72a487b1b'
+  '48eafbe04887d8d5275730b73511a16bb4b9e20b6897d2352eb43f42faa9ffeb'
 
 function sha256(filePath: string): string {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex')
@@ -43,6 +43,15 @@ test('vendored hp.js matches pinned sha256', () => {
 
 test('vendored view.html matches pinned (forked) sha256', () => {
   assert.equal(sha256(join(VENDOR_DIR, 'view.html')), PINNED_VIEW_HTML_SHA256)
+})
+
+// AIDEV-NOTE (PMR-BRSV): the pr row must keep its http(s) scheme allowlist —
+// a re-vendor that re-applies the fork without it fails here even when the
+// checksum pins above were re-pinned over the regression.
+test('view.html pr row only links http(s) urls', () => {
+  const html = readFileSync(join(VENDOR_DIR, 'view.html'), 'utf8')
+  assert.match(html, /\^https\?:\\\//)
+  assert.match(html, /plain text so it can never execute/)
 })
 
 test('vendored LICENSE is the MIT license', () => {

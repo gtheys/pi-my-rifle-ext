@@ -412,7 +412,19 @@ function renderFlowHeader() {
   if (FLOW_HEADER.phases && FLOW_HEADER.phases.length) add('phases', FLOW_HEADER.phases.map((p) => `${esc(p.phase)} ${dur(Math.round(p.seconds * 1000))}`).join(' · '));
   if (FLOW_HEADER.commitsBySubtask && FLOW_HEADER.commitsBySubtask.length) add('commits', FLOW_HEADER.commitsBySubtask.map((c) => `${esc(c.subtask)}: ${c.commits.map(esc).join(', ')}`).join(' · '));
   if (FLOW_HEADER.unattributed && FLOW_HEADER.unattributed.length) add('unattributed', FLOW_HEADER.unattributed.map(esc).join(', '));
-  if (FLOW_HEADER.prUrl) add('pr', `<a href="${esc(FLOW_HEADER.prUrl)}">${esc(FLOW_HEADER.prUrl)}</a>`);
+  if (FLOW_HEADER.prUrl) {
+    // pi-flow fork (PMR-BRSV): scheme allowlist — only http(s) URLs become
+    // links; anything else (e.g. a crafted javascript: journal prUrl)
+    // renders as plain text so it can never execute on click.
+    const prUrl = String(FLOW_HEADER.prUrl);
+    let prCell;
+    if (/^https?:\/\//i.test(prUrl)) {
+      prCell = `<a href="${esc(prUrl)}">${esc(prUrl)}</a>`;
+    } else {
+      prCell = esc(prUrl);
+    }
+    add('pr', prCell);
+  }
   if (FLOW_HEADER.generatedAt) add('generated', esc(FLOW_HEADER.generatedAt));
   if (!rows.length) return;
   const el = document.getElementById('flow-header');
