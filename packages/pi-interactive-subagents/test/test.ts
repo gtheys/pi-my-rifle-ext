@@ -7811,3 +7811,385 @@ describe('subagent-done.ts ask_owner replay windows (PMR-1006 / PMR-ZJCP)', () =
     )
   })
 })
+
+// --- Handler-level tests: message_owner / message_peer replay windows (PMR-JBEX / PMR-ZJCP) ---
+// AIDEV-NOTE (PMR-ZJCP): sibling of the ask_owner replay suite above; reuses
+// the same per-test env harness pattern. The fake peer presence is published
+// through the real publishPresence/lock helpers so resolvePeer sees it as
+// live, and released in finally on every case.
+
+describe('subagent-done.ts message tools replay windows (PMR-JBEX / PMR-ZJCP)', () => {
+  const MESSAGE_ENV_NAMES = [
+    'PI_SUBAGENT_ID',
+    'PI_SUBAGENT_SESSION',
+    'PI_SUBAGENT_NAME',
+    'PI_SUBAGENT_PARENT_SESSION',
+    'PI_SUBAGENT_ACTIVITY_FILE',
+    'PI_CODING_AGENT_DIR',
+  ] as const
+
+  const OWNER_TEXT = 'Progress update: phase one finished cleanly.'
+  const OTHER_OWNER_TEXT = 'Progress update: phase two finished cleanly.'
+  const PEER_TEXT = 'Handing you the fixture notes for review.'
+  const PEER_ID = 'peer-b'
+
+  interface MessageTool {
+    execute: (
+      toolCallId: string,
+      params: any,
+      signal: any,
+      onUpdate: any,
+      ctx: any,
+    ) => Promise<any>
+  }
+
+  interface MessageHarness {
+    childId: string
+    root: string
+    sessionFile: string
+    parentSessionId: string
+    messageOwnerTool: MessageTool
+    messagePeerTool: MessageTool
+  }
+
+  async function withMessageToolsEnv<T>(
+    dir: string,
+    run: (harness: MessageHarness) => Promise<T>,
+  ): Promise<T> {
+    const previous = new Map(
+      MESSAGE_ENV_NAMES.map((name) => [name, process.env[name]] as const),
+    )
+    const childId = 'msg-replay-child'
+    const agentDir = join(dir, 'agent')
+    const root = subagentsDataRoot(agentDir)
+    const sessionFile = join(dir, 'child-session.jsonl')
+    const parentSessionId = join(dir, 'parent-session.jsonl')
+    process.env.PI_SUBAGENT_ID = childId
+    process.env.PI_SUBAGENT_SESSION = sessionFile
+    process.env.PI_SUBAGENT_NAME = 'msg-replay-child'
+    process.env.PI_SUBAGENT_PARENT_SESSION = parentSessionId
+    process.env.PI_SUBAGENT_ACTIVITY_FILE = join(dir, 'activity.json')
+    process.env.PI_CODING_AGENT_DIR = agentDir
+    try {
+      const mock = createMockExtensionApi()
+      subagentDoneExtension(mock.api)
+      const messageOwnerTool = mock.registeredTools.find(
+        (t) => t.name === 'message_owner',
+      )
+      const messagePeerTool = mock.registeredTools.find(
+        (t) => t.name === 'message_peer',
+      )
+      assert.ok(messageOwnerTool, 'child extension must register message_owner')
+      assert.ok(messagePeerTool, 'child extension must register message_peer')
+      return await run({
+        childId,
+        root,
+        sessionFile,
+        parentSessionId,
+        messageOwnerTool,
+        messagePeerTool,
+      })
+    } finally {
+      for (const [name, value] of previous) {
+        restoreEnvVar(name, value)
+      }
+    }
+  }
+
+  function callMessage(
+    tool: MessageTool,
+    params: Record<string, unknown>,
+  ): Promise<any> {
+    const ctx = { shutdown() {} }
+    return tool.execute('call-1', params, undefined, undefined, ctx)
+  }
+
+  function ownerFingerprint(childId: string, message: string): string {
+    return effectFingerprint('message_owner', childId, { message })
+  }
+
+  function peerFingerprint(childId: string, message: string): string {
+    return effectFingerprint('message_peer', childId, {
+      peer: PEER_ID,
+      message,
+      resultRef: undefined,
+    })
+  }
+
+  function removeMemo(
+    childId: string,
+    tool: 'message_owner' | 'message_peer',
+    fingerprint: string,
+    root: string,
+  ): void {
+    rmSync(effectMemoPath(childId, tool, fingerprint, root))
+  }
+
+  it('(a) message_owner identical interrupted call replays: one inbox entry, same messageId, replay-prefixed text', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(
+        dir,
+        async ({ childId, root, parentSessionId, messageOwnerTool }) => {
+          const first = await callMessage(messageOwnerTool, {
+            message: OWNER_TEXT,
+          })
+          assert.equal(typeof first.details.messageId, 'string')
+          assert.ok(
+            first.content[0].text.includes('Message delivered to the owner'),
+          )
+
+          const replay = await callMessage(messageOwnerTool, {
+            message: OWNER_TEXT,
+          })
+          assert.equal(replay.details.messageId, first.details.messageId)
+          assert.match(
+            replay.content[0].text,
+            /^\[Replay of an interrupted call\]/,
+          )
+
+          const inbox = readOwnerInbox(parentSessionId, root)
+          assert.equal(inbox.length, 1)
+          assert.equal(inbox[0].message.messageId, first.details.messageId)
+          assert.equal(inbox[0].message.message, OWNER_TEXT)
+
+          const memo = readEffectMemo(
+            childId,
+            'message_owner',
+            ownerFingerprint(childId, OWNER_TEXT),
+            root,
+          )
+          assert.ok(memo)
+          assert.equal(memo.result.messageId, first.details.messageId)
+        },
+      ),
+    )
+  })
+
+  it('(b) message_owner with memo deleted replays from the inbox scan: still one entry, memo re-memoized', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(
+        dir,
+        async ({ childId, root, parentSessionId, messageOwnerTool }) => {
+          const first = await callMessage(messageOwnerTool, {
+            message: OWNER_TEXT,
+          })
+          const fingerprint = ownerFingerprint(childId, OWNER_TEXT)
+          assert.ok(readEffectMemo(childId, 'message_owner', fingerprint, root))
+          removeMemo(childId, 'message_owner', fingerprint, root)
+
+          const replay = await callMessage(messageOwnerTool, {
+            message: OWNER_TEXT,
+          })
+          assert.equal(replay.details.messageId, first.details.messageId)
+          assert.ok(
+            replay.content[0].text.includes('already delivered earlier'),
+            'scan-path result must name the earlier delivery',
+          )
+
+          const inbox = readOwnerInbox(parentSessionId, root)
+          assert.equal(inbox.length, 1)
+          assert.equal(inbox[0].message.messageId, first.details.messageId)
+
+          const reMemo = readEffectMemo(
+            childId,
+            'message_owner',
+            fingerprint,
+            root,
+          )
+          assert.ok(reMemo, 'scan path must re-write the memo')
+          assert.equal(reMemo.result.messageId, first.details.messageId)
+        },
+      ),
+    )
+  })
+
+  it('(c) message_owner different texts deliver twice: two inbox entries', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(
+        dir,
+        async ({ root, parentSessionId, messageOwnerTool }) => {
+          const first = await callMessage(messageOwnerTool, {
+            message: OWNER_TEXT,
+          })
+          const second = await callMessage(messageOwnerTool, {
+            message: OTHER_OWNER_TEXT,
+          })
+          assert.notEqual(second.details.messageId, first.details.messageId)
+
+          const inbox = readOwnerInbox(parentSessionId, root)
+          assert.equal(inbox.length, 2)
+          const texts = inbox.map((entry) => entry.message.message).sort()
+          assert.deepEqual(texts, [OWNER_TEXT, OTHER_OWNER_TEXT])
+        },
+      ),
+    )
+  })
+
+  it('(d) message_owner without subagent env throws', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(dir, async ({ messageOwnerTool }) => {
+        delete process.env.PI_SUBAGENT_ID
+        delete process.env.PI_SUBAGENT_PARENT_SESSION
+        await assert.rejects(
+          callMessage(messageOwnerTool, { message: OWNER_TEXT }),
+          /only available in subagent contexts/,
+        )
+      }),
+    )
+  })
+
+  it('(e) message_peer identical interrupted call replays: one inbox entry for the peer, same messageId', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
+        const release = publishPresence(
+          {
+            childId: PEER_ID,
+            sessionFile: join(dir, 'peer-b-session.jsonl'),
+            name: 'Peer B',
+            cwd: dir,
+          },
+          root,
+        )
+        try {
+          const first = await callMessage(messagePeerTool, {
+            peer: PEER_ID,
+            message: PEER_TEXT,
+          })
+          assert.equal(typeof first.details.messageId, 'string')
+
+          const replay = await callMessage(messagePeerTool, {
+            peer: PEER_ID,
+            message: PEER_TEXT,
+          })
+          assert.equal(replay.details.messageId, first.details.messageId)
+          assert.match(
+            replay.content[0].text,
+            /^\[Replay of an interrupted call\]/,
+          )
+
+          const inbox = readInbox(PEER_ID, root)
+          assert.equal(inbox.length, 1)
+          assert.equal(inbox[0].message.messageId, first.details.messageId)
+          assert.equal(inbox[0].message.message, PEER_TEXT)
+          assert.equal(inbox[0].message.from.childId, childId)
+
+          const memo = readEffectMemo(
+            childId,
+            'message_peer',
+            peerFingerprint(childId, PEER_TEXT),
+            root,
+          )
+          assert.ok(memo)
+          assert.equal(memo.result.messageId, first.details.messageId)
+        } finally {
+          release()
+        }
+      }),
+    )
+  })
+
+  it('(f) message_peer with memo deleted replays from the inbox scan: still one entry', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
+        const release = publishPresence(
+          {
+            childId: PEER_ID,
+            sessionFile: join(dir, 'peer-b-session.jsonl'),
+            name: 'Peer B',
+            cwd: dir,
+          },
+          root,
+        )
+        try {
+          const first = await callMessage(messagePeerTool, {
+            peer: PEER_ID,
+            message: PEER_TEXT,
+          })
+          const fingerprint = peerFingerprint(childId, PEER_TEXT)
+          removeMemo(childId, 'message_peer', fingerprint, root)
+
+          const replay = await callMessage(messagePeerTool, {
+            peer: PEER_ID,
+            message: PEER_TEXT,
+          })
+          assert.equal(replay.details.messageId, first.details.messageId)
+          assert.ok(
+            replay.content[0].text.includes('already delivered'),
+            'scan-path result must name the earlier delivery',
+          )
+
+          const inbox = readInbox(PEER_ID, root)
+          assert.equal(inbox.length, 1)
+          assert.equal(inbox[0].message.messageId, first.details.messageId)
+        } finally {
+          release()
+        }
+      }),
+    )
+  })
+
+  it('(g) message_peer memo hit works after peer presence is gone: memoized result, no throw', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
+        const release = publishPresence(
+          {
+            childId: PEER_ID,
+            sessionFile: join(dir, 'peer-b-session.jsonl'),
+            name: 'Peer B',
+            cwd: dir,
+          },
+          root,
+        )
+        let first: any
+        try {
+          first = await callMessage(messagePeerTool, {
+            peer: PEER_ID,
+            message: PEER_TEXT,
+          })
+        } finally {
+          release()
+        }
+        assert.ok(first)
+
+        // Peer is offline now; the memo-hit path must not call resolvePeer.
+        const replay = await callMessage(messagePeerTool, {
+          peer: PEER_ID,
+          message: PEER_TEXT,
+        })
+        assert.equal(replay.details.messageId, first.details.messageId)
+        assert.match(
+          replay.content[0].text,
+          /^\[Replay of an interrupted call\]/,
+        )
+        assert.equal(readInbox(PEER_ID, root).length, 1)
+      }),
+    )
+  })
+
+  it('(h) message_peer to self throws cannot-message-yourself', async () => {
+    await withTempDirAsync((dir) =>
+      withMessageToolsEnv(
+        dir,
+        async ({ childId, root, sessionFile, messagePeerTool }) => {
+          // The child's own presence must be live for self to resolve.
+          const release = publishPresence(
+            { childId, sessionFile, name: 'msg-replay-child', cwd: dir },
+            root,
+          )
+          try {
+            await assert.rejects(
+              callMessage(messagePeerTool, {
+                peer: childId,
+                message: PEER_TEXT,
+              }),
+              /Cannot message yourself/,
+            )
+            assert.equal(readInbox(childId, root).length, 0)
+          } finally {
+            release()
+          }
+        },
+      ),
+    )
+  })
+})
