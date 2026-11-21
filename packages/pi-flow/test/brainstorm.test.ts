@@ -157,6 +157,20 @@ test('buildBrainstormPrompt: gate text instructs research-path metadata on aven 
   assert.match(p, /destination <destination>/)
 })
 
+test('buildBrainstormPrompt: personal gate requires aven verification before proposing', () => {
+  const p = buildBrainstormPrompt({
+    kind: 'feature',
+    input: 'rate limiting',
+    artifactPath: '/repo/notes/brainstorm/r.md',
+    mode: 'personal',
+  })
+  assert.match(p, /VERIFY the destination with aven itself/)
+  assert.match(p, /`aven doctor`/)
+  assert.match(p, /`aven list 2>&1 \| head -1`/)
+  assert.match(p, /`aven project list`/)
+  assert.match(p, /--workspace\/--project/)
+})
+
 test('buildBrainstormPrompt: gate text has no flow_phase_complete instruction', () => {
   for (const kind of ['debug', 'feature'] as const) {
     const p = buildBrainstormPrompt({

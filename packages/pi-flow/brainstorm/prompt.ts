@@ -27,6 +27,11 @@ export interface TicketPromptInput {
 // despite the /research -> /brainstorm rename (PMR-H7RW): existing tickets
 // already carry 'research-path' and the artifact is still a research
 // artifact conceptually. Renaming would orphan them.
+// AIDEV-NOTE (PMR-VQ6R): personal mode must VERIFY the aven destination with
+// aven itself before proposing (doctor/list/project list) — the PMR-3E1Z
+// brainstorm proposed a workspace from memory ("personal" instead of the
+// routed "projects"). Keep the verification commands and the explicit
+// --workspace/--project fallback in the gate text.
 const GATE_INSTRUCTIONS = `
 TICKET CREATION GATE — after the artifact is written:
 1. Use the ask_user_question tool to propose a ticket destination and require an
@@ -34,7 +39,16 @@ TICKET CREATION GATE — after the artifact is written:
    - work mode: the Jira project (pick the most likely project key, let the user
      confirm or override).
    - personal mode: the aven workspace AND project (a named project may exist in
-     several workspaces — confirm both).
+     several workspaces — confirm both). VERIFY the destination with aven itself
+     BEFORE proposing — never from memory or repo-location conventions:
+     - \`aven doctor\` — the "Workspace" section prints the active workspace
+       (e.g. "ok active workspace projects").
+     - \`aven list 2>&1 | head -1\` — the scope line (printed on stderr) shows
+       the resolved project.
+     - \`aven project list\` — confirms the project exists in that workspace.
+     The proposal shown to the user must state what aven resolved, and ticket
+     creation passes --workspace/--project explicitly when the resolved target
+     differs from the intended one.
 2. ONLY if the user explicitly confirms, create the ticket:
    - work mode: acli jira workitem create in the confirmed project.
    - personal mode: aven ticket create in the confirmed workspace+project.
