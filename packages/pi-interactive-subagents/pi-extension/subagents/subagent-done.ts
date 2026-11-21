@@ -30,7 +30,7 @@ import {
 } from './control.ts'
 import { ensureSubagentsDataDir } from './dataroot.ts'
 import { hasDelivered, markDelivered } from './delivered.ts'
-import { sendOwnerMessage } from './inbox.ts'
+import { readOwnerInbox, sendOwnerMessage } from './inbox.ts'
 import {
   type ChildIdentity,
   inboxDir,
@@ -991,17 +991,92 @@ export default function (pi: ExtensionAPI) {
             'PI_SUBAGENT_ID/PI_SUBAGENT_PARENT_SESSION environment variables are not set.',
         )
       }
+      const deliveredText =
+        'Message delivered to the owner. Keep working — no response is ' +
+        'expected; the owner reads it on its next refresh tick.'
+      const fingerprint = effectFingerprint('message_owner', childId, {
+        message: params.message,
+      })
+      // AIDEV-NOTE (PMR-ZJCP): replay-safety for message_owner. Memo hit →
+      // the earlier send already happened; replay the memoized messageId with
+      // NO send and NO inbox mutation. Malformed memo results fail closed by
+      // falling through to the inbox scan below.
+      const memo = readEffectMemo(childId, 'message_owner', fingerprint)
+      if (
+        memo !== null &&
+        typeof memo.result.messageId === 'string' &&
+        typeof memo.result.path === 'string'
+      ) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `[Replay of an interrupted call] ${deliveredText}`,
+            },
+          ],
+          details: { messageId: memo.result.messageId, path: memo.result.path },
+        }
+      }
+      // AIDEV-NOTE (PMR-ZJCP): W1 crash-window evidence scan — the inbox is
+      // the source of truth when a send happened but the memo write was
+      // interrupted. The scan matches on childId + exact content only
+      // (OwnerMessage carries no resultRef); intentional byte-identical
+      // resends are therefore suppressed — the documented cost of crash-safe
+      // dedup.
+      const delivered = readOwnerInbox(parentSessionId).find(
+        (entry) =>
+          entry.message.childId === childId &&
+          entry.message.message === params.message,
+      )
+      if (delivered !== undefined) {
+        writeEffectMemo({
+          version: 1,
+          childId,
+          tool: 'message_owner',
+          fingerprint,
+          createdAt: new Date().toISOString(),
+          result: {
+            messageId: delivered.message.messageId,
+            path: delivered.path,
+          },
+        })
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `An identical message was already delivered earlier ` +
+                `(messageId ${delivered.message.messageId}); no duplicate ` +
+                'send was made.',
+            },
+          ],
+          details: {
+            messageId: delivered.message.messageId,
+            path: delivered.path,
+          },
+        }
+      }
       const sent = sendOwnerMessage({
         parentSessionId,
         childId,
         name: subagentName || childId,
         message: params.message,
       })
+      // AIDEV-NOTE (PMR-ZJCP): mark-after-effect — memo written only after
+      // the send is durable, so a memo hit is trustworthy evidence.
+      writeEffectMemo({
+        version: 1,
+        childId,
+        tool: 'message_owner',
+        fingerprint,
+        createdAt: new Date().toISOString(),
+        result: { messageId: sent.messageId, path: sent.path },
+      })
       return {
         content: [
           {
             type: 'text',
-            text: 'Message delivered to the owner. Keep working — no response is expected; the owner reads it on its next refresh tick.',
+            text: deliveredText,
           },
         ],
         details: { messageId: sent.messageId, path: sent.path },
