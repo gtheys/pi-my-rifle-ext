@@ -7764,6 +7764,31 @@ describe('peer-bindings.ts (PMR-77KT)', () => {
     assert.equal(JSON.parse(readFileSync(path, 'utf8')).version, 1)
   })
 
+  it('touchPeerBinding is best-effort: an unwritable binding file does not throw', () => {
+    // AIDEV-NOTE (PMR-77KT): touch runs AFTER writeEffectMemo in the handler,
+    // so a throwing touch would fail an already-completed send. Lock the
+    // best-effort contract: EACCES on the record must be swallowed and the
+    // record left byte-identical.
+    const original = binding({
+      childId: 'child-touch-eacces',
+      fingerprint: 'fp-touch-eacces',
+    })
+    writePeerBinding(original, root)
+    const path = peerBindingPath(original.childId, original.fingerprint, root)
+    const before = readFileSync(path, 'utf8')
+    const dir = dirname(path)
+    chmodSync(dir, 0o500)
+    try {
+      touchPeerBinding(original, root)
+      assert.equal(readFileSync(path, 'utf8'), before)
+      for (const entry of readdirSync(dir)) {
+        assert.ok(!entry.endsWith('.tmp'), `tmp residue: ${entry}`)
+      }
+    } finally {
+      chmodSync(dir, 0o700)
+    }
+  })
+
   it('sanitizes hostile childIds out of binding paths', () => {
     const hostile = '../../etc/passwd'
     const written = binding({ childId: hostile, fingerprint: 'fp-hostile' })

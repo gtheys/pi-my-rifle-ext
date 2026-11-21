@@ -152,16 +152,24 @@ function atomicWrite(path: string, contents: string): void {
 // AIDEV-NOTE (PMR-77KT): atomic touch (tmp + fsync + rename, tool-effects
 // atomicWrite shape) advancing ONLY lastActivityAt — every other field,
 // including the bound recipient and request identity, stays byte-identical.
-// Best-effort on the replay path: a failed touch must never break a send.
+// Best-effort by contract: handlers call it AFTER writeEffectMemo, so a
+// throwing touch would surface a tool error for an already-completed send.
+// All failures (EACCES, ENOSPC, read-only fs) are swallowed here — a stale
+// lastActivityAt never justifies breaking a send; a leftover .tmp sibling is
+// harmless (same shape as the atomicWrite in peers.ts).
 export function touchPeerBinding(
   binding: PeerRecipientBinding,
   root?: string,
 ): void {
-  const path = peerBindingPath(binding.childId, binding.fingerprint, root)
-  mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 })
-  const touched: PeerRecipientBinding = {
-    ...binding,
-    lastActivityAt: new Date().toISOString(),
+  try {
+    const path = peerBindingPath(binding.childId, binding.fingerprint, root)
+    mkdirSync(join(path, '..'), { recursive: true, mode: 0o700 })
+    const touched: PeerRecipientBinding = {
+      ...binding,
+      lastActivityAt: new Date().toISOString(),
+    }
+    atomicWrite(path, JSON.stringify(touched))
+  } catch {
+    // Best-effort: see the AIDEV-NOTE above.
   }
-  atomicWrite(path, JSON.stringify(touched))
 }
