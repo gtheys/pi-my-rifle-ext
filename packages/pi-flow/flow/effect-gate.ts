@@ -35,6 +35,12 @@ export const DEFAULT_RECIPES: Record<EffectKind, string[]> = {
     're-create it: worktree tool action=create with branch=<branch> (commits live in the shared store — removal alone deletes nothing)',
     're-bind it to the flow: worktree tool action=bind',
   ],
+  // AIDEV-NOTE: PMR-DMZR — a workspace-close only ever targets a PROVEN
+  // dangling workspace (checkout gone, no agents), so there is nothing to
+  // recover; the recipe states that instead of a fake undo step.
+  'workspace-close': [
+    'the closed workspace was proven dangling (checkout path gone, absent from herdr worktree list, no agents attached) — nothing to recover; if the worktree is needed again: worktree tool action=create branch=<branch>',
+  ],
 }
 
 // AIDEV-NOTE: command position = start, or after any shell separator, a

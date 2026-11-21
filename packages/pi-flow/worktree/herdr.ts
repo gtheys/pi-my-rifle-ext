@@ -25,6 +25,19 @@ export interface HerdrAgent {
   cwd?: string
 }
 
+/** Workspace record from `herdr workspace list` (PMR-DMZR). */
+export interface HerdrWorkspace {
+  workspaceId: string
+  label: string
+  agentStatus: string
+  // Worktree provenance — '' when the workspace is not worktree-backed.
+  checkoutPath: string
+  isLinkedWorktree: boolean
+  repoKey: string
+  repoName: string
+  repoRoot: string
+}
+
 /** JSON.parse with a never-throw contract; returns null on non-JSON. */
 export function parseJson(stdout: string): unknown {
   try {
@@ -290,4 +303,93 @@ export async function agentList(
       return agent
     })
     .filter((agent) => agent.name !== '')
+}
+
+/**
+ * AIDEV-NOTE: PMR-DMZR — worktree provenance block nested on worktree-backed
+ * workspace records (live shape on herdr 0.8.2: worktree.checkout_path,
+ * worktree.is_linked_worktree, worktree.repo_key, worktree.repo_name,
+ * worktree.repo_root). Variants tolerated: work_tree for the block key.
+ * Returns null for plain-directory workspaces — the prune action's
+ * provenance check then fails closed (never closes a dir: workspace).
+ */
+function pickWorktreeProvenance(
+  entry: unknown,
+): Record<string, unknown> | null {
+  if (!isRecord(entry)) {
+    return null
+  }
+  for (const key of ['worktree', 'work_tree']) {
+    const nested = entry[key]
+    if (isRecord(nested)) {
+      return nested
+    }
+  }
+  return null
+}
+
+/** Map a parsed `herdr workspace list` payload onto HerdrWorkspace[]. */
+export function parseWorkspaces(root: unknown): HerdrWorkspace[] {
+  // AIDEV-NOTE: PMR-DMZR — herdr 0.8.2 emits {result:{type:'workspace_list',
+  // workspaces:[{workspace_id,label,agent_status,...,worktree?:{...}}]}}.
+  // Variants tolerated: id / workspace.id for the workspace key, name for
+  // the label, status/state for the agent status. Without a provenance
+  // block, checkoutPath stays '' and isLinkedWorktree stays false.
+  return pickArray(root, 'workspaces').map((entry) => {
+    const workspace: HerdrWorkspace = {
+      workspaceId: pickString(entry, ['workspace_id', 'id', 'workspace.id']),
+      label: pickString(entry, ['label', 'name']),
+      agentStatus: pickString(entry, ['agent_status', 'status', 'state']),
+      checkoutPath: '',
+      isLinkedWorktree: false,
+      repoKey: '',
+      repoName: '',
+      repoRoot: '',
+    }
+    const provenance = pickWorktreeProvenance(entry)
+    if (provenance !== null) {
+      workspace.checkoutPath = pickString(provenance, ['checkout_path', 'path'])
+      workspace.isLinkedWorktree = pickLinked(provenance)
+      workspace.repoKey = pickString(provenance, ['repo_key', 'key'])
+      workspace.repoName = pickString(provenance, ['repo_name', 'name'])
+      workspace.repoRoot = pickString(provenance, ['repo_root', 'root'])
+    }
+    return workspace
+  })
+}
+
+export async function workspaceList(
+  pi: ExtensionAPI,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
+): Promise<HerdrWorkspace[]> {
+  const result = await pi.exec('herdr', ['workspace', 'list'], { cwd })
+  if (result.code !== 0) {
+    throw new Error(
+      `herdr workspace list failed: ${result.stderr || result.stdout}`,
+    )
+  }
+  const parsed = parseJson(result.stdout)
+  if (parsed === null) {
+    throw new Error(
+      `herdr workspace list returned non-JSON: ${result.stdout.slice(-200)}`,
+    )
+  }
+  return parseWorkspaces(parsed)
+}
+
+export async function workspaceClose(
+  pi: ExtensionAPI,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
+  workspaceId: string,
+): Promise<void> {
+  const result = await pi.exec('herdr', ['workspace', 'close', workspaceId], {
+    cwd,
+  })
+  if (result.code !== 0) {
+    throw new Error(
+      `herdr workspace close ${workspaceId} failed: ${result.stderr || result.stdout}`,
+    )
+  }
 }

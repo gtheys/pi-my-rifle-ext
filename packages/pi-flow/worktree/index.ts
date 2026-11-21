@@ -34,10 +34,13 @@ import {
   agentList,
   filterLinked,
   type HerdrAgent,
+  type HerdrWorkspace,
   type HerdrWorktree,
   herdrAvailable,
   parseJson,
   pickString,
+  workspaceClose,
+  workspaceList,
   worktreeCreate,
   worktreeList,
   worktreeRemove,
@@ -91,7 +94,7 @@ function resolveEffects(deps?: { effects?: EffectJournal }): EffectJournal {
 async function declareWorktreeEffect(
   effects: EffectJournal,
   ref: string,
-  effect: 'worktree-create' | 'worktree-remove',
+  effect: 'worktree-create' | 'worktree-remove' | 'workspace-close',
   command: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const declared = await effects.declare({
@@ -975,19 +978,201 @@ async function removeFlow(
   })
 }
 
+// AIDEV-NOTE: PMR-DMZR — one entry per workspace in the prune result:
+// 'closed' workspaces were proven dangling and closed; every 'skipped'
+// entry carries the failing check verbatim (fail-closed visibility —
+// anything not closed must say why).
+export type PruneEntry = {
+  workspaceId: string
+  label: string
+  checkoutPath: string
+  outcome: 'closed' | 'skipped'
+  reason: string
+}
+
+// AIDEV-NOTE: PMR-DMZR — prune closes only PROVEN-dangling herdr workspaces
+// (herdr's workspace registry never learns that pi-flow's sweep removed the
+// git worktree underneath it). A workspace is closed ONLY when ALL hold:
+// (a) worktree provenance with a checkout_path, (b) checkout_path missing on
+// disk, (c) path absent from `herdr worktree list`, (d) no agent attached —
+// same fail-closed unknown-means-live policy as cleanupFlowWorktree's
+// in-flight guard, including the PMR-F5HB self-pane exclusion
+// (HERDR_PANE_ID). ANY failure to list workspaces/agents/worktrees aborts
+// the whole run before a single close (fail-closed). Declare-before-act
+// (PMR-VDVJ): the exact `herdr workspace close <id>` argv is journaled
+// under the 'workspace-close' effect kind before each close.
+async function pruneFlow(
+  pi: ExtensionAPI,
+  effects: EffectJournal,
+  // PMR-YG2N fix round — undefined = process cwd (loop done path).
+  cwd: string | undefined,
+): Promise<ToolResult> {
+  const preflight = await herdrAvailable(pi, cwd)
+  if (!preflight.ok) {
+    return errorResult(
+      `${preflight.error}\nThe worktree tool must run inside a Herdr session with herdr on PATH.`,
+    )
+  }
+
+  // Fail-closed: every list must succeed or NOTHING is closed.
+  let workspaces: HerdrWorkspace[]
+  try {
+    workspaces = await workspaceList(pi, cwd)
+  } catch (error) {
+    return errorResult(`prune aborted: ${(error as Error).message}`)
+  }
+  let worktrees: HerdrWorktree[]
+  try {
+    worktrees = await worktreeList(pi, cwd)
+  } catch (error) {
+    return errorResult(`prune aborted: ${(error as Error).message}`)
+  }
+  let agents: HerdrAgent[]
+  try {
+    agents = await agentList(pi, cwd)
+  } catch (error) {
+    return errorResult(`prune aborted: ${(error as Error).message}`)
+  }
+
+  // AIDEV-NOTE (PMR-F5HB): same self-pane identification as
+  // cleanupFlowWorktree — HERDR_PANE_ID is '<workspaceId>:<paneId>' and
+  // agentList carries pane_id per agent; the session's own agent row must
+  // not pin its workspace via the attach check.
+  const herdrPane = process.env.HERDR_PANE_ID?.trim()
+  let ownPaneId = ''
+  if (herdrPane?.includes(':') === true) {
+    ownPaneId = herdrPane.slice(herdrPane.indexOf(':') + 1)
+  }
+
+  const wtPaths = new Set(worktrees.map((wt) => wt.path))
+  const ref = getActiveFlowRef() ?? 'worktree-ops'
+  const entries: PruneEntry[] = []
+
+  for (const ws of workspaces) {
+    const entry: PruneEntry = {
+      workspaceId: ws.workspaceId,
+      label: ws.label,
+      checkoutPath: ws.checkoutPath,
+      outcome: 'skipped',
+      reason: '',
+    }
+    // (a) provenance: only worktree-backed records are candidates.
+    if (ws.checkoutPath === '') {
+      entry.reason = 'no worktree provenance (not worktree-backed)'
+      entries.push(entry)
+      continue
+    }
+    // herdr workspace close needs a target id; a provenance record without
+    // one cannot be closed (defensive-parse '' degrades to a skip).
+    if (ws.workspaceId === '') {
+      entry.reason = 'workspace id missing — cannot close'
+      entries.push(entry)
+      continue
+    }
+    // (b) the checkout must be gone from disk.
+    const stat = await fs.stat(ws.checkoutPath).catch(() => null)
+    if (stat !== null) {
+      entry.reason = 'checkout path exists on disk'
+      entries.push(entry)
+      continue
+    }
+    // (c) herdr must not still track the worktree for this path.
+    if (wtPaths.has(ws.checkoutPath)) {
+      entry.reason = 'checkout path still present in herdr worktree list'
+      entries.push(entry)
+      continue
+    }
+    // (d) no agent attached (self-pane rows excluded first; ANY matched
+    // agent defers regardless of its agent_status — unknown-means-live).
+    let attached: HerdrAgent | undefined
+    for (const agent of agents) {
+      if (ownPaneId !== '' && agent.pane === ownPaneId) {
+        continue
+      }
+      if (agent.workspaceId !== '' && agent.workspaceId === ws.workspaceId) {
+        attached = agent
+        break
+      }
+      if (
+        agent.cwd !== undefined &&
+        agent.cwd.startsWith(ws.checkoutPath) === true
+      ) {
+        attached = agent
+        break
+      }
+    }
+    if (attached !== undefined) {
+      let agentState = attached.state
+      if (agentState === '') {
+        agentState = 'unknown'
+      }
+      entry.reason = `agent '${attached.name}' (state: ${agentState}) may still be in-flight`
+      entries.push(entry)
+      continue
+    }
+    // Declare the exact argv BEFORE acting (fail-closed per workspace).
+    const command = `herdr workspace close ${ws.workspaceId}`
+    const declared = await declareWorktreeEffect(
+      effects,
+      ref,
+      'workspace-close',
+      command,
+    )
+    if (!declared.ok) {
+      entry.reason = `effect declaration failed (${declared.reason}) — workspace left untouched`
+      entries.push(entry)
+      continue
+    }
+    try {
+      await workspaceClose(pi, cwd, ws.workspaceId)
+    } catch (error) {
+      entry.reason = (error as Error).message
+      entries.push(entry)
+      continue
+    }
+    entry.outcome = 'closed'
+    entry.reason = `closed dangling workspace (checkout ${ws.checkoutPath} missing on disk, absent from herdr worktree list, no agents attached)`
+    entries.push(entry)
+  }
+
+  const closed = entries.filter((e) => e.outcome === 'closed')
+  const skipped = entries.filter((e) => e.outcome === 'skipped')
+  const lines = [
+    `Prune complete: ${closed.length} closed, ${skipped.length} skipped.`,
+  ]
+  if (closed.length > 0) {
+    lines.push('', 'closed:')
+    for (const e of closed) {
+      lines.push(`  ${e.workspaceId} ${e.label} — ${e.reason}`)
+    }
+  }
+  if (skipped.length > 0) {
+    lines.push('', 'skipped:')
+    for (const e of skipped) {
+      lines.push(`  ${e.workspaceId} ${e.label} — ${e.reason}`)
+    }
+  }
+  return textResult(lines.join('\n'), {
+    entries,
+    closed: closed.length,
+    skipped: skipped.length,
+  })
+}
+
 export default function (pi: ExtensionAPI, deps?: { effects?: EffectJournal }) {
   pi.registerTool({
     name: 'worktree',
     label: 'Worktree',
     description:
-      'Create, list, bind, or remove git worktrees managed as Herdr workspaces. Create derives a branch (from a Jira issue, a conventional name+type, or a literal), creates the Herdr worktree, bootstraps dependencies from the detected lockfile, copies missing .env* files from the main checkout. List shows a worktree/agent dashboard. Bind re-attaches an existing worktree to the active flow (resume path) so the review tool diffs it; remove guards against dirty worktrees.',
+      'Create, list, bind, or remove git worktrees managed as Herdr workspaces. Create derives a branch (from a Jira issue, a conventional name+type, or a literal), creates the Herdr worktree, bootstraps dependencies from the detected lockfile, copies missing .env* files from the main checkout. List shows a worktree/agent dashboard. Bind re-attaches an existing worktree to the active flow (resume path) so the review tool diffs it; remove guards against dirty worktrees. Prune closes herdr workspaces proven dangling (checkout removed outside herdr); each close is declared in the effect journal before acting.',
     promptSnippet:
-      'Create/list/bind/remove git worktrees as Herdr workspaces for parallel work',
+      'Create/list/bind/remove/prune git worktrees as Herdr workspaces for parallel work',
     promptGuidelines: [
       'Use worktree when implementing multiple features of the same repo in parallel — create a worktree before spawning a subagent with cwd set to the new worktree path.',
       'Use worktree list as a dashboard of worktrees and their running pi agent states.',
       'Create supports exactly one of jira_id, name (+type), or branch.',
       'Use bind when resuming a flow with an existing worktree (from the ticket worktree: note) — create binds automatically, resume must bind explicitly.',
+      'Use prune at the end of a flow to close herdr workspaces whose checkout directories were already removed — only proven-dangling workspaces are closed, everything else is skipped with a reason.',
     ],
     parameters: Type.Object({
       action: Type.Union(
@@ -996,6 +1181,7 @@ export default function (pi: ExtensionAPI, deps?: { effects?: EffectJournal }) {
           Type.Literal('list'),
           Type.Literal('bind'),
           Type.Literal('remove'),
+          Type.Literal('prune'),
         ],
         { description: 'Action to perform' },
       ),
@@ -1057,7 +1243,7 @@ export default function (pi: ExtensionAPI, deps?: { effects?: EffectJournal }) {
     async execute(
       _toolCallId: string,
       params: {
-        action: 'create' | 'list' | 'bind' | 'remove'
+        action: 'create' | 'list' | 'bind' | 'remove' | 'prune'
         jira_id?: string
         name?: string
         type?: 'feat' | 'fix' | 'chore' | 'docs' | 'refactor'
@@ -1089,6 +1275,9 @@ export default function (pi: ExtensionAPI, deps?: { effects?: EffectJournal }) {
       }
       if (params.action === 'bind') {
         return bindFlow(pi, cwd, params)
+      }
+      if (params.action === 'prune') {
+        return pruneFlow(pi, resolveEffects(deps), cwd)
       }
       return removeFlow(pi, resolveEffects(deps), cwd, params)
     },

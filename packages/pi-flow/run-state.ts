@@ -69,6 +69,7 @@ export type EffectKind =
   | 'gh-pr-create'
   | 'worktree-create'
   | 'worktree-remove'
+  | 'workspace-close'
 
 // Exported for flow/effect-gate.ts (PMR-VDVJ phase 2) to mirror the union.
 export const EFFECT_KINDS: readonly EffectKind[] = [
@@ -77,6 +78,7 @@ export const EFFECT_KINDS: readonly EffectKind[] = [
   'gh-pr-create',
   'worktree-create',
   'worktree-remove',
+  'workspace-close',
 ]
 
 export interface CommandReceiptRecord {
