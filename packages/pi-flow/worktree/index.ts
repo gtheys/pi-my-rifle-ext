@@ -13,12 +13,14 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+import { recoveryCommand } from '../flow/binding-heal.ts'
 import { DEFAULT_RECIPES } from '../flow/effect-gate.ts'
 import {
   type FlowWorktree,
   getActiveFlowRef,
   getFlowWorktree,
   NO_ACTIVE_FLOW_WARNING,
+  setActiveFlowRef,
   setFlowWorktree,
 } from '../flow/worktree-context.ts'
 import { createEffectJournal, type EffectJournal } from '../run-state.ts'
@@ -84,7 +86,7 @@ function errorResult(text: string): ToolResult {
 // paths. Fail-closed: a failed declaration refuses the action — for create
 // the pre-recorded flow base is cleared (the existing create-failure revert),
 // for remove the worktree is simply left intact (nothing to revert).
-function resolveEffects(deps?: { effects?: EffectJournal }): EffectJournal {
+function resolveEffects(deps?: WorktreeDeps): EffectJournal {
   if (deps?.effects) {
     return deps.effects
   }
@@ -353,6 +355,7 @@ async function bindFlow(
     path?: string
     branch?: string
   },
+  deps?: WorktreeDeps,
 ): Promise<ToolResult> {
   if (!params.path || !params.branch) {
     return errorResult("bind requires 'path' and 'branch'")
@@ -362,11 +365,38 @@ async function bindFlow(
   if (!stat?.isDirectory()) {
     return errorResult(`No directory at ${wtPath}`)
   }
-  const ref = getActiveFlowRef()
+  let ref = getActiveFlowRef()
+  let adopted = false
   if (ref === null) {
-    return errorResult(
-      `No active flow ref — nothing to bind to. ${NO_ACTIVE_FLOW_WARNING}`,
-    )
+    // AIDEV-NOTE: PMR-DRKH — binding self-heal: with no active flow ref
+    // (module state lost on pi reload), derive candidate refs from durable
+    // pending records via the injected seam. Adoption only on exactly one
+    // survivor (SINGLE-CANDIDATE-ONLY rule in flow/durable-refs.ts);
+    // zero/absent seam keeps the original refusal byte-for-byte (worktree
+    // tests assert it), multiple lists a per-ref recovery command.
+    const candidates = deps?.deriveFlowRefs ? await deps.deriveFlowRefs() : []
+    if (candidates.length === 0) {
+      return errorResult(
+        `No active flow ref — nothing to bind to. ${NO_ACTIVE_FLOW_WARNING}`,
+      )
+    }
+    if (candidates.length > 1) {
+      const lines = candidates.map((candidate) => {
+        return `  ${recoveryCommand(candidate)} — ${candidate}`
+      })
+      return errorResult(
+        `No active flow ref — multiple candidate flows found:\n${lines.join('\n')}\nRecover exactly one explicitly before binding.`,
+      )
+    }
+    const candidate = candidates[0]
+    if (candidate === undefined) {
+      return errorResult(
+        `No active flow ref — nothing to bind to. ${NO_ACTIVE_FLOW_WARNING}`,
+      )
+    }
+    ref = candidate
+    adopted = true
+    setActiveFlowRef(ref)
   }
   let worktrees: HerdrWorktree[]
   try {
@@ -389,8 +419,12 @@ async function bindFlow(
   if (previous) {
     replaced = ` (replacing previous binding ${previous.path})`
   }
+  let adoptedNote = ''
+  if (adopted) {
+    adoptedNote = ' (ref adopted from pending flow state)'
+  }
   return textResult(
-    `Bound worktree ${wtPath} (${params.branch}) to flow ${ref}${replaced}`,
+    `Bound worktree ${wtPath} (${params.branch}) to flow ${ref}${replaced}${adoptedNote}`,
   )
 }
 
@@ -1173,7 +1207,15 @@ async function pruneFlow(
   })
 }
 
-export default function (pi: ExtensionAPI, deps?: { effects?: EffectJournal }) {
+// AIDEV-NOTE: PMR-DRKH — optional deriveFlowRefs seam for bind-time
+// self-heal; inject a scanner here from pi-flow/index.ts (real) or tests
+// (fake). Absent seam = zero candidates = original refusal.
+export interface WorktreeDeps {
+  effects?: EffectJournal
+  deriveFlowRefs?: () => Promise<string[]>
+}
+
+export default function (pi: ExtensionAPI, deps?: WorktreeDeps) {
   pi.registerTool({
     name: 'worktree',
     label: 'Worktree',
@@ -1288,7 +1330,7 @@ export default function (pi: ExtensionAPI, deps?: { effects?: EffectJournal }) {
         return listFlow(pi, cwd)
       }
       if (params.action === 'bind') {
-        return bindFlow(pi, cwd, params)
+        return bindFlow(pi, cwd, params, deps)
       }
       if (params.action === 'prune') {
         return pruneFlow(pi, resolveEffects(deps), cwd)

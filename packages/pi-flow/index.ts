@@ -64,6 +64,7 @@ import {
   type FlowCostDeps,
   registerFlowCostCommand,
 } from './flow/cost-command.ts'
+import { deriveFlowRefs } from './flow/durable-refs.ts'
 import { mergeIntercept } from './flow/effect-gate.ts'
 import type { OpenGate } from './flow/gates.ts'
 import { collectOpenGates, createGateDeps } from './flow/gates.ts'
@@ -800,7 +801,30 @@ export default function (pi: ExtensionAPI) {
   // journal is created here so the flow-done cleanup (PMR-81SX 5.2) can
   // share the exact same instance.
   const worktreeEffects = createEffectJournal(getAgentDir())
-  worktreeExtension(pi, { effects: worktreeEffects })
+  // AIDEV-NOTE: PMR-DRKH — real deriveFlowRefs scanner for the worktree
+  // bind self-heal seam. Resolves the session gitRoot at call time (same
+  // `git rev-parse --show-toplevel` semantics as the sweep's journal
+  // filter) and reuses the pendingDir construction from the resume
+  // consumer above; gitRoot resolution failure fails closed (empty list).
+  worktreeExtension(pi, {
+    effects: worktreeEffects,
+    deriveFlowRefs: async () => {
+      const gitRoot = await resolveSessionRepoRoot(pi)
+      if (gitRoot === null) {
+        return []
+      }
+      return deriveFlowRefs({
+        agentDir: getAgentDir(),
+        pendingDir: pendingDirPath(getAgentDir()),
+        io: {
+          readdir: (dir) => readdir(dir),
+          readFile: (p) => fs.readFile(p, 'utf8'),
+        },
+        readRunEvents: (agentDir, ref, io) => readRunEvents(agentDir, ref, io),
+        gitRoot,
+      })
+    },
+  })
 
   // AIDEV-NOTE: PMR-YG2N 4.1 — background worktree sweep, latched fire-and-
   // forget. Latched because session_start and the /flow run path can both
