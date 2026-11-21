@@ -647,6 +647,55 @@ test('run-input: mismatched ref is ignored', () => {
   assert.equal(before.input, undefined)
 })
 
+// yolo plan 2.2: the journaled run-input may carry the yolo flag. Old
+// journals lack the field and must stay guard-valid (back-compat).
+test('run-input: applyEvent journals yolo on the input snapshot', () => {
+  let state = applyEvent(null, inputRun)
+  state = applyEvent(state, {
+    kind: 'run-input',
+    at: 't1',
+    ref: 'PMR-INPUT',
+    input: {
+      mode: 'work',
+      gitRoot: '/repo',
+      workRoots: ['/a'],
+      yolo: true,
+    },
+  })
+  assert.equal(state.input?.yolo, true)
+})
+
+test('isFlowRunState: input without yolo stays valid; non-boolean yolo rejected', () => {
+  const legacy = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+    mode: 'work',
+    startedAt: 't0',
+    updatedAt: 't0',
+    completedPhases: [],
+    currentPhase: null,
+    notes: [],
+  }
+  assert.ok(
+    isFlowRunState({
+      ...legacy,
+      input: { mode: 'work', gitRoot: '/repo', workRoots: [] },
+    }),
+  )
+  assert.ok(
+    isFlowRunState({
+      ...legacy,
+      input: { mode: 'work', gitRoot: '/repo', workRoots: [], yolo: true },
+    }),
+  )
+  assert.ok(
+    !isFlowRunState({
+      ...legacy,
+      input: { mode: 'work', gitRoot: '/repo', workRoots: [], yolo: 'yes' },
+    }),
+  )
+})
+
 test('loop-state: applyEvent sets and overwrites the loop snapshot', () => {
   let state = applyEvent(null, loopRun)
   state = applyEvent(state, {

@@ -53,6 +53,7 @@ export interface JournalablePromptInput {
   mode: 'work' | 'personal'
   gitRoot: string
   workRoots: readonly string[]
+  yolo?: boolean
 }
 
 /**
@@ -69,11 +70,18 @@ export function mergeSeedInput<T extends JournalablePromptInput>(
   if (seed.input === undefined) {
     return promptInput
   }
+  // AIDEV-NOTE: yolo plan 2.2 — the JOURNALED seed wins for yolo too:
+  // a flag-less re-invocation of a yolo run stays yolo, and a later --yolo
+  // re-invocation cannot upgrade a running non-yolo seed (an old journal
+  // without the field resolves to non-yolo). The handler must therefore
+  // stamp parsed.yolo onto promptInput BEFORE calling this, not after.
+  const seedYolo = seed.input.yolo === true
   return {
     ...promptInput,
     mode: seed.input.mode,
     gitRoot: seed.input.gitRoot,
     workRoots: seed.input.workRoots,
+    yolo: seedYolo,
   }
 }
 
@@ -85,9 +93,15 @@ export function mergeSeedInput<T extends JournalablePromptInput>(
 export function runInputRecord(
   promptInput: JournalablePromptInput,
 ): RunInputRecord {
-  return {
+  const record: RunInputRecord = {
     mode: promptInput.mode,
     gitRoot: promptInput.gitRoot,
     workRoots: [...promptInput.workRoots],
   }
+  // yolo plan 2.2 — journal the flag only when on, so non-yolo records keep
+  // the pre-yolo shape (mergeSeedInput treats a missing field as non-yolo).
+  if (promptInput.yolo === true) {
+    record.yolo = true
+  }
+  return record
 }

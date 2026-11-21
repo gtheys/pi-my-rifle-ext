@@ -365,6 +365,54 @@ test('run-input: no seed keeps the freshly rebuilt promptInput as-is', () => {
     workRoots: ['/fresh'],
   })
 })
+
+// yolo plan 2.2: the JOURNALED seed wins for yolo — a flag-less re-invocation
+// of a yolo run stays yolo, and a --yolo re-invocation cannot upgrade a
+// running non-yolo seed.
+test('run-input yolo: journaled yolo seed wins over the fresh --yolo value', () => {
+  // flag-less resume of a yolo run stays yolo
+  const yoloResume = mergeSeedInput(
+    { mode: 'work', gitRoot: '/fresh', workRoots: ['/fresh'], yolo: false },
+    {
+      input: {
+        mode: 'work',
+        gitRoot: '/parked',
+        workRoots: ['/parked-w'],
+        yolo: true,
+      },
+    },
+  )
+  assert.equal(yoloResume.yolo, true)
+  assert.deepEqual(runInputRecord(yoloResume), {
+    mode: 'work',
+    gitRoot: '/parked',
+    workRoots: ['/parked-w'],
+    yolo: true,
+  })
+
+  // --yolo re-invocation of a non-yolo journaled run does NOT upgrade it
+  const nonYoloSeed = mergeSeedInput(
+    { mode: 'work', gitRoot: '/fresh', workRoots: ['/fresh'], yolo: true },
+    {
+      input: {
+        mode: 'work',
+        gitRoot: '/parked',
+        workRoots: ['/parked-w'],
+        yolo: false,
+      },
+    },
+  )
+  assert.equal(nonYoloSeed.yolo, false)
+
+  // old journal: seed.input without a yolo field resolves to non-yolo
+  const legacySeed = mergeSeedInput(
+    { mode: 'work', gitRoot: '/fresh', workRoots: ['/fresh'], yolo: true },
+    {
+      input: { mode: 'work', gitRoot: '/parked', workRoots: ['/parked-w'] },
+    },
+  )
+  assert.equal(legacySeed.yolo, false)
+})
 // --- /flow handler dispatch: answer path (PMR-R5VB subtask 1.4) ---
 
 const HANDLER_BIN = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-handler-bin-'))

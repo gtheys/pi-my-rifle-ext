@@ -1509,16 +1509,19 @@ export default function (pi: ExtensionAPI) {
         await readRunEvents(getAgentDir(), ref),
         (p) => existsSync(p),
       )
-      let promptInput = await commandPhaseInput(pi, {
-        mode,
-        ref,
-        cwd: ctx.cwd,
-      })
+      // AIDEV-NOTE (yolo plan 2.1/2.2): thread --yolo BEFORE mergeSeedInput —
+      // the journaled seed wins for yolo (flag-less resume of a yolo run
+      // stays yolo; --yolo cannot upgrade a running non-yolo seed).
+      let promptInput = {
+        ...(await commandPhaseInput(pi, {
+          mode,
+          ref,
+          cwd: ctx.cwd,
+        })),
+        yolo: parsed.yolo,
+      }
       promptInput = mergeSeedInput(promptInput, seed)
-      // AIDEV-NOTE (yolo plan 2.1): thread --yolo into the loop's prompt
-      // input and start input so PI_FLOW_YOLO is stamped for workers and
-      // phase command builders can observe the mode.
-      const yolo = parsed.yolo
+      const yolo = promptInput.yolo === true
       promptInput = { ...promptInput, yolo }
       // AIDEV-NOTE: serializable prompt-input subset; closures
       // (findTicketRef, ...) are rebuilt per invocation, never journaled.

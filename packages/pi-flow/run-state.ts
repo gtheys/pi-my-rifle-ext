@@ -338,6 +338,11 @@ export interface RunInputRecord {
   mode: 'work' | 'personal'
   gitRoot: string
   workRoots: string[]
+  // AIDEV-NOTE: yolo plan 2.2 — optional so pre-yolo journals stay valid;
+  // the JOURNALED value wins on resume (see mergeSeedInput in flow/resume.ts):
+  // a flag-less re-invocation of a yolo run stays yolo, and a later --yolo
+  // cannot upgrade a running non-yolo seed.
+  yolo?: boolean
 }
 
 export type LoopRunStatus = 'running' | 'paused' | 'halted' | 'done'
@@ -616,6 +621,13 @@ export function applyEvent(
     case 'run-input': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
+      // yolo plan 2.2 — mirror the isFlowRunState constraint: a leniently
+      // parsed journal with a non-boolean yolo must not project a state the
+      // guard then rejects (see the applyEvent AIDEV-NOTE above).
+      const input = event.input
+      const inputYoloOk =
+        input.yolo === undefined || typeof input.yolo === 'boolean'
+      if (!inputYoloOk) return state as FlowRunState
       return {
         ...state,
         input: event.input,
@@ -878,7 +890,8 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
       (input.mode === 'work' || input.mode === 'personal') &&
       typeof input.gitRoot === 'string' &&
       Array.isArray(input.workRoots) &&
-      input.workRoots.every((r) => typeof r === 'string')
+      input.workRoots.every((r) => typeof r === 'string') &&
+      (input.yolo === undefined || typeof input.yolo === 'boolean')
     if (!inputOk) return false
   }
   if (v.loop !== undefined) {
