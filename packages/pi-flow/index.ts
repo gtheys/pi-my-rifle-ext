@@ -32,7 +32,6 @@ import {
   discoverAvenPrefixes,
   ensureLabels,
   epicHasOpenChildren,
-  getAvenSessionCwd,
   lastAvenResolutionFailure,
   readAvenLabels,
   readFreshBlockers,
