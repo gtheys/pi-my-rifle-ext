@@ -121,12 +121,29 @@ export function fenceBlock(text: string, lang = ''): string {
   return `${f}${lang}\n${text}\n${f}`
 }
 
+// AIDEV-NOTE: PMR-MH1Y — PMR-C0YV burned 3 consecutive reviewer runs on
+// artifacts whose declared count did not match the parseable lines: the
+// reviewer enumerated findings as narrative prose (numbered lists quoting
+// spec/notes text with backticks, regexes and angle brackets) and never
+// restated them as contract lines. The contract below is therefore explicit
+// about the section shape (ONLY contract lines, no prose, restate findings,
+// no literal pipes inside fields) and ends with a mandatory self-check the
+// reviewer performs before responding. The parser stays strict — this prompt
+// is the emitter-side half of the fix, the raw-artifact excerpt in
+// tools/deviation.ts is the diagnosis half.
 const DEVIATION_EMITTER_INSTRUCTIONS = `End the review with a machine-readable deviation verdict section:
    ${DEVIATION_VERDICT_HEADING}
    deviations_count: <N>
 ${DEVIATION_CONTRACT_PROMPT}
    where N is the number of deviations, 0 when the diff matches the spec.
-   Emit the count line EXACTLY ONCE, directly under the heading.`
+
+   Verdict-section rules (the parser is STRICT — any violation fails the gate):
+   - The verdict section contains ONLY contract lines: the heading, the reviewed_range / diff_lines_read lines when required above, exactly one deviations_count line, and exactly N "- deviation:" lines. No prose, no summaries, no numbered lists, no other bullets inside the section.
+   - Emit the count line EXACTLY ONCE, directly under the heading (after reviewed_range / diff_lines_read when those are required).
+   - One deviation per line, each line starting exactly with "- deviation:". Never wrap a deviation across multiple lines. No markdown formatting (no **bold**, no \`code\`) inside a deviation line.
+   - Fields are separated by " | " — never use a "|" character inside the what/why/evidence fields themselves (write ";" or "/" instead).
+   - If you described deviations in prose earlier in your reply, restate EVERY one as a "- deviation:" line here — prose findings do not count.
+   - SELF-CHECK before responding: count the "- deviation:" lines in your verdict section. The number MUST equal N. If it does not, fix the section until it does.`
 
 const ECHO_INSTRUCTIONS = `Pinned range you are reviewing (set by the harness — do NOT recompute it):
    reviewed_range: <baseSha>..<headSha>

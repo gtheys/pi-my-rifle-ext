@@ -198,9 +198,25 @@ export function describeRange(r: FlowRange): string {
 
 export type DeviationReviewDetails = DeviationArtifact
 
+// AIDEV-NOTE: PMR-MH1Y — bound the excerpt so a pathological artifact cannot
+// blow up the tool result; tail-biased because the verdict section is emitted
+// at the end of the reviewer reply.
+const RAW_ARTIFACT_EXCERPT_MAX = 4000
+
+function rawArtifactExcerpt(artifact: string): string {
+  if (artifact.length <= RAW_ARTIFACT_EXCERPT_MAX) {
+    return artifact
+  }
+  return `…${artifact.slice(-RAW_ARTIFACT_EXCERPT_MAX)}`
+}
+
 /**
  * Map a raw reviewer artifact to the tool result. A malformed artifact is an
  * isError result carrying the parse reason — never a silent 0.
+ * AIDEV-NOTE: PMR-MH1Y — a parse failure also carries the raw reviewer
+ * artifact (bounded) so the caller can SEE what the reviewer emitted and
+ * diagnose the mismatch. PMR-C0YV failed 3 identical blind re-runs because
+ * the error named only the count parity, never the artifact.
  */
 export function deviationResultToToolResult(
   rawArtifact: string,
@@ -208,7 +224,7 @@ export function deviationResultToToolResult(
   const parsed = parseDeviationArtifact(rawArtifact)
   if (!parsed.ok) {
     return toolResult(
-      `deviation_review: artifact parse failed — ${parsed.reason}\nRe-run the deviation_review tool with the same inputs. NEVER treat this as 0 deviations.`,
+      `deviation_review: artifact parse failed — ${parsed.reason}\nRe-run the deviation_review tool with the same inputs. NEVER treat this as 0 deviations.\n--- raw reviewer artifact (for diagnosis) ---\n${rawArtifactExcerpt(rawArtifact)}\n--- end raw reviewer artifact ---`,
       parsed,
       { isError: true },
     )
@@ -252,7 +268,7 @@ export function registerDeviationReviewTool(
       'Call deviation_review with mode, ref, the resolved spec text and the mined aven notes (validate prompt steps D1/D2). Do NOT pass a diff or commit messages: the tool resolves base, diff and commits itself in the flow worktree and reports the base SHA and range in its result.',
       'A "cannot resolve the flow worktree" refusal names a checkout mismatch: the bound flow worktree could not be verified (missing, foreign repo, branch moved). STOP and tell the human — fix or re-bind the worktree (/flow <ref> to resume so the flow loop session holds the worktree context); never retry from the session checkout.',
       'If the result says the flow base is missing or the range is empty, STOP and tell the human — never retry with a hand-written diff.',
-      'An error result means re-run deviation_review — NEVER treat an error or malformed artifact as 0 deviations.',
+      'An error result means re-run deviation_review — NEVER treat an error or malformed artifact as 0 deviations. A parse failure carries the raw reviewer artifact: read it first to see what the reviewer emitted before re-running.',
       'The gate pins its review target at spawn and verifies the reviewer echoed the pinned range (PMR-6EEW). A target_mismatch or stale result invalidates the verdict — re-run the tool; do not hand-wave a verdict around it.',
     ],
     parameters: Type.Object({
