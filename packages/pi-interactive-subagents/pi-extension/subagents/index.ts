@@ -4344,11 +4344,44 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // /subagent command — spawn a subagent by name
   pi.registerCommand('subagent', {
-    description: 'Spawn a subagent: /subagent <agent> <task>',
+    description:
+      'Spawn a subagent: /subagent <agent> <task> — or prune: /subagent prune',
     handler: async (args, ctx) => {
       const trimmed = args.trim()
       if (!trimmed) {
-        ctx.ui.notify('Usage: /subagent <agent> [task]', 'warning')
+        ctx.ui.notify(
+          'Usage: /subagent <agent> [task] | /subagent prune',
+          'warning',
+        )
+        return
+      }
+
+      // AIDEV-NOTE (PMR-KT90): `prune` is a reserved word — it must be checked
+      // BEFORE agent-name resolution, so an agent literally named "prune" is
+      // unreachable via the slash command (accepted trade-off).
+      if (trimmed === 'prune') {
+        const retentionDays = getRetentionDays()
+        if (retentionDays === undefined) {
+          ctx.ui.notify(
+            'retentionDays not configured; nothing to prune',
+            'warning',
+          )
+          return
+        }
+        try {
+          const report = pruneSubagentsData({ retentionDays })
+          const removedTotal = sumPruneCounts(report.removed)
+          const skippedTotal = sumPruneCounts(report.skipped)
+          ctx.ui.notify(
+            `Retention sweep (>${retentionDays}d): removed ${removedTotal}, skipped ${skippedTotal}`,
+            'info',
+          )
+        } catch (error) {
+          ctx.ui.notify(
+            `Retention sweep failed: ${describePruneError(error)}`,
+            'error',
+          )
+        }
         return
       }
 

@@ -10157,3 +10157,174 @@ describe('session_start retention auto-prune (PMR-KT90)', () => {
     })
   })
 })
+
+// AIDEV-NOTE (PMR-KT90): `/subagent prune` reserved-word subcommand — fires
+// the same maintenance sweep as session_start, on demand. Reserved BEFORE
+// agent-name resolution, so an agent named "prune" is unreachable here.
+describe('/subagent prune command (PMR-KT90)', () => {
+  interface NotifyCall {
+    message: string
+    level: string
+  }
+
+  function notifyingCtx() {
+    const notifications: NotifyCall[] = []
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify(message: string, level: string) {
+          notifications.push({ message, level })
+        },
+        setWidget() {},
+        setStatus() {},
+      },
+    }
+    return { ctx, notifications }
+  }
+
+  function seedRetiredRecord(
+    agentDir: string,
+    name: string,
+    retiredAt: string,
+  ) {
+    const dir = join(agentDir, 'pi-subagents', 'retired')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, name), JSON.stringify({ retiredAt }))
+    return join(dir, name)
+  }
+
+  function writeRetentionConfig(projectDir: string, retentionDays: number) {
+    const configDir = join(projectDir, '.pi', 'pi-subagents')
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(
+      join(configDir, 'config.json'),
+      JSON.stringify({
+        status: { enabled: true, hideWhenIdle: true },
+        retentionDays,
+      }),
+    )
+  }
+
+  function getSubagentCommand(registeredCommands: Array<any>): any {
+    const command = registeredCommands.find(
+      (entry: any) => entry.name === 'subagent',
+    )
+    assert.ok(command, '/subagent command registered')
+    return command
+  }
+
+  function writeSpawnableAgent(projectAgentsDir: string, name: string) {
+    writeFileSync(
+      join(projectAgentsDir, `${name}.md`),
+      `---\nname: ${name}\ndescription: test agent\n---\n\nDo the task.\n`,
+    )
+  }
+
+  it('without config: warning notify, nothing removed from disk (PMR-KT90)', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, globalDir }) => {
+      // AIDEV-NOTE (PMR-KT90): getRetentionDays() rides a globalThis Symbol
+      // cache — clear any retentionDays leaked by earlier suites.
+      delete (globalThis as Record<symbol, unknown>)[
+        Symbol.for('pi-subagents/retention-days')
+      ]
+      const oldRecord = seedRetiredRecord(
+        globalDir,
+        'old.json',
+        '2020-01-01T00:00:00.000Z',
+      )
+      const { api, registeredCommands } = createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+      const { ctx, notifications } = notifyingCtx()
+
+      await getSubagentCommand(registeredCommands).handler('prune', ctx)
+
+      assert.equal(existsSync(oldRecord), true)
+      assert.equal(notifications.length, 1)
+      assert.equal(notifications[0].level, 'warning')
+      assert.equal(
+        notifications[0].message,
+        'retentionDays not configured; nothing to prune',
+      )
+    })
+  })
+
+  it('with config: sweep runs, removed/skipped summary notify (PMR-KT90)', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, globalDir }) => {
+      writeRetentionConfig(projectDir, 7)
+      const { api, registeredCommands, eventHandlers } =
+        createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+      const { ctx, notifications } = notifyingCtx()
+      // AIDEV-NOTE (PMR-KT90): the prune command reads the cached config, so
+      // seed it the same way production does — fire session_start first (with
+      // no records present, so it prunes nothing and stays silent), then seed
+      // the records the command's own sweep should act on.
+      const handlers = eventHandlers.get('session_start') ?? []
+      assert.equal(handlers.length, 1)
+      handlers[0](
+        {},
+        {
+          ...ctx,
+          cwd: projectDir,
+          sessionManager: { getSessionId: () => 'prune-command-session' },
+        },
+      )
+
+      const oldRecord = seedRetiredRecord(
+        globalDir,
+        'old.json',
+        '2020-01-01T00:00:00.000Z',
+      )
+      const freshRecord = seedRetiredRecord(
+        globalDir,
+        'fresh.json',
+        new Date().toISOString(),
+      )
+
+      await getSubagentCommand(registeredCommands).handler('prune', ctx)
+
+      assert.equal(existsSync(oldRecord), false)
+      // AIDEV-NOTE (PMR-KT90): notifications[0] may be session_start's own
+      // sweep summary (skipped-only records in the shared temp data root);
+      // the COMMAND's notify is the last one and reports the removed record.
+      const last = notifications[notifications.length - 1]
+      assert.equal(last.level, 'info')
+      assert.match(last.message, /removed 1/)
+    })
+  })
+
+  it('normal spawn path unchanged: prune word-check runs BEFORE agent resolution (PMR-KT90)', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, projectAgentsDir }) => {
+      writeSpawnableAgent(projectAgentsDir, 'worker')
+      const { api, registeredCommands, sentUserMessages } =
+        createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+      const { ctx, notifications } = notifyingCtx()
+
+      await getSubagentCommand(registeredCommands).handler(
+        'worker fix the bug',
+        ctx,
+      )
+
+      assert.equal(notifications.length, 0)
+      assert.equal(sentUserMessages.length, 1)
+      assert.match(sentUserMessages[0], /agent: "worker"/)
+      assert.match(sentUserMessages[0], /fix the bug/)
+
+      // Unknown agent still errors the same way (resolution untouched).
+      const {
+        api: api2,
+        registeredCommands: cmds2,
+        sentUserMessages: sent2,
+      } = createMockExtensionApi()
+      ;(subagentsModule as any).default(api2)
+      const { ctx: ctx2, notifications: notes2 } = notifyingCtx()
+      await getSubagentCommand(cmds2).handler('ghost do it', ctx2)
+      assert.equal(sent2.length, 0)
+      assert.equal(notes2.length, 1)
+      assert.equal(notes2[0].level, 'error')
+      assert.match(notes2[0].message, /not found/)
+      assert.ok(projectDir)
+    })
+  })
+})

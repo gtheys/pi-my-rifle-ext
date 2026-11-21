@@ -176,6 +176,9 @@ Subagent-side (auto-injected, never deniable):
 | `/iterate` | Fork into a subagent for quick fixes |
 | `/subagent <agent> <task>` | Spawn a named agent directly (user-initiated — bypasses `manager-approval` gates) |
 | `/subagents` | Open the subagent dashboard |
+| `/subagent prune` | Run the retention sweep on demand (requires `retentionDays` config; warns if unset) |
+
+> Note: `prune` is a reserved word — an agent named `prune` cannot be spawned via `/subagent`.
 
 ### `subagent()` parameters
 
