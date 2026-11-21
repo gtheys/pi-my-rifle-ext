@@ -467,29 +467,28 @@ function extractListRefs(parsed: unknown[]): string[] {
   return refs
 }
 
-// AIDEV-NOTE (PMR-384R fix round, review blocker 1): classifier for
-// `aven list --open` output. aven exits 0 on errors — never trust exit
-// codes, classify by text via avenErrorText (the listPlansAtReviewRefs
-// guard pattern) — so anything unclassifiable (error text on stdout or
-// stderr, non-JSON, non-array schema drift) returns null: ISC-13, gates
-// suppress NOTHING when status cannot be verified. [] is reserved for a
-// successfully parsed empty array (a real zero-open answer). PMR-710A:
-// every null path records its reason via recordAvenFailure, so
-// lastAvenResolutionFailure() can explain why gates were kept after a
-// silent aven-side failure (the spawn catch alone misses classify-level
-// anomalies). Exported for tests; listOpenTicketRefs is the production
-// consumer.
-export function classifyOpenTicketRefs(
+// AIDEV-NOTE (PMR-KESB): shared fail-closed head of the aven-list
+// classifiers — one contract for both consumers (previously copied
+// verbatim between classifyOpenTicketRefs and classifyReadyTickets, which
+// is exactly why extractListRefs was extracted as the shared tail).
+// Error text on either stream, a lowercase `error:` stderr line, non-JSON
+// stdout, or non-array schema drift all record their reason via
+// recordAvenFailure and return { ok: false }; a successfully parsed array
+// (including an empty one — a real zero answer) returns its entries.
+// `universe` names what becomes unverifiable in the recorded messages, so
+// per-consumer diagnostics still differ. Tails stay per-consumer.
+function classifyListHead(
   stdout: string,
   stderr: string,
-): string[] | null {
+  universe: string,
+): { ok: true; entries: unknown[] } | { ok: false } {
   const errorText = avenErrorText(stdout, stderr)
   if (errorText !== null) {
     // Bound the recorded reason: aven output can be arbitrarily large.
     recordAvenFailure(
       `aven list output contains error text: ${errorText.trim().split('\n')[0]?.slice(0, 200) ?? '(empty)'}`,
     )
-    return null
+    return { ok: false }
   }
   // aven's own CLI errors print lowercase `error: …` on stderr (observed:
   // `error: unexpected argument … found`); avenErrorText's regex only
@@ -505,24 +504,48 @@ export function classifyOpenTicketRefs(
     recordAvenFailure(
       `aven list stderr reported an error: ${stderrErrorLine.trim().slice(0, 200)}`,
     )
-    return null
+    return { ok: false }
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(stdout)
   } catch {
     recordAvenFailure(
-      'aven list stdout was not valid JSON — ticket-status universe unverifiable',
+      `aven list stdout was not valid JSON — ${universe} unverifiable`,
     )
-    return null
+    return { ok: false }
   }
   if (!Array.isArray(parsed)) {
     recordAvenFailure(
-      'aven list stdout JSON is not an array (schema drift) — ticket-status universe unverifiable',
+      `aven list stdout JSON is not an array (schema drift) — ${universe} unverifiable`,
     )
+    return { ok: false }
+  }
+  return { ok: true, entries: parsed }
+}
+
+// AIDEV-NOTE (PMR-384R fix round, review blocker 1): classifier for
+// `aven list --open` output. aven exits 0 on errors — never trust exit
+// codes, classify by text via avenErrorText (the listPlansAtReviewRefs
+// guard pattern) — so anything unclassifiable (error text on stdout or
+// stderr, non-JSON, non-array schema drift) returns null: ISC-13, gates
+// suppress NOTHING when status cannot be verified. [] is reserved for a
+// successfully parsed empty array (a real zero-open answer). PMR-710A:
+// every null path records its reason via recordAvenFailure, so
+// lastAvenResolutionFailure() can explain why gates were kept after a
+// silent aven-side failure (the spawn catch alone misses classify-level
+// anomalies). PMR-KESB: the fail-closed head is shared via
+// classifyListHead. Exported for tests; listOpenTicketRefs is the
+// production consumer.
+export function classifyOpenTicketRefs(
+  stdout: string,
+  stderr: string,
+): string[] | null {
+  const head = classifyListHead(stdout, stderr, 'ticket-status universe')
+  if (!head.ok) {
     return null
   }
-  return extractListRefs(parsed)
+  return extractListRefs(head.entries)
 }
 
 // AIDEV-NOTE (PMR-3E1Z): classifier for the ready-ticket picker's
@@ -542,39 +565,12 @@ export function classifyReadyTickets(
   stdout: string,
   stderr: string,
 ): ReadyTicket[] | null {
-  const errorText = avenErrorText(stdout, stderr)
-  if (errorText !== null) {
-    recordAvenFailure(
-      `aven list output contains error text: ${errorText.trim().split('\n')[0]?.slice(0, 200) ?? '(empty)'}`,
-    )
-    return null
-  }
-  const stderrErrorLine = stderr
-    .split('\n')
-    .find((line) => /^error\b/.test(line.trim()))
-  if (stderrErrorLine !== undefined) {
-    recordAvenFailure(
-      `aven list stderr reported an error: ${stderrErrorLine.trim().slice(0, 200)}`,
-    )
-    return null
-  }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(stdout)
-  } catch {
-    recordAvenFailure(
-      'aven list stdout was not valid JSON — ready-ticket universe unverifiable',
-    )
-    return null
-  }
-  if (!Array.isArray(parsed)) {
-    recordAvenFailure(
-      'aven list stdout JSON is not an array (schema drift) — ready-ticket universe unverifiable',
-    )
+  const head = classifyListHead(stdout, stderr, 'ready-ticket universe')
+  if (!head.ok) {
     return null
   }
   const tickets: ReadyTicket[] = []
-  for (const entry of parsed) {
+  for (const entry of head.entries) {
     if (typeof entry !== 'object' || entry === null) continue
     const ref = (entry as { ref?: unknown }).ref
     const title = (entry as { title?: unknown }).title
