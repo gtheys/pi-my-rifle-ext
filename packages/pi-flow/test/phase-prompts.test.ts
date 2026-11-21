@@ -142,3 +142,12 @@ test('validate: personal prompt no longer carries the close-out (moved to feedba
   assert.doesNotMatch(result.prompt, /phase="feedback"/)
   assert.ok(!result.prompt.includes('status to done'))
 })
+
+test('yolo: the prompt input carries the yolo bit (PMR yolo plan 2.1)', async () => {
+  // AIDEV-NOTE: yolo rides on PhasePromptInput so phase command builders can
+  // observe the mode; the prompt text itself is yolo-agnostic here.
+  const result = await buildPhasePrompt('plan', { ...BASE, yolo: true })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  assert.match(result.prompt, /plan\.md/)
+})

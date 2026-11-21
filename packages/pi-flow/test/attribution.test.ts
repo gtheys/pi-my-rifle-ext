@@ -101,3 +101,26 @@ test('clearFlowEnv: removes every flow key', () => {
   assert.equal(env.UNRELATED, 'kept')
   for (const key of FLOW_ENV_KEYS) assert.equal(key in env, false)
 })
+
+test('stampFlowStart: yolo stamps PI_FLOW_YOLO and clearFlowEnv clears it', () => {
+  const env: Record<string, string | undefined> = {}
+  assert.deepEqual(
+    stampFlowStart(env, 'PMR-1', 'plan', fixedRng, { yolo: true }),
+    {
+      ok: true,
+    },
+  )
+  assert.equal(env.PI_FLOW_YOLO, '1')
+  env.PI_FLOW_SUBTASK = 'child'
+  clearFlowEnv(env)
+  assert.equal(env.PI_FLOW_YOLO, undefined)
+  assert.equal(env.PI_FLOW_SUBTASK, undefined)
+})
+
+test('stampFlowStart: no yolo -> PI_FLOW_YOLO cleared (no stale stamp)', () => {
+  const env: Record<string, string | undefined> = {
+    PI_FLOW_YOLO: '1',
+  }
+  stampFlowStart(env, 'PMR-1', 'plan', fixedRng)
+  assert.equal(env.PI_FLOW_YOLO, undefined)
+})

@@ -107,6 +107,8 @@ export interface FlowStartInput {
   phase: Phase
   /** Per-run inputs for buildPhasePrompt (mode, gitRoot, workRoots, ...). */
   promptInput: Omit<PhasePromptInput, 'labels'>
+  /** /flow --yolo: propagate the mode onto the prompt input + env stamp. */
+  yolo?: boolean
   /**
    * AIDEV-NOTE: PMR-XTQQ phase 2 — resume seed from the journal tail
    * (flow/resume.ts). Restores blockerRetries and validateStartedAt exactly;
@@ -177,7 +179,11 @@ class FlowLoopImpl implements FlowLoop {
       input.ref,
       input.phase,
       undefined,
-      { trackRef: input.trackRef, mode: input.promptInput.mode },
+      {
+        trackRef: input.trackRef,
+        mode: input.promptInput.mode,
+        yolo: input.yolo,
+      },
     )
     this.deps.onFlowEnvChange?.()
     if (!stamped.ok) {

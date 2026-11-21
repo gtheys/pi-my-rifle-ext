@@ -57,6 +57,8 @@ export interface PhasePromptInput {
    *  (an oneshot route over an open tree is always a misroute: the whole
    *  tree gets executed as one batch without per-task workers). */
   epicHasOpenChildren?: boolean
+  /** True when the run started with /flow --yolo (gates skipped). */
+  yolo?: boolean
   /** /brainstorm override: explicit kind + topic/symptom (flow defaults to feature+ref). */
   brainstorm?: BrainstormOverride
   /** Aven ticket lookup for ticket brainstorming (jira-ref epic, then jira-key

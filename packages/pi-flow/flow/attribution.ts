@@ -27,6 +27,9 @@ export const FLOW_ENV_KEYS = [
   // 'work' | 'personal'.
   'PI_FLOW_TRACK_REF',
   'PI_FLOW_MODE',
+  // AIDEV-NOTE (yolo plan 2.1): '1' when the run started with --yolo (no
+  // gates). Worker subagents read it to skip gate behavior.
+  'PI_FLOW_YOLO',
 ] as const
 
 export type FlowEnv = Record<string, string | undefined>
@@ -66,6 +69,8 @@ export interface StampExtras {
   /** Tracking ref (Jira key in work mode); falls back to `ref` when absent/invalid. */
   trackRef?: string
   mode?: 'work' | 'personal'
+  /** --yolo run: stamp PI_FLOW_YOLO for worker visibility. */
+  yolo?: boolean
 }
 
 export function stampFlowStart(
@@ -86,14 +91,18 @@ export function stampFlowStart(
   }
   env.PI_FLOW_REF = ref
   env.PI_FLOW_PHASE = phase
-  // a stale tracking ref/mode from a superseded run must never survive
+  // a stale tracking ref/mode/yolo from a superseded run must never survive
   delete env.PI_FLOW_TRACK_REF
   delete env.PI_FLOW_MODE
+  delete env.PI_FLOW_YOLO
   if (extras?.trackRef !== undefined && FLOW_VALUE_RE.test(extras.trackRef)) {
     env.PI_FLOW_TRACK_REF = extras.trackRef
   }
   if (extras?.mode === 'work' || extras?.mode === 'personal') {
     env.PI_FLOW_MODE = extras.mode
+  }
+  if (extras?.yolo === true) {
+    env.PI_FLOW_YOLO = '1'
   }
   let generated = newTraceparent(rng)
   if (!TRACEPARENT_RE.test(generated)) {

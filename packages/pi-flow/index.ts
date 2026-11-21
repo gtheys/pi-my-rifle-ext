@@ -1515,6 +1515,11 @@ export default function (pi: ExtensionAPI) {
         cwd: ctx.cwd,
       })
       promptInput = mergeSeedInput(promptInput, seed)
+      // AIDEV-NOTE (yolo plan 2.1): thread --yolo into the loop's prompt
+      // input and start input so PI_FLOW_YOLO is stamped for workers and
+      // phase command builders can observe the mode.
+      const yolo = parsed.yolo
+      promptInput = { ...promptInput, yolo }
       // AIDEV-NOTE: serializable prompt-input subset; closures
       // (findTicketRef, ...) are rebuilt per invocation, never journaled.
       // mergeSeedInput (override rule) and runInputRecord (journaled shape)
@@ -1531,6 +1536,7 @@ export default function (pi: ExtensionAPI) {
         trackRef,
         phase: next.phase,
         promptInput,
+        yolo,
       }
       if (seed.resume !== undefined) {
         startInput.resume = seed.resume
