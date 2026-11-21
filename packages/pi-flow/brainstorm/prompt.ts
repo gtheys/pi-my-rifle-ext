@@ -42,7 +42,7 @@ TICKET CREATION GATE — after the artifact is written:
      several workspaces — confirm both). VERIFY the destination with aven itself
      BEFORE proposing — never from memory or repo-location conventions:
      - \`aven doctor\` — the "Workspace" section prints the active workspace
-       (e.g. "ok active workspace projects").
+       (e.g. "ok active workspace   projects (projects)").
      - \`aven list 2>&1 | head -1\` — the scope line (printed on stderr) shows
        the resolved project.
      - \`aven project list\` — confirms the project exists in that workspace.
