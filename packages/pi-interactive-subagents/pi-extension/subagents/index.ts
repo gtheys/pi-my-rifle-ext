@@ -127,6 +127,7 @@ import {
   sendEscape,
   shellEscape,
 } from './surface.ts'
+import { composeChildTask } from './task-composition.ts'
 import {
   createSessionUsageTracker,
   createUsageSummary,
@@ -2550,23 +2551,21 @@ async function launchSubagent(
   mkdirSync(dirname(activityFile), { recursive: true })
   const { inheritsConversationContext } = launchBehavior
 
-  // Build the task message
-  // Only full-context fork mode inherits prior conversation state.
-  // Blank-session modes need the wrapper instructions and artifact-backed handoff.
-  const modeHint = agentDefs?.autoExit
-    ? 'Complete your task autonomously.'
-    : 'Complete your task. When finished, call the subagent_done tool. The user can interact with you at any time.'
-  const summaryInstruction = agentDefs?.autoExit
-    ? 'Your FINAL assistant message should summarize what you accomplished.'
-    : 'Your FINAL assistant message (before calling subagent_done or before the user exits) should summarize what you accomplished.'
   const denySet = resolveDenyTools(agentDefs)
-  const identity = agentDefs?.body ?? params.systemPrompt ?? null
-  const systemPromptMode = agentDefs?.systemPromptMode
-  const identityInSystemPrompt = systemPromptMode && identity
-  const roleBlock = identity && !identityInSystemPrompt ? `\n\n${identity}` : ''
-  const fullTask = inheritsConversationContext
-    ? params.task
-    : `${roleBlock}\n\n${modeHint}\n\n${params.task}\n\n${summaryInstruction}`
+  // AIDEV-NOTE: cache boundary — the composition splits into a stable layer
+  // (identity, which rides the system-prompt addendum/flag and is stable per
+  // role) and a dynamic layer (composition.taskMessage, which differs per
+  // spawn). aven-context injection is gated off in children. Known churn
+  // source: pi-core still appends a trailing `cwd` section to the system
+  // prompt for worktree spawns — that belongs to pi-core, out of scope here.
+  const composition = composeChildTask({
+    task: params.task,
+    identity: agentDefs?.body ?? params.systemPrompt ?? null,
+    systemPromptMode: agentDefs?.systemPromptMode,
+    autoExit: agentDefs?.autoExit ?? false,
+    inheritsConversationContext,
+  })
+  const fullTask = composition.taskMessage
 
   // ── Build child env (rides `tab create --env`) + agent argv ──
 
@@ -2649,11 +2648,8 @@ async function launchSubagent(
     }
     // Pass agent body as system prompt via file to avoid escaping issues.
     // Pi's --append-system-prompt and --system-prompt auto-detect file paths.
-    if (identityInSystemPrompt && identity) {
-      const flag =
-        systemPromptMode === 'replace'
-          ? '--system-prompt'
-          : '--append-system-prompt'
+    if (composition.systemPromptFlag && composition.systemPromptIdentity) {
+      const flag = composition.systemPromptFlag
       const spTimestamp = new Date()
         .toISOString()
         .replace(/[:.]/g, '-')
@@ -2669,7 +2665,7 @@ async function launchSubagent(
         `context/${spSafeName || 'subagent'}-sysprompt-${spTimestamp}.md`,
       )
       mkdirSync(dirname(syspromptPath), { recursive: true })
-      writeFileSync(syspromptPath, identity, 'utf8')
+      writeFileSync(syspromptPath, composition.systemPromptIdentity, 'utf8')
       argv.push(flag, syspromptPath)
     }
     const toolAllowlist = buildSubagentToolAllowlist(effectiveTools)
