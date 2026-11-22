@@ -4,7 +4,7 @@ export type PersonalType = 'feat' | 'fix' | 'chore' | 'docs' | 'refactor'
 
 export type BranchInput =
   | { kind: 'jira'; jiraId: string }
-  | { kind: 'personal'; name: string; type: PersonalType }
+  | { kind: 'personal'; name: string; type: PersonalType; flowRef?: string }
   | { kind: 'literal'; branch: string }
 
 const PERSONAL_TYPES: readonly PersonalType[] = [
@@ -80,8 +80,27 @@ export function slugify(text: string): string {
     .replace(/^-|-$/g, '')
 }
 
-export function personalBranch(name: string, type: PersonalType): string {
-  return `${type}/${slugify(name)}`
+// AIDEV-NOTE: PMR-902B — branch-shape contract for personal flows. When a
+// personal flow is active, its aven ref is injected into the branch as
+// `<type>/<REF>-<slug>` (e.g. feat/PMR-AB12-add-save-button). The ref is used
+// bare — no brackets — because git refnames reject `[`. Validated against
+// AVEN_REF_RE (mirrors plan-tools/jira-branch.ts JIRA_ID_RE, but allows a
+// letter suffix for aven refs like PMR-902B). Callers with no active flow pass
+// null/undefined and get the bare `<type>/<slug>` shape.
+const AVEN_REF_RE = /^[A-Z]+-[A-Z0-9]+$/
+
+export function personalBranch(
+  name: string,
+  type: PersonalType,
+  ref?: string | null,
+): string {
+  if (ref === null || ref === undefined) {
+    return `${type}/${slugify(name)}`
+  }
+  if (!AVEN_REF_RE.test(ref)) {
+    throw new Error(`Invalid flow ref '${ref}' — expected format like PMR-AB12`)
+  }
+  return `${type}/${ref}-${slugify(name)}`
 }
 
 // AIDEV-NOTE: PMR-XCA9 — deriveBranchName inlined from the retired
@@ -169,7 +188,7 @@ export async function deriveBranch(
   }
   if (input.kind === 'personal') {
     return {
-      branch: personalBranch(input.name, input.type),
+      branch: personalBranch(input.name, input.type, input.flowRef),
       source: 'personal',
     }
   }

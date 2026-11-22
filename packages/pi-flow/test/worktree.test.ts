@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 import {
+  deriveBranch,
   parseBranchInput,
   personalBranch,
   slugify,
@@ -112,6 +113,52 @@ test('personalBranch: each personal type', () => {
     personalBranch('refactor core', 'refactor'),
     'refactor/refactor-core',
   )
+})
+
+test('personalBranch: injects validated ref', () => {
+  assert.equal(
+    personalBranch('Add Save Button & Export!', 'feat', 'PMR-AB12'),
+    'feat/PMR-AB12-add-save-button-export',
+  )
+})
+
+test('personalBranch: null ref stays bare', () => {
+  assert.equal(personalBranch('docs', 'docs', null), 'docs/docs')
+})
+
+test('personalBranch: letter-suffix ref accepted', () => {
+  assert.equal(
+    personalBranch('prefix personal branch', 'feat', 'PMR-902B'),
+    'feat/PMR-902B-prefix-personal-branch',
+  )
+})
+
+test('personalBranch: lowercase ref throws', () => {
+  assert.throws(
+    () => personalBranch('x', 'feat', 'pmr-ab12'),
+    /Invalid flow ref 'pmr-ab12'/,
+  )
+})
+
+test('personalBranch: malformed ref throws', () => {
+  assert.throws(
+    () => personalBranch('x', 'feat', 'PMR-'),
+    /Invalid flow ref 'PMR-'/,
+  )
+})
+
+test('deriveBranch: personal kind threads flowRef', async () => {
+  const pi = {} as unknown as ExtensionAPI
+  const result = await deriveBranch(pi, {
+    kind: 'personal',
+    name: 'Add Save Button & Export!',
+    type: 'feat',
+    flowRef: 'PMR-AB12',
+  })
+  assert.deepEqual(result, {
+    branch: 'feat/PMR-AB12-add-save-button-export',
+    source: 'personal',
+  })
 })
 
 // --- herdr.ts parsing helpers ---
