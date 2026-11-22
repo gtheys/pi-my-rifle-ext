@@ -1,7 +1,9 @@
 import {
+  type FlowPhase,
   type FlowRunEvent,
   type FlowRunState,
   type LoopRunStatus,
+  type OwnerRecord,
   projectRunState,
   runFileName,
 } from '../run-state.ts'
@@ -15,6 +17,12 @@ import {
 // durable pending-run records (used by binding self-heal / worktree bind).
 // All paths and IO are injected; this module must never call getAgentDir()
 // itself so tests can run against fakes and consumers control resolution.
+// AIDEV-NOTE: PMR-T9ZQ — the scan body is shared (scanRunStates) between
+// deriveFlowRefs (plain refs, binding self-heal) and deriveParkedCandidates
+// (rich records for the parked-run resume picker). Both mappers MUST keep the
+// same filters and the same parked-first order — the picker and the self-heal
+// have to agree on what is live; test/durable-refs-candidates.test.ts pins
+// that equality.
 //
 // SINGLE-CANDIDATE-ONLY CONSUMPTION RULE: this scan is a *derivation*, not a
 // consumption. Callers may only act on the result when exactly one ref
@@ -49,14 +57,46 @@ function keepRef(state: FlowRunState, gitRoot: string): boolean {
 }
 
 /**
- * Scan <pendingDir> for pending records and return refs that are still
- * live for the given repo: latest journaled input.gitRoot matches and the
- * loop state is non-terminal (running/paused). Parked runs
- * (awaitingOutcome) sort before paused/running. Any candidate whose journal
- * is missing or unreadable is silently skipped; readdir failure yields an
- * empty list — this function never throws.
+ * AIDEV-NOTE: PMR-T9ZQ — one rich record per live candidate run, derived
+ * from the same scan as deriveFlowRefs. `phase` is the journaled current
+ * phase, `status` the loop status, `updatedAt` the last run-activity stamp
+ * (owner refreshes never move it), `owner` is absent for runs journaled
+ * before the owner-session event (the picker then renders no liveness
+ * hint), and `hasWorktree` reports whether a worktree-create effect was
+ * ever declared for the run.
  */
-export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
+export interface ParkedCandidate {
+  ref: string
+  phase: FlowPhase | null
+  status: LoopRunStatus
+  updatedAt: string
+  owner?: OwnerRecord
+  hasWorktree: boolean
+}
+
+// AIDEV-NOTE: PMR-T9ZQ — one scanned live record; `parked` is the
+// awaitingOutcome flag the resume picker (flow/resume-picker.ts) labels with,
+// and it also decides the parked-first ordering below.
+interface ScannedRun {
+  ref: string
+  state: FlowRunState
+  parked: boolean
+}
+
+function hasWorktreeDeclared(state: FlowRunState): boolean {
+  const declarations = state.effectDeclarations
+  if (declarations === undefined) return false
+  return declarations.some((d) => d.effect === 'worktree-create')
+}
+
+/**
+ * Shared scan: pending records that are still live for the given repo
+ * (latest journaled input.gitRoot matches, loop status non-terminal).
+ * Parked runs (awaitingOutcome) come before paused/running. Missing or
+ * unreadable journals are silently skipped; readdir failure yields an empty
+ * list — this never throws.
+ */
+async function scanRunStates(deps: DurableRefDeps): Promise<ScannedRun[]> {
   let names: string[]
   try {
     names = await deps.io.readdir(deps.pendingDir)
@@ -64,8 +104,8 @@ export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
     return []
   }
 
-  const parked: string[] = []
-  const active: string[] = []
+  const parked: ScannedRun[] = []
+  const active: ScannedRun[] = []
   for (const name of names) {
     if (!isCandidateName(name)) continue
     const ref = name.slice(0, -'.json'.length)
@@ -84,11 +124,63 @@ export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
     if (!keepRef(state, deps.gitRoot)) continue
 
     // isParkedLoop is typed over LoopStateRecord; project here for the check.
-    if (isParkedLoop(state.loop)) {
-      parked.push(ref)
+    const entry: ScannedRun = {
+      ref,
+      state,
+      parked: isParkedLoop(state.loop),
+    }
+    if (entry.parked) {
+      parked.push(entry)
     } else {
-      active.push(ref)
+      active.push(entry)
     }
   }
   return [...parked, ...active]
+}
+
+/**
+ * Scan <pendingDir> for pending records and return refs that are still
+ * live for the given repo: latest journaled input.gitRoot matches and the
+ * loop state is non-terminal (running/paused). Parked runs
+ * (awaitingOutcome) sort before paused/running. Any candidate whose journal
+ * is missing or unreadable is silently skipped; readdir failure yields an
+ * empty list — this function never throws.
+ */
+export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
+  const entries = await scanRunStates(deps)
+  const refs: string[] = []
+  for (const entry of entries) {
+    refs.push(entry.ref)
+  }
+  return refs
+}
+
+/**
+ * AIDEV-NOTE: PMR-T9ZQ — rich variant of deriveFlowRefs for the parked-run
+ * resume picker: same scan, same filters, same parked-first order, but one
+ * ParkedCandidate per ref carrying what the menu label and the owner hint
+ * need. Pure derivation (no consumption, no side effects).
+ */
+export async function deriveParkedCandidates(
+  deps: DurableRefDeps,
+): Promise<ParkedCandidate[]> {
+  const entries = await scanRunStates(deps)
+  const candidates: ParkedCandidate[] = []
+  for (const entry of entries) {
+    const state = entry.state
+    // keepRef guarantees a non-terminal loop; the guard keeps that fact in
+    // the type system instead of a non-null assertion.
+    const loop = state.loop
+    if (loop === undefined) continue
+    const candidate: ParkedCandidate = {
+      ref: entry.ref,
+      phase: state.currentPhase,
+      status: loop.status,
+      updatedAt: state.updatedAt,
+      hasWorktree: hasWorktreeDeclared(state),
+    }
+    if (state.owner !== undefined) candidate.owner = state.owner
+    candidates.push(candidate)
+  }
+  return candidates
 }
