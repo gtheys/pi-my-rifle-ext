@@ -21,6 +21,7 @@ import {
   createAttemptLedger,
   registerRunAttemptTool,
 } from '../tools/run-attempt.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 const ROOT = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-run-attempt-'))
 const BIN_DIR = path.join(ROOT, 'bin')
@@ -250,9 +251,7 @@ test('exhausted budget refuses further attempts without a second note', async ()
         execute = tool.execute
       },
     } as unknown as ExtensionAPI,
-    createAttemptLedger(
-      mkdtempSync(path.join(os.tmpdir(), 'pi-flow-attempt-')),
-    ),
+    createAttemptLedger(mkTmpDir('pi-flow-attempt-')),
   )
   assert.ok(execute)
   const previousPath = process.env.PATH ?? ''

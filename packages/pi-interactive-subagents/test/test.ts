@@ -2915,10 +2915,7 @@ describe('subagent interruption', () => {
 
   it('recoveryGuidanceFor: resume hint for a verified session path', () => {
     const testApi = (subagentsModule as any).__test__
-    const isolated = join(
-      mkdtempSync(join(tmpdir(), 'guidance-')),
-      'pi-subagents',
-    )
+    const isolated = join(mkTmpDir('guidance-'), 'pi-subagents')
     mkdirSync(isolated, { recursive: true })
     try {
       const sessionFile = join(isolated, 'session.jsonl')
@@ -2937,10 +2934,7 @@ describe('subagent interruption', () => {
 
   it('recoveryGuidanceFor: re-spawn guidance for a starting record with no pane', () => {
     const testApi = (subagentsModule as any).__test__
-    const isolated = join(
-      mkdtempSync(join(tmpdir(), 'guidance-')),
-      'pi-subagents',
-    )
+    const isolated = join(mkTmpDir('guidance-'), 'pi-subagents')
     try {
       writeAssignment(
         draftGuidance('g-respawn', { status: 'starting' }),
@@ -2960,10 +2954,7 @@ describe('subagent interruption', () => {
 
   it('recoveryGuidanceFor: fails closed with no guessed resume command', () => {
     const testApi = (subagentsModule as any).__test__
-    const isolated = join(
-      mkdtempSync(join(tmpdir(), 'guidance-')),
-      'pi-subagents',
-    )
+    const isolated = join(mkTmpDir('guidance-'), 'pi-subagents')
     try {
       // missing record
       assert.equal(
@@ -3026,10 +3017,7 @@ describe('subagent interruption', () => {
 
   it('recoveryGuidanceFor: verified agent-error exit falls back to the watcher sessionFile', () => {
     const testApi = (subagentsModule as any).__test__
-    const isolated = join(
-      mkdtempSync(join(tmpdir(), 'guidance-')),
-      'pi-subagents',
-    )
+    const isolated = join(mkTmpDir('guidance-'), 'pi-subagents')
     mkdirSync(isolated, { recursive: true })
     try {
       const sessionFile = join(isolated, 'session.jsonl')
@@ -3532,7 +3520,7 @@ describe('store.ts durable result store', () => {
   let storeRoot: string
 
   before(() => {
-    storeRoot = join(mkdtempSync(join(tmpdir(), 'store-')), 'pi-subagents')
+    storeRoot = join(mkTmpDir('store-'), 'pi-subagents')
   })
   after(() => {
     rmSync(storeRoot, { recursive: true, force: true })
@@ -5621,7 +5609,7 @@ describe('peers.ts (PMR-98S6 peer-to-peer messaging)', () => {
   }
 
   before(() => {
-    peersRoot = join(mkdtempSync(join(tmpdir(), 'peers-')), 'pi-subagents')
+    peersRoot = join(mkTmpDir('peers-'), 'pi-subagents')
   })
   after(() => {
     rmSync(peersRoot, { recursive: true, force: true })
@@ -5847,10 +5835,7 @@ describe('inbox.ts (PMR-QCVA owner messaging)', () => {
   let inboxRoot: string
 
   before(() => {
-    inboxRoot = join(
-      mkdtempSync(join(tmpdir(), 'owner-inbox-')),
-      'pi-subagents',
-    )
+    inboxRoot = join(mkTmpDir('owner-inbox-'), 'pi-subagents')
   })
   after(() => {
     rmSync(inboxRoot, { recursive: true, force: true })
@@ -6256,7 +6241,7 @@ describe('assignments.ts durable branch-owned assignments (PMR-Z5KR)', () => {
   let root: string
 
   before(() => {
-    root = join(mkdtempSync(join(tmpdir(), 'assignments-')), 'pi-subagents')
+    root = join(mkTmpDir('assignments-'), 'pi-subagents')
   })
   after(() => {
     rmSync(root, { recursive: true, force: true })
@@ -6666,10 +6651,7 @@ describe('usage.ts (PMR-874G)', () => {
 
   describe('settle-time accounting', () => {
     it('recordAssignmentUsage persists totals onto the record; missing record is a no-op', () => {
-      const root = join(
-        mkdtempSync(join(tmpdir(), 'usage-assign-')),
-        'pi-subagents',
-      )
+      const root = join(mkTmpDir('usage-assign-'), 'pi-subagents')
       writeAssignment(
         {
           childId: 'u1',
@@ -6705,10 +6687,7 @@ describe('usage.ts (PMR-874G)', () => {
     })
 
     it('writeResultRecord carries usage into the durable result record', () => {
-      const root = join(
-        mkdtempSync(join(tmpdir(), 'usage-store-')),
-        'pi-subagents',
-      )
+      const root = join(mkTmpDir('usage-store-'), 'pi-subagents')
       const written = writeResultRecord(
         {
           childId: 'u2',
@@ -6839,7 +6818,7 @@ describe('retirement.ts (PMR-1EC3 context retirement)', () => {
   let retireRoot: string
 
   before(() => {
-    retireRoot = join(mkdtempSync(join(tmpdir(), 'retire-')), 'pi-subagents')
+    retireRoot = join(mkTmpDir('retire-'), 'pi-subagents')
   })
   after(() => {
     rmSync(retireRoot, { recursive: true, force: true })
@@ -6925,10 +6904,7 @@ describe('retirement.ts (PMR-1EC3 context retirement)', () => {
 
     it('points subagent_result stubs at the existing result record', () => {
       // own root: the retired/ dir must not exist unless THIS test writes it
-      const root = join(
-        mkdtempSync(join(tmpdir(), 'retire-ref-')),
-        'pi-subagents',
-      )
+      const root = join(mkTmpDir('retire-ref-'), 'pi-subagents')
       const written = writeResultRecord(
         {
           childId: 'child-ret',
@@ -6966,10 +6942,7 @@ describe('retirement.ts (PMR-1EC3 context retirement)', () => {
 
     it('writes a durable hash-named record when no resultPath exists', () => {
       // own root: idempotence assertion counts files under retired/
-      const root = join(
-        mkdtempSync(join(tmpdir(), 'retire-hash-')),
-        'pi-subagents',
-      )
+      const root = join(mkTmpDir('retire-hash-'), 'pi-subagents')
       const messages = [
         customMsg('subagent_ask', `${big}-q`, { name: 'worker' }),
         customMsg('subagent_result', `${big}-keep`),
@@ -7328,7 +7301,7 @@ describe('delivered.ts exactly-once dedup (PMR-KY0E)', () => {
   let root: string
 
   before(() => {
-    root = join(mkdtempSync(join(tmpdir(), 'delivered-')), 'pi-subagents')
+    root = join(mkTmpDir('delivered-'), 'pi-subagents')
   })
   after(() => {
     rmSync(root, { recursive: true, force: true })
@@ -7384,7 +7357,7 @@ describe('child tool-effect replay memo (PMR-ZJCP)', () => {
   let root: string
 
   before(() => {
-    root = join(mkdtempSync(join(tmpdir(), 'effectmemo-')), 'pi-subagents')
+    root = join(mkTmpDir('effectmemo-'), 'pi-subagents')
   })
   after(() => {
     rmSync(root, { recursive: true, force: true })
@@ -7594,7 +7567,7 @@ describe('peer-bindings.ts (PMR-77KT)', () => {
   let root: string
 
   before(() => {
-    root = join(mkdtempSync(join(tmpdir(), 'peerbindings-')), 'pi-subagents')
+    root = join(mkTmpDir('peerbindings-'), 'pi-subagents')
   })
   after(() => {
     rmSync(root, { recursive: true, force: true })
@@ -7805,7 +7778,7 @@ describe('replay-safe spawn identity (PMR-YKAC)', () => {
   let root: string
 
   before(() => {
-    root = join(mkdtempSync(join(tmpdir(), 'spawnseq-')), 'pi-subagents')
+    root = join(mkTmpDir('spawnseq-'), 'pi-subagents')
   })
   after(() => {
     rmSync(root, { recursive: true, force: true })
