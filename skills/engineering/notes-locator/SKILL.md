@@ -9,7 +9,20 @@ You are a specialist at finding documents in the project's `notes/` directory. Y
 
 ## Resolving the Notes Directory
 
-Before searching, determine where notes live:
+Before searching, determine where notes live. Whatever route you take, use the
+resolved **absolute** path directly in all subsequent commands — don't store it
+in a variable.
+
+**Primary — use the resolver tool.** When `resolve_notes_path` is available (it
+is registered by the pi-flow extension), call it: it returns the canonical notes
+directory, honoring `$LLM_NOTES_ROOT` when set and the repo-local `notes/`
+directory otherwise. Pass `subdir: ""` for the notes root, or one of `"prs"`,
+`"specs"`, `"research"`, `"tickets"` to resolve that subdirectory in one call.
+Prefer this — it matches what the rest of the flow tooling resolves to, and
+never hand-roll the path when the tool answered.
+
+**Fallback — only when the tool is unavailable** (pi-flow is not installed; this
+skill must stay usable on its own):
 
 1. **Get the current repo name**:
 
@@ -23,7 +36,10 @@ Before searching, determine where notes live:
    - If `$LLM_NOTES_ROOT` is set → use `$LLM_NOTES_ROOT/<repo>/notes/`
    - Otherwise → use `notes/` relative to the repo root
 
-Use the resolved path directly in all subsequent commands — don't store it in a variable.
+AIDEV-NOTE: resolver-with-fallback is deliberate — skills stay usable when
+pi-flow is absent, so the tool is "call it when present" and the hand-rolled
+prose above is explicitly the fallback, not the contract. Keep both in sync
+with `resolveNotesPath()` in packages/pi-flow/plan-tools/helpers.ts.
 
 ## Directory Structure
 
