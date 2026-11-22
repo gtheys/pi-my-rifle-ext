@@ -10112,6 +10112,35 @@ describe('retention.ts (PMR-KT90 prune sweep)', () => {
     assert.match(report.skipReasons.join('\n'), /asks: delete failed/)
   })
 
+  // AIDEV-NOTE: PMR-VWZB — a partial removal (ask candidate unlinked, a
+  // sibling fails with a real error) used to be reported as a plain full
+  // removal, orphaning the sibling with no way to collect it later. The
+  // unlinkable sibling is a DIRECTORY named like the reply record:
+  // readJson sees it as missing (EISDIR) while unlinkSync fails EISDIR — a
+  // real failure, distinct from the expected ENOENT missing-sibling case.
+  it('reports a partial ask removal as removed plus a partial skip reason', () => {
+    freshFixture()
+    writeJson(join(root, 'asks', 'partial.json'), {
+      askId: 'ask-partial',
+      childId: 'partial',
+      question: 'q',
+      sessionFile: join(agentDir, 'sessions', 'gone-partial.jsonl'),
+      createdAt: OLD_ISO,
+    })
+    mkdirSync(join(root, 'asks', 'partial.reply.json'), { recursive: true })
+
+    const report = prune()
+
+    assert.ok(!existsSync(join(root, 'asks', 'partial.json')))
+    assert.ok(existsSync(join(root, 'asks', 'partial.reply.json')))
+    assert.equal(report.removed.asks, 1)
+    assert.equal(report.skipped.asks, 1)
+    assert.match(
+      report.skipReasons.join('\n'),
+      /asks: delete failed \(partial\)/,
+    )
+  })
+
   it('prunes owner inbox only when the parent session file is gone', () => {
     freshFixture()
     // Parent session file exists under agentDir/sessions → keep. The name

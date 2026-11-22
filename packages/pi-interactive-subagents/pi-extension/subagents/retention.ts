@@ -365,6 +365,10 @@ function prunePeers(dir: string, ledger: PruneLedger, root: string): void {
       continue
     }
     if (removedAny) markRemoved(ledger, 'peers')
+    // AIDEV-NOTE: PMR-VWZB — a partial removal is reported as BOTH: the
+    // removed count reflects what did disappear, and a distinct skip reason
+    // surfaces the orphaned remainder instead of claiming a full removal.
+    if (failed) markSkipped(ledger, 'peers', 'delete failed (partial)')
   }
 }
 
@@ -482,6 +486,13 @@ function pruneAsks(dir: string, ledger: PruneLedger, root: string): void {
       continue
     }
     if (removedAny) markRemoved(ledger, 'asks')
+    // AIDEV-NOTE: PMR-VWZB — a partial removal is reported as BOTH: the
+    // removed count reflects the file(s) that did disappear, and a distinct
+    // skip reason surfaces the orphaned sibling. Without it the ledger
+    // claimed a full removal while an unlinkable .reply.json/.control.json
+    // stayed behind — uncollectable later, because pruneAsks only iterates
+    // <childId>.json candidates.
+    if (failed) markSkipped(ledger, 'asks', 'delete failed (partial)')
   }
 }
 
