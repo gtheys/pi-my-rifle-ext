@@ -324,7 +324,7 @@ Safety rules:
 - **Never pruned:** `result-ref-reservations/` and `spawn-seq/` — monotonic counters; pruning them would silently reuse result refs and childIds.
 - **Age-eligible:** `results/`, `retired/` — removed once older than the cutoff.
 - **Session-checked:** `assignments/`, `peers/`, `asks/`, `inbox/`, `delivered/`, `interrupts/`, `tool-effects/`, `peer-bindings/` — pruned only when aged out **and** liveness is verifiably dead **and** the resume-source session file no longer exists. Live, current, resumable, unreadable, or unverifiable records are always kept; any inspection failure skips the record.
-- **Loud expiry:** pruned `results/` records never leave a silently dangling `result:<name>#<n>` ref — `inspectResultRef` reports `expired` ("result expired by retention policy") because reservation markers are never pruned and their target identity is immutable.
+- **Ref expiry:** pruned `results/` records can never silently resolve to different content — reservation markers are never pruned and their target identity is immutable. The `inspectResultRef` API reports a pruned target loudly as `expired` ("result expired by retention policy"); runtime result consumers today keep their own pre-prune record path and surface a pruned record as a plain missing-record error.
 - pi-flow run journals are never touched.
 
 ## Requirements
