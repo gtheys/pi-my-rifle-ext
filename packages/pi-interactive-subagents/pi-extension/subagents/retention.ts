@@ -795,14 +795,27 @@ function pruneChildIdKeyedDir(
       continue
     }
     if (!isDir) continue
-    const newest = newestTimestampAcrossDir(childDir, pickFields)
-    if (newest === null) {
-      markSkipped(ledger, cls, 'malformed record')
+    // AIDEV-NOTE: PMR-S7TF — an EMPTY childId dir (zero records, e.g. left
+    // behind by an interrupted rmSync) is not a malformed record: it lists
+    // fine and carries no replay evidence, so it skips the timestamp check
+    // and stays prunable under the same session-file guard instead of being
+    // kept forever with a misleading reason. Unreadable and malformed stay
+    // distinct fail-closed cases.
+    const childEntries = dirEntries(childDir)
+    if (childEntries === null) {
+      markSkipped(ledger, cls, 'child dir unreadable')
       continue
     }
-    if (newest >= ledger.cutoffMs) {
-      markSkipped(ledger, cls)
-      continue
+    if (childEntries.length > 0) {
+      const newest = newestTimestampAcrossDir(childDir, pickFields)
+      if (newest === null) {
+        markSkipped(ledger, cls, 'malformed record')
+        continue
+      }
+      if (newest >= ledger.cutoffMs) {
+        markSkipped(ledger, cls)
+        continue
+      }
     }
     const sessionFile = resolveChildSessionFile(childId, root)
     if (sessionFile === null) {

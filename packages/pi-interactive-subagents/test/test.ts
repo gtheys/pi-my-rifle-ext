@@ -9805,6 +9805,30 @@ describe('retention.ts (PMR-KT90 prune sweep)', () => {
     assert.ok(existsSync(join(root, 'assignments', 'alive.json')))
   })
 
+  // AIDEV-NOTE: PMR-S7TF — an EMPTY childId dir (zero records, e.g. left
+  // behind by an interrupted rmSync) used to be reported as a 'malformed
+  // record' and kept forever. It lists fine and carries no replay evidence,
+  // so it must stay reclaimable under the same session-file guard.
+  it('reclaims an empty childId dir instead of keeping it as malformed', () => {
+    freshFixture()
+    writeAssignmentFixture({
+      childId: 'emptied',
+      sessionFile: join(agentDir, 'sessions', 'emptied.jsonl'),
+      pid: DEAD_PID,
+      updatedAt: OLD_ISO,
+    })
+    mkdirSync(join(root, 'tool-effects', 'emptied'), { recursive: true })
+
+    const report = prune()
+
+    assert.ok(!existsSync(join(root, 'tool-effects', 'emptied')))
+    assert.equal(report.removed['tool-effects'], 1)
+    assert.doesNotMatch(
+      report.skipReasons.join('\n'),
+      /tool-effects: malformed record/,
+    )
+  })
+
   it('prunes peer-bindings only when the child session file is gone', () => {
     freshFixture()
     const resumableSession = sessionFileInAgentDir('resumable.jsonl')
