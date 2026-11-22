@@ -186,7 +186,10 @@ describe('herdr surface [two-mode herdr]', { timeout: 60_000 }, () => {
     await sleep(1000)
 
     const marker = uniqueId()
-    const filePath = `/tmp/pi-herdr-test-${marker}.txt`
+    // AIDEV-NOTE: PMR-M3DM — write into the tracked env dir, never /tmp:
+    // cleanupTestEnv rmSyncs the dir, and a killed run no longer leaves
+    // pi-herdr-*.txt strays in the shared /tmp namespace.
+    const filePath = `${env.dir}/pi-herdr-test-${marker}.txt`
     trackTempFile(env, filePath)
 
     sendCommand(
@@ -218,7 +221,8 @@ describe('herdr surface [two-mode herdr]', { timeout: 60_000 }, () => {
     await sleep(1000)
 
     const marker = uniqueId()
-    const byteFile = `/tmp/pi-herdr-escape-${marker}.txt`
+    // AIDEV-NOTE: PMR-M3DM — env dir, not /tmp (see the file-test note).
+    const byteFile = `${env.dir}/pi-herdr-escape-${marker}.txt`
     trackTempFile(env, byteFile)
 
     const nodeProgram =

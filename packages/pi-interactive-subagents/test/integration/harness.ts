@@ -239,8 +239,30 @@ export function createTestEnv(): TestEnv {
     }
   }
 
-  return { dir, surfaces: [], tabs: [], tempFiles: [] }
+  const env: TestEnv = { dir, surfaces: [], tabs: [], tempFiles: [] }
+  liveEnvs.add(env)
+  return env
 }
+
+// AIDEV-NOTE: PMR-M3DM — cleanup backstop: cleanupTestEnv only runs from
+// after() hooks, so a killed/crashed run left tracked temp files
+// (pi-herdr-*.txt) behind in /tmp. Every created env is registered here and
+// swept again on process exit (best-effort, mirrors pi-flow test/tmpdir.ts).
+// Surfaces/tabs are NOT closed here: herdr calls on a dying process can hang.
+const liveEnvs = new Set<TestEnv>()
+
+process.on('exit', () => {
+  for (const env of liveEnvs) {
+    for (const file of env.tempFiles) {
+      try {
+        unlinkSync(file)
+      } catch {}
+    }
+    try {
+      rmSync(env.dir, { recursive: true, force: true })
+    } catch {}
+  }
+})
 
 /**
  * Clean up all resources created during the test.
@@ -266,6 +288,7 @@ export function cleanupTestEnv(env: TestEnv): void {
   try {
     rmSync(env.dir, { recursive: true, force: true })
   } catch {}
+  liveEnvs.delete(env)
 }
 
 /**
