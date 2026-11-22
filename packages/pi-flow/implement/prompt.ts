@@ -2,8 +2,10 @@
 // /implement command (same pattern as plan/prompt.ts). Plan routing hands off
 // to the implement-plan-aven skill BY NAME — never reimplemented here. Oneshot
 // and bug routing are pi-flow's own playbooks: worktree isolation (PMR-NJYY),
-// branch derivation (jira_create_branch for work refs, conventional slug
-// branch for personal), per-task test+commit cycle, retry budget, escalation.
+// branch derivation (jira_create_branch for work refs; ref-injected
+// conventional branch for personal — feat/<REF>-<slug> during an active flow,
+// bare feat/<slug> outside one, see BRANCH_RULES / PMR-902B), per-task
+// test+commit cycle, retry budget, escalation.
 
 export interface ImplementPromptInput {
   mode: 'work' | 'personal'
