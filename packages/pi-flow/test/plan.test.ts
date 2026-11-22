@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { canImplement } from '../gates.ts'
 import { parsePlanArgs } from '../plan/args.ts'
-import { resolvePlanDir } from '../plan/paths.ts'
 import { buildPlanPrompt } from '../plan/prompt.ts'
 import { classifySize } from '../plan/size-check.ts'
 
@@ -265,22 +264,6 @@ test('canImplement: ok with planned', () => {
   const r = canImplement(['planned'])
   assert.equal(r.ok, true)
   assert.equal(r.reason, undefined)
-})
-
-// --- paths ---
-
-test('resolvePlanDir: PERSONAL_FEATURES set → features branch', () => {
-  assert.equal(
-    resolvePlanDir('/pf', 'myrepo', '/home/x/repo', '2026-10-16', 'add-thing'),
-    '/pf/myrepo/2026-10-16-add-thing',
-  )
-})
-
-test('resolvePlanDir: PERSONAL_FEATURES unset → .pi/plans branch', () => {
-  assert.equal(
-    resolvePlanDir(undefined, 'myrepo', '/home/x/repo', '2026-10-16', 'add'),
-    '/home/x/repo/.pi/plans/2026-10-16-add',
-  )
 })
 
 test('parsePlanArgs: kind prefixes force the kind (PMR-PCVK)', () => {

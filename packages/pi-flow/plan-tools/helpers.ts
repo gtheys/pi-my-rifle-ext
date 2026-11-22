@@ -83,8 +83,8 @@ export async function resolveNotesPath(
 // AIDEV-NOTE: Feature path contract — if $PERSONAL_FEATURES is set, feature
 // plans live in $PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md (personal
 // cross-repo features collection). Otherwise fall back to the repo-local
-// <git-toplevel>/.pi/plans/<date>-<slug>/plan.md. plan/paths.ts mirrors this
-// contract in pure form for the /plan phase.
+// <git-toplevel>/.pi/plans/<date>-<slug>/plan.md. resolveFeaturePath is the
+// single contract for feature plan paths.
 export async function resolveFeaturePath(
   pi: ExtensionAPI,
   summary: string,
