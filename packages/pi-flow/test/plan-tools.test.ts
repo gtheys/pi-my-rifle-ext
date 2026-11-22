@@ -108,7 +108,10 @@ test('resolveNotesPath: $LLM_NOTES_ROOT set with subdir → <root>/<repo>/notes/
   }
 })
 
-test('resolveNotesPath: repo-local fallback uses the remote repo name in a worktree', async () => {
+// AIDEV-NOTE: PMR-VXN9 — renamed: this test sets $LLM_NOTES_ROOT, so it
+// pins the ENV-ROOT branch resolving the remote repo name in a worktree;
+// the repo-local branch never uses a repo name at all.
+test('resolveNotesPath: $LLM_NOTES_ROOT set uses the remote repo name in a worktree', async () => {
   const prev = process.env.LLM_NOTES_ROOT
   process.env.LLM_NOTES_ROOT = '/home/dev/notes'
   try {

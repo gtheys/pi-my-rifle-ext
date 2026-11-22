@@ -169,7 +169,13 @@ test('spec_publish execute surfaces git-repo failure as a tool error', async () 
 // unset. This drives the registered spec_publish tool end-to-end (command-aware
 // fake git exec, fake aven on PATH, real temp plan file) and pins the resolved
 // publish root via the manual-publish block returned when the worker cannot
-// spawn (no session file → launchSubagent throws before any side effect).
+// spawn (no session file → launchSubagent throws).
+// AIDEV-NOTE: PMR-VXN9 — recorded assumption: launchSubagent assigns the
+// passed ctx to its module-global latestCtx BEFORE the session-file throw
+// (pi-interactive-subagents index.ts, `if (!latestCtx) latestCtx = ctx`), so
+// the stub ctx below sticks in that global for the rest of the process. No
+// test in this file may rely on widget/notify behavior reading latestCtx;
+// if a future test here spawns via a different path, guard or reset it.
 async function withFakeAven<T>(opts: {
   root: string
   planPath: string
@@ -195,7 +201,10 @@ async function withFakeAven<T>(opts: {
   try {
     return await opts.run()
   } finally {
-    process.env.PATH = oldPath
+    // AIDEV-NOTE: PMR-VXN9 — delete when undefined: assigning undefined
+    // stringifies to the literal 'undefined' on process.env.
+    if (oldPath === undefined) delete process.env.PATH
+    else process.env.PATH = oldPath
   }
 }
 
