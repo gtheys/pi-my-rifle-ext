@@ -16,8 +16,11 @@ export interface ModeProfile {
   /** Whether Jira IDs are valid flow/research refs (work repos sync Jira;
    *  personal repos are aven-only — PMR-PCVK ambiguity rule). */
   acceptsJiraRefs: boolean
-  /** Branch derivation rule for the implement phase. */
-  branchRule: 'jira_create_branch' | 'conventional-slug'
+  /** Branch derivation rule for the implement phase. Work mode derives via
+   *  jira_create_branch; personal mode's worktree-tool branch carries the
+   *  active flow ref — `<type>/<REF>-<slug>`, bare `<type>/<slug>` outside a
+   *  flow (PMR-902B; prose lives in implement/prompt.ts). */
+  branchRule: 'jira_create_branch' | 'ref-prefixed-slug'
   /** Phases /flow runs, in order. Both modes run the full PIV order —
    *  personal feedback is its own wrap-up phase (PMR-81SX, unfolding
    *  PMR-GFM5's earlier fold). */
@@ -36,7 +39,7 @@ export const MODE_PROFILE: Record<WorkMode, ModeProfile> = {
     landingRoute: 'merge-main',
     artifactRootEnv: 'PERSONAL_FEATURES',
     acceptsJiraRefs: false,
-    branchRule: 'conventional-slug',
+    branchRule: 'ref-prefixed-slug',
     phases: ['plan', 'implement', 'validate', 'feedback'],
   },
 }

@@ -89,6 +89,67 @@ test('implement: oneshot route without children stays oneshot', async () => {
   assert.match(result.prompt, /Oneshot flow/)
 })
 
+// AIDEV-NOTE: PMR-902B 2.1 — text-pin the personal-flow branch/commit
+// conventions in EVERY implement route. BRANCH_RULES is interpolated into the
+// plan, bug and oneshot prompts, so the conventions must show up in all three
+// (ISC-6). The plan route keeps its own `Subtask: <subtask-ref>` trailer
+// mandate byte-identical (ISC-A-2) — the ref rule sits beside it, never
+// replaces it.
+const SUBTASK_TRAILER_RULE = `- EVERY commit message ends with a \`Subtask: <subtask-ref>\` trailer naming
+  the subtask it implements (e.g. "Subtask: PMR-AB12"). The review gates
+  derive per-subtask diff ranges from these trailers; a commit without the
+  trailer is unattributed and will be surfaced as such.`
+
+const IMPLEMENT_ROUTES: [string, readonly string[]][] = [
+  ['plan', ['planned', 'plan']],
+  ['bug', ['planned', 'bug']],
+  ['oneshot', ['planned']],
+]
+
+test('implement: every personal route states the ref-injected branch shape (PMR-902B)', async () => {
+  for (const [route, labels] of IMPLEMENT_ROUTES) {
+    const result = await buildPhasePrompt('implement', { ...BASE, labels })
+    assert.equal(result.kind, 'send')
+    if (result.kind !== 'send') continue
+    assert.ok(
+      result.prompt.includes(`Route: ${route}`),
+      `expected the ${route} route prompt`,
+    )
+    // Branch: <type>/<REF>-<slug> during an active flow, bare feat/<slug> outside.
+    assert.match(result.prompt, /feat\/<REF>-<slug>/)
+    assert.match(result.prompt, /feat\/PMR-AB12-add-save-button/)
+    assert.match(result.prompt, /bare feat\/<slug>/)
+  }
+})
+
+test('implement: every personal route states the ref-after-scope commit subject (PMR-902B)', async () => {
+  for (const [, labels] of IMPLEMENT_ROUTES) {
+    const result = await buildPhasePrompt('implement', { ...BASE, labels })
+    assert.equal(result.kind, 'send')
+    if (result.kind !== 'send') continue
+    // Subject: type(scope): [REF] subject — ref AFTER the scope (user-decided).
+    assert.match(result.prompt, /type\(scope\): \[REF\] subject/)
+    assert.match(
+      result.prompt,
+      /feat\(pi-flow\): \[PMR-AB12\] add retry budget/,
+    )
+    assert.match(
+      result.prompt,
+      /Subtask: <subtask-ref> trailer rule is unchanged/,
+    )
+  }
+})
+
+test('implement: plan route keeps the Subtask: trailer mandate byte-identical (PMR-902B ISC-A-2)', async () => {
+  const result = await buildPhasePrompt('implement', {
+    ...BASE,
+    labels: ['planned', 'plan'],
+  })
+  assert.equal(result.kind, 'send')
+  if (result.kind !== 'send') return
+  assert.ok(result.prompt.includes(SUBTASK_TRAILER_RULE))
+})
+
 test('validate: personal oneshot label names ticket description as spec source', async () => {
   const result = await buildPhasePrompt('validate', {
     ...BASE,

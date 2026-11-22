@@ -31,10 +31,25 @@ Hard rules for every task in this phase:
 `
 }
 
+// AIDEV-NOTE: PMR-902B — personal-flow branch/commit conventions, stated for
+// all three implement routes (this block is interpolated into the plan, bug
+// and oneshot prompts). Branch shape is `<type>/<REF>-<slug>` — never
+// bracketed, git refnames reject `[` — and the worktree tool injects the
+// active flow ref automatically, so the agent must not compose it by hand.
+// Commit subjects keep the ref AFTER the scope (user-decided, mirrors
+// prompts/git.md's Jira rule). The plan route's `Subtask: <subtask-ref>`
+// trailer mandate stays byte-identical: this rule sits beside it, and the
+// review gates still derive per-subtask diff ranges from those trailers.
 const BRANCH_RULES = `
 Branch derivation:
 - Work mode: create the branch via the jira_create_branch tool for the ticket ref.
-- Personal mode: create a conventional branch from the ticket slug (e.g. feat/<slug>).`
+- Personal mode: create a conventional branch from the ticket slug via the
+  worktree tool — during an active flow the ref is injected automatically
+  (feat/<REF>-<slug>, e.g. feat/PMR-AB12-add-save-button); outside a flow,
+  bare feat/<slug>.
+Commit subjects (personal mode): embed the flow ref after the scope —
+type(scope): [REF] subject (e.g. feat(pi-flow): [PMR-AB12] add retry budget).
+The Subtask: <subtask-ref> trailer rule is unchanged and still required.`
 
 export function buildImplementPrompt(input: ImplementPromptInput): string {
   const header = `Implement phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}. Route: ${input.route}.`
