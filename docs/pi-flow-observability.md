@@ -28,6 +28,17 @@ backfilled; new runs are pushed automatically; `/flow-cost <ref> --push` re-expo
 session file = one coverage-gap row, never a zero. Windows: a phase runs from its phase-start to the next phase-start;
 the last one ends at its phase-complete; entries outside every window (chat before/after the flow) are ignored.
 
+**Owner identity — `owner-session` (PMR-T9ZQ, 2026-11-22).** Same shape as `main-session` (main pi session file + ref +
+timestamp) plus the writing process's `pid`, but it is a **projected** event, not journal-only: `applyEvent` folds it
+last-wins into `state.owner` (`{sessionFile, pid, at}`) and deliberately does **not** bump `updatedAt` — an owner
+refresh is a liveness stamp, not run activity, and must not make a parked run look freshly updated to the sweep or the
+widget. Write sites: `/flow <ref>` start (right after `run-start`, `index.ts`) and a refresh on **every** phase prompt
+(`sendPhasePrompt`, `flow/loop.ts`, next to the `main-session` write). `sessionFile` is nullable — a headless or
+server-driven run has no session file — so `pid` is the liveness carrier; the resume picker probes it with
+`process.kill(pid, 0)` (display hint only, never a gate). Consumers that read the journal tail must go through
+`readRunEvents` + `projectRunState` (the picker path), because journal-only kinds never reach the projection. A failed
+write stays best-effort: `writer.record` reports `false`, it never throws, never halts a phase.
+
 ## 2. Infrastructure (chicken homelab, podman quadlets)
 
 Source of truth: `~/Code/personal/homelab/quadlets/*` (git repo). Deployed copy: `/opt/homelab` (root-owned; needs

@@ -120,7 +120,9 @@ test('start: sends one phase prompt and awaits outcome', async () => {
   assert.equal(loop.isActive(), true)
   assert.deepEqual(
     h.events.map((e) => e.kind),
-    ['loop-state', 'phase-start', 'loop-state'],
+    // AIDEV-NOTE: PMR-T9ZQ 1.2 — every phase prompt journals a projected
+    // owner-session refresh right after its phase-start.
+    ['loop-state', 'phase-start', 'owner-session', 'loop-state'],
   )
 })
 
@@ -152,9 +154,11 @@ test('settled with label landed: advances to the next phase prompt', async () =>
     [
       'loop-state',
       'phase-start',
+      'owner-session',
       'loop-state',
       'phase-complete',
       'phase-start',
+      'owner-session',
       'loop-state',
     ],
   )
@@ -363,14 +367,17 @@ test('resume after approval: /flow re-enters plan, refreshed prompt run lands th
     [
       'loop-state',
       'phase-start',
+      'owner-session',
       'loop-state',
       'note',
       'loop-state',
       'loop-state',
       'phase-start',
+      'owner-session',
       'loop-state',
       'phase-complete',
       'phase-start',
+      'owner-session',
       'loop-state',
     ],
   )

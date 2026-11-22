@@ -421,6 +421,20 @@ class FlowLoopImpl implements FlowLoop {
         sessionFile,
       })
     }
+    // AIDEV-NOTE: PMR-T9ZQ 1.2 — owner identity refresh on every phase
+    // prompt. PROJECTED event (deps.journal routes to the projecting
+    // writer.record), unlike the journal-only 'main-session' above: the
+    // parked-run resume picker reads state.owner from the projection.
+    // Journaled even when the session file is unknown — pid is the liveness
+    // carrier. Best-effort: the journal dep contract is "never throws" and
+    // production wires it to writer.record, which swallows io errors.
+    this.deps.journal({
+      kind: 'owner-session',
+      at: now(),
+      ref: this.state.ref,
+      sessionFile,
+      pid: process.pid,
+    })
     this.state.currentPhase = phase
     // AIDEV-NOTE: PMR-HFK1 — phase transitions re-stamp the env so children
     // spawned in later phases attribute to the phase doing the work.

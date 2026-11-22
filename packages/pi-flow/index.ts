@@ -1621,6 +1621,21 @@ export default function (
         mode,
         trackRef,
       })
+      // AIDEV-NOTE: PMR-T9ZQ 1.2 — owner identity stamp. PROJECTED event (not
+      // journal-only): the parked-run resume picker reads state.owner through
+      // readRunEvents + projectRunState, so this must go through the
+      // projecting `journal` seam. sessionFile is the closure's main session
+      // file (null until a session_start supplied one — the loop refreshes it
+      // per phase prompt); pid is the liveness carrier the picker probes.
+      // Best-effort like every other journal write: writer.record never
+      // rejects, so a failed stamp cannot halt the run.
+      await journal({
+        kind: 'owner-session',
+        at: new Date().toISOString(),
+        ref,
+        sessionFile: mainSessionFile,
+        pid: process.pid,
+      })
       // AIDEV-NOTE: PMR-XTQQ phase 2 — resume seeding. The journal tail's
       // latest loop-state restores the blocker-retry budget and the validate
       // blockers-note cutoff exactly; the journaled run-input scalars win

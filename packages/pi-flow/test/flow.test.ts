@@ -1466,3 +1466,105 @@ test('flow handler: not-done ticket still takes the run path, no sweep marker (P
     assert.match(journal, /"kind":"run-start"/)
   })
 })
+
+// AIDEV-NOTE: PMR-T9ZQ 1.2 — /flow start journals the owner identity
+// (owner-session) immediately after run-start, with the closure's
+// mainSessionFile (null until a session_start supplies one) and process.pid.
+// The run-state projection is read back too: owner-session is a PROJECTED
+// event kind, so a write that only reached the journal (the journal-only
+// main-session route) would fail this pin.
+function journalEvents(ref: string): Record<string, unknown>[] {
+  const lines = readFileSync(journalPath(HANDLER_AGENT_DIR, ref), 'utf8').split(
+    '\n',
+  )
+  const events: Record<string, unknown>[] = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0) continue
+    events.push(JSON.parse(trimmed) as Record<string, unknown>)
+  }
+  return events
+}
+
+function ownerSessionEvents(
+  events: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return events.filter((event) => event.kind === 'owner-session')
+}
+
+test('flow handler: /flow start journals owner-session right after run-start (PMR-T9ZQ 1.2)', async () => {
+  const ref = 'PMR-OWNERSTART'
+  writeDoneLabels(ref, ['planned'])
+  await withHandlerEnv(async () => {
+    const { handler, sent } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    await handler(ref, flowCtx(notifications))
+    assert.ok(sent.length > 0, 'expected sendUserMessage on the run path')
+    const events = journalEvents(ref)
+    const kinds = events.map((event) => String(event.kind))
+    const owners = ownerSessionEvents(events)
+    assert.ok(
+      owners.length >= 1,
+      `expected an owner-session event, got kinds: ${String(kinds)}`,
+    )
+    const first = owners[0]
+    if (first === undefined) return
+    assert.equal(first.ref, ref)
+    assert.equal(first.pid, process.pid)
+    // No session_start fired in this harness → the closure has no main
+    // session file yet, and a nullable sessionFile is exactly the contract.
+    assert.equal(first.sessionFile, null)
+    const runStart = kinds.indexOf('run-start')
+    const firstOwner = kinds.indexOf('owner-session')
+    assert.equal(
+      firstOwner,
+      runStart + 1,
+      'owner-session lands immediately after run-start',
+    )
+    // Projected: the run-state file carries the owner record.
+    const statePath = path.join(
+      HANDLER_AGENT_DIR,
+      'pi-flow',
+      'runs',
+      `${ref}.json`,
+    )
+    const state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<
+      string,
+      unknown
+    >
+    const owner = state.owner as Record<string, unknown> | undefined
+    assert.equal(owner?.pid, process.pid)
+    assert.equal(owner?.sessionFile, null)
+  })
+})
+
+test('flow handler: owner-session carries the session_start main session file (PMR-T9ZQ 1.2)', async () => {
+  const ref = 'PMR-OWNERFILE'
+  const sessionFile = '/s/2026-11-22T07-00-00-000Z_cccccccc-dddd.jsonl'
+  writeDoneLabels(ref, ['planned'])
+  await withHandlerEnv(async () => {
+    const { handler, sent, fireSessionStart } = captureFlowCommand()
+    const notifications: Array<{ message: string; level: string }> = []
+    // session_start supplies mainSessionFile synchronously; the /flow start
+    // write site must pick up the closure's current value.
+    fireSessionStart({
+      cwd: HANDLER_WS,
+      ui: {
+        notify: (message: string, level: string) =>
+          notifications.push({ message, level }),
+      },
+      sessionManager: {
+        getSessionFile: () => sessionFile,
+        getBranch: () => [],
+      },
+    })
+    await handler(ref, flowCtx(notifications))
+    assert.ok(sent.length > 0, 'expected sendUserMessage on the run path')
+    const owners = ownerSessionEvents(journalEvents(ref))
+    assert.equal(owners.length >= 1, true, 'expected an owner-session event')
+    const first = owners[0]
+    if (first === undefined) return
+    assert.equal(first.sessionFile, sessionFile)
+    assert.equal(first.pid, process.pid)
+  })
+})
