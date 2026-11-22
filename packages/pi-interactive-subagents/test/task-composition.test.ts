@@ -38,6 +38,24 @@ test('null identity → flag null, systemPromptIdentity null', () => {
   assert.ok(r.taskMessage.includes('do the thing'))
 })
 
+test('empty-string identity is normalized to null (PMR-W2EP)', () => {
+  // Matches the old consumer truthiness in index.ts: '' must not yield a
+  // system-prompt flag (a `!== null` consumer would write an empty sysprompt
+  // file). Pinned for both fork and non-fork shapes.
+  for (const inheritsConversationContext of [false, true]) {
+    const r = composeChildTask({
+      task: 'do the thing',
+      identity: '',
+      systemPromptMode: 'replace',
+      autoExit: true,
+      inheritsConversationContext,
+    })
+    assert.equal(r.systemPromptIdentity, null)
+    assert.equal(r.systemPromptFlag, null)
+    assert.ok(r.taskMessage.includes('do the thing'))
+  }
+})
+
 test('non-fork + identity + explicit replace → --system-prompt', () => {
   const r = composeChildTask({
     task: 't',

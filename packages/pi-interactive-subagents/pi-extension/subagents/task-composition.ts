@@ -67,13 +67,14 @@ function summaryInstructionFor(autoExit: boolean): string {
 export function composeChildTask(
   input: ComposeChildTaskInput,
 ): ComposeChildTaskResult {
-  const {
-    task,
-    identity,
-    systemPromptMode,
-    autoExit,
-    inheritsConversationContext,
-  } = input
+  const { task, systemPromptMode, autoExit, inheritsConversationContext } =
+    input
+
+  // AIDEV-NOTE: PMR-W2EP — normalize '' to null up front, matching the old
+  // consumer truthiness in index.ts: an empty identity must not produce a
+  // system-prompt flag (a `!== null` consumer would otherwise write an empty
+  // sysprompt file).
+  const identity = input.identity === '' ? null : input.identity
 
   const explicitMode = isExplicitMode(systemPromptMode)
 
