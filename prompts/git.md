@@ -55,6 +55,16 @@ fix(auth): [PROJ-456] resolve token expiry edge case
 
 No Jira ID provided = omit brackets entirely.
 
+<!-- AIDEV-NOTE: PMR-902B — personal-mode counterpart to the Jira bracket rule above; mirrors packages/pi-flow/implement/prompt.ts BRANCH_RULES, keep the two in sync. Brackets belong in commit subjects only — git refnames reject `[`, so branches use the bare feat/<REF>-<slug> shape. -->
+During a personal-mode PIV flow, embed the flow's aven feature ref the same way:
+
+```
+feat(pi-flow): [PMR-AB12] add retry budget to flow_run_attempt
+```
+
+The ref comes from the active flow (never invented). Outside a flow, plain
+conventional subjects — omit brackets entirely.
+
 ### Types
 
 - `feat:` — new feature (correlates with MINOR in SemVer)

@@ -66,8 +66,10 @@ The ref's workspace decides the flavor of the run, not the mechanics:
 |---|---|---|
 | Comes from | free-text `/plan` (local feature) | Jira ticket pulled in as a local epic (`jira-ref` metadata, dep-linked to the synced ticket) |
 | Source of truth | the aven ticket itself | Jira; execution on the local epic (sync never touches it), spec context from the synced ticket |
-| Branch | suggested `feat/<slug>` (no automation) | `jira_create_branch` from the epic's `jira-ref` value |
+| Branch | worktree-tool create injects the active flow ref → `feat/<REF>-<slug>` (e.g. `feat/PMR-AB12-add-save-button`); bare `feat/<slug>` outside a flow | `jira_create_branch` from the epic's `jira-ref` value |
 | PR | optional (pushing to a personal remote directly is fine) | required — PR review is the gate |
+
+<!-- AIDEV-NOTE: PMR-902B — personal-mode branch/commit shapes are owned by the worktree tool (ref injection) and prompts/git.md; mirror of work mode's Jira handling. Branches: feat/<REF>-<slug> (never brackets — git refnames reject `[`). Subjects: ref in brackets AFTER the scope, e.g. feat(pi-flow): [PMR-AB12] subject. -->
 
 Both workspaces run the same execution loop; only branch/PR behavior differs.
 The workspace comes from aven's cwd routing — verify it with aven itself
@@ -223,7 +225,9 @@ All `worktree`-tool requirements apply (inside Herdr, `herdr` on PATH):
 
    The create action derives the branch, bootstraps dependencies by lockfile,
    and copies `.env*` from the main checkout — it returns only after the
-   install finishes, so tests can run immediately.
+   install finishes, so tests can run immediately. In a personal-mode flow the
+   derive step injects the epic's aven ref into the branch
+   (`feat/<REF>-<slug>`) — never compose the branch by hand.
 
 3. Record the worktree on the feature ticket so any session can resume:
 
@@ -246,8 +250,9 @@ Check the `jira-ref` metadata in the `aven show <FEATURE_REF> --full` output
 from Step 2 (Jira-linked epic pulled in from a synced ticket).
 
 **Not Jira-linked** (no `jira-ref`): no branch automation (personal features).
-If on `main`/`master` and about to edit, suggest one branch name (e.g.
-`feat/<feature-slug>`) — one sentence, no tool call. Otherwise stay put.
+If on `main`/`master` and about to edit, suggest one branch name built from the
+epic's own ref — `feat/<REF>-<slug>` (e.g. `feat/PMR-AB12-add-save-button`; never
+brackets, git refnames reject `[`) — one sentence, no tool call. Otherwise stay put.
 
 **Jira-linked** (`jira-ref` present): derive the branch with
 `jira_create_branch` (from the `pi-flow` package) using the `jira-ref`
@@ -360,12 +365,15 @@ inline; same steps otherwise. When in doubt, spawn the worker.
 
    ```
    Ready to commit:
-     git -C <WORKTREE_PATH> add -u && git -C <WORKTREE_PATH> commit -m "feat(<scope>): <name> ..."
+     git -C <WORKTREE_PATH> add -u && git -C <WORKTREE_PATH> commit -m "feat(<scope>): [<REF>] <name> ..."
 
    Confirm to commit, or edit the message.
    ```
 
    Conventional subject with the repo's scope; explain the why in the body.
+   `<REF>` is the flow's identifier in brackets after the scope — the epic's
+   aven ref in a personal-mode run (`feat(pi-flow): [PMR-AB12] ...`), the Jira
+   ID in a work-mode run (`feat(api): [PROJ-123] ...`).
    Worktree mode: every git command carries `-C <WORKTREE_PATH>` (or runs
    with the worktree as cwd). (No-worktree fallback only: plain git in the
    repo root — see Step 3's stop-and-ask gate.)
