@@ -295,13 +295,15 @@ export default function (
       },
     }
   }
-  // AIDEV-NOTE: PMR-DRKH — production derive/heal IO for the session_start
-  // durable rebind. Same deriveFlowRefs construction as the worktreeExtension
-  // wiring below; heal goes through the shared productionReviewDeps so the
-  // resolver's verification chain (binding → aven note → herdr) is identical
-  // to /code-review. Overridable via the extension factory's second param.
-  const durableRebind: DurableRebindDeps = durableRebindDeps ?? {
-    deriveRefs: async () => {
+  // AIDEV-NOTE: PMR-86NN — single construction site for the production
+  // deriveFlowRefs scanner, shared by the session_start durable rebind
+  // (deriveRefs) and the worktree bind self-heal seam below so the two
+  // cannot drift. Resolves the session gitRoot at call time (same
+  // `git rev-parse --show-toplevel` semantics as the sweep's journal
+  // filter) and reuses the pendingDir construction from the resume
+  // consumer; gitRoot resolution failure fails closed (empty list).
+  const makeDeriveRefs = (): (() => Promise<string[]>) => {
+    return async () => {
       const gitRoot = await resolveSessionRepoRoot(pi)
       if (gitRoot === null) {
         return []
@@ -316,7 +318,14 @@ export default function (
         readRunEvents: (agentDir, ref, io) => readRunEvents(agentDir, ref, io),
         gitRoot,
       })
-    },
+    }
+  }
+  // AIDEV-NOTE: PMR-DRKH — production derive/heal IO for the session_start
+  // durable rebind. Heal goes through the shared productionReviewDeps so the
+  // resolver's verification chain (binding → aven note → herdr) is identical
+  // to /code-review. Overridable via the extension factory's second param.
+  const durableRebind: DurableRebindDeps = durableRebindDeps ?? {
+    deriveRefs: makeDeriveRefs(),
     heal: (ref, cwd) => healFlowBinding(ref, productionReviewDeps(pi, cwd)),
   }
   const writer: EventWriter = createEventWriter(
@@ -905,29 +914,11 @@ export default function (
   // journal is created here so the flow-done cleanup (PMR-81SX 5.2) can
   // share the exact same instance.
   const worktreeEffects = createEffectJournal(getAgentDir())
-  // AIDEV-NOTE: PMR-DRKH — real deriveFlowRefs scanner for the worktree
-  // bind self-heal seam. Resolves the session gitRoot at call time (same
-  // `git rev-parse --show-toplevel` semantics as the sweep's journal
-  // filter) and reuses the pendingDir construction from the resume
-  // consumer above; gitRoot resolution failure fails closed (empty list).
+  // AIDEV-NOTE: PMR-DRKH — worktree bind self-heal seam; the scanner is
+  // the shared makeDeriveRefs() above (PMR-86NN).
   worktreeExtension(pi, {
     effects: worktreeEffects,
-    deriveFlowRefs: async () => {
-      const gitRoot = await resolveSessionRepoRoot(pi)
-      if (gitRoot === null) {
-        return []
-      }
-      return deriveFlowRefs({
-        agentDir: getAgentDir(),
-        pendingDir: pendingDirPath(getAgentDir()),
-        io: {
-          readdir: (dir) => readdir(dir),
-          readFile: (p) => fs.readFile(p, 'utf8'),
-        },
-        readRunEvents: (agentDir, ref, io) => readRunEvents(agentDir, ref, io),
-        gitRoot,
-      })
-    },
+    deriveFlowRefs: makeDeriveRefs(),
   })
 
   // AIDEV-NOTE: PMR-YG2N 4.1 — background worktree sweep, latched fire-and-
