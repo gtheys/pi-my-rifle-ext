@@ -255,6 +255,31 @@ test('resolveReviewWorktree: no herdr match names the expected branch', async ()
   )
 })
 
+// AIDEV-NOTE: PMR-2YY4 — worktrees created BEFORE the ref-prefixed
+// expectation (PMR-902B) live on the bare <type>/<slug> shape, which the
+// ref-prefixed `expected` can never match; the herdr fallback must also try
+// the legacy bare shape while a flow ref is active.
+test('resolveReviewWorktree: legacy bare-shape worktree resolves via herdr fallback', async () => {
+  const deps = baseDeps()
+  deps.avenShowFull = async () => TITLE_LINE
+  deps.herdrWorktreeList = async () => [
+    wt('main', '/repo'),
+    wt('feat/alpha-gate', '/repo/.wt/legacy'),
+  ]
+  deps.exec = async (_cmd, args) => {
+    if (args.includes('--abbrev-ref')) {
+      return { code: 0, stdout: 'feat/alpha-gate\n', stderr: '' }
+    }
+    return { code: 0, stdout: '/repo\n', stderr: '' }
+  }
+  const result = await resolveReviewWorktree('PMR-ABC1', deps)
+  assert.deepEqual(result, {
+    path: '/repo/.wt/legacy',
+    branch: 'feat/alpha-gate',
+    source: 'herdr',
+  })
+})
+
 test('resolveReviewWorktree: note hit with branch mismatch falls through', async () => {
   const deps = baseDeps()
   deps.avenShowFull = async () => NOTE_FIXTURE

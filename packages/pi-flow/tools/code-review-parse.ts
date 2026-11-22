@@ -355,6 +355,18 @@ export async function resolveReviewWorktree(
   if (hit === null && expected !== null) {
     hit = matchHerdrWorktree(worktrees, expected)
   }
+  // AIDEV-NOTE: PMR-2YY4 — legacy bare-shape fallback: worktrees created
+  // BEFORE the ref-prefixed expectation (PMR-902B) live on <type>/<slug>
+  // with no ref segment, so `expected` can never match them. Try the bare
+  // shape once the ref-prefixed one missed; this only bites when the
+  // earlier sources (binding, notes, ref match) all missed too.
+  let legacy: string | null = null
+  if (hit === null && title !== null) {
+    legacy = titleBranch(title, null)
+    if (legacy !== expected) {
+      hit = matchHerdrWorktree(worktrees, legacy)
+    }
+  }
   if (hit !== null) {
     const verified = await verifyCandidate(hit, deps)
     if (verified.ok) {
@@ -362,9 +374,11 @@ export async function resolveReviewWorktree(
     }
     failures.push(`herdr: ${verified.reason}`)
   } else if (expected !== null) {
-    failures.push(
-      `herdr: no linked worktree matched ${ref} or expected branch ${expected}`,
-    )
+    let shapes = `expected branch ${expected}`
+    if (legacy !== null) {
+      shapes += ` or legacy branch ${legacy}`
+    }
+    failures.push(`herdr: no linked worktree matched ${ref} or ${shapes}`)
   }
 
   throw new Error(
