@@ -152,6 +152,80 @@ test('resolveNotesPath: $LLM_NOTES_ROOT unset and not a git repo → throws (no 
   }
 })
 
+// AIDEV-NOTE: PMR-J97S — all three resolvers share ONE non-git behavior:
+// fail fast. Without these, resolveSpecPath/resolveFeaturePath returned
+// relative paths ('notes/specs/…') despite promising absolute ones, and
+// with an env root set a non-git cwd silently landed under <root>/unknown/.
+test('resolveNotesPath: $LLM_NOTES_ROOT set but no git repo → throws (no unknown-repo dir)', async () => {
+  const prev = process.env.LLM_NOTES_ROOT
+  process.env.LLM_NOTES_ROOT = '/home/dev/notes'
+  try {
+    await assert.rejects(
+      () => resolveNotesPath(fakePi({ toplevel: '' }), 'specs'),
+      /unknown/,
+    )
+  } finally {
+    if (prev === undefined) delete process.env.LLM_NOTES_ROOT
+    else process.env.LLM_NOTES_ROOT = prev
+  }
+})
+
+test('resolveSpecPath: $LLM_NOTES_ROOT unset and not a git repo → throws (no relative path)', async () => {
+  const prev = process.env.LLM_NOTES_ROOT
+  delete process.env.LLM_NOTES_ROOT
+  try {
+    await assert.rejects(
+      () => resolveSpecPath(fakePi({ toplevel: '' }), 'PMR-1', 'Add dark mode'),
+      /not in a git repository/,
+    )
+  } finally {
+    if (prev === undefined) delete process.env.LLM_NOTES_ROOT
+    else process.env.LLM_NOTES_ROOT = prev
+  }
+})
+
+test('resolveSpecPath: $LLM_NOTES_ROOT set but no git repo → throws (no unknown-repo dir)', async () => {
+  const prev = process.env.LLM_NOTES_ROOT
+  process.env.LLM_NOTES_ROOT = '/home/dev/notes'
+  try {
+    await assert.rejects(
+      () => resolveSpecPath(fakePi({ toplevel: '' }), 'PMR-1', 'Add dark mode'),
+      /unknown/,
+    )
+  } finally {
+    if (prev === undefined) delete process.env.LLM_NOTES_ROOT
+    else process.env.LLM_NOTES_ROOT = prev
+  }
+})
+
+test('resolveFeaturePath: $PERSONAL_FEATURES unset and not a git repo → throws (no relative path)', async () => {
+  const prev = process.env.PERSONAL_FEATURES
+  delete process.env.PERSONAL_FEATURES
+  try {
+    await assert.rejects(
+      () => resolveFeaturePath(fakePi({ toplevel: '' }), 'Add dark mode'),
+      /not in a git repository/,
+    )
+  } finally {
+    if (prev === undefined) delete process.env.PERSONAL_FEATURES
+    else process.env.PERSONAL_FEATURES = prev
+  }
+})
+
+test('resolveFeaturePath: $PERSONAL_FEATURES set but no git repo → throws (no unknown-repo dir)', async () => {
+  const prev = process.env.PERSONAL_FEATURES
+  process.env.PERSONAL_FEATURES = '/home/dev/features'
+  try {
+    await assert.rejects(
+      () => resolveFeaturePath(fakePi({ toplevel: '' }), 'Add dark mode'),
+      /unknown/,
+    )
+  } finally {
+    if (prev === undefined) delete process.env.PERSONAL_FEATURES
+    else process.env.PERSONAL_FEATURES = prev
+  }
+})
+
 // AIDEV-NOTE: PMR-BHM2 — behavior-pinning tests for resolveSpecPath. The
 // repo-local fallback (no $LLM_NOTES_ROOT → <git-toplevel>/notes/specs/) is
 // INTENTIONAL: repo writes are allowed when no centralised notes root is

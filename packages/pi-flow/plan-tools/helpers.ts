@@ -40,28 +40,65 @@ export async function getRepoName(pi: ExtensionAPI): Promise<string> {
   return 'unknown'
 }
 
+// AIDEV-NOTE: PMR-J97S — ONE documented non-git behavior across all three
+// resolvers below: FAIL FAST. Outside a git repository a resolver must never
+// return a relative path (join('', 'notes') → 'notes') despite promising an
+// absolute one, and with a notes-root env var set it must never silently land
+// files under <root>/unknown/ (getRepoName's last-resort name). Both cases
+// throw with the resolver name in the message; pinned by test/plan-tools.
+async function gitToplevelOrFail(
+  pi: ExtensionAPI,
+  who: string,
+  envName: string,
+): Promise<string> {
+  const r = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
+  const toplevel = r.stdout.trim()
+  if (!toplevel) {
+    throw new Error(
+      `${who}: not in a git repository and $${envName} is unset — cannot resolve an absolute path`,
+    )
+  }
+  return toplevel
+}
+
+async function repoNameOrFail(pi: ExtensionAPI, who: string): Promise<string> {
+  const repoName = await getRepoName(pi)
+  if (repoName === 'unknown') {
+    throw new Error(
+      `${who}: cannot derive a repo name (no origin remote, not a git repository) — refusing to resolve a path under an 'unknown' repo dir`,
+    )
+  }
+  return repoName
+}
+
 // AIDEV-NOTE: Spec path contract — if $LLM_NOTES_ROOT is set, specs live in
 // $LLM_NOTES_ROOT/<repo>/notes/specs/<JIRA>__<slug>.md (work mode, centralised
 // notes root). Otherwise fall back to repo-local <git-toplevel>/notes/specs/.
 // The repo-local fallback is INTENTIONAL (repo writes allowed when no env var
 // is set) — it was previously assumed to fail fast; that was wrong. Pinned by
 // the resolveSpecPath tests in test/plan-tools.test.ts (PMR-BHM2). Do not
-// convert this branch to a throw without updating those tests.
+// convert this branch to a throw without updating those tests. PMR-J97S:
+// OUTSIDE a git repo the fallback still fails fast (see gitToplevelOrFail) —
+// the intentional case is a repo-local path inside a git repo.
 export async function resolveSpecPath(
   pi: ExtensionAPI,
   jiraId: string,
   summary: string,
 ): Promise<string> {
-  const repoName = await getRepoName(pi)
   const slug = slugify(summary)
 
   const notesRoot = process.env.LLM_NOTES_ROOT
   let specDir: string
   if (notesRoot) {
+    const repoName = await repoNameOrFail(pi, 'resolveSpecPath')
     specDir = join(notesRoot, repoName, 'notes', 'specs')
   } else {
-    const r = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
-    specDir = join(r.stdout.trim(), 'notes', 'specs')
+    const toplevel = await gitToplevelOrFail(
+      pi,
+      'resolveSpecPath',
+      'LLM_NOTES_ROOT',
+    )
+    specDir = join(toplevel, 'notes', 'specs')
   }
 
   return join(specDir, `${jiraId}__${slug}.md`)
@@ -92,20 +129,18 @@ export async function resolveNotesPath(
   const notesRoot = process.env.LLM_NOTES_ROOT
   let dir: string
   if (notesRoot) {
-    const repoName = await getRepoName(pi)
+    const repoName = await repoNameOrFail(pi, 'resolveNotesPath')
     dir = join(notesRoot, repoName, 'notes')
   } else {
-    const r = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
-    const toplevel = r.stdout.trim()
-    // AIDEV-NOTE: PMR-HHS8 fix round (review P3) — fail fast outside a git
-    // repo: join('', 'notes') would return the relative path 'notes' while
-    // the tool promises an absolute one. New code path only; the pre-existing
-    // resolveSpecPath/resolveFeaturePath behavior is unchanged.
-    if (!toplevel) {
-      throw new Error(
-        'resolveNotesPath: not in a git repository and $LLM_NOTES_ROOT is unset — cannot resolve an absolute notes path',
-      )
-    }
+    // AIDEV-NOTE: PMR-HHS8 fix round (review P3), unified by PMR-J97S —
+    // fail fast outside a git repo: join('', 'notes') would return the
+    // relative path 'notes' while the tool promises an absolute one. All
+    // three resolvers share this behavior via gitToplevelOrFail.
+    const toplevel = await gitToplevelOrFail(
+      pi,
+      'resolveNotesPath',
+      'LLM_NOTES_ROOT',
+    )
     dir = join(toplevel, 'notes')
   }
 
@@ -127,11 +162,15 @@ export async function resolveFeaturePath(
   const personalFeatures = process.env.PERSONAL_FEATURES
   let dir: string
   if (personalFeatures) {
-    const repoName = await getRepoName(pi)
+    const repoName = await repoNameOrFail(pi, 'resolveFeaturePath')
     dir = join(personalFeatures, repoName, `${date}-${slug}`)
   } else {
-    const r = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
-    dir = join(r.stdout.trim(), '.pi', 'plans', `${date}-${slug}`)
+    const toplevel = await gitToplevelOrFail(
+      pi,
+      'resolveFeaturePath',
+      'PERSONAL_FEATURES',
+    )
+    dir = join(toplevel, '.pi', 'plans', `${date}-${slug}`)
   }
 
   return join(dir, 'plan.md')

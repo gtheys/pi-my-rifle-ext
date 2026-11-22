@@ -32,6 +32,7 @@ Every flow document — `plan.md`, Jira specs, brainstorm research, scout findin
   - `resolve_feature_path` reads `$PERSONAL_FEATURES` (personal mode) → `$PERSONAL_FEATURES/<repo>/…`.
   - `resolve_spec_path` and `resolve_notes_path` read `$LLM_NOTES_ROOT` (work mode) → `$LLM_NOTES_ROOT/<repo>/notes/…`.
 - **A resolver's env var is unset:** that resolver uses the repo-local fallback (`<git-toplevel>/…`) only. A repo-local write is never taken while its own env var is set.
+- **Outside a git repository all three resolvers fail fast (throw):** no relative-path fallback, and with an env root set but no derivable repo name (no origin remote, no git toplevel) no silent `<root>/unknown/` directory — the resolvers refuse instead.
 - **`<repo>`** is the origin remote name (basename of `git remote get-url origin`, `.git` stripped), falling back to the `git rev-parse --show-toplevel` basename when there is no remote — so herdr worktrees don't scatter docs into per-worktree directories.
 - **Paths come from the pi-flow resolver tools — never hand-rolled:**
   - `resolve_feature_path` — personal `plan.md` (and its directory, the shared artifact dir for `scout-context.md` / `review.md`).
