@@ -8,8 +8,29 @@ import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { slugify } from '../slugify.ts'
 
+// AIDEV-NOTE: PMR-HHS8 fix round (review P1) — getRepoName MUST prefer the
+// origin remote name (basename of the URL, `.git` stripped) over the toplevel
+// basename. In a herdr git worktree the toplevel basename is the worktree
+// name (e.g. `feat-flow-document-paths-env-standard`), not the repo, which
+// scattered notes/PR docs into per-worktree junk dirs. The skill fallbacks
+// (notes-locator, pr-description SKILL.md) use `git remote get-url origin`
+// first too — that "keep both in sync" claim holds again only because of
+// this ordering. Toplevel basename remains the fallback when there is no
+// remote or the lookup fails.
 export async function getRepoName(pi: ExtensionAPI): Promise<string> {
-  // ponytail: git rev-parse --show-toplevel always works in a repo; remote URL is optional
+  try {
+    const remote = await pi.exec('git', ['remote', 'get-url', 'origin'], {})
+    const url = remote.stdout.trim()
+    if (url) {
+      let name = url.split('/').pop() ?? ''
+      if (name.endsWith('.git')) {
+        name = name.slice(0, -'.git'.length)
+      }
+      if (name) return name
+    }
+  } catch {
+    // No origin remote or git unavailable — fall through to the toplevel name.
+  }
   try {
     const r = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
     if (r.stdout.trim()) return r.stdout.trim().split('/').pop() ?? 'unknown'
@@ -49,7 +70,8 @@ export async function resolveSpecPath(
 // AIDEV-NOTE: Notes subdir allowlist — resolve_notes_path only ever appends
 // one of these fixed segments to the notes root, never an arbitrary path, so
 // the tool cannot be used for path injection. '' means the notes root itself.
-// Mirror this list in resolve-notes-path.ts's TypeBox union (PMR-TF0R).
+// resolve-notes-path.ts builds its TypeBox union from this array — adding a
+// subdir here is a single edit (PMR-TF0R, PMR-HHS8 fix round).
 export const NOTES_SUBDIRS = [
   '',
   'prs',
@@ -74,7 +96,17 @@ export async function resolveNotesPath(
     dir = join(notesRoot, repoName, 'notes')
   } else {
     const r = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
-    dir = join(r.stdout.trim(), 'notes')
+    const toplevel = r.stdout.trim()
+    // AIDEV-NOTE: PMR-HHS8 fix round (review P3) — fail fast outside a git
+    // repo: join('', 'notes') would return the relative path 'notes' while
+    // the tool promises an absolute one. New code path only; the pre-existing
+    // resolveSpecPath/resolveFeaturePath behavior is unchanged.
+    if (!toplevel) {
+      throw new Error(
+        'resolveNotesPath: not in a git repository and $LLM_NOTES_ROOT is unset — cannot resolve an absolute notes path',
+      )
+    }
+    dir = join(toplevel, 'notes')
   }
 
   return join(dir, subdir)

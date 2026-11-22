@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
+  getRepoName,
   resolveFeaturePath,
   resolveNotesPath,
   resolveSpecPath,
@@ -13,11 +14,45 @@ import { slugify } from '../slugify.ts'
 
 const GIT_TOPLEVEL = '/home/dev/Code/acme/widgets'
 
-function fakePi(): ExtensionAPI {
+// AIDEV-NOTE: PMR-HHS8 fix round — the fake exec is command-aware so tests can
+// pin the remote-name-preferred getRepoName() and the no-toplevel fail-fast
+// guard. remoteUrl '' means "no origin remote configured".
+function fakePi(
+  opts: { remoteUrl?: string; toplevel?: string } = {},
+): ExtensionAPI {
+  const remoteUrl = opts.remoteUrl ?? ''
+  const toplevel = opts.toplevel ?? GIT_TOPLEVEL
   return {
-    exec: async () => ({ stdout: `${GIT_TOPLEVEL}\n`, stderr: '' }),
+    exec: async (_cmd: string, args: string[]) => {
+      if (args[0] === 'remote') {
+        return { stdout: remoteUrl ? `${remoteUrl}\n` : '', stderr: '' }
+      }
+      return { stdout: toplevel, stderr: '' }
+    },
   } as unknown as ExtensionAPI
 }
+
+test('getRepoName: prefers origin remote name over toplevel basename (worktree-safe)', async () => {
+  const name = await getRepoName(
+    fakePi({
+      remoteUrl: 'https://github.com/acme/widgets.git',
+      toplevel: '/home/dev/.herdr/worktrees/widgets/feat-some-branch',
+    }),
+  )
+  assert.equal(name, 'widgets')
+})
+
+test('getRepoName: handles scp-style ssh remote URLs', async () => {
+  const name = await getRepoName(
+    fakePi({ remoteUrl: 'git@github.com:acme/widgets.git' }),
+  )
+  assert.equal(name, 'widgets')
+})
+
+test('getRepoName: falls back to toplevel basename when no remote', async () => {
+  const name = await getRepoName(fakePi())
+  assert.equal(name, 'widgets')
+})
 
 test('slugify: lowercase, strip punctuation, max 5 words', () => {
   assert.equal(
@@ -73,12 +108,44 @@ test('resolveNotesPath: $LLM_NOTES_ROOT set with subdir → <root>/<repo>/notes/
   }
 })
 
+test('resolveNotesPath: repo-local fallback uses the remote repo name in a worktree', async () => {
+  const prev = process.env.LLM_NOTES_ROOT
+  process.env.LLM_NOTES_ROOT = '/home/dev/notes'
+  try {
+    const path = await resolveNotesPath(
+      fakePi({
+        remoteUrl: 'https://github.com/acme/widgets.git',
+        toplevel: '/home/dev/.herdr/worktrees/widgets/feat-some-branch',
+      }),
+      'prs',
+    )
+    assert.equal(path, '/home/dev/notes/widgets/notes/prs')
+  } finally {
+    if (prev === undefined) delete process.env.LLM_NOTES_ROOT
+    else process.env.LLM_NOTES_ROOT = prev
+  }
+})
+
 test('resolveNotesPath: $LLM_NOTES_ROOT unset → <git-toplevel>/notes', async () => {
   const prev = process.env.LLM_NOTES_ROOT
   delete process.env.LLM_NOTES_ROOT
   try {
     const path = await resolveNotesPath(fakePi(), 'specs')
     assert.equal(path, `${GIT_TOPLEVEL}/notes/specs`)
+  } finally {
+    if (prev === undefined) delete process.env.LLM_NOTES_ROOT
+    else process.env.LLM_NOTES_ROOT = prev
+  }
+})
+
+test('resolveNotesPath: $LLM_NOTES_ROOT unset and not a git repo → throws (no relative path)', async () => {
+  const prev = process.env.LLM_NOTES_ROOT
+  delete process.env.LLM_NOTES_ROOT
+  try {
+    await assert.rejects(
+      () => resolveNotesPath(fakePi({ toplevel: '' }), 'specs'),
+      /not in a git repository/,
+    )
   } finally {
     if (prev === undefined) delete process.env.LLM_NOTES_ROOT
     else process.env.LLM_NOTES_ROOT = prev

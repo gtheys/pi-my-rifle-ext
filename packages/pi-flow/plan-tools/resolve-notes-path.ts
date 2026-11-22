@@ -5,7 +5,10 @@
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import { resolveNotesPath } from './helpers.ts'
+import { NOTES_SUBDIRS, resolveNotesPath } from './helpers.ts'
+
+// AIDEV-NOTE: PMR-HHS8 fix round (review P3) — the union is derived from
+// NOTES_SUBDIRS, so adding a subdir is a single edit in helpers.ts.
 
 export function registerResolveNotesPath(pi: ExtensionAPI) {
   pi.registerTool({
@@ -16,16 +19,10 @@ export function registerResolveNotesPath(pi: ExtensionAPI) {
     promptSnippet: 'Compute the canonical notes directory path for this repo',
     parameters: Type.Object({
       subdir: Type.Union(
-        [
-          Type.Literal(''),
-          Type.Literal('prs'),
-          Type.Literal('specs'),
-          Type.Literal('research'),
-          Type.Literal('tickets'),
-        ],
+        NOTES_SUBDIRS.map((subdir) => Type.Literal(subdir)),
         {
           description:
-            'Optional notes subdirectory ("" for the notes root; allowlist: prs, specs, research, tickets)',
+            'Notes subdirectory ("" for the notes root; allowlist: prs, specs, research, tickets)',
         },
       ),
     }),

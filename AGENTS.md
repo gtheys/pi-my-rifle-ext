@@ -28,14 +28,16 @@ When working in this repository, read the OpenWiki quickstart first, then follow
 
 Every flow document — `plan.md`, Jira specs, brainstorm research, scout findings, review artifacts, generic notes, PR descriptions — follows the env-var standard. This section is the **single source of truth** for the layout; OpenWiki and `docs/piv-flow*.md` reference it instead of restating the full shape.
 
-- **Personal mode:** write under `$PERSONAL_FEATURES/<repo>/…`.
-- **Work mode:** write under `$LLM_NOTES_ROOT/<repo>/…`.
-- **Neither env var set:** repo-local fallback (`<git-toplevel>/…`) only. A repo-local write is never taken while the corresponding env var is set.
+- **Each resolver reads exactly one env var** — there is no cross-fallback between them:
+  - `resolve_feature_path` reads `$PERSONAL_FEATURES` (personal mode) → `$PERSONAL_FEATURES/<repo>/…`.
+  - `resolve_spec_path` and `resolve_notes_path` read `$LLM_NOTES_ROOT` (work mode) → `$LLM_NOTES_ROOT/<repo>/notes/…`.
+- **A resolver's env var is unset:** that resolver uses the repo-local fallback (`<git-toplevel>/…`) only. A repo-local write is never taken while its own env var is set.
+- **`<repo>`** is the origin remote name (basename of `git remote get-url origin`, `.git` stripped), falling back to the `git rev-parse --show-toplevel` basename when there is no remote — so herdr worktrees don't scatter docs into per-worktree directories.
 - **Paths come from the pi-flow resolver tools — never hand-rolled:**
   - `resolve_feature_path` — personal `plan.md` (and its directory, the shared artifact dir for `scout-context.md` / `review.md`).
   - `resolve_spec_path` — Jira-linked specs (`…/notes/specs/<JIRA>__<slug>.md`).
   - `resolve_notes_path` — generic notes paths; takes a `subdir` from a fixed allowlist (`""` for the notes root, `prs`, `specs`, `research`, `tickets`) and returns `$LLM_NOTES_ROOT/<repo>/notes[/<subdir>]` (or the repo-local fallback).
-- **Brainstorm research** uses the same env-var standard with `notes/brainstorm/` as the fixed subdir; pi-flow exposes this internally as `resolveBrainstormDir` (`packages/pi-flow/brainstorm/paths.ts`) rather than as a registered resolver tool, because the subdir is not configurable.
+- **Brainstorm research** uses the same env-var standard with `notes/brainstorm/` as the fixed subdir, but its env root is mode-dependent (work → `$LLM_NOTES_ROOT`, personal → `$PERSONAL_FEATURES`; see `MODE_PROFILE[mode].artifactRootEnv`). pi-flow exposes this internally as `resolveBrainstormDir` (`packages/pi-flow/brainstorm/paths.ts`) rather than as a registered resolver tool, because the subdir is not configurable.
 - **AIDEV comments near resolver tools in `packages/pi-flow/plan-tools/helpers.ts` are the inline record of these contracts** — update them together with this section.
 
 ## Extension-specific guidance
