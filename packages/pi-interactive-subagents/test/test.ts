@@ -5355,11 +5355,6 @@ describe('stall watchdog escalation wiring (PMR-YFRB phase 3)', () => {
     const { pollForExit } = await import('../pi-extension/subagents/surface.ts')
     const dir = mkdtempSync(join(tmpdir(), 'stall-advancing-'))
     const activityFile = getSubagentActivityFile(dir, 'child-stall')
-    const writer = setInterval(() => {
-      try {
-        writeActivitySnapshot(dir, 'child-stall', Date.now())
-      } catch {}
-    }, 10)
     try {
       testApi.setWatchdogThresholdsForTest({
         enabled: true,
@@ -5368,18 +5363,28 @@ describe('stall watchdog escalation wiring (PMR-YFRB phase 3)', () => {
       })
       writeActivitySnapshot(dir, 'child-stall', Date.now())
       const running = fakeRunner(activityFile)
-      // ~90+ ticks at interval 5; the abort (not a stall) must end the poll.
+      // AIDEV-NOTE (PMR-6Q9Z): was a setInterval(10ms) writer racing the 60ms
+      // stall threshold — under parallel suite load the interval slips past
+      // 60ms and the poll escalates a false stall. Write the fresh snapshot
+      // from isAlive instead: the poll runs liveness right before the stall
+      // check within the SAME tick (POLL_CHECK_ORDER), so the observed
+      // activity always advances in lockstep with the poll, no wall-clock
+      // race.
       await assert.rejects(
         pollForExit('w1:p1', AbortSignal.timeout(500), {
           interval: 5,
           sessionFile: join(dir, 's.jsonl'),
-          isAlive: () => true,
+          isAlive: () => {
+            try {
+              writeActivitySnapshot(dir, 'child-stall', Date.now())
+            } catch {}
+            return true
+          },
           checkStall: subagentsModule.makeCheckStall(running),
         } as any),
         /Aborted/,
       )
     } finally {
-      clearInterval(writer)
       testApi.setWatchdogThresholdsForTest(undefined)
       rmSync(dir, { recursive: true, force: true })
     }
