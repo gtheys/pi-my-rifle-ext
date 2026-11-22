@@ -3,9 +3,6 @@
 // single candidate → adopt + bind; multiple → refusal listing /flow <ref>
 // per candidate; seam absent (or empty) → the unchanged refusal text.
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import { afterEach, test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
@@ -14,6 +11,7 @@ import {
   setActiveFlowRef,
 } from '../flow/worktree-context.ts'
 import worktreeExtension from '../worktree/index.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 type BindExecute = (
   id: string,
@@ -69,7 +67,7 @@ afterEach(() => {
 const bindCtx = { cwd: '/tmp/main-checkout' }
 
 test('bind heal: single candidate is adopted and bound', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-heal-'))
+  const dir = mkTmpDir('wt-heal-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }], {
     deps: {
       deriveFlowRefs: async () => ['PMR-HEAL1'],
@@ -96,7 +94,7 @@ test('bind heal: single candidate is adopted and bound', async () => {
 })
 
 test('bind heal: multiple candidates refuse with per-ref /flow commands', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-heal-'))
+  const dir = mkTmpDir('wt-heal-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }], {
     deps: {
       deriveFlowRefs: async () => ['PMR-HEALA', 'PMR-HEALB'],
@@ -119,7 +117,7 @@ test('bind heal: multiple candidates refuse with per-ref /flow commands', async 
 })
 
 test('bind heal: absent seam falls back to the unchanged refusal', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-heal-'))
+  const dir = mkTmpDir('wt-heal-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }])
   setActiveFlowRef(null)
   const result = await execute(
@@ -136,7 +134,7 @@ test('bind heal: absent seam falls back to the unchanged refusal', async () => {
 })
 
 test('bind heal: empty candidate list falls back to the unchanged refusal', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-heal-'))
+  const dir = mkTmpDir('wt-heal-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }], {
     deps: {
       deriveFlowRefs: async () => [],

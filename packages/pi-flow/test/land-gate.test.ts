@@ -1,8 +1,7 @@
 // Tests for the landing gate (PMR-06RH): pure decisions consumed by the
 // flow_land tool and the bash tool_call interceptor.
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
+import { chmodSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, it } from 'node:test'
 import {
@@ -11,6 +10,7 @@ import {
   landingIntercept,
 } from '../flow/land-gate.ts'
 import { createLandingState, registerLandTool } from '../tools/land.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 type LandExecute = (
   toolCallId: string,
@@ -194,7 +194,7 @@ describe('landingState clear-after-use (interceptor sequence)', () => {
 
 // --- PMR-VZEV: flow_land ref validation against loop.activeRef() ---
 describe('flow_land ref validation', () => {
-  const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-refgate-bin-'))
+  const BIN_DIR = mkTmpDir('pi-flow-refgate-bin-')
   writeFileSync(
     path.join(BIN_DIR, 'aven'),
     `#!/bin/sh\necho '{"ref":"PMR-ABC1","labels":["review-passed"]}'\n`,
