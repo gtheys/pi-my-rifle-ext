@@ -52,13 +52,22 @@ Spend ~30 seconds. Tech stack, project shape, and the area relevant to the user'
 
 ## Artifact Paths
 
-For a planning run, pick a short `<name>` (e.g. `auth-redesign`) and use a shared directory under `.pi/plans/YYYY-MM-DD-<name>/` for every deliverable. Pass explicit paths in each subagent's task and read them back with the plain `read` tool when a subagent finishes.
+Every deliverable from a planning run lives in ONE shared directory. Resolve it **before** spawning any subagent, then pass explicit file paths in each subagent's task and read them back with the plain `read` tool when a subagent finishes.
 
-Standard filenames:
+**Primary — use the resolver tool.** When `resolve_feature_path` is available (it is registered by the pi-flow extension), call it with the feature name as `summary` — e.g. `resolve_feature_path` with `summary: "auth redesign"`. It returns the canonical `plan.md` path; the directory that contains it is your shared artifact directory. Prefer this: it honors `$PERSONAL_FEATURES`, so plans land in the developer's centralized features folder when one is configured.
 
-- `.pi/plans/YYYY-MM-DD-<name>/scout-context.md`
-- `.pi/plans/YYYY-MM-DD-<name>/plan.md`
-- `.pi/plans/YYYY-MM-DD-<name>/review.md` (optional, for reviewer output)
+**Fallback — only when the tool is unavailable** (pi-flow not installed): use the repo-local `.pi/plans/YYYY-MM-DD-<name>/`, with a short `<name>` (e.g. `auth-redesign`).
+
+Standard filenames — `<resolved artifact dir>` below means the directory from whichever route you just took:
+
+- `<resolved artifact dir>/scout-context.md`
+- `<resolved artifact dir>/plan.md`
+- `<resolved artifact dir>/review.md` (optional, for reviewer output)
+
+AIDEV-NOTE: resolver-with-fallback is deliberate — this package is
+independently installable and must never depend on pi-flow, so the tool is
+"call it when present" and the repo-local path is explicitly the fallback, not
+the contract.
 
 ---
 
@@ -72,9 +81,13 @@ subagent({
   agent: "scout",
   task: `Analyze the codebase for [user's request area]. Map file structure, key modules, patterns, conventions, and existing code related to [feature area]. Focus on what a planner would need to understand before designing this feature.
 
-Save your findings to: .pi/plans/YYYY-MM-DD-<name>/scout-context.md`,
+Save your findings to: <resolved artifact dir>/scout-context.md`,
 });
 ```
+
+`<resolved artifact dir>` is the directory returned by `resolve_feature_path` (its
+`plan.md` parent), or `.pi/plans/YYYY-MM-DD-<name>/` when that tool is unavailable —
+substitute the real absolute path before spawning.
 
 **Wait for the scout to finish.** Read the scout's context file with the `read` tool — you'll pass it to the planner.
 
@@ -96,10 +109,13 @@ subagent({
 Scout context:
 [paste scout findings here — file structure, conventions, patterns, relevant code]
 
-Save the final plan to: .pi/plans/YYYY-MM-DD-<name>/plan.md
+Save the final plan to: <resolved artifact dir>/plan.md
 Create todos tagged with: <name>`,
 });
 ```
+
+As above, `<resolved artifact dir>` comes from the resolver (or the fallback) — pass the
+resolved absolute path, never the placeholder.
 
 **The user works with the planner.** It will clarify requirements lightly (1-2 rounds of questions, not a deep spec session), propose approaches, validate the design, run a premortem, write the plan, and create todos with mandatory code examples.
 
