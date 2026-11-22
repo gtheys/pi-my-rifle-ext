@@ -2390,7 +2390,11 @@ ${result.summary}`
       }
 
       // Check if we're in a git repository
-      const { code } = await pi.exec('git', ['rev-parse', '--git-dir'])
+      // AIDEV-NOTE: PMR-NPWY — pass ctx.cwd explicitly: under the makeRealPi
+      // sandbox seam a cwd-less exec REJECTS instead of returning {code: 1}.
+      const { code } = await pi.exec('git', ['rev-parse', '--git-dir'], {
+        cwd: ctx.cwd,
+      })
       if (code !== 0) {
         ctx.ui.notify('Not a git repository', 'error')
         return
