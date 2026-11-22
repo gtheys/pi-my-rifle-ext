@@ -302,7 +302,15 @@ function prunePeers(dir: string, ledger: PruneLedger, root: string): void {
       continue
     }
     let newest = updatedAt
-    const inboxEntries = dirEntries(join(dir, childId, 'inbox'))
+    const inboxDirPath = join(dir, childId, 'inbox')
+    const inboxEntries = dirEntries(inboxDirPath)
+    // AIDEV-NOTE (PMR-KT90): an inbox dir that EXISTS but cannot be listed
+    // (EACCES, EIO) is not an empty inbox — fail closed and keep the whole
+    // candidate instead of force-removing an unread inbox.
+    if (inboxEntries === null && existsSync(inboxDirPath)) {
+      markSkipped(ledger, 'peers', 'inbox unreadable')
+      continue
+    }
     if (inboxEntries !== null) {
       for (const msg of inboxEntries) {
         const message = readJson(join(dir, childId, 'inbox', msg))
@@ -641,6 +649,10 @@ function deliveredSourceExists(
 
   // Distinguish "scanned everything, no match" from "a scan failed".
   const replyExists = existsSync(join(root, 'asks', `${scope}.reply.json`))
+  // AIDEV-NOTE (PMR-KT90): a reply record that EXISTS but is unreadable or
+  // malformed (readJson → null) is not "no source" — fail closed and keep
+  // the marker rather than re-opening the duplicate-delivery window.
+  if (replyExists && reply === null) return null
   if (replyExists) return false
   const peerInboxMissing = !existsSync(join(root, 'peers', scope, 'inbox'))
   const ownerInboxMissing = !existsSync(join(root, 'inbox', scope))

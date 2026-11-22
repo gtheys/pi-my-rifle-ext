@@ -9691,6 +9691,68 @@ describe('retention.ts (PMR-KT90 prune sweep)', () => {
     assert.ok(existsSync(join(root, 'asks', 'kid.control.json')))
   })
 
+  it('keeps a delivered marker when its ask-reply source is unreadable (fail closed)', () => {
+    // AIDEV-NOTE (PMR-KT90): a reply record that EXISTS but is malformed
+    // (readJson → null) is not "no source" — the marker's source cannot be
+    // disproven, so the sweep must keep the marker (duplicate-delivery
+    // window stays closed). Deviation-gate fix round 2.
+    freshFixture()
+    writeRaw(join(root, 'asks', 'kid-reply.reply.json'), '{nope')
+    const marker = join(root, 'delivered', 'kid-reply', 'req-x')
+    writeRaw(marker, '')
+    utimesSync(marker, new Date(OLD_MS), new Date(OLD_MS))
+
+    const report = prune()
+
+    assert.ok(existsSync(marker))
+    assert.equal(report.removed.delivered, undefined)
+    assert.equal(report.skipped.delivered, 1)
+    assert.match(report.skipReasons.join('\n'), /delivered: source scan failed/)
+  })
+
+  it('keeps a peer whose inbox dir is unreadable (fail closed)', () => {
+    // AIDEV-NOTE (PMR-KT90): chmod 0o000 makes readdirSync fail EACCES —
+    // an inbox that EXISTS but cannot be listed is not an empty inbox; the
+    // whole candidate must be kept, never force-removed. Root ignores
+    // permission bits, so the injection is a no-op there and the test skips
+    // itself. Deviation-gate fix round 2.
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return
+    freshFixture()
+    const goneSession = join(agentDir, 'sessions', 'stuck.jsonl')
+    writeJson(
+      join(root, 'peers', 'stuck.json'),
+      presenceFixture({
+        childId: 'stuck',
+        sessionFile: goneSession,
+        pid: DEAD_PID,
+        updatedAt: OLD_ISO,
+      }),
+    )
+    const deadCleanup = publishDeadPresenceLock(goneSession)
+    const inboxDir = join(root, 'peers', 'stuck', 'inbox')
+    writeJson(join(inboxDir, 'm1.json'), {
+      version: 1,
+      messageId: 'm1',
+      from: { childId: 'someone' },
+      message: 'hello',
+      sentAt: OLD_ISO,
+    })
+    chmodSync(inboxDir, 0o000)
+    let report: PruneReport
+    try {
+      report = prune()
+    } finally {
+      chmodSync(inboxDir, 0o700)
+      deadCleanup()
+    }
+
+    assert.ok(existsSync(join(root, 'peers', 'stuck.json')))
+    assert.ok(existsSync(join(inboxDir, 'm1.json')))
+    assert.equal(report.removed.peers, undefined)
+    assert.equal(report.skipped.peers, 1)
+    assert.match(report.skipReasons.join('\n'), /peers: inbox unreadable/)
+  })
+
   it('prunes tool-effects only when the child session file is gone', () => {
     freshFixture()
     const resumableSession = sessionFileInAgentDir('resumable.jsonl')
