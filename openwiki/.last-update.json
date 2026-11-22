@@ -1,7 +1,7 @@
 {
   "command": "update",
-  "model": "claude-sonnet-5.5",
-  "updatedAt": "2026-11-05T13:11:18.046Z",
-  "gitHead": "db2e7504702be09507584e6ee823e660337f146c",
+  "model": "kimi-coding/k3",
+  "updatedAt": "2026-11-21T04:56:35.111Z",
+  "gitHead": "3068e3bd32e188f6231ef850a163aa25ba84838f",
   "snapshotHash": "b3Blbndpa2kvYXJj"
 }

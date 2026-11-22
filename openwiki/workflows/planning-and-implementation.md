@@ -52,7 +52,13 @@ extension-owned gate tools — direct `aven edit --label`, `git push`, and
    single-use and ref-scoped.
 4. **Feedback** — work: `/sonarqube` + `/pr-quality` triage (mechanical
    fixes committed; anything behavioral → new task through the gates);
-   personal: no feedback phase — `/validate` writes the outcome summary note and sets `done` after the push.
+   personal: a **wrap-up phase** (PMR-81SX) that runs after validate's
+   landing already ff-only merged the flow branch into main — it verifies
+   the merge landed (fail-closed), writes the outcome summary note
+   ("What shipped / Test evidence / Review verdict"), files review-feedback
+   backlog tickets, then sets `done` and completes the phase. `flow_land`
+   is never called here — the landing is already done and pushes stay
+   blocked for the whole flow.
 
 Brainstorming is standalone, not a flow phase: `/brainstorm <topic>` runs the
 question loop + scouts → artifact in `notes/brainstorm/` → ticket-creation
@@ -60,7 +66,22 @@ gate (explicit human confirm; work: Jira via acli, personal: aven). The
 artifact path is stored on the ticket as `research-path` metadata; the
 validate phase reads findings through it, tolerating absence.
 
-Landing: work = PR + Jira comment; personal = push straight to main.
+Landing: work = PR + Jira comment; personal = local **ff-only merge into
+your main checkout** via `flow_land route=merge-main` (the gate pins the
+exact `git merge --ff-only` command; the human code-review pass marker is
+required first), then `git push` to main — the land-gate interceptor
+unblocks the push only for that ref.
+
+Risky actions are declared in the run journal before they run (**effect
+contracts**, `flow/effect-gate.ts`): push, PR create, merge-main, worktree
+create/remove, workspace-close — each declaration carries a plain-language
+undo recipe.
+
+Flow-created worktrees are **cleaned up automatically** once the merge is
+provable (merge-base ancestor of main / PR MERGED): at flow done, on a
+`/flow` rerun of a completed flow, and via a session-start/flow-start sweep
+over run-journal refs. Unproven or dirty worktrees are deferred with an
+aven note and retried by a later sweep — never deleted silently.
 
 Mode comes from `workRoots` in `~/.pi/agent/pi-flow/config.json`: git
 toplevel under a prefix → work mode, else personal.
@@ -76,7 +97,10 @@ command reference live in the superseded-but-still-accurate
 ## See also
 
 - `docs/piv-flow.md` — canonical flow doc (gates, retry budget, resume
-  semantics, config, script-path resolution).
+  semantics, config, script-path resolution); `docs/piv-flow-work.md` and
+  `docs/piv-flow-personal.md` carry the per-mode detail.
+- `docs/pi-flow-observability.md` — the OTLP/Pushgateway/Grafana stack,
+  cost attribution model, and the traps already hit.
 - `openwiki/workflows/code-review.md` — the review commands; review now
   gates validate.
 - [Extension reference](../architecture/extensions.md#plan-tools-absorbed-from-pi-planning)

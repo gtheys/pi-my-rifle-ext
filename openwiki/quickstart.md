@@ -75,9 +75,10 @@ Bump versions manually in each `packages/*/package.json` before releasing.
 pi-my-rifle-ext/
 ├── packages/       # bun workspace packages — one per pi extension group
 │                   #   (ask-user-question, prompt-snippets, interactive-subagents,
-│                   #    planning, review, test-runner, sem, tool-pills,
-│                   #    desktop-notify, teams-transcript, pr-digest, worktree,
-│                   #    bootstrap, sudo, aven-context, flow)
+│                   #    test-runner, sem, tool-pills, desktop-notify,
+│                   #    teams-transcript, pr-digest, bootstrap, sudo, aven-context,
+│                   #    herdr-title, flow — flow absorbed the retired planning,
+│                   #    review and worktree packages)
 ├── skills/         # SKILL.md-driven agent skills (engineering/tools)
 ├── prompts/        # slash-command prompt templates
 ├── themes/         # theme JSON (tokyo-night)
@@ -98,7 +99,9 @@ pi's own packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, 
   `packages/` does, its tools/commands, and key implementation notes.
 - [Planning & implementation workflow](workflows/planning-and-implementation.md) —
   how an aven ticket → plan.md → epic/dep tree → phased implementation works
-  (canonical flow doc: `docs/piv-flow.md`).
+  (canonical flow doc: `docs/piv-flow.md`; work/personal mode detail:
+  `docs/piv-flow-work.md`, `docs/piv-flow-personal.md`; observability stack:
+  `docs/pi-flow-observability.md`).
 - [Code review workflow](workflows/code-review.md) — `/review`, `/sonarqube`,
   `/pr-quality`, `/pr-watch`.
 - [Skills & prompts](domain/skills-and-prompts.md) — inventory of `SKILL.md` files and

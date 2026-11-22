@@ -25,7 +25,8 @@ offers the ocr-delegate preset, below).
   subagent** via `pi-interactive-subagents`' programmatic API (`launchSubagent`)
   — the review runs in its own pane and findings steer back into the session when
   done. The legacy in-session path remains as fallback (no mux, or spawn failed);
-  with a mux, every mode runs in the subagent.
+  with a mux, every mode runs in the subagent. `/review commit <sha>` resolves
+  the bound flow worktree as review cwd when one exists (PMR-3P3T).
 - PR reviews are **worktree-based by default**: with Herdr and a mux available, the
   PR is fetched into a dedicated `review/pr-<n>` branch in its own Herdr worktree,
   the reviewer subagent runs there, and the worktree (+ branch) is auto-removed

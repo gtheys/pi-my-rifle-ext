@@ -51,6 +51,21 @@ non-obvious implementation decisions worth knowing before you touch it.
 - **Agent frontmatter** is fully documented in `docs/agent-frontmatter.md`
   (`be716a1`); the bundled `reviewer`/`worker` agents were moved off
   github-copilot models (`042e55d`).
+- **Dead-turn stall watchdog** (PMR-YFRB, `subagents/status.ts`): a pure,
+  now-parameterized classifier watches each child's activity snapshot;
+  scope-aware thresholds (provider turns get a longer deadline so a slow
+  provider never false-kills a healthy child — PMR-S1PT). Stalled turns are
+  escalated as **failed results** (`d5e6a66`) so the parent is never left
+  waiting forever; fail-closed: a possibly-alive child is never reported
+  dead. Opt-out via the `watchdog` object in `pi-subagents/config.json`.
+- **Subagents widget**: hides itself when no subagents run (`b640c9d`),
+  rows are styled with phase emoji + emphasis (`124b724`), and the footer
+  shows a running-count status set before the cheap-path return (`5dcf678`).
+- **Flow-env attribution stamping** (`subagents/flow-env.ts`, PMR-HFK1):
+  copies `PI_FLOW_REF` / `PI_FLOW_PHASE` / `PI_FLOW_TRACEPARENT` from the
+  parent env into each child's herdr `--env` block and adds
+  `PI_FLOW_SUBTASK` — this is how pi-flow's cost rollup and OTLP spans
+  attribute spawned sessions to ticket/phase/subtask.
 - **`/reload` survival:** module-level timers and poll loops are keyed on
   `Symbol.for(...)` globals; a fresh module load aborts the previous load's
   poll controller (`POLL_ABORT_KEY`) so old closures can't keep polling.
@@ -186,6 +201,14 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   project-note cross-linking).
 - Tenant settings gate everything (Graph access master switch, speaker
   attribution) — see the README troubleshooting table for the exact 403 modes.
+- **Zombie-stub guard** (`findPendingSummaries`, now exported and taking an
+  optional `vaultDir`): a `.vtt` whose note was already summarized and
+  archived by `/teams-transcript-push` has no sibling `.md` in the staging
+  dir (push moved it to `pushed/`) while the `.vtt` stays forever as the
+  sync dedup store — without checking `pushed/` and the vault, the pending
+  scan re-bootstraps a stub and the meeting gets summarized a second time.
+  A vault copy is treated as done regardless of summary state — push never
+  overwrites an existing vault note, so that file is canonical.
 
 ## pi-sudo
 
@@ -215,10 +238,19 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   enforcement interceptors; decisions live in pure modules), `aven/` (client:
   every aven shell-out), `config.ts` + `work-mode.ts` + `mode-profile.ts`
   (config boundary + work/personal mode), `tools/` (the gate tools: phase-complete, land, run-attempt, spec-approve,
-  deviation, code-review + `code-review-parse.ts`),
-  `flow/` (loop, args, attribution, label-gate, land-gate, ensure-labels, aven-resolve,
-  ref-kind, jira-ref, phase-command, phase-prompts, orchestrate, cost + cost-command —
-  the `/flow-cost` per-ticket rollup),
+  deviation, code-review + `code-review-parse.ts`, flow-submit + `result.ts`),
+  `flow/` (loop, args, attribution, label-gate, land-gate, effect-gate, ensure-labels, aven-resolve,
+  ref-kind, jira-ref, phase-command, phase-prompts, orchestrate, cost + cost-command + cost-autopush —
+  the `/flow-cost` per-ticket rollup and its automatic Pushgateway push when a run ends —
+  answer, resume, status, frame, widget + phase-emoji — the flow-status widget,
+  picker, agent-role, step-output, worktree-context, aven-resolve-exec),
+  `flow-diagram/` (`/flow-diagram` command + pure run segmentation/translation +
+  a checksummed vendored harness-profiler HTML renderer under `vendor/`),
+  `adhoc/tracker.ts` (time/cost tracking for non-flow commands: `/brainstorm`,
+  `/pr-quality`, `/review` — pushes `pi_flow_adhoc_*` metrics under job
+  `pi-flow-adhoc`; deliberately distinct names so flow dashboards never pick
+  them up; disabled while a flow is active),
+  `server/` (the durable run-server daemon: consumer/daemon/lifecycle/pending/writer),
   `spec-review/` (approve, aven-spec, publish, open-in-pane, picker),
   `brainstorm|plan|implement|validate|feedback/` (one subdir per command: args +
   prompt), `plan-tools/` (absorbed from pi-planning), `review/` +
@@ -229,9 +261,16 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   sync).
 - **Commands:** `/brainstorm` (standalone), `/plan`, `/implement`, `/validate`, `/feedback`,
   `/flow` (orchestrator loop), `/flow-cost <ref> [--push]` (per-ticket cost rollup),
+  `/flow-diagram <ref> [run]` (self-contained HTML sequence diagram of a run —
+  one lane per subagent + orchestrator, phase markers, tool arrows, per-lane
+  token totals; writes `pi-flow/diagrams/<ref>.run<k>.<stamp>.html` and
+  best-effort opens it; the file path is always the deliverable; every
+  degradation step aborts with one warning, never a crash),
   `/spec-review`, `/spec-publish`, `/review-spec`,
   `/code-review <ref>` (human review gate), the absorbed `/review`, `/sonarqube`, `/pr-quality`, `/pr-watch`, plus the
-  Herdr pair `/flow-view <ref>` and `/herdr-sync`.
+  Herdr trio `/flow-view <ref>`, `/flow-view-replay <ref>` (journal replay
+  viewer — byte-for-byte mirror of `/flow-view` wiring with viewer mode
+  `replay`), and `/herdr-sync`.
 - **Tools (agent-callable gates):** `flow_phase_complete` (the ONLY way to write
   lifecycle labels — direct `aven edit --label` mutations are blocked by
   `flow/label-gate.ts`), `flow_land` (gates push/PR creation behind the
@@ -322,12 +361,53 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
 - **Invariants:** no polling/daemon/state-store in the herdr viewer path (the
   pi-flow run-server daemon is a separate, journal-side component); public
   herdr verbs only; 5s exec timeouts + bounded JSON parsing; panes resolve
-  nothing from PATH (session passes `PI_FLOW_REF`/`PI_FLOW_RUN_FILE` via
-  `--env`).
+  nothing from PATH (session passes `PI_FLOW_REF`/`PI_FLOW_RUN_FILE` — and
+  `PI_FLOW_JOURNAL_FILE` for the activity feed — via `--env`). The flow-viewer
+  plugin also renders a live journal activity feed (fs.watch + debounced
+  re-render) and has a **replay mode** (event cursor + keyloop; Shift+G jumps
+  to latest) driven by `/flow-view-replay`. Requires Herdr ≥ 0.9.1
+  (`herdr-plugin.toml`).
+- **Flow-status widget** (`flow/widget.ts`, `frame.ts`, `status.ts`,
+  `phase-emoji.ts`, PMR-ZGPY/PMR-C3B6): a TUI widget showing the active
+  flow's phase with phase-colored frame and emoji. Visibility is a 3-state
+  machine — `hidden` (default) → `flashing` (a phase transition reveals it
+  for a few seconds) → `pinned` (explicit toggle). Content never
+  auto-registers the widget; the footer status line is never gated on
+  visibility. Refresh is pull-based off `agent_settled`/spawn events plus a
+  presentation-only 2s tick (no fs IO in the tick); fail-closed data
+  collection keeps the last good content on error.
+- **Effect contracts** (`flow/effect-gate.ts`, PMR-VDVJ): before a risky
+  action runs, the agent declares it in the run journal with a plain-language
+  undo recipe (`DEFAULT_RECIPES`). Declared kinds: `git-push`,
+  `gh-pr-create`, `merge-main` (personal ff-only landing), `worktree-create`,
+  `worktree-remove`, `workspace-close`. `MERGE_RE` + `mergeIntercept` are the
+  merge-main twins of land-gate's landing matcher — the negative lookahead in
+  the command-position regex is load-bearing so `git merge-base`/
+  `merge-file`/`merge-tree` never match.
+- **Automatic worktree cleanup** (PMR-EVSR arc): flow-created worktrees are
+  removed automatically at three trigger points — the loop's done handler
+  (`cleanupFlowWorktree` via `onFlowDone`), a `/flow` rerun of a
+  harness-completed flow, and a background sweep at session start / flow
+  start over run-journal refs. Deletion only happens when the merge is
+  provable (merge-base ancestor of main for personal flows, PR MERGED state
+  for work flows); dirty, in-flight, or unproven worktrees are deferred with
+  an aven note and retried by a later sweep. A manual `NO_PR` veto is
+  respected.
+- **Observability** (`telemetry/`, `flow/cost-autopush.ts`,
+  `adhoc/tracker.ts`): two independent signal paths — live OTLP/HTTP spans
+  per pi process (opt-in, metadata-only by default) and after-the-fact
+  `pi_flow_*` Prometheus metrics pushed to a Pushgateway automatically when a
+  run ends (env-gated by `PI_FLOW_PUSHGATEWAY_URL`, idempotent; `/flow-cost
+  --push` is the manual retry/backfill). Full stack (Caddy/Tempo/Pushgateway/
+  Grafana wiring, dashboards, traps) is documented in
+  [`docs/pi-flow-observability.md`](../../docs/pi-flow-observability.md) +
+  `pi-flow-observability-troubleshooting.md`, with four checked-in Grafana
+  dashboard JSONs (`docs/pi-flow-*.dashboard.json`).
 - **Config:** `~/.pi/agent/pi-flow/config.json` — `workRoots` (work-vs-personal
   mode by path prefix), `avenWorkspace` (pin a workspace, skip inference),
   `runServer.enabled` (kill switch for the durable run server daemon, default
-  `true`).
+  `true`), `viewerPlacement` (default herdr placement for `/flow-view*`),
+  `telemetry.*` (OTLP endpoint, content capture policy).
 
 ### plan-tools/ (absorbed from pi-planning)
 
@@ -358,7 +438,9 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   programmatic API (`launchSubagent`, `d90713f`) — findings steer back into the session
   when the review completes. The legacy in-session path remains as fallback when
   there's no mux or the spawn fails; with a mux available, every mode runs in the
-  subagent.
+  subagent. `/review commit <sha>` resolves the flow worktree for the review
+  cwd when one is bound (PMR-3P3T), so commit reviews inside a flow review
+  the worktree's checkout, not the main one.
 - **PR reviews are worktree-based by default:** with Herdr + mux, the PR is fetched
   into a dedicated `review/pr-<n>` branch in its own Herdr worktree; the worktree
   (and branch) is auto-removed when all jobs finish. Fresh worktrees run
@@ -425,7 +507,8 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
 
 - **Files:** `packages/pi-flow/worktree/` (`index.ts`, `branch.ts`,
   `bootstrap.ts`, `herdr.ts`, `remove-guards.ts`).
-- **Registers:** `worktree` tool (actions `create` / `list` / `remove`).
+- **Registers:** `worktree` tool (actions `create` / `list` / `bind` /
+  `remove` / `prune`).
 - **What:** Parallel feature work via [Herdr](https://github.com/pi-edubot/herdr)
   worktree workspaces. `create` derives a branch from a Jira ID (acli), a
   conventional `name`+`type`, or a literal `branch`; creates the worktree, bootstraps
@@ -433,10 +516,17 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   block creation, and the action waits for bootstrap to finish before returning),
   copies missing `.env*` files from the main checkout (point-in-time snapshot, never
   overwritten), and best-effort sets the git-town parent for the Jira flow.
-  `list` joins worktrees with live pi agent states as a dashboard; `remove` refuses
-  dirty worktrees without `force` and only deletes branches already **MERGED** on
-  GitHub when `delete_branch` is set. Merge/push stay manual — removal only checks
-  the result.
+  `list` joins worktrees with live pi agent states as a dashboard; `bind`
+  re-attaches an existing worktree to the active flow (the resume path —
+  create binds automatically); `remove` refuses dirty worktrees without
+  `force` and only deletes branches already **MERGED** on GitHub when
+  `delete_branch` is set. `remove` also runs a best-effort `git fetch
+  --prune` afterwards (never fails the remove). `prune` (PMR-DMZR) closes
+  herdr workspaces whose checkout directories are already gone — only
+  **proven-dangling** workspaces (checkout path gone, absent from
+  `herdr worktree list`, no agents attached) are closed; everything else is
+  skipped with a per-workspace reason. Merge/push stay manual — removal only
+  checks the result.
 
 ## Next
 

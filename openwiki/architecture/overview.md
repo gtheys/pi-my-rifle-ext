@@ -56,7 +56,10 @@ packages/
 ├── pi-aven-context/          injects live aven workspace state at session_start
 ├── pi-flow/                  PIV flow: /brainstorm /plan /implement /validate /feedback
 │                             + /flow orchestrator, gate tools (flow_phase_complete,
-│                             flow_land, flow_run_attempt, spec_approve), Herdr plugin;
+│                             flow_land, flow_run_attempt, spec_approve, flow_submit),
+│                             flow-status widget, effect gate, run journal + durable
+│                             run server, /flow-diagram HTML renderer, /flow-cost
+│                             rollup + OTLP/Pushgateway observability, Herdr plugin;
 │                             also owns the absorbed plan-tools/, review/, sonarqube/,
 │                             pr-quality/, worktree/ modules (pi-planning, pi-review,
 │                             pi-worktree were retired into it)
@@ -104,8 +107,8 @@ for 3 exec calls).
 | `pi-interactive-subagents` | multiplexer CLI (cmux/tmux/zellij/wezterm/herdr) | sub-agents run in real terminal panes, results steer back into the session |
 | `pi-test-runner` | test scripts via the `pi-interactive-subagents` API | isolate test runs in a `test-runner` agent so they don't block the conversation |
 | `pi-pr-digest` | `gh` CLI | PR author/comment/review status across an org |
-| `pi-flow` | `aven`, `herdr`, `git`/`gh` (via gate tools) | PIV phases; aven labels as run state; herdr panes for flow-view/spec-review |
-| `pi-flow/worktree` | `herdr`, `git`, optional `acli`/`gh`/`git-town` + package manager | create/list/remove worktree workspaces |
+| `pi-flow` | `aven`, `herdr`, `git`/`gh` (via gate tools), optional OTLP/HTTP + Pushgateway | PIV phases; aven labels as run state; herdr panes for flow-view/flow-view-replay/spec-review; telemetry + cost metrics are opt-in |
+| `pi-flow/worktree` | `herdr`, `git`, optional `acli`/`gh`/`git-town` + package manager | create/list/bind/remove/prune worktree workspaces |
 | `pi-desktop-notify` | `notify-send` | desktop notification on idle-after-work |
 
 ## Next
