@@ -2,7 +2,7 @@
 name: reviewer
 description: Code review agent - reviews changes for quality, security, and correctness
 tools: read, bash
-model: zai/glm-5.3-flash
+model: qwen-token-plan-individual/qwen3.8-max
 thinking: high
 spawning: false
 auto-exit: true

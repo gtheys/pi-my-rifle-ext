@@ -17,6 +17,7 @@ Second important rule: Always explain what you are going to do and why. I want t
 | G-2 | Follow lint/style configs (`pyproject.toml`, `.prettierrc`, `.pre-commit-config.yaml`). Use the project's configured linter, if available, instead of manually re-formatting code. | ❌ Re-format code to any other style.                                                                                                                 |
 | G-3 | For changes >300 LOC or >3 files, **ask for confirmation**.                                                                                                                        | ❌ Refactor large modules without human guidance.                                                                                                     |
 | G-4 | Stay within the current task context. Inform the dev if it'd be better to start afresh.                                                                                            | ❌ Continue work from a prior prompt after "new task" – start a fresh session.                                                                        |
+| G-5 | **Verify before asserting.** Run the decisive check BEFORE stating a claim as fact; label anything unverified as a guess ("unverified guess: …" / "I don't know yet").                  | ❌ Present a hypothesis as fact or name a culprit before the mechanism is proven — especially during incidents.                                        |
 
 ---
 
