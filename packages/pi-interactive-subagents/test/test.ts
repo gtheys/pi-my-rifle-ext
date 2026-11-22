@@ -3438,7 +3438,7 @@ describe('config.ts', () => {
       /Invalid subagents config in t/,
     )
     // Scaffold never writes the key into new configs.
-    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const agentDir = mkTmpDir('subagents-agentdir-')
     scaffoldGlobalSubagentsConfig(agentDir)
     const onDisk = JSON.parse(
       readFileSync(globalSubagentsConfigPath(agentDir), 'utf8'),

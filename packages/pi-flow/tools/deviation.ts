@@ -505,7 +505,14 @@ export function registerDeviationReviewTool(
         return mapped
       } finally {
         if (diffDir !== undefined) {
-          rmSync(diffDir, { recursive: true, force: true })
+          // AIDEV-NOTE: cleanup must never mask the computed verdict — a
+          // throwing rmSync (busy/shared TMPDIR) would replace `return
+          // mapped` with an exception. Mirrors test/tmpdir.ts.
+          try {
+            rmSync(diffDir, { recursive: true, force: true })
+          } catch {
+            // swallow: the verdict already computed stands
+          }
         }
       }
     },

@@ -8,11 +8,10 @@
 // spawn-failure error AND the temp dir must be gone afterwards.
 // Template: deviation-worktree-real-git.test.ts (real git, module binding).
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -20,41 +19,42 @@ import type {
 import { setActiveFlowRef, setFlowWorktree } from '../flow/worktree-context.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
-import type { Exec } from '../shared/diff-base.ts'
 import { recordFlowBase } from '../shared/flow-base.ts'
 import type {
   DeviationReviewDetails,
   DeviationReviewToolParams,
 } from '../tools/deviation.ts'
 import { registerDeviationReviewTool } from '../tools/deviation.ts'
+// AIDEV-NOTE: PMR-ZMX0 review fix — this real-git fixture must use the
+// shared isolation helpers like every other real-git fixture in the
+// package: it ran with an inherited process.env and a leaked GIT_DIR made
+// it branch/commit/push in the INVOKING checkout (reviewer repro, review
+// round 1). isolateProcessGitEnv() at module load + sandboxed exec/git.
+import {
+  cleanupSandboxes,
+  isolateProcessGitEnv,
+  makeSandboxExec,
+  registerSandbox,
+  runInSandbox,
+} from './git-sandbox.ts'
 
-const exec: Exec = async (cmd, args, options) => {
-  try {
-    const stdout = execFileSync(cmd, args, {
-      cwd: options?.cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    return { stdout, code: 0 }
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string }
-    return {
-      stdout: err.stdout ?? '',
-      stderr: err.stderr ?? '',
-      code: 1,
-    }
-  }
-}
+isolateProcessGitEnv()
+
+const exec = makeSandboxExec()
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  return runInSandbox('git', args, cwd)
 }
 
 function commit(cwd: string, file: string, msg: string): void {
-  execFileSync('sh', ['-c', `echo "${msg}" >> ${file}`], { cwd })
+  runInSandbox('sh', ['-c', `echo "${msg}" >> ${file}`], cwd)
   git(cwd, 'add', '-A')
   git(cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', msg)
 }
+
+after(() => {
+  cleanupSandboxes()
+})
 
 function deviationDiffDirs(): Set<string> {
   return new Set(
@@ -73,7 +73,7 @@ function nullWriter(): EventWriter {
 }
 
 test('oversized-diff path removes the deviation-diff- temp dir on the spawn-failure error return', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'dev-tmpdir-'))
+  const root = registerSandbox(mkdtempSync(path.join(tmpdir(), 'dev-tmpdir-')))
   const origin = path.join(root, 'origin.git')
   const repo = path.join(root, 'repo')
   git(root, 'init', '-q', '--bare', origin)

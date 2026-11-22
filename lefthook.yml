@@ -13,4 +13,4 @@ pre-push:
       # (pi-flow flow-base/deviation-worktree) never act on the REAL repo
       # (PMR-ZMX0 — PMR-ESPA landing incident 2026-11-22). PMR-W9TE is the
       # structural fix (sandboxEnv); this removes the detonator.
-      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_QUARANTINE_PATH -u GIT_PREFIX -u GIT_LITERAL_PATHSPECS bun run check
+      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_QUARANTINE_PATH -u GIT_PREFIX -u GIT_LITERAL_PATHSPECS -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES bun run check
