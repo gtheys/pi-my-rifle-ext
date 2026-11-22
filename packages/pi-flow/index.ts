@@ -56,7 +56,7 @@ import {
   executeFlowAnswer,
   parseFlowAnswerArgs,
 } from './flow/answer.ts'
-import { type FlowArgs, parseFlowArgs } from './flow/args.ts'
+import { FLOW_USAGE, type FlowArgs, parseFlowArgs } from './flow/args.ts'
 import { spawnJournalTarget } from './flow/attribution.ts'
 import {
   type HealResult,
@@ -1288,7 +1288,7 @@ export default function (
 
   pi.registerCommand('flow', {
     description:
-      'PIV run-all (plan -> implement -> validate -> feedback; personal feedback = wrap-up: outcome summary, done, auto worktree cleanup) or record a protected human decision. Usage: /flow <ref> | /flow answer <ref> <approve|reject|pass|fail> | /flow dashboard. Brainstorm topics go through /brainstorm. Completed-flow worktrees are cleaned up automatically (loop done, /flow rerun, or session/flow-start sweep) and are never deleted while dirty, in flight, or unproven.',
+      'PIV run-all (plan -> implement -> validate -> feedback; personal feedback = wrap-up: outcome summary, done, auto worktree cleanup) or record a protected human decision. Usage: /flow <ref> [--yolo] | /flow --yolo (receipt gates skipped, personal mode only) | /flow answer <ref> <approve|reject|pass|fail> | /flow dashboard. Brainstorm topics go through /brainstorm. Completed-flow worktrees are cleaned up automatically (loop done, /flow rerun, or session/flow-start sweep) and are never deleted while dirty, in flight, or unproven.',
     // AIDEV-NOTE: Aven IS the run state — labels fetched fail-closed (aven
     // failure aborts, never starts mid-phase by accident). nextPhase()
     // resolves the first phase whose completion label is missing, then the
@@ -1484,10 +1484,7 @@ export default function (
       if (parsed.kind === 'help') {
         // Fix round 2: non-zero-arg /flow keeps the pre-picker usage notify —
         // the picker is exclusively the zero-arg invocation (isPickerInvocation).
-        ctx.ui.notify(
-          'Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>>. Brainstorm topics go through /brainstorm.',
-          'info',
-        )
+        ctx.ui.notify(FLOW_USAGE, 'info')
         return
       }
       const mode = await resolveMode(pi, ctx.cwd)

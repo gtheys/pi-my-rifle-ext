@@ -13,7 +13,7 @@ import path from 'node:path'
 import { after, test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { answerUsageText } from '../flow/answer.ts'
-import { parseFlowArgs } from '../flow/args.ts'
+import { FLOW_USAGE, parseFlowArgs } from '../flow/args.ts'
 import { nextPhase, PHASE_LABEL } from '../flow/orchestrate.ts'
 import {
   mergeSeedInput,
@@ -22,6 +22,16 @@ import {
 } from '../flow/resume.ts'
 import { resolveRepoRoot } from '../herdr/sync.ts'
 import flowExtension, { setAvenSessionCwd } from '../index.ts'
+
+// --- FLOW_USAGE ---
+
+test('FLOW_USAGE: the /flow usage surface documents --yolo', () => {
+  // PMR-N181 — /flow help must discover the flag: both the trailing form
+  // (<ref> --yolo) and the bare picker form (/flow --yolo), personal-only.
+  assert.match(FLOW_USAGE, /\[--yolo\]/)
+  assert.match(FLOW_USAGE, /\/flow --yolo/)
+  assert.match(FLOW_USAGE, /personal mode only/)
+})
 
 // --- parseFlowArgs ---
 

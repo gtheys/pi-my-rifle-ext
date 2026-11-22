@@ -7,6 +7,11 @@
 
 import { parseRefKind } from './ref-kind.ts'
 
+// AIDEV-NOTE: PMR-N181 — exported so index.ts's usage notify and its test
+// pin one string. Mentions --yolo (personal-mode only, PMR-ZRMQ).
+export const FLOW_USAGE =
+  'Usage: /flow <jira-id | aven-ref | aven:<ref> | jira:<key>> [--yolo] | /flow --yolo. --yolo runs without the receipt gates (personal mode only). Brainstorm topics go through /brainstorm.'
+
 export type FlowArgs =
   | { kind: 'jira'; jiraId: string; yolo: boolean }
   | { kind: 'aven'; ref: string; yolo: boolean }
