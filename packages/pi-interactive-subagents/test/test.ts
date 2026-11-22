@@ -162,6 +162,7 @@ import subagentDoneExtension, {
   shouldAutoExitOnAgentEnd,
   shouldMarkUserTookOver,
 } from '../pi-extension/subagents/subagent-done.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 // --- Helpers ---
 
@@ -3285,7 +3286,7 @@ describe('dataroot.ts', () => {
   })
 
   it('creates lazily-named subdirs with 0700 and is idempotent', () => {
-    const root = mkdtempSync(join(tmpdir(), 'subagents-dataroot-'))
+    const root = mkTmpDir('subagents-dataroot-')
     const dir = ensureSubagentsDataDir('results', root)
     assert.equal(dir, join(root, 'results'))
     assert.ok(statSync(dir).isDirectory())
@@ -3296,7 +3297,7 @@ describe('dataroot.ts', () => {
 
   it("includes 'tool-effects' in the data dir names and creates it 0700 (PMR-ZJCP)", () => {
     assert.ok(SUBAGENTS_DATA_DIR_NAMES.includes('tool-effects'))
-    const root = mkdtempSync(join(tmpdir(), 'subagents-dataroot-'))
+    const root = mkTmpDir('subagents-dataroot-')
     const dir = ensureSubagentsDataDir('tool-effects', root)
     assert.equal(dir, join(root, 'tool-effects'))
     assert.ok(statSync(dir).isDirectory())
@@ -3305,7 +3306,7 @@ describe('dataroot.ts', () => {
 
   it("includes 'peer-bindings' in the data dir names and creates it 0700", () => {
     assert.ok(SUBAGENTS_DATA_DIR_NAMES.includes('peer-bindings'))
-    const root = mkdtempSync(join(tmpdir(), 'subagents-dataroot-'))
+    const root = mkTmpDir('subagents-dataroot-')
     const dir = ensureSubagentsDataDir('peer-bindings', root)
     assert.equal(dir, join(root, 'peer-bindings'))
     assert.ok(statSync(dir).isDirectory())
@@ -3410,7 +3411,7 @@ describe('config.ts', () => {
   })
 
   it('scaffolds the global config only when missing and never overwrites', () => {
-    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const agentDir = mkTmpDir('subagents-agentdir-')
     const path = globalSubagentsConfigPath(agentDir)
     assert.equal(scaffoldGlobalSubagentsConfig(agentDir), path)
     assert.ok(existsSync(path))
@@ -3426,16 +3427,16 @@ describe('config.ts', () => {
   })
 
   it('falls back to the global config and defaults', () => {
-    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
-    const cwd = mkdtempSync(join(tmpdir(), 'subagents-cwd-'))
+    const agentDir = mkTmpDir('subagents-agentdir-')
+    const cwd = mkTmpDir('subagents-cwd-')
     const loaded = loadSubagentsConfig(cwd, agentDir)
     assert.deepEqual(loaded.config, DEFAULT_SUBAGENTS_CONFIG)
     assert.equal(loaded.source, globalSubagentsConfigPath(agentDir))
   })
 
   it('lets the project override win and fails fast on invalid config', () => {
-    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
-    const cwd = mkdtempSync(join(tmpdir(), 'subagents-cwd-'))
+    const agentDir = mkTmpDir('subagents-agentdir-')
+    const cwd = mkTmpDir('subagents-cwd-')
     const projectPath = projectSubagentsConfigPath(cwd)
     mkdirSync(dirname(projectPath), { recursive: true })
     writeFileSync(projectPath, '{"status":{"enabled":false}}')
@@ -3470,7 +3471,7 @@ describe('lock.ts', () => {
   })
 
   it('acquires, observes, and releases a lock', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const dir = mkTmpDir('subagents-lock-')
     const path = join(dir, 'lock')
     const lease = acquireProcessLock(path, { name: 'test lock' })
     assert.equal(lease.claim.pid, process.pid)
@@ -3482,7 +3483,7 @@ describe('lock.ts', () => {
   })
 
   it('rejects a second live claimant', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const dir = mkTmpDir('subagents-lock-')
     const path = join(dir, 'lock')
     const lease = acquireProcessLock(path)
     assert.throws(
@@ -3495,7 +3496,7 @@ describe('lock.ts', () => {
   })
 
   it('takes over a stale claim from a dead pid', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'subagents-lock-'))
+    const dir = mkTmpDir('subagents-lock-')
     const path = join(dir, 'lock')
     // Process.kill(pid=largest-possible) can't be used safely; instead write a
     // claim with a pid that cannot exist (no PID will ever be 2^22+ on Linux).
@@ -7140,7 +7141,7 @@ describe('config.ts contextRetirement (PMR-1EC3)', () => {
   })
 
   it('scaffolded global config carries the disabled default', () => {
-    const agentDir = mkdtempSync(join(tmpdir(), 'subagents-agentdir-'))
+    const agentDir = mkTmpDir('subagents-agentdir-')
     const path = scaffoldGlobalSubagentsConfig(agentDir)
     const onDisk = JSON.parse(readFileSync(path, 'utf8'))
     assert.deepEqual(onDisk.contextRetirement, { enabled: false })
@@ -7924,7 +7925,7 @@ describe('replay-safe spawn identity (PMR-YKAC)', () => {
 })
 
 describe('snapshot.ts (PMR-YJC5 aggregate snapshot)', () => {
-  const root = mkdtempSync(join(tmpdir(), 'subagents-snapshot-'))
+  const root = mkTmpDir('subagents-snapshot-')
   const owner = 'parent-snap-1'
   const childA = deriveChildId(owner, 1)
   const childB = deriveChildId(owner, 2)
