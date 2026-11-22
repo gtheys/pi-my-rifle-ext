@@ -33,15 +33,22 @@ function buildDeltaReviewStep(ref: string): string {
 // gates. pi-review resolves its base from <base>@{upstream}; comparing that to
 // `git diff main...HEAD` made unpushed commits look like a reviewer mix-up
 // (PMR-KKDC). The agent records ONE sha here and reuses it in 7, D2 and D3.
-// AIDEV-NOTE: PMR-S87F — the resolution rule is mode-keyed. Work mode pushes
-// the branch, so <base>@{upstream} tracks the real base. Personal mode NEVER
+// AIDEV-NOTE: PMR-S87F (amended by PMR-7N3D) — the resolution rule is
+// mode-keyed (MODE_PROFILE[mode].baseResolution). Work mode pushes the
+// branch, so <base>@{upstream} tracks the real base. Personal mode NEVER
 // pushes, so upstream lags local main by every previous personal merge and
 // the merge-base sweeps unrelated tickets into the review (PMR-MH1Y needed
-// human arbitration toward the recorded flow base). Personal mode therefore
-// pins BASE_SHA to the flow base recorded at worktree create
-// (branch.<branch>.flowbasesha, shared/flow-base.ts) — the same base the
-// deviation gate resolves — with merge-base HEAD <base> only as the legacy
-// fallback for worktrees without a recorded SHA.
+// human arbitration toward the recorded flow base). PMR-7N3D: personal
+// BASE_SHA is now the REBASE-AWARE merge-base of HEAD and the LOCAL
+// recorded flowbase branch (`branch.<branch>.flowbase`, shared/flow-base.ts)
+// — the same value the deviation gate resolves via resolveFlowRange, so the
+// two gates agree by construction. The recorded
+// `branch.<branch>.flowbasesha` cannot self-heal after a mid-flow rebase
+// (flow_land's guided rebase, PMR-1KAE) — it is demoted to a creation-time
+// cross-check: it equals BASE_SHA unless the branch was rebased; a
+// difference with no rebase in history means something is wrong, STOP and
+// ask the human. Personal mode still NEVER resolves against the base's
+// upstream ref.
 function buildBasePinStep(mode: 'work' | 'personal'): string {
   const tail = `Record the SHA as BASE_SHA, then run \`git log BASE_SHA..HEAD --oneline\`
    and \`git diff --stat BASE_SHA..HEAD\`. Use this BASE_SHA for the review
@@ -50,16 +57,22 @@ function buildBasePinStep(mode: 'work' | 'personal'): string {
    range the reviewer describes differs from the recorded one, ASK the human
    — never call it a reviewer or tool error. If <base> cannot be resolved
    unambiguously, STOP and ask the human.`
-  if (mode === 'personal') {
+  if (MODE_PROFILE[mode].baseResolution === 'merge-base-local') {
     return `6a. Pin the diff base ONCE, before the review gate: BASE_SHA is the
-   flow base recorded at worktree create — read it with
-   \`git config branch.$(git branch --show-current).flowbasesha\` (this is the
-   same base the deviation gate resolves, so the two gates agree by
-   construction). NEVER resolve against the base's upstream ref: personal
-   mode never pushes, so the upstream lags local main and would sweep
-   unrelated commits into the review. If flowbasesha is unset (legacy worktree), fall
-   back to \`git merge-base HEAD <base>\` where <base> is the recorded flow
-   base branch (\`git config branch.$(git branch --show-current).flowbase\`).
+   merge-base of HEAD and the flow base branch recorded at worktree create —
+   read it with
+   \`git merge-base HEAD $(git config branch.$(git branch --show-current).flowbase)\`
+   (the same base the deviation gate resolves, so the two gates agree by
+   construction — and it stays correct after a mid-flow rebase, because the
+   merge-base moves with the rebase while the recorded flowbasesha cannot
+   self-heal). Cross-check against
+   \`git config branch.$(git branch --show-current).flowbasesha\` (the base
+   recorded at worktree create): it equals BASE_SHA unless the branch was
+   rebased mid-flow — after a rebase the merge-base is the correct value;
+   with no rebase in the flow's history a difference means something is
+   wrong: STOP and ask the human. NEVER resolve against the base's upstream
+   ref: personal mode never pushes, so the upstream lags local main and
+   would sweep unrelated commits into the review.
    ${tail}`
   }
   return `6a. Pin the diff base ONCE, before the review gate: resolve <base> (the

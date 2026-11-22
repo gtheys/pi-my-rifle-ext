@@ -345,14 +345,20 @@ Review gate (part 1: review tool + blockers) — run ONLY after validation has
 fully passed:
 
 6a. Pin the diff base ONCE, before the review gate: BASE_SHA is the
-   flow base recorded at worktree create — read it with
-   \`git config branch.$(git branch --show-current).flowbasesha\` (this is the
-   same base the deviation gate resolves, so the two gates agree by
-   construction). NEVER resolve against the base's upstream ref: personal
-   mode never pushes, so the upstream lags local main and would sweep
-   unrelated commits into the review. If flowbasesha is unset (legacy worktree), fall
-   back to \`git merge-base HEAD <base>\` where <base> is the recorded flow
-   base branch (\`git config branch.$(git branch --show-current).flowbase\`).
+   merge-base of HEAD and the flow base branch recorded at worktree create —
+   read it with
+   \`git merge-base HEAD $(git config branch.$(git branch --show-current).flowbase)\`
+   (the same base the deviation gate resolves, so the two gates agree by
+   construction — and it stays correct after a mid-flow rebase, because the
+   merge-base moves with the rebase while the recorded flowbasesha cannot
+   self-heal). Cross-check against
+   \`git config branch.$(git branch --show-current).flowbasesha\` (the base
+   recorded at worktree create): it equals BASE_SHA unless the branch was
+   rebased mid-flow — after a rebase the merge-base is the correct value;
+   with no rebase in the flow's history a difference means something is
+   wrong: STOP and ask the human. NEVER resolve against the base's upstream
+   ref: personal mode never pushes, so the upstream lags local main and
+   would sweep unrelated commits into the review.
    Record the SHA as BASE_SHA, then run \`git log BASE_SHA..HEAD --oneline\`
    and \`git diff --stat BASE_SHA..HEAD\`. Use this BASE_SHA for the review
    (7). The deviation gate resolves its own range (base recorded at worktree

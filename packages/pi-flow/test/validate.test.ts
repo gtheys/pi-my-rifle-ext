@@ -528,24 +528,31 @@ test('buildValidatePrompt: work mode resolves the base via <base>@{upstream} (PM
   assert.ok(p.includes('git merge-base HEAD <base>'))
 })
 
-// --- PMR-S87F: personal mode pins the review base to the recorded flow base ---
+// --- PMR-S87F (amended PMR-7N3D): personal mode pins the review base to the rebase-aware merge-base ---
 
-test('buildValidatePrompt: personal mode pins BASE_SHA to the recorded flow base (PMR-S87F)', () => {
+test('buildValidatePrompt: personal mode pins BASE_SHA to the rebase-aware merge-base vs the local flowbase branch (PMR-S87F, PMR-7N3D)', () => {
   const p = buildValidatePrompt({
     mode: 'personal',
     ref: 'PMR-S87F',
     scriptsDir: null,
   })
-  // recorded at worktree create — the same base the deviation gate resolves
-  assert.ok(p.includes('flowbasesha'))
+  // PRIMARY: merge-base of HEAD and the LOCAL recorded flowbase branch —
+  // rebase-aware, the same base the deviation gate resolves
   assert.ok(
-    p.includes('git config branch.$(git branch --show-current).flowbasesha'),
+    p.includes(
+      'git merge-base HEAD $(git config branch.$(git branch --show-current).flowbase)',
+    ),
   )
   // personal mode never pushes, so upstream must never win
   assert.ok(!p.includes('<base>@{upstream}'))
   assert.ok(p.includes('never pushes'))
-  // legacy fallback without a recorded SHA stays merge-base against the base
-  assert.ok(p.includes('git merge-base HEAD <base>'))
+  // flowbasesha survives as the creation-time CROSS-CHECK
+  assert.ok(p.includes('flowbasesha'))
+  assert.ok(
+    p.includes('git config branch.$(git branch --show-current).flowbasesha'),
+  )
+  // a cross-check difference without a rebase must stop the agent
+  assert.ok(p.includes('STOP and ask the human'))
 })
 
 // --- PMR-DQ7Z: personal step 7 targets the pinned BASE_SHA, not a branch name ---
