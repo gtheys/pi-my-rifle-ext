@@ -61,12 +61,17 @@ import {
 } from '../adhoc/tracker.ts'
 import { resolveMode } from '../config.ts'
 import { getActiveFlowRef, getFlowWorktree } from '../flow/worktree-context.ts'
+import { MODE_PROFILE } from '../mode-profile.ts'
 import {
   createDaemonAliveProbe,
   createEventWriter,
   type EventWriter,
 } from '../server/writer.ts'
-import { type Exec, getMergeBase } from '../shared/diff-base.ts'
+import {
+  type Exec,
+  getMergeBase,
+  resolveFlowRange,
+} from '../shared/diff-base.ts'
 import { readFlowBase } from '../shared/flow-base.ts'
 import {
   type ResolvedWorktree,
@@ -82,6 +87,7 @@ import {
   reviewedRangeLine,
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
+import type { WorkMode } from '../work-mode.ts'
 import {
   filterLinked,
   type HerdrWorktree,
@@ -318,6 +324,49 @@ export async function buildReviewGatePin(
   })
   if (!('diffSha256' in built)) return null
   return built
+}
+
+// AIDEV-NOTE: PMR-R4AP/PMR-7N3D — mode-keyed flow review base, extracted
+// as an exported seam so real-git tests drive both modes without Pi config.
+// In a flow worktree the review base is NOT whatever branch name the agent
+// typed or origin/<branch>: work mode keeps the SHA recorded at worktree
+// create (same value deviation_review uses); personal mode resolves the
+// REBASE-AWARE base — merge-base of HEAD and the LOCAL recorded flowbase
+// branch — through the ONE shared local-only resolver (resolveFlowRange),
+// so the review and deviation gates agree by construction (PMR-R4AP).
+// Returns a resolved SHA (never a branch NAME): downstream consumers
+// (buildReviewGatePin, buildReviewPrompt, buildSemReviewInstructions —
+// which omits cwd, isEmptyBranchRange, the ocr args) each call
+// getMergeBase(exec, target.branch, …); a raw SHA has no
+// `<sha>@{upstream}`, so they all land on local `merge-base HEAD <sha>` ==
+// the resolved SHA — no per-consumer plumbing needed. Substituting the
+// branch NAME instead would re-resolve through the base's upstream ref —
+// the PMR-MH1Y/DQ7Z regression, forbidden in personal mode (it never
+// pushes, upstream lags local main and sweeps unrelated commits in).
+// Resolution failure falls back to the legacy refs so the
+// isEmptyBranchRange refusal in the tool execute still produces the
+// friendly empty-range error.
+export async function resolveBranchRefForReview(
+  pi: ExtensionAPI,
+  requestedBranch: string,
+  cwd: string,
+  mode: WorkMode,
+): Promise<string> {
+  const recorded = await readFlowBase(execOf(pi), cwd)
+  if (!recorded.ok) return requestedBranch
+  if (MODE_PROFILE[mode].baseResolution !== 'merge-base-local') {
+    if (recorded.value.sha !== null) return recorded.value.sha
+    return requestedBranch
+  }
+  const range = await resolveFlowRange(
+    execOf(pi),
+    cwd,
+    recorded.value.branch,
+    recorded.value.branch,
+  )
+  if (range.ok) return range.value.baseSha
+  if (recorded.value.sha !== null) return recorded.value.sha
+  return requestedBranch
 }
 
 /** Echo-contract section appended to the reviewer prompt when pinned. */
@@ -2562,16 +2611,20 @@ ${result.summary}`
         }
         reviewCwd = commitCwd.cwd
       }
-      // AIDEV-NOTE: PMR-R4AP — in a flow worktree the review base is the SHA
-      // recorded at worktree create (same value deviation_review uses), not
-      // whatever branch name the agent typed or origin/<branch>.
+      // AIDEV-NOTE: PMR-R4AP (amended by PMR-7N3D) — in a flow worktree the
+      // review base is resolved by resolveBranchRefForReview (see its note:
+      // work → recorded sha, personal → rebase-aware local-only merge-base,
+      // ONE resolved SHA plumbed to all consumers), not whatever branch
+      // name the agent typed or origin/<branch>.
       let branchRef = ''
       if (p.type === 'branch') {
-        branchRef = p.branch
-        const recorded = await readFlowBase(execOf(pi), reviewCwd)
-        if (recorded.ok && recorded.value.sha !== null) {
-          branchRef = recorded.value.sha
-        }
+        const mode = await resolveMode(pi, reviewCwd)
+        branchRef = await resolveBranchRefForReview(
+          pi,
+          p.branch,
+          reviewCwd,
+          mode,
+        )
       }
       if (
         p.type === 'branch' &&
