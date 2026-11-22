@@ -1411,3 +1411,221 @@ test('createEffectJournal: declare creates pi-flow/runs on real fs (fresh agent 
   assert.equal(parsed.kind, 'effect-declaration')
   assert.equal(parsed.effectId, result.effectId)
 })
+
+// --- PMR-T9ZQ owner-session event kind (run-record schema) ---
+
+const ownerRun = {
+  kind: 'run-start' as const,
+  at: '2026-11-22T00:00:00Z',
+  ref: 'PMR-OWNER',
+  mode: 'work' as const,
+}
+
+function ownerEvent(
+  at: string,
+  sessionFile: string | null,
+  pid: number,
+  ref = 'PMR-OWNER',
+) {
+  return {
+    kind: 'owner-session' as const,
+    at,
+    ref,
+    sessionFile,
+    pid,
+  }
+}
+
+test('owner-session: applyEvent projects the owner record', () => {
+  const state = applyEvent(
+    applyEvent(null, ownerRun),
+    ownerEvent('t1', '/s/main.jsonl', 4242),
+  )
+  assert.deepEqual(state.owner, {
+    sessionFile: '/s/main.jsonl',
+    pid: 4242,
+    at: 't1',
+  })
+  assert.equal(isFlowRunState(state), true)
+})
+
+test('owner-session: last-wins refresh replaces the owner without bumping updatedAt', () => {
+  let state = applyEvent(null, ownerRun)
+  const startedAt = state.updatedAt
+  state = applyEvent(state, ownerEvent('t1', '/s/main.jsonl', 4242))
+  state = applyEvent(state, ownerEvent('t2', null, 9999))
+  // AIDEV-NOTE: PMR-T9ZQ — pins the invariant that an owner refresh is a
+  // liveness stamp, not run activity: updatedAt stays at the last real event.
+  // Bumping it here would make a parked run look freshly updated in the resume
+  // picker and the flow widget.
+  assert.equal(state.updatedAt, startedAt)
+  assert.deepEqual(state.owner, { sessionFile: null, pid: 9999, at: 't2' })
+})
+
+test('owner-session: a null sessionFile still projects (pid is the liveness carrier)', () => {
+  const state = applyEvent(
+    applyEvent(null, ownerRun),
+    ownerEvent('t1', null, 4242),
+  )
+  assert.deepEqual(state.owner, { sessionFile: null, pid: 4242, at: 't1' })
+  assert.equal(isFlowRunState(state), true)
+})
+
+test('owner-session: mismatched ref is ignored', () => {
+  const state = applyEvent(null, ownerRun)
+  const after = applyEvent(
+    state,
+    ownerEvent('t1', '/s/main.jsonl', 4242, 'OTHER'),
+  )
+  assert.equal(after, state)
+  assert.equal(state.owner, undefined)
+})
+
+test('owner-session: out-of-vocabulary events are ignored (lenient-parse drift)', () => {
+  const state = applyEvent(null, ownerRun)
+  const drifted: unknown[] = [
+    // non-integer pid
+    {
+      kind: 'owner-session',
+      at: 't1',
+      ref: 'PMR-OWNER',
+      sessionFile: '/s.jsonl',
+      pid: 1.5,
+    },
+    // pid is not a number at all
+    {
+      kind: 'owner-session',
+      at: 't1',
+      ref: 'PMR-OWNER',
+      sessionFile: '/s.jsonl',
+      pid: '4242',
+    },
+    // sessionFile is a number
+    {
+      kind: 'owner-session',
+      at: 't1',
+      ref: 'PMR-OWNER',
+      sessionFile: 7,
+      pid: 4242,
+    },
+    // sessionFile undefined (neither string nor null)
+    { kind: 'owner-session', at: 't1', ref: 'PMR-OWNER', pid: 4242 },
+    // at is not a string
+    {
+      kind: 'owner-session',
+      at: 5,
+      ref: 'PMR-OWNER',
+      sessionFile: '/s.jsonl',
+      pid: 4242,
+    },
+  ]
+  for (const raw of drifted) {
+    const after = applyEvent(state, raw as FlowRunEvent)
+    // Ignored means unchanged AND guard-valid: the projection must never
+    // carry a value isFlowRunState would reject (applyEvent AIDEV-NOTE).
+    assert.equal(
+      after.owner,
+      undefined,
+      `expected ignore: ${JSON.stringify(raw)}`,
+    )
+    assert.equal(after.updatedAt, state.updatedAt)
+    assert.equal(isFlowRunState(after), true)
+  }
+})
+
+test('owner-session: replaying a pre-owner journal still projects a valid state', () => {
+  const legacyEvents = [
+    { kind: 'run-start', at: 't0', ref: 'PMR-1', mode: 'work' },
+    { kind: 'phase-start', at: 't1', ref: 'PMR-1', phase: 'plan' },
+    { kind: 'note', at: 't2', ref: 'PMR-1', text: 'hello' },
+  ] as unknown as FlowRunEvent[]
+  const state = projectRunState(legacyEvents)
+  assert.ok(state)
+  assert.equal(state.owner, undefined)
+  assert.equal(isFlowRunState(state), true)
+  // A newer writer appending owner-session on top of the old journal keeps
+  // replaying cleanly.
+  const refreshed = applyEvent(
+    state,
+    ownerEvent('t3', '/s/main.jsonl', 7, 'PMR-1'),
+  )
+  assert.deepEqual(refreshed.owner, {
+    sessionFile: '/s/main.jsonl',
+    pid: 7,
+    at: 't3',
+  })
+  assert.equal(isFlowRunState(refreshed), true)
+})
+
+test('isFlowRunState: validates owner only when present', () => {
+  const baseState: Record<string, unknown> = {
+    schema: 'gtheys.pi-flow.run.v1',
+    ref: 'PMR-1',
+    mode: 'work',
+    startedAt: 't0',
+    updatedAt: 't1',
+    completedPhases: [],
+    currentPhase: null,
+    notes: [],
+  }
+  // Absent owner (old journals/projections) stays valid.
+  assert.equal(isFlowRunState(baseState), true)
+  assert.equal(
+    isFlowRunState({
+      ...baseState,
+      owner: { sessionFile: '/s.jsonl', pid: 1, at: 't2' },
+    }),
+    true,
+  )
+  assert.equal(
+    isFlowRunState({
+      ...baseState,
+      owner: { sessionFile: null, pid: 1, at: 't2' },
+    }),
+    true,
+  )
+  const malformed: unknown[] = [
+    'nope',
+    null,
+    42,
+    {},
+    { sessionFile: '/s.jsonl', pid: 1 },
+    { sessionFile: '/s.jsonl', pid: 1.5, at: 't2' },
+    { sessionFile: '/s.jsonl', pid: '1', at: 't2' },
+    { sessionFile: '/s.jsonl', at: 't2' },
+    { sessionFile: 7, pid: 1, at: 't2' },
+    { sessionFile: '/s.jsonl', pid: 1, at: 7 },
+  ]
+  for (const owner of malformed) {
+    assert.equal(
+      isFlowRunState({ ...baseState, owner }),
+      false,
+      `expected reject: ${JSON.stringify(owner)}`,
+    )
+  }
+})
+
+test('recordRunEvent: owner-session reaches the projection (not journal-only)', async () => {
+  const files: MemFiles = new Map()
+  await recordRunEvent('/agent', ownerRun, fakeIo(files))
+  await recordRunEvent(
+    '/agent',
+    ownerEvent('t1', '/s/main.jsonl', 4242),
+    fakeIo(files),
+  )
+  const projection = JSON.parse(
+    files.get('/agent/pi-flow/runs/PMR-OWNER.json') ?? '{}',
+  ) as Record<string, unknown>
+  // The picker reads candidates via readRunEvents + projectRunState, so the
+  // owner must land in the projection file — a journal-only kind would be
+  // dropped there (PMR-C998 main-session precedent).
+  assert.deepEqual(projection.owner, {
+    sessionFile: '/s/main.jsonl',
+    pid: 4242,
+    at: 't1',
+  })
+  assert.equal(projection.updatedAt, '2026-11-22T00:00:00Z')
+  const journal = files.get('/agent/pi-flow/runs/PMR-OWNER.journal.jsonl')
+  assert.ok(journal)
+  assert.equal(journal.split('\n').filter(Boolean).length, 2)
+})

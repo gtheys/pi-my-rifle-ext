@@ -285,6 +285,23 @@ export type FlowRunEvent =
     }
   | {
       /**
+       * AIDEV-NOTE: PMR-T9ZQ — owner identity of the pi process driving this
+       * run: the main session file plus the writer's pid, journaled at run
+       * start and refreshed on every phase prompt. PROJECTED (last-wins into
+       * `owner`), not journal-only — the parked-run resume picker reads the
+       * projection through readRunEvents + projectRunState and journal-only
+       * kinds never reach it. `sessionFile` is nullable because a headless /
+       * server-driven run may have no session file at all; `pid` is the
+       * liveness carrier the picker probes.
+       */
+      kind: 'owner-session'
+      at: string
+      ref: string
+      sessionFile: string | null
+      pid: number
+    }
+  | {
+      /**
        * AIDEV-NOTE: PMR-XTQQ durable attempt ledger — post-transition
        * snapshot of the flow_run_attempt budget; last-wins per ref.
        * `outcome: 'passed'` resets the projection `attempts` to 0;
@@ -348,6 +365,17 @@ export interface RunInputRecord {
 
 export type LoopRunStatus = 'running' | 'paused' | 'halted' | 'done'
 
+/**
+ * AIDEV-NOTE: PMR-T9ZQ — projected owner identity (see the 'owner-session'
+ * event). `sessionFile` null = the writer had no session file; liveness is
+ * judged from `pid` alone.
+ */
+export interface OwnerRecord {
+  sessionFile: string | null
+  pid: number
+  at: string
+}
+
 export interface LoopStateRecord {
   phase: FlowPhase
   awaitingOutcome: boolean
@@ -396,6 +424,10 @@ export type FlowRunState = {
   // (and old journals rebuilt without these events) stay valid.
   input?: RunInputRecord
   loop?: LoopStateRecord
+  // AIDEV-NOTE: PMR-T9ZQ — optional so pre-owner projections (and old
+  // journals rebuilt without owner-session events) stay valid; validated only
+  // when present (old journals).
+  owner?: OwnerRecord
   // AIDEV-NOTE: PMR-XTQQ — optional so pre-attempt-ledger projections (and
   // old journals rebuilt without attempt-record events) stay valid.
   attempts?: number
@@ -646,6 +678,31 @@ export function applyEvent(
         ...state,
         loop: event.loop,
         updatedAt: event.at,
+      }
+    }
+    case 'owner-session': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      // AIDEV-NOTE: PMR-T9ZQ — lenient-parse drift protection (see the
+      // applyEvent AIDEV-NOTE): owner values land in the projection, so the
+      // guard's vocabulary is enforced HERE and an out-of-vocabulary event is
+      // ignored rather than projected. pid must be an integer, sessionFile a
+      // string or null (undefined is not accepted — the writer always sends
+      // null explicitly), at a string.
+      if (!Number.isInteger(event.pid)) return state
+      if (event.sessionFile !== null && typeof event.sessionFile !== 'string')
+        return state
+      if (typeof event.at !== 'string') return state
+      // AIDEV-NOTE: PMR-T9ZQ — last-wins, and deliberately NO updatedAt bump:
+      // an owner refresh is a liveness stamp, not run activity, so it must not
+      // make a parked run look freshly updated to the picker or the widget.
+      return {
+        ...state,
+        owner: {
+          sessionFile: event.sessionFile,
+          pid: event.pid,
+          at: event.at,
+        },
       }
     }
     case 'attempt-record': {
@@ -910,6 +967,18 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
   // AIDEV-NOTE: PMR-XTQQ — attempts validated only when present (old journals).
   if (v.attempts !== undefined) {
     if (typeof v.attempts !== 'number') return false
+  }
+  // AIDEV-NOTE: PMR-T9ZQ — owner validated only when present (old journals).
+  if (v.owner !== undefined) {
+    const owner = v.owner as Record<string, unknown>
+    const ownerOk =
+      typeof owner === 'object' &&
+      owner !== null &&
+      (owner.sessionFile === null || typeof owner.sessionFile === 'string') &&
+      typeof owner.pid === 'number' &&
+      Number.isInteger(owner.pid) &&
+      typeof owner.at === 'string'
+    if (!ownerOk) return false
   }
   return true
 }
