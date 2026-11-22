@@ -94,6 +94,10 @@ describe('resolvePublishRoot', () => {
       assert.equal(result.isFallback, false)
     }
   })
+  // AIDEV-NOTE: PMR-AQTF — with a notes-root env var SET but unmatched, the
+  // resolver fails loudly with the real mismatch reason instead of silently
+  // downgrading to the project-repo fallback (whose worker task text claims
+  // the env var was unset and git-adds a file outside the root).
   it('does not match a sibling repo with a prefix-colliding name', () => {
     const result = resolvePublishRoot({
       repo: 'my-rifle-ext',
@@ -101,13 +105,13 @@ describe('resolvePublishRoot', () => {
       toplevel: '/repo/toplevel',
       env: { LLM_NOTES_ROOT: '/home/x/notes' },
     })
-    assert.equal(result.kind, 'ok')
-    if (result.kind === 'ok') {
-      assert.equal(result.root, '/repo/toplevel')
-      assert.equal(result.isFallback, true)
+    assert.equal(result.kind, 'error')
+    if (result.kind === 'error') {
+      assert.match(result.reason, /repo segment mismatch/)
+      assert.match(result.reason, /my-rifle-ext/)
     }
   })
-  it('falls back to project toplevel when planPath is under neither root', () => {
+  it('fails loudly when planPath is under neither root but an env var is set', () => {
     const result = resolvePublishRoot({
       repo,
       planPath: '/repo/toplevel/.pi/plans/plan.md',
@@ -117,12 +121,10 @@ describe('resolvePublishRoot', () => {
         LLM_NOTES_ROOT: '/home/x/notes',
       },
     })
-    assert.deepEqual(result, {
-      kind: 'ok',
-      root: '/repo/toplevel',
-      planFile: '/repo/toplevel/.pi/plans/plan.md',
-      isFallback: true,
-    })
+    assert.equal(result.kind, 'error')
+    if (result.kind === 'error') {
+      assert.match(result.reason, /refusing the project-repo fallback/)
+    }
   })
   it('falls back to project toplevel when both env vars are unset', () => {
     const result = resolvePublishRoot({

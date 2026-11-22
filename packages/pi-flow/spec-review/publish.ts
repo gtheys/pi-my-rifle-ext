@@ -23,12 +23,15 @@ export type PublishRootResult =
 // LLM_NOTES_ROOT in ANY mode, so matching on mode git-adds files outside the
 // chosen root. Match on the <root>/<repo>/ boundary (sibling repos with
 // prefix-colliding names must not match). The toplevel fallback covers plans
-// under <toplevel>/.pi/plans/.
+// under <toplevel>/.pi/plans/ — ONLY while no notes-root env var is set:
+// with one set but unmatched, the result is a loud error (PMR-AQTF).
 export function resolvePublishRoot(input: PublishRootInput): PublishRootResult {
   const env = input.env ?? process.env
   const candidates = [env.PERSONAL_FEATURES, env.LLM_NOTES_ROOT]
+  const setRoots: string[] = []
   for (const notesRoot of candidates) {
     if (notesRoot === undefined || notesRoot === '') continue
+    setRoots.push(notesRoot)
     const prefix = `${notesRoot.replace(/\/$/, '')}/${input.repo}/`
     if (input.planPath.startsWith(prefix)) {
       return {
@@ -37,6 +40,18 @@ export function resolvePublishRoot(input: PublishRootInput): PublishRootResult {
         planFile: input.planPath,
         isFallback: false,
       }
+    }
+  }
+  // AIDEV-NOTE: PMR-AQTF — a notes-root env var IS set but no candidate
+  // matched (legacy plan-path metadata recorded from a worktree before the
+  // origin-name derivation, or a plan under a sibling repo's notes dir):
+  // fail with the real mismatch reason. The old silent downgrade told the
+  // worker "notes root env var was unset" (a lie) and had it git-add a plan
+  // file OUTSIDE the fallback root (exit 128).
+  if (setRoots.length > 0) {
+    return {
+      kind: 'error',
+      reason: `plan path ${input.planPath} is not under ${setRoots.join(' or ')} at the <root>/${input.repo}/ boundary (repo segment mismatch) — refusing the project-repo fallback while a notes-root env var is set`,
     }
   }
   if (input.toplevel === undefined || input.toplevel === '') {
