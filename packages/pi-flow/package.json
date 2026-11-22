@@ -65,6 +65,7 @@
     "flow/phase-prompts.ts",
     "flow/picker.ts",
     "flow/ref-kind.ts",
+    "flow/resume-picker.ts",
     "flow/resume.ts",
     "flow/status.ts",
     "flow/widget.ts",
