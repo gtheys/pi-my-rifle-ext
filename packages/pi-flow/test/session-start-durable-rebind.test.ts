@@ -195,7 +195,18 @@ describe('session_start durable rebind (PMR-DRKH)', () => {
     harness.fireSessionStart(sessionStartCtx(root, notifications))
     await new Promise((resolve) => setTimeout(resolve, 100))
     assert.equal(healCalls, 0)
-    assert.equal(notifications.length, 0)
+    // AIDEV-NOTE: only rebind-path notifications are in scope here — other
+    // session_start handlers (e.g. ensureLabels) legitimately notify in
+    // aven-less environments (CI), and those warnings are not this feature's
+    // output. Assert the durable rebind itself stayed silent.
+    const rebindNotifications = notifications.filter((n) => {
+      return (
+        n.message.includes('flow binding') ||
+        n.message.includes('candidate flow refs') ||
+        n.message.includes('/flow ')
+      )
+    })
+    assert.deepEqual(rebindNotifications, [])
     assert.equal(getActiveFlowRef(), null)
     assert.deepEqual(harness.sent, [])
   })
