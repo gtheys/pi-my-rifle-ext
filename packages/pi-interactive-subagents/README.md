@@ -178,7 +178,7 @@ Subagent-side (auto-injected, never deniable):
 | `/subagents` | Open the subagent dashboard |
 | `/subagent prune` | Run the retention sweep on demand (requires `retentionDays` config; warns if unset) |
 
-> Note: `prune` is a reserved word — an agent named `prune` cannot be spawned via `/subagent`.
+> Note: a **bare** `/subagent prune` (no task text) is intercepted as the retention sweep. An agent literally named `prune` remains spawnable with an explicit task — `/subagent prune <task>` falls through to agent resolution.
 
 ### `subagent()` parameters
 
@@ -317,7 +317,7 @@ Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on
 
 ### Data retention policy
 
-When `retentionDays` is set, a maintenance sweep runs automatically at session start and on demand via `/subagent prune`, removing inactive data-root records whose **newest relevant activity** is older than the configured age. The sweep reports what it removed and never aborts session startup.
+When `retentionDays` is set, a maintenance sweep runs automatically at session start and on demand via `/subagent prune`, removing inactive data-root records whose **newest relevant activity** is older than the configured age. The sweep reports what it removed and never aborts session startup. The automatic session-start sweep stays **silent unless it removes something** — a sweep that removes nothing (including one degraded by persistent failures, e.g. an unreadable data root) posts no notification; run `/subagent prune` on demand to surface skip reasons and failures.
 
 Safety rules:
 
