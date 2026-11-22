@@ -93,6 +93,7 @@ import {
 import { allocateSpawnIdentity } from './spawnseq.ts'
 import {
   buildSubagentStateSnapshot,
+  buildSubagentStateStopped,
   publishStateEvent,
   type SubagentStateEntry,
 } from './state-events.ts'
@@ -1126,6 +1127,25 @@ function emitSubagentStateSnapshot(): void {
     publishStateEvent(latestPi?.events, event)
   } catch {
     // Observation must never break the caller; swallow defensively.
+  }
+}
+
+// AIDEV-NOTE (PMR-3QMY): the terminal `stopped` emitter mirrors
+// emitSubagentStateSnapshot's two safety properties — the same child-session
+// gate (ISC-7: child sessions never publish) and the same swallow-everything
+// isolation (ISC-6: observation must never break the caller). It is called
+// from the FIRST statement of `session_shutdown` so co-extensions learn the
+// publisher is going away even if a later shutdown step throws.
+function emitSubagentStateStopped(): void {
+  const isChildSession =
+    !!process.env.PI_SUBAGENT_SESSION || !!process.env.PI_SUBAGENT_ID
+  if (isChildSession) {
+    return
+  }
+  try {
+    publishStateEvent(latestPi?.events, buildSubagentStateStopped())
+  } catch {
+    // Observation must never break shutdown; swallow defensively.
   }
 }
 
@@ -3446,6 +3466,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
   // Clean up on session shutdown
   pi.on('session_shutdown', (_event, _ctx) => {
+    // AIDEV-NOTE (PMR-3QMY): emit the terminal `stopped` event as the FIRST
+    // statement, before any mutation, so it goes out even if a later shutdown
+    // step throws. The payload (`agents: []`) does not depend on
+    // runningSubagents, so its position relative to the clear() below is
+    // irrelevant — putting it first is purely a robustness choice.
+    emitSubagentStateStopped()
     if (statusInterval) {
       clearInterval(statusInterval)
       statusInterval = null
