@@ -32,7 +32,8 @@
     "config.schema.json"
   ],
   "scripts": {
-    "test": "node --test test/test.ts test/task-composition.test.ts test/herdr-stderr.test.ts test/tmpdir-helper.test.ts",
+<<<<<<< HEAD
+    "test": "node --test test/test.ts test/task-composition.test.ts test/herdr-stderr.test.ts test/tmpdir-helper.test.ts test/system-prompt-mode.test.ts",
     "test:integration": "node --test --test-concurrency=1 --test-force-exit test/integration/*.itest.ts"
   },
   "peerDependencies": {
