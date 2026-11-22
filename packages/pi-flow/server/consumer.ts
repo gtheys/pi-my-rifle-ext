@@ -1,8 +1,19 @@
 // AIDEV-NOTE: PMR-XTQQ — pending-record consumer (durable run server,
 // subtask 3.3). Called from index.ts on session_start (after the binding
 // restore) and on agent_settled when the loop is inactive: if the restored
-// binding's ref has a pending record, consume it (rename-first, exactly-once
-// — see server/pending.ts) and re-present `/flow <ref>` to the user.
+// binding's ref has a pending record, consume it (rename-first,
+// exactly-once — see server/pending.ts) and re-present `/flow <ref>` to the
+// user.
+//
+// AIDEV-NOTE: PMR-T9ZQ — GATE-AT-CALL-SITES CONTRACT: this module stays
+// consent-free by design. Cross-session resume consent (the parked-run
+// picker) is enforced at the index.ts call sites, strictly BEFORE
+// resumeParkedRun is reached, so a session that declined, has no UI, or hit
+// a picker error never gets here and therefore never renames/consumes a
+// pending record. The OWN-session PMR-PJM0 restore keeps calling this
+// automatically (design decision 1: the session already owns the run). Do
+// NOT add a consent check inside the consumer — it has no ctx/ui and the
+// gate must precede the rename.
 //
 // DEGRADE PATH (documented, not a bug): if sendUserMessage throws — e.g.
 // because a run is already streaming, where a plain triggerTurn would be

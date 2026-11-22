@@ -69,7 +69,12 @@ import {
   type FlowCostDeps,
   registerFlowCostCommand,
 } from './flow/cost-command.ts'
-import { deriveFlowRefs } from './flow/durable-refs.ts'
+import {
+  type DurableRefDeps,
+  deriveFlowRefs,
+  deriveParkedCandidates,
+  type ParkedCandidate,
+} from './flow/durable-refs.ts'
 import { mergeIntercept } from './flow/effect-gate.ts'
 import type { OpenGate } from './flow/gates.ts'
 import { collectOpenGates, createGateDeps } from './flow/gates.ts'
@@ -102,6 +107,10 @@ import {
   resumeSeedFromEvents,
   runInputRecord,
 } from './flow/resume.ts'
+import {
+  planResumePickerOutcome,
+  type ResumeSelection,
+} from './flow/resume-picker.ts'
 import {
   type DashboardToggleOutcome,
   initFlowWidget,
@@ -245,10 +254,55 @@ function notifyDashboardOutcome(
   }
 }
 
+// AIDEV-NOTE: PMR-T9ZQ 3.1 — the seam now derives rich PARKED CANDIDATES
+// (not bare refs): the cross-session resume paths must know the candidate's
+// phase/status/owner/worktree history before they render the consent menu.
+// Production defaults resolve the session gitRoot and scan the pending-run
+// records; tests inject fakes via the optional second parameter.
 export interface DurableRebindDeps {
-  deriveRefs: () => Promise<string[]>
+  deriveCandidates: () => Promise<ParkedCandidate[]>
   heal: (ref: string, cwd: string) => Promise<HealResult>
 }
+
+// AIDEV-NOTE: PMR-T9ZQ — one-line decline notice for the resume picker: the
+// session stays clean, the recovery commands are the whole message. Pure so
+// the wiring test can pin the exact shape.
+function resumeDeclineMessage(refs: string[]): string {
+  let commands = ''
+  for (let i = 0; i < refs.length; i++) {
+    if (i > 0) {
+      commands += ' / '
+    }
+    commands += recoveryCommand(refs[i])
+  }
+  return `pi-flow: resume declined — this session stays clean. Recover with ${commands}.`
+}
+
+// The consent prompt for a parked cross-session run. Select rows are
+// rendered from flow/resume-picker.ts labels, so the title stays generic.
+const RESUME_SELECT_TITLE = 'Parked flow runs in this repo — resume one?'
+
+// AIDEV-NOTE: PMR-T9ZQ — the ctx surface askResumeThenArm needs. Structurally
+// narrowed (same shape as pickReadyTicketRef) so command, session_start and
+// agent_settled contexts all fit without importing Pi internals.
+type ResumeAskCtx = {
+  cwd: string
+  hasUI: boolean
+  ui: {
+    notify(message: string, level?: 'info' | 'warning' | 'error'): void
+    select(title: string, options: string[]): Promise<string | undefined>
+  }
+}
+
+// AIDEV-NOTE: PMR-T9ZQ — module-level ask latch, per PROCESS (so a settle
+// firing while a startup select is open can never stack a second prompt).
+// askResumeThenArm flips it to 'asking' SYNCHRONOUSLY before awaiting
+// ctx.ui.select and to 'done' after any completed ask (pick, cancel, or a
+// fail-closed throw). The startup path calls askResumeThenArm unconditionally
+// (every new session asks at most once anyway); the agent_settled belt-and-
+// braces path (subtask 3.2) must gate on 'idle'.
+type ResumeAskState = 'idle' | 'asking' | 'done'
+let resumeAskState: ResumeAskState = 'idle'
 
 // AIDEV-NOTE: PMR-DRKH — injectable IO seam for the session_start durable
 // rebind (plan 3.1). Production defaults resolve the session gitRoot and
@@ -296,37 +350,59 @@ export default function (
       },
     }
   }
-  // AIDEV-NOTE: PMR-86NN — single construction site for the production
-  // deriveFlowRefs scanner, shared by the session_start durable rebind
-  // (deriveRefs) and the worktree bind self-heal seam below so the two
-  // cannot drift. Resolves the session gitRoot at call time (same
-  // `git rev-parse --show-toplevel` semantics as the sweep's journal
+  // AIDEV-NOTE: PMR-86NN + PMR-T9ZQ — single construction site for the
+  // production durable-run scanner deps, shared by the two derive modes:
+  // deriveFlowRefs (plain refs — the worktree bind self-heal seam) and
+  // deriveParkedCandidates (rich records — the resume picker). One site so
+  // the two can never drift. Resolves the session gitRoot at call time
+  // (same `git rev-parse --show-toplevel` semantics as the sweep's journal
   // filter) and reuses the pendingDir construction from the resume
-  // consumer; gitRoot resolution failure fails closed (empty list).
+  // consumer; gitRoot resolution failure fails closed (null => empty list).
+  const durableScanDeps = async (): Promise<DurableRefDeps | null> => {
+    const gitRoot = await resolveSessionRepoRoot(pi)
+    if (gitRoot === null) {
+      return null
+    }
+    return {
+      agentDir: getAgentDir(),
+      pendingDir: pendingDirPath(getAgentDir()),
+      io: {
+        readdir: (dir) => readdir(dir),
+        readFile: (p) => fs.readFile(p, 'utf8'),
+      },
+      readRunEvents: (agentDir, ref, io) => readRunEvents(agentDir, ref, io),
+      gitRoot,
+    }
+  }
   const makeDeriveRefs = (): (() => Promise<string[]>) => {
     return async () => {
-      const gitRoot = await resolveSessionRepoRoot(pi)
-      if (gitRoot === null) {
+      const deps = await durableScanDeps()
+      if (deps === null) {
         return []
       }
-      return deriveFlowRefs({
-        agentDir: getAgentDir(),
-        pendingDir: pendingDirPath(getAgentDir()),
-        io: {
-          readdir: (dir) => readdir(dir),
-          readFile: (p) => fs.readFile(p, 'utf8'),
-        },
-        readRunEvents: (agentDir, ref, io) => readRunEvents(agentDir, ref, io),
-        gitRoot,
-      })
+      return deriveFlowRefs(deps)
+    }
+  }
+  // AIDEV-NOTE: PMR-T9ZQ 3.1 — production rich-candidate scanner for the
+  // resume picker (same scan/filters as makeDeriveRefs, per the durable-refs
+  // header note).
+  const makeDeriveCandidates = (): (() => Promise<ParkedCandidate[]>) => {
+    return async () => {
+      const deps = await durableScanDeps()
+      if (deps === null) {
+        return []
+      }
+      return deriveParkedCandidates(deps)
     }
   }
   // AIDEV-NOTE: PMR-DRKH — production derive/heal IO for the session_start
   // durable rebind. Heal goes through the shared productionReviewDeps so the
   // resolver's verification chain (binding → aven note → herdr) is identical
   // to /code-review. Overridable via the extension factory's second param.
+  // PMR-T9ZQ: the candidate list is rich now and NOTHING here runs before a
+  // human picks Resume (see the session_start resume-picker gate below).
   const durableRebind: DurableRebindDeps = durableRebindDeps ?? {
-    deriveRefs: makeDeriveRefs(),
+    deriveCandidates: makeDeriveCandidates(),
     heal: (ref, cwd) => healFlowBinding(ref, productionReviewDeps(pi, cwd)),
   }
   const writer: EventWriter = createEventWriter(
@@ -344,6 +420,128 @@ export default function (
     event: Parameters<typeof writer.recordJournalOnly>[0],
   ): Promise<void> {
     await writer.recordJournalOnly(event)
+  }
+
+  // AIDEV-NOTE: PMR-T9ZQ 3.1 — arm a CONSENTED cross-session resume: exactly
+  // today's PMR-DRKH sequence, in order, but only ever reached behind the
+  // picker gate. heal is conditional on candidate.hasWorktree — a run that
+  // never journaled a worktree-create effect gets the plain restore info
+  // and NEVER a heal-failed warning (kills the plan-phase noise). The config
+  // sync stays BEFORE the consumer (JKD6RFC0MYY3N29C), and the whole gate
+  // runs strictly before consumePending renames a pending record.
+  async function armResumedRun(
+    ctx: ResumeAskCtx,
+    candidate: ParkedCandidate,
+  ): Promise<void> {
+    const ref = candidate.ref
+    restoreFlowBinding({ ref, worktree: null })
+    boundRef = ref
+    if (candidate.hasWorktree) {
+      try {
+        const healed = await durableRebind.heal(ref, ctx.cwd)
+        if (healed.ok) {
+          ctx.ui.notify(
+            `pi-flow: restored flow binding for ${ref} from the pending-run record. The /flow loop itself is not resumed — recover with ${recoveryCommand(ref)} if needed.`,
+            'info',
+          )
+        } else {
+          ctx.ui.notify(
+            `pi-flow: restored flow binding for ${ref}, but the worktree heal failed (${healed.reason}). Recover with ${recoveryCommand(ref)}.`,
+            'warning',
+          )
+        }
+      } catch {
+        ctx.ui.notify(
+          `pi-flow: restored flow binding for ${ref}. Recover with ${recoveryCommand(ref)}.`,
+          'info',
+        )
+      }
+    } else {
+      ctx.ui.notify(
+        `pi-flow: restored flow binding for ${ref} (this run never bound a worktree). Recover with ${recoveryCommand(ref)} if needed.`,
+        'info',
+      )
+    }
+    try {
+      const config = await loadConfig(ctx.cwd)
+      runServerEnabled = resolveRunServerEnabled(config)
+    } catch {
+      // best-effort init; /flow re-syncs per start
+    }
+    await resumeParkedRun(resumeConsumerDeps(ref))
+  }
+
+  // The notify-only degradation shared by the headless plan and every
+  // fail-closed path: one info line per candidate, nothing else.
+  function notifyResumeFallback(ctx: ResumeAskCtx, lines: string[]): void {
+    for (const line of lines) {
+      ctx.ui.notify(line, 'info')
+    }
+  }
+
+  // AIDEV-NOTE: PMR-T9ZQ 3.1 — the shared ask-then-arm gate for BOTH
+  // cross-session resume paths (session_start's durable rebind here; the
+  // agent_settled belt-and-braces path in subtask 3.2 reuses it verbatim).
+  // The order is the contract: derive -> planResumePickerOutcome -> (UI
+  // sessions only) ctx.ui.select -> armResumedRun on a resume pick. Nothing
+  // binds, heals, consumes or injects before the human answers, and every
+  // non-resume outcome fails CLOSED to a fully clean session: a decline/Esc
+  // gets one info line listing the recovery commands, a headless context or
+  // a throwing select gets the notify-only fallback lines. The module-level
+  // ask latch is flipped synchronously around the await so overlapping
+  // asks never stack two prompts in one process.
+  async function askResumeThenArm(
+    ctx: ResumeAskCtx,
+    candidates: ParkedCandidate[],
+  ): Promise<void> {
+    let plan = planResumePickerOutcome(ctx.hasUI, candidates)
+    if (plan.kind === 'menu') {
+      if (resumeAskState === 'asking') {
+        return
+      }
+      const labelToValue = new Map(plan.options.map((o) => [o.label, o.value]))
+      resumeAskState = 'asking'
+      let selection: ResumeSelection
+      try {
+        const picked = await ctx.ui.select(
+          RESUME_SELECT_TITLE,
+          plan.options.map((o) => o.label),
+        )
+        if (picked === undefined) {
+          selection = { stage: 'resume-cancelled' }
+        } else {
+          selection = {
+            stage: 'resume-picked',
+            value: labelToValue.get(picked) ?? '',
+          }
+        }
+      } catch {
+        // select unavailable (a mode without a dialog implementation) or it
+        // threw: fail closed — no consent was obtained, so surface the
+        // plain-text recovery lines and leave the session clean. Re-planning
+        // with hasUI=false is what turns this path into the same notify-only
+        // shape the headless startup shows.
+        resumeAskState = 'done'
+        const closed = planResumePickerOutcome(false, candidates)
+        if (closed.kind === 'fallback') {
+          notifyResumeFallback(ctx, closed.lines)
+        }
+        return
+      }
+      resumeAskState = 'done'
+      plan = planResumePickerOutcome(ctx.hasUI, candidates, selection)
+    }
+    if (plan.kind === 'fallback') {
+      notifyResumeFallback(ctx, plan.lines)
+      return
+    }
+    if (plan.kind === 'declined') {
+      ctx.ui.notify(resumeDeclineMessage(plan.refs), 'info')
+      return
+    }
+    if (plan.kind === 'resume') {
+      await armResumedRun(ctx, plan.candidate)
+    }
   }
 
   // AIDEV-NOTE: production wiring for the /flow answer dispatch (PMR-R5VB) —
@@ -683,65 +881,30 @@ export default function (
         await resumeParkedRun(resumeConsumerDeps(savedRef))
       })()
     } else {
-      // AIDEV-NOTE: PMR-DRKH — durable rebind when the PMR-PJM0 branch walk
-      // restored nothing (no pi-flow-binding entry on the leaf path). Derive
-      // candidate refs from the pending-run records; exactly one → restore a
-      // bare binding + best-effort eager heal (success re-binds the worktree
-      // and persists via the binding-change listener registered below, which
-      // the async continuation always observes). Zero → nothing; multiple →
-      // notify-only, never guess across refs. A restored candidate runs the
-      // same config-sync + resumeParkedRun sequence as the PMR-PJM0 block
-      // above (config read BEFORE the consumer, JKD6RFC0MYY3N29C). No /flow
-      // message injection happens here — only the pre-existing parked
-      // consumer path may inject.
+      // AIDEV-NOTE: PMR-DRKH — durable resume PICKER gate when the PMR-PJM0
+      // branch walk restored nothing (no pi-flow-binding entry on the leaf
+      // path). PMR-T9ZQ rewrote the old automatic takeover: candidates are
+      // derived as rich ParkedCandidates and handed to the shared
+      // askResumeThenArm gate, which renders the consent menu (ctx.ui.select)
+      // and binds / heals / consumes ONLY after a human picked Resume.
+      // Zero candidates → silent (today's behavior); no UI, a declined pick,
+      // Esc or a throwing select → fully clean session plus notify-only
+      // recovery lines. A resumed pick runs the same heal + config-sync +
+      // resumeParkedRun sequence as the PMR-PJM0 block above (config read
+      // BEFORE the consumer, JKD6RFC0MYY3N29C), with the heal skipped
+      // entirely for runs that never declared a worktree. The gate always
+      // precedes consumePending, so a declined session never renames a
+      // pending record. A new session re-arms the ask-once latch (the plan's
+      // accepted per-process restart case).
+      resumeAskState = 'idle'
       void (async () => {
-        let candidates: string[]
+        let candidates: ParkedCandidate[]
         try {
-          candidates = await durableRebind.deriveRefs()
+          candidates = await durableRebind.deriveCandidates()
         } catch {
           return
         }
-        if (candidates.length === 0) {
-          return
-        }
-        if (candidates.length > 1) {
-          const lines = candidates.map((ref) => `- ${recoveryCommand(ref)}`)
-          notifyUser(
-            `pi-flow: multiple candidate flow refs found for this repo — rerun one explicitly:\n${lines.join('\n')}`,
-            'warning',
-          )
-          return
-        }
-        const ref = candidates[0]
-        if (ref === undefined) return
-        restoreFlowBinding({ ref, worktree: null })
-        boundRef = ref
-        try {
-          const healed = await durableRebind.heal(ref, ctx.cwd)
-          if (healed.ok) {
-            notifyUser(
-              `pi-flow: restored flow binding for ${ref} from the pending-run record. The /flow loop itself is not resumed — recover with ${recoveryCommand(ref)} if needed.`,
-              'info',
-            )
-          } else {
-            notifyUser(
-              `pi-flow: restored flow binding for ${ref}, but the worktree heal failed (${healed.reason}). Recover with ${recoveryCommand(ref)}.`,
-              'warning',
-            )
-          }
-        } catch {
-          notifyUser(
-            `pi-flow: restored flow binding for ${ref}. Recover with ${recoveryCommand(ref)}.`,
-            'info',
-          )
-        }
-        try {
-          const config = await loadConfig(ctx.cwd)
-          runServerEnabled = resolveRunServerEnabled(config)
-        } catch {
-          // best-effort init; /flow re-syncs per start
-        }
-        await resumeParkedRun(resumeConsumerDeps(ref))
+        await askResumeThenArm(ctx, candidates)
       })()
     }
     setBindingChangeListener((snapshot) => {

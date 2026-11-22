@@ -24,12 +24,16 @@ import {
 // have to agree on what is live; test/durable-refs-candidates.test.ts pins
 // that equality.
 //
-// SINGLE-CANDIDATE-ONLY CONSUMPTION RULE: this scan is a *derivation*, not a
-// consumption. Callers may only act on the result when exactly one ref
-// survives the filters (zero or multiple → notify/refuse, never guess across
-// refs — plan PMR-DRKH gotcha 5). This function therefore returns a plain
-// sorted list and owns no activation/consumption side effects; only
-// consumePending (server/pending.ts) may consume a record.
+// DERIVATION-ONLY RULES (PMR-DRKH gotcha 5, consent gate added by PMR-T9ZQ):
+// this scan is a *derivation*, never a consumption — only consumePending
+// (server/pending.ts) may consume a record. Two consumers, two rules:
+// - deriveFlowRefs (worktree bind self-heal) keeps the SINGLE-CANDIDATE
+//   rule: zero or multiple → refuse, never guess across refs.
+// - deriveParkedCandidates (the resume picker) may NOT act on its own at
+//   all: index.ts's askResumeThenArm gate puts every candidate in front of
+//   the human and adopts exactly the picked ref. The gate runs strictly
+//   BEFORE consumePending, so a declined/headless session never renames a
+//   pending record (the old automatic single-candidate takeover is gone).
 
 const NON_TERMINAL: readonly LoopRunStatus[] = ['running', 'paused']
 
