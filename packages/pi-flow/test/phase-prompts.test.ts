@@ -354,8 +354,9 @@ fully passed:
    self-heal). Cross-check against
    \`git config branch.$(git branch --show-current).flowbasesha\` (the base
    recorded at worktree create): it equals BASE_SHA unless the branch was
-   rebased mid-flow — after a rebase the merge-base is the correct value;
-   with no rebase in the flow's history a difference means something is
+   rebased mid-flow or the base was merged INTO the branch — after either
+   operation the merge-base is the correct value; with neither a rebase nor
+   a base-merge in the flow's history a difference means something is
    wrong: STOP and ask the human. NEVER resolve against the base's upstream
    ref: personal mode never pushes, so the upstream lags local main and
    would sweep unrelated commits into the review.
