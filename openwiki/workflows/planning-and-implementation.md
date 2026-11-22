@@ -66,11 +66,13 @@ gate (explicit human confirm; work: Jira via acli, personal: aven). The
 artifact path is stored on the ticket as `research-path` metadata; the
 validate phase reads findings through it, tolerating absence.
 
-Landing: work = PR + Jira comment; personal = local **ff-only merge into
-your main checkout** via `flow_land route=merge-main` (the gate pins the
-exact `git merge --ff-only` command; the human code-review pass marker is
-required first), then `git push` to main — the land-gate interceptor
-unblocks the push only for that ref.
+Landing: work = authorized `git push` + `gh pr create` + a Jira comment
+linking the PR; personal = local **ff-only merge into your main checkout**
+via `flow_land route=merge-main` (the gate pins the exact
+`git -C <main checkout> merge --ff-only <branch>` command; one of your
+human code-review pass records is required first). Personal mode **never
+pushes** — `git push` stays blocked for the whole flow (PMR-HYZA). See
+`docs/piv-flow-modes.md` for the visual mode split.
 
 Risky actions are declared in the run journal before they run (**effect
 contracts**, `flow/effect-gate.ts`): push, PR create, merge-main, worktree

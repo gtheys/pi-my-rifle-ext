@@ -14,6 +14,10 @@ Everything here is read from the source of truth:
 `feedback/prompt.ts`, `feedback/triage.ts`, `run-state.ts`, `gates.ts`,
 `work-mode.ts`, and the tool wiring in `index.ts`.
 
+For the side-by-side view of both modes (mode split, settings precedence,
+sequence diagrams, "who acts" tables), see
+[`piv-flow-modes.md`](piv-flow-modes.md).
+
 ---
 
 ## 1. When you are in personal mode
@@ -39,8 +43,8 @@ What personal mode changes, in one table:
 | Ticket tracker | Jira (acli) + local aven epic | aven only |
 | Plan phase | `feature-plan-aven` skill | pi-flow's own size-check + split-confirm flow |
 | Validate environment | minikube cluster gate | **you are the test environment** |
-| Landing | PR via gh | **push straight to main** (standing no-PR rule) |
-| Feedback | /sonarqube + /pr-quality triage | no phase — validate writes the outcome summary note and sets `done` after the push |
+| Landing | PR via gh | **local `merge --ff-only` into main — never a push** (standing no-PR rule, PMR-HYZA) |
+| Feedback | /sonarqube + /pr-quality triage over the PR | own wrap-up phase (PMR-81SX): outcome summary note, `review-feedback` tickets, `done` — after the merge |
 
 ---
 
@@ -60,15 +64,17 @@ arbitrary.
 | **Every decomposition waits for your "Confirm"** (`brainstorm/prompt.ts`, `plan/split-gate.ts`) | A pure function returns a plan object only when `confirmed === true`. Creating a ticket or splitting a ticket into an epic tree without your explicit answer is impossible by construction. |
 | **The human is the test environment** (`validate/personal.ts`) | No cluster exists for personal repos. Test steps are composed from the plan and brainstorm artifacts (found via the ticket's `research-path` metadata when present; its absence is normal) — and if those sections are all empty, the agent must STOP rather than invent generic filler steps. |
 | **Fail closed everywhere** | Aven unreadable → abort, never "start from scratch by accident". Malformed `blockers_count` → error, never treated as 0. Unknown severity in feedback → new task, never a silent fix. |
-| **Push to main, no PR** (`validate/review-gate.ts`) | Own repos, standing no-PR rule; the review gate substitutes for PR review before the direct push. |
+| **Land by local merge, never a push** (`mode-profile.ts:41-45`, `tools/land.ts:172,185-195`) | Own repos, standing no-PR rule. `flow_land(route=merge-main)` returns ONE pinned command — `git -C <main checkout> merge --ff-only <branch>` — and the agent runs it verbatim. `git push` stays blocked for the whole flow; a compound command is refused (PMR-HYZA). |
 | **Notes are the durable evidence record** | Every gate answer, failure, halt, and outcome lands as an aven note on the ref, so any later session can reconstruct what happened. The journal (`~/.pi/agent/pi-flow/runs/`) additionally records the run projection for the Herdr viewer. |
 
 ---
 
 ## 3. The whole flow at a glance
 
-`/flow` runs the PIV lifecycle — plan → implement → validate (personal; work adds feedback) —
-on an existing ticket. Before the flow, the standalone `/brainstorm <topic>`
+`/flow` runs the PIV lifecycle — plan → implement → validate → feedback —
+on an existing ticket. Both modes run all four phases
+(`mode-profile.ts:36-53`); personal `feedback` is the post-merge wrap-up
+(PMR-81SX). Before the flow, the standalone `/brainstorm <topic>`
 command can turn a bare topic into a ticket: question loop (WAIT per
 question) → scouts → artifact in `notes/brainstorm/` → ticket-creation gate
 (WAIT — explicit Confirm). Its completion is the ticket itself; it lands no
@@ -88,9 +94,9 @@ flowchart TD
     split -- plan --> epic["ticket becomes epic<br/>subtasks created<br/>label: plan<br/>plan.md written"]
     osh --> psr["status: todo<br/>plan-state: review<br/>plan.md opens in herdr pane"]
     epic --> psr
-    psr --> appr["APPROVAL GATE<br/>WAIT — /spec-review, then you say<br/>'approve PMR-ABC1'<br/>spec_approve → plan-state=approved"]
+    psr --> appr["APPROVAL GATE<br/>WAIT — you run /flow answer ref approve<br/>(the receipt is the gate)<br/>spec_approve → plan-state=approved"]
     appr --> lblP["label: planned<br/>(flow_phase_complete)"]
-    lblP --> impl["IMPLEMENT phase<br/>worktree + feat/<REF>-<slug> branch<br/>route: bug | plan | oneshot"]
+    lblP --> impl["IMPLEMENT phase<br/>worktree + feat/REF-slug branch<br/>route: bug | plan | oneshot"]
     impl --> tests{"tests green in<br/>≤ 3 attempts?<br/>(flow_run_attempt)"}
     tests -- "3rd fail" --> esc["status: blocked<br/>evidence note<br/>ESCALATE to you"]
     tests -- green --> lblA["label: active<br/>(flow_phase_complete)"]
@@ -102,18 +108,27 @@ flowchart TD
     note2 --> rev["REVIEW GATE<br/>/review (fresh context)<br/>blockers_count artifact"]
     rev -- "count &gt; 0" --> bl["blocker notes<br/>route back to /implement"]
     bl --> impl
-    rev -- "count = 0" --> lblV["label: review-passed<br/>(flow_phase_complete)"]
-    lblV --> land["flow_land route=merge-main<br/>then local ff-only merge into main"]
-    land --> push["git push to main<br/>(now unblocked)"]
-    push --> summ["OUTCOME SUMMARY note<br/>What shipped / Test evidence /<br/>Review verdict"]
-    summ --> done["status: done<br/>label: done<br/>(flow_phase_complete)<br/>AUTO: flow complete"]
+    rev -- "count = 0" --> dev["DEVIATION GATE<br/>deviation_review vs plan.md<br/>deviations_count"]
+    dev -- "count &gt; 0" --> dva["WAIT — you accept or fix"]
+    dva -- fix --> bl
+    dva -- accept --> crg
+    dev -- "count = 0" --> crg["CODE REVIEW GATE<br/>code_review opens tuicr<br/>WAIT — you pass or fail"]
+    crg -- fail --> bl2["tuicr findings note<br/>route back to /implement"]
+    bl2 --> impl
+    crg -- pass --> lblV["label: review-passed<br/>(flow_phase_complete)"]
+    lblV --> land["flow_land route=merge-main<br/>green suite + your pass record<br/>pins the exact merge command"]
+    land --> mrg["local ff-only merge<br/>git -C main-repo<br/>merge --ff-only branch<br/>NEVER a push"]
+    mrg --> summ["FEEDBACK phase wrap-up<br/>outcome summary note<br/>review-feedback tickets"]
+    summ --> done["status: done<br/>label: done<br/>(flow_phase_complete)<br/>worktree removed<br/>AUTO: flow complete"]
 
     style split fill:#f9d71c
     style appr fill:#f9d71c
     style htest fill:#f9d71c
     style esc fill:#ff6b6b
     style start fill:#9ad3ff
-    style push fill:#c7f0bd
+    style mrg fill:#c7f0bd
+    style dev fill:#f9d71c
+    style crg fill:#f9d71c
     style done fill:#c7f0bd
 ```
 
@@ -352,33 +367,73 @@ STOP, the artifacts are missing; filler steps are never invented.
   `/implement` with the **retry budget reset** (a new fix cycle deserves a
   fresh budget).
 
-**Stage 2 — review gate (both modes).** `/review` runs with a fresh-context
+**Stage 2 — review blockers gate (both modes).** `/review` runs with a fresh-context
 reviewer. The verdict must be written machine-readable: exactly one line
 `blockers_count: <N>` plus one `- blocker: <description>` per blocker.
 Parsing is strict and scoped to the verdict section — a missing, duplicated,
 or non-integer count is an ERROR (re-run /review), never a silent 0, because
 a silent 0 would auto-land broken code.
 
-- `blockers_count > 0` → each blocker becomes an aven note; route back to
-  `/implement` (budget applies); do not land.
-- `blockers_count: 0` → `flow_phase_complete(phase="validate")` lands
-  `review-passed`, then `flow_land ref route=merge-main` re-checks the gate
-  (label required, artifact cross-checked when supplied) and authorizes the
-  landing — only then does `git push` to main pass the interceptor.
+- `blockers_count > 0` → each blocker becomes an aven note (with
+  `reviewed-at: <sha>`); route back to `/implement` (budget applies); do not
+  land.
+
+**Stage 3 — deviation gate** (`tools/deviation.ts`,
+`buildDeviationGateSection`, `validate/prompt.ts:221-313`). A fresh-context
+reviewer compares the **spec** against the diff. In personal mode the spec is
+`plan.md` from the ticket's `plan-path` metadata (read from
+`aven show <ref> --full` heredoc blocks — `--json` omits metadata on aven
+0.1.39), or, for a `oneshot`, the ticket description itself. The tool
+resolves the diff itself: base = `git merge-base HEAD <flowbase>` — the
+**local** base, never the base's upstream ref, because personal never pushes
+and upstream lags local main (`validate/prompt.ts:23-60`).
+
+- A malformed artifact is a re-run, never "0 deviations".
+- `deviations_count > 0` → **WAIT**: you accept the deviation or route back
+  to fix. Personal mode never auto-accepts.
+- `deviations_count == 0` (or you accepted) → stage 4.
+
+**Stage 4 — human code-review gate** (`tools/code-review.ts`,
+`buildPersonalCodeReviewGate`, `validate/prompt.ts:186-201`). The
+`code_review` tool resolves the flow worktree and opens **tuicr** in a focused
+herdr pane, then asks you pass/fail. This gate is personal-only: it is the
+substitute for PR review.
+
+- **WAIT**: pass → the human-pass marker is recorded (in-session), or the
+  durable `/flow answer <ref> pass` route when the pane is not available.
+- fail → the tool records the tuicr findings as an aven note; you add a
+  `reviewed-at: <sha>` note; route back to `/implement` (budget applies).
+- If `ask_user_question` is unavailable the tool **refuses** — there is no
+  agent-attested pass. It directs you to `/flow answer <ref> pass|fail`.
+
+**Landing** (after the pass): `flow_phase_complete(phase="validate")` lands
+`review-passed`, then `flow_land(ref, route=merge-main)` re-checks the label,
+requires one of your pass records (marker, durable answer, or a HEAD-pinned
+`code_review` receipt — `tools/land.ts:793-828`), runs the land test suite
+itself, and returns the ONE pinned merge command. Run it alone. **Never a
+push** — `git push` stays blocked for the whole flow.
 
 **Exit:** `review-passed` label + pushed branch → AUTO close-out (below).
 
-### 5.5 Close-out — the audit trail, then done (inside validate)
+### 5.5 Feedback — the post-merge wrap-up (its own phase, PMR-81SX)
 
-Personal mode has no separate feedback phase (PMR-GFM5) and no re-review
-step; after the push the validate prompt closes the ticket:
+Personal feedback runs AFTER validate merged the branch into main. The
+landing state is already consumed: `git push` stays blocked and
+`flow_land` must NOT be called again (`feedback/prompt.ts:66-70`). Steps:
 
+- Verify the merge really happened: `git merge-base --is-ancestor <branch>
+  main`. On failure → note + STOP; the phase never merges anything itself.
 - The **outcome summary** note is written on the ref: `## Outcome summary`
   with `### What shipped`, `### Test evidence`, `### Review verdict`. Any
   empty section → STOP and ask you, never filler.
+- Non-blocking observations each become their own backlog ticket labeled
+  `review-feedback`. Purely informational notes and already-ticketed items
+  are skipped.
 - Only once that note exists: status `done` AND
   `flow_phase_complete(phase="feedback")` → `done` label.
-- `/feedback` is blocked in personal mode.
+- The harness removes the flow worktree automatically; no manual
+  `git worktree remove` is needed. A merged-worktree sweep also runs over
+  journal refs (`worktree/sweep.ts`).
 
 **Exit:** the personal loop ends once `review-passed` lands (phase list is
 mode-keyed); `done` is applied by the close-out above.
@@ -400,9 +455,12 @@ mode-keyed); `done` is applied by the close-out above.
 | 9 | Validate human test (pass/fail) | WAIT | Run stays in flight until you answer |
 | 10 | Validate fail → re-implement | AUTO (after your answer) | Back to implement, budget reset |
 | 11 | Review gate parse/decision | AUTO | 0 → land; >0 → back to implement with notes |
-| 12 | Landing (`flow_land` ok) | AUTO | Agent pushes to main immediately |
-| 13 | Post-push outcome summary + done (in validate) | AUTO | Note written from real evidence; empty section → STOP and ask |
-| 14 | All labels present | AUTO | Flow complete; `/flow` re-run says "nothing to run" |
+| 12 | Landing (`flow_land` ok) | AUTO | Agent runs the pinned local `merge --ff-only` immediately — never a push |
+| 13 | Deviation gate (`deviations_count`) | AUTO + WAIT | 0 → next gate; \>0 → you accept or route back |
+| 14 | Human code review (tuicr) | WAIT | No pass → `review-passed` never lands; `flow_land` refuses |
+| 15 | Feedback wrap-up (outcome summary, `review-feedback` tickets, `done`) | AUTO | Runs after the merge; empty section → STOP and ask |
+| 16 | Worktree cleanup at done | AUTO (harness) | `cleanupFlowWorktree` + merged-worktree sweep |
+| 17 | All labels present | AUTO | Flow complete; `/flow` re-run says "nothing to run" |
 
 ---
 
@@ -430,8 +488,8 @@ mode-keyed); `done` is applied by the close-out above.
 | --- | --- |
 | `flow_phase_complete(ref, phase)` | ONLY writer of lifecycle labels; re-checks phase order (`checkPhaseCompletion`); idempotent ("already recorded") |
 | `flow_run_attempt(ref, result)` | Owns the 3-attempt budget in memory; decides retry vs escalate; escalation = tool error + aven note + blocked |
-| `flow_land(ref, route, artifact?)` | Re-checks `review-passed` (+ artifact verdict) at the landing boundary; authorizes exactly that ref's push |
-| `spec_approve(ref)` | ONLY writer of `plan-state=approved` (requires your explicit "approve <REF>"); pins `plan` label, status `todo`; then `/spec-publish` |
+| `flow_land(ref, route, artifact?)` | Re-checks `review-passed` (+ artifact verdict) at the landing boundary; `route=merge-main` requires one of your pass records, runs the land suite, and pins the exact local merge command — it never authorizes a push |
+| `spec_approve(ref)` | ONLY writer of `plan-state=approved`; refuses without your durable `/flow answer <ref> approve` receipt (PMR-R5VB; `oneshot` and journaled yolo are exempt); pins `plan` label, status `todo`; then `spec_publish` |
 | bash interceptor #1 | Blocks `aven edit/label` writes of lifecycle labels while any flow is registered |
 | bash interceptor #2 | Blocks `git push` / `gh pr create` while the loop has an active ref, until `flow_land` authorized it |
 

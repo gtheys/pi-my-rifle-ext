@@ -9,11 +9,16 @@ the flow advances by itself and where it stops and waits for you**.
 Everything here is read from the source of truth:
 `packages/pi-flow/flow/loop.ts`, `flow/orchestrate.ts`, `flow/phase-prompts.ts`,
 `flow/jira-ref.ts`, `flow/label-gate.ts`, `flow/land-gate.ts`,
+`mode-profile.ts`,
 `plan/prompt.ts`, `brainstorm/prompt.ts`,
 `implement/prompt.ts`, `implement/routing.ts`, `implement/retry.ts`,
 `validate/gate.ts`, `validate/review-gate.ts`, `validate/prompt.ts`,
 `feedback/prompt.ts`, `feedback/triage.ts`, `run-state.ts`, `gates.ts`,
 `work-mode.ts`, and the tool wiring in `index.ts`.
+
+For the side-by-side view of both modes (mode split, settings precedence,
+sequence diagrams, "who acts" tables), see
+[`piv-flow-modes.md`](piv-flow-modes.md).
 
 ---
 
@@ -39,7 +44,7 @@ What work mode changes, in one table:
 | Refs you can pass | aven refs only | aven refs **and Jira IDs** (`DP-71`), plus explicit `jira:`/`aven:` prefixes |
 | Plan phase | pi-flow's size-check flow | **`feature-plan-aven` skill** (interview, scout, planner, plan.md, epic tree, plan-state approval) |
 | Validate environment | you are the test environment | **ordered cluster gate**: minikube → connectivity → queues → deploy → manual tests → Jira evidence comment |
-| Landing | push straight to main | **PR via gh** + Jira comment linking it |
+| Landing | local `merge --ff-only` into main (never a push) | **PR via gh**: `flow_land(route=pr)` authorizes one `git push` + one `gh pr create`, then a Jira comment links the PR |
 | Feedback | re-review + outcome note | **/sonarqube + /pr-quality** triage over the PR |
 
 ### 1.1 The two-ledger design: Jira is the ticket, the epic is the run state

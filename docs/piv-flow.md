@@ -65,7 +65,9 @@ Consequences of mode: `/brainstorm` tickets land in Jira (work) vs aven
 (personal); plan/implement route to the `feature-plan-aven` /
 `implement-plan-aven` skills (work) vs pi-flow's own size-check flow
 (personal); validate runs the cluster gate (work) vs human-as-test-env
-(personal); landing is PR (work) vs push-to-main (personal).
+(personal); landing is a pushed branch + PR (work) vs a LOCAL `ff-only`
+merge into main, never a push (personal). See
+[`piv-flow-modes.md`](piv-flow-modes.md) for the visual map of both.
 
 ## 2. Label lifecycle
 
@@ -234,10 +236,12 @@ On pass the ticket carries the `review-passed` label.
 
 | Mode | Landing |
 | --- | --- |
-| work | Push branch, create PR via pi-flow's gh tooling, post a Jira comment on the ref linking the PR |
-| personal | Push the branch straight to main — standing no-PR rule on own repos |
+| work | Push the branch, create the PR via the gh CLI, then post a Jira comment on the ref linking the PR URL. `flow_land(route=pr)` authorizes exactly one `git push` + one `gh pr create` after declaring both effects. |
+| personal | Merge the branch into main LOCALLY. `flow_land(route=merge-main)` returns ONE pinned command — `git -C <main checkout> merge --ff-only <branch>` — which the agent runs alone. **Never a push**: `git push` stays blocked for the whole flow (PMR-HYZA). No PR, no Jira link step. On ff-only failure the agent stops and asks. |
 
-Landing happens only after the review gate reports `blockers_count: 0`.
+Landing happens only after the review gate reports `blockers_count: 0`, the
+deviation gate is clear, and (personal) the human code-review gate has passed.
+Routing and the diff base are data, not prose: `mode-profile.ts:36-53`.
 
 ## 6. `/flow <ref>` — the orchestrator
 
@@ -422,6 +426,9 @@ identically whether the backend exists or not.
 
 ## See also
 
+- [piv-flow-modes.md](piv-flow-modes.md) — **visual mode split**: mode
+  detection, the `MODE_PROFILE` table, config/env precedence, per-phase
+  sequence diagrams for both modes, and the "you vs the machine" tables.
 - [piv-flow-personal.md](piv-flow-personal.md) — personal-mode deep dive:
   every transition, status change, and auto-advance vs wait-for-human point,
   with diagrams.
