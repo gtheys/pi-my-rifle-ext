@@ -727,6 +727,12 @@ export function registerLandTool(
       // WARNING naming the recovery command. landingSuiteCwd() itself is
       // unchanged — healing rebinds state before it is read.
       let healWarning = ''
+      // AIDEV-NOTE: PMR-51PV — suite-specific variant of the heal warning.
+      // Receipt-adoption ok-messages state 'the suite was NOT re-run', so
+      // appending 'the suite ran in <cwd> instead' there would be
+      // self-contradictory. Only paths that actually ran the suite use
+      // healSuiteWarning; adoption paths use the suite-agnostic healWarning.
+      let healSuiteWarning = ''
       const binding = getFlowWorktree()
       const healNeeded = binding === null || binding.ref !== params.ref
       const healAllowed = flowRef === null || flowRef === params.ref
@@ -770,7 +776,9 @@ export function registerLandTool(
               { isError: true },
             )
           }
-          healWarning = `\n\nWARNING: the flow worktree could not be resolved (${heal.reason}); the suite ran in ${process.cwd()} instead. Recovery: run ${heal.recovery} to re-arm the flow binding.`
+          const healBase = `\n\nWARNING: the flow worktree could not be resolved (${heal.reason})`
+          healWarning = `${healBase}. Recovery: run ${heal.recovery} to re-arm the flow binding.`
+          healSuiteWarning = `${healBase}; the suite ran in ${process.cwd()} instead. Recovery: run ${heal.recovery} to re-arm the flow binding.`
         }
       }
       // AIDEV-NOTE: PMR-C6AK — the merge-main human pass has durable twins
@@ -930,7 +938,7 @@ export function registerLandTool(
           )
         }
         return toolResult(
-          `flow_land: landing for ${params.ref} gated ok via merge-main${humanGateNote} — the suite ran green just now.${mergeOkNote(merge.command)}${healWarning}`,
+          `flow_land: landing for ${params.ref} gated ok via merge-main${humanGateNote} — the suite ran green just now.${mergeOkNote(merge.command)}${healSuiteWarning}`,
           { ok: true, reason: '' },
         )
       }
@@ -944,7 +952,7 @@ export function registerLandTool(
       }
       state.authorized = params.ref
       return toolResult(
-        `flow_land: landing for ${params.ref} authorized via pr — run the git push / gh pr create step now${healWarning}`,
+        `flow_land: landing for ${params.ref} authorized via pr — run the git push / gh pr create step now${healSuiteWarning}`,
         { ok: true, reason: '' },
       )
     },
