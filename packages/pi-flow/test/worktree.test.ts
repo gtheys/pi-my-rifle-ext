@@ -848,6 +848,8 @@ type BindExecute = (
     action: string
     path?: string
     branch?: string
+    name?: string
+    type?: string
     cwd?: string
     force?: boolean
   },
@@ -1304,6 +1306,81 @@ test('worktree create: declaration lands under the active flow ref, else worktre
     bindCtx,
   )
   assert.equal(idleEffects.declarations[0]?.ref, 'worktree-ops')
+})
+
+// AIDEV-NOTE: PMR-902B — injection seam: createFlow reads getActiveFlowRef()
+// and threads it into the personal branch input, so name+type yields
+// <type>/<REF>-<slug> during a flow and the bare <type>/<slug> otherwise.
+// Literal/jira modes ignore the ref, which is why the 'feat/x' fixtures above
+// stay green with a flow active.
+test('worktree create: name+type injects the active flow ref into the branch', async () => {
+  const { exec, herdrCalls } = makeCreateExec()
+  const effects = makeFakeEffects(true)
+  const execute = makeWorktreeTool([], { exec, deps: { effects } })
+  setActiveFlowRef('PMR-TEST')
+  const result = await execute(
+    'call-r1',
+    { action: 'create', name: 'Add save button', type: 'feat' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(
+    result.content[0]?.text ?? '',
+    /Worktree ready: feat\/PMR-TEST-add-save-button/,
+  )
+  assert.ok(
+    herdrCalls.some((c) =>
+      c.includes('--branch feat/PMR-TEST-add-save-button'),
+    ),
+    `herdr worktree create must receive the ref-prefixed branch, got: ${herdrCalls.join(' | ')}`,
+  )
+  // Label default keeps working on the prefixed branch (no brackets, 5-word cap).
+  assert.ok(
+    herdrCalls.some((c) => c.includes('--label featpmr-test-add-save-button')),
+    `label must derive from the prefixed branch, got: ${herdrCalls.join(' | ')}`,
+  )
+})
+
+test('worktree create: name+type without an active flow stays bare (ISC-2)', async () => {
+  const { exec, herdrCalls } = makeCreateExec()
+  const effects = makeFakeEffects(true)
+  const execute = makeWorktreeTool([], { exec, deps: { effects } })
+  setActiveFlowRef(null)
+  const result = await execute(
+    'call-r2',
+    { action: 'create', name: 'Add save button' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(
+    result.content[0]?.text ?? '',
+    /Worktree ready: feat\/add-save-button/,
+  )
+  assert.ok(
+    herdrCalls.some((c) => c.includes('--branch feat/add-save-button')),
+    `herdr worktree create must receive the bare branch, got: ${herdrCalls.join(' | ')}`,
+  )
+})
+
+test('worktree create: literal branch ignores the active flow ref', async () => {
+  const { exec, herdrCalls } = makeCreateExec()
+  const effects = makeFakeEffects(true)
+  const execute = makeWorktreeTool([], { exec, deps: { effects } })
+  setActiveFlowRef('PMR-TEST')
+  const result = await execute(
+    'call-r3',
+    { action: 'create', branch: 'feat/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  assert.match(result.content[0]?.text ?? '', /Worktree ready: feat\/x/)
+  assert.ok(
+    herdrCalls.some((c) => c.includes('--branch feat/x ')),
+    `literal branch must pass through untouched, got: ${herdrCalls.join(' | ')}`,
+  )
 })
 
 test('worktree remove: failing declare leaves worktree intact (no herdr remove)', async () => {

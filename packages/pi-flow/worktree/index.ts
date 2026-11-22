@@ -165,6 +165,16 @@ async function createFlow(
     return errorResult((error as Error).message)
   }
 
+  // AIDEV-NOTE: PMR-902B — during an active flow the aven ref is injected
+  // into personal branches (<type>/<REF>-<slug>, e.g. feat/PMR-AB12-add-save).
+  // Never a tool parameter: read from the flow's module-global context. Only
+  // the personal kind carries it — deriveBranch ignores it for literal and
+  // jira inputs, so those paths stay byte-for-byte as before.
+  const flowRef = getActiveFlowRef()
+  if (input.kind === 'personal' && flowRef !== null) {
+    input = { ...input, flowRef }
+  }
+
   let derived: Awaited<ReturnType<typeof deriveBranch>>
   try {
     derived = await deriveBranch(pi, input)
@@ -1258,7 +1268,7 @@ export default function (pi: ExtensionAPI, deps?: WorktreeDeps) {
       name: Type.Optional(
         Type.String({
           description:
-            'Create mode 2: feature name, slugified into <type>/<slug>',
+            'Create mode 2: feature name, slugified into <type>/<slug>; during an active flow the ref is injected (<type>/<REF>-<slug>)',
         }),
       ),
       type: Type.Optional(
