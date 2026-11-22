@@ -11,7 +11,9 @@ import { isFullSha } from './gate-target.ts'
 
 export const SUBTASK_TRAILER_PREFIX = 'Subtask:'
 
-const SUBTASK_REF_RE = /^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+$/
+// AIDEV-NOTE: PMR-JJ8Z — exported as the package's ONE ref-shape
+// definition; worktree/branch.ts validates flow refs against it too.
+export const SUBTASK_REF_RE = /^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+$/
 // /g for matchAll, /i for case, /m for per-line trailer matching
 const TRAILER_RE = /^Subtask:\s*([A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+)\s*$/gim
 

@@ -133,11 +133,15 @@ test('personalBranch: letter-suffix ref accepted', () => {
   )
 })
 
-test('personalBranch: lowercase ref throws', () => {
-  assert.throws(
-    () => personalBranch('x', 'feat', 'pmr-ab12'),
-    /Invalid flow ref 'pmr-ab12'/,
-  )
+// AIDEV-NOTE: PMR-JJ8Z — AVEN_REF_RE was narrower than the package's one
+// ref-shape definition (SUBTASK_REF_RE); personalBranch now reuses it and
+// normalizes case, keeping titleBranch lockstep.
+test('personalBranch: lowercase ref normalizes to uppercase', () => {
+  assert.equal(personalBranch('x', 'feat', 'pmr-ab12'), 'feat/PMR-AB12-x')
+})
+
+test('personalBranch: alphanumeric-prefix ref accepted', () => {
+  assert.equal(personalBranch('x', 'feat', 'PM2-AB12'), 'feat/PM2-AB12-x')
 })
 
 test('personalBranch: malformed ref throws', () => {

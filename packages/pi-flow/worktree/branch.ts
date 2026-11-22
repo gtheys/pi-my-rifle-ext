@@ -1,4 +1,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+// AIDEV-NOTE: PMR-JJ8Z — one definition of the ref shape for the whole
+// package; branch validation must not drift from the subtask trailer's.
+import { SUBTASK_REF_RE } from '../validate/subtask-range.ts'
 
 export type PersonalType = 'feat' | 'fix' | 'chore' | 'docs' | 'refactor'
 
@@ -83,12 +86,12 @@ export function slugify(text: string): string {
 // AIDEV-NOTE: PMR-902B — branch-shape contract for personal flows. When a
 // personal flow is active, its aven ref is injected into the branch as
 // `<type>/<REF>-<slug>` (e.g. feat/PMR-AB12-add-save-button). The ref is used
-// bare — no brackets — because git refnames reject `[`. Validated against
-// AVEN_REF_RE (mirrors plan-tools/jira-branch.ts JIRA_ID_RE, but allows a
-// letter suffix for aven refs like PMR-902B). Callers with no active flow pass
-// null/undefined and get the bare `<type>/<slug>` shape.
-const AVEN_REF_RE = /^[A-Z]+-[A-Z0-9]+$/
-
+// bare — no brackets — because git refnames reject `[`. PMR-JJ8Z: the ref
+// shape now REUSES the package's one definition (SUBTASK_REF_RE,
+// validate/subtask-range.ts) instead of a narrower uppercase-only variant,
+// and the ref is normalized with toUpperCase so branch names stay in
+// lockstep with titleBranch's ref-prefixed expectation. Callers with no
+// active flow pass null/undefined and get the bare `<type>/<slug>` shape.
 export function personalBranch(
   name: string,
   type: PersonalType,
@@ -97,10 +100,10 @@ export function personalBranch(
   if (ref === null || ref === undefined) {
     return `${type}/${slugify(name)}`
   }
-  if (!AVEN_REF_RE.test(ref)) {
+  if (!SUBTASK_REF_RE.test(ref)) {
     throw new Error(`Invalid flow ref '${ref}' — expected format like PMR-AB12`)
   }
-  return `${type}/${ref}-${slugify(name)}`
+  return `${type}/${ref.toUpperCase()}-${slugify(name)}`
 }
 
 // AIDEV-NOTE: PMR-XCA9 — deriveBranchName inlined from the retired
