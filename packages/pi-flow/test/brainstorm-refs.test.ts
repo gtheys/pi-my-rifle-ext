@@ -173,6 +173,35 @@ test('phase-prompts: synced ticket resolves without acli', async () => {
   assert.doesNotMatch(result.prompt, /acli/)
 })
 
+// AIDEV-NOTE: PMR-YC8V — the brainstorm artifact dir must use the caller-
+// supplied repoName (getRepoName: origin remote name preferred, worktree-
+// safe), not the gitRoot basename: in a herdr worktree the basename is the
+// worktree dir, which scattered notes into per-worktree junk dirs under the
+// notes root — the symptom PMR-HHS8 eliminated for the resolver tools.
+test('phase-prompts: brainstorm dir uses repoName, not the worktree gitRoot basename', async () => {
+  const prev = process.env.LLM_NOTES_ROOT
+  process.env.LLM_NOTES_ROOT = '/home/x/notes'
+  try {
+    const result = await buildPhasePrompt('brainstorm', {
+      ...BASE,
+      mode: 'work',
+      gitRoot: '/home/x/.herdr/worktrees/pi-flow-range/feat-some-branch',
+      repoName: 'pi-flow-range',
+      brainstorm: { kind: 'feature', text: 'dark mode' },
+    })
+    assert.equal(result.kind, 'send')
+    if (result.kind !== 'send') return
+    assert.match(
+      result.prompt,
+      /\/home\/x\/notes\/pi-flow-range\/notes\/brainstorm\//,
+    )
+    assert.doesNotMatch(result.prompt, /feat-some-branch/)
+  } finally {
+    if (prev === undefined) delete process.env.LLM_NOTES_ROOT
+    else process.env.LLM_NOTES_ROOT = prev
+  }
+})
+
 test('phase-prompts: findTicketRef miss falls back to the acli branch', async () => {
   const result = await buildPhasePrompt('brainstorm', {
     ...BASE,

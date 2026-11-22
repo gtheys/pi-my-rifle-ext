@@ -21,6 +21,7 @@ import { loadConfig, resolveMode } from '../config.ts'
 import { parseFeedbackArgs } from '../feedback/args.ts'
 import { parseImplementArgs } from '../implement/args.ts'
 import { parsePlanArgs } from '../plan/args.ts'
+import { getRepoName } from '../plan-tools/helpers.ts'
 import { parseValidateArgs } from '../validate/args.ts'
 import type { WorkMode } from '../work-mode.ts'
 import { findJiraEpic, findTicketBrainstormTarget } from './jira-ref.ts'
@@ -73,6 +74,10 @@ export async function commandPhaseInput(
     mode: input.mode,
     ref: input.ref,
     gitRoot: stdout.trim(),
+    // AIDEV-NOTE: PMR-YC8V — origin-remote-first repo name (worktree-safe),
+    // the same source the plan-tool resolvers use, so /brainstorm writes to
+    // $LLM_NOTES_ROOT/<origin-name>/… instead of a per-worktree junk dir.
+    repoName: await getRepoName(pi),
     workRoots: config.workRoots,
     labels: input.labels ?? [],
     // AIDEV-NOTE: read-only ticket lookup for ticket brainstorming — jira-ref epic

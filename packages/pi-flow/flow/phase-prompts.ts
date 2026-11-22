@@ -49,6 +49,11 @@ export interface PhasePromptInput {
   ref: string
   /** Git toplevel of the session cwd; brainstorm/plan derive repoName from it. */
   gitRoot: string
+  /** Repo name from getRepoName (origin remote name preferred, worktree-safe).
+   *  PMR-YC8V: brainstorm must NOT derive it from the gitRoot basename — in a
+   *  herdr worktree that is the worktree dir, scattering notes into per-
+   *  worktree junk dirs. Falls back to the gitRoot basename when absent. */
+  repoName?: string
   /** Resolved pi-flow config workRoots; work-mode validate needs them. */
   workRoots: readonly string[]
   /** Current aven labels on the ref; implement routing gates on them. */
@@ -95,7 +100,11 @@ async function brainstormPrompt(input: PhasePromptInput): Promise<PhasePrompt> {
     kind: 'feature' as const,
     text: input.ref,
   }
-  const repoName = input.gitRoot.split('/').pop() ?? 'unknown'
+  // AIDEV-NOTE: PMR-YC8V — caller-supplied repoName (getRepoName: origin
+  // remote name preferred) keeps /brainstorm in a herdr worktree writing
+  // $LLM_NOTES_ROOT/<origin-name>/notes/brainstorm/ like the resolver tools,
+  // not $LLM_NOTES_ROOT/<worktree-dir>/… junk dirs.
+  const repoName = input.repoName ?? input.gitRoot.split('/').pop() ?? 'unknown'
   const dir = resolveBrainstormDir(
     input.mode,
     process.env.LLM_NOTES_ROOT,
