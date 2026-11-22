@@ -42,9 +42,11 @@
     "flow/attribution.ts",
     "flow/aven-resolve-exec.ts",
     "flow/aven-resolve.ts",
+    "flow/binding-heal.ts",
     "flow/cost.ts",
     "flow/cost-autopush.ts",
     "flow/cost-command.ts",
+    "flow/durable-refs.ts",
     "flow/step-output.ts",
     "telemetry/attributes.ts",
     "telemetry/content.ts",
@@ -59,6 +61,7 @@
     "flow/gates.ts",
     "flow/orchestrate.ts",
     "flow/phase-command.ts",
+    "flow/phase-emoji.ts",
     "flow/phase-prompts.ts",
     "flow/picker.ts",
     "flow/ref-kind.ts",
@@ -125,6 +128,7 @@
     "tools/land.ts",
     "tools/phase-complete.ts",
     "tools/result.ts",
+    "tools/review-deps.ts",
     "tools/run-attempt.ts",
     "tools/spec-approve.ts",
     "validate/args.ts",
@@ -141,7 +145,8 @@
     "worktree/branch.ts",
     "worktree/herdr.ts",
     "worktree/index.ts",
-    "worktree/remove-guards.ts"
+    "worktree/remove-guards.ts",
+    "worktree/sweep.ts"
   ],
   "pi": {
     "extensions": [
