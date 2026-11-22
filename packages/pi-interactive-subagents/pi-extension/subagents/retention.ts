@@ -460,11 +460,16 @@ function pruneAsks(dir: string, ledger: PruneLedger, root: string): void {
       try {
         unlinkSync(target)
         removedAny = true
-      } catch {
-        // Missing sibling (no reply/control record) is the common case.
+      } catch (error) {
+        // AIDEV-NOTE (PMR-KT90): ENOENT is the expected missing-sibling case
+        // (no reply/control record). Any OTHER unlink failure (EACCES,
+        // EIO, ...) must surface — silently counting it as removed would
+        // report a record deleted that is still on disk (prunePeers sets
+        // `failed` the same way).
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failed = true
       }
     }
-    if (failed) {
+    if (failed && !removedAny) {
       markSkipped(ledger, 'asks', 'delete failed')
       continue
     }
@@ -473,11 +478,15 @@ function pruneAsks(dir: string, ledger: PruneLedger, root: string): void {
 }
 
 /**
- * Recursively list .jsonl file names under the sessions root. Null when the
- * scan itself fails (fail closed — keep the inbox).
+ * Recursively collect SESSION IDS (not file names) under the sessions root.
+ * Pi session files are named `<ISO-timestamp>_<sessionId>.jsonl` (index.ts
+ * spawn), so each file contributes its base name AND the portion after the
+ * first underscore — both `<id>.jsonl` and `<ts>_<id>.jsonl` shapes resolve
+ * to their id. Files without an underscore contribute only the bare id.
+ * Null when the scan itself fails (fail closed — keep the inbox).
  */
-function scanSessionFileNames(sessionsRoot: string): Set<string> | null {
-  const names = new Set<string>()
+function scanSessionIds(sessionsRoot: string): Set<string> | null {
+  const ids = new Set<string>()
   const visit = (dir: string): boolean => {
     let entries: import('node:fs').Dirent[]
     try {
@@ -489,13 +498,16 @@ function scanSessionFileNames(sessionsRoot: string): Set<string> | null {
       if (entry.isDirectory()) {
         if (!visit(join(dir, entry.name))) return false
       } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
-        names.add(entry.name)
+        const base = entry.name.slice(0, -'.jsonl'.length)
+        ids.add(base)
+        const underscore = base.indexOf('_')
+        if (underscore !== -1) ids.add(base.slice(underscore + 1))
       }
     }
     return true
   }
   if (!visit(sessionsRoot)) return null
-  return names
+  return ids
 }
 
 function pruneOwnerInbox(
@@ -508,6 +520,7 @@ function pruneOwnerInbox(
     markSkipped(ledger, 'inbox', 'inbox dir unreadable')
     return
   }
+  let cachedSessionIds: Set<string> | null | undefined
   for (const entry of entries) {
     const inboxDir = join(dir, entry)
     let statIsDir = true
@@ -550,12 +563,22 @@ function pruneOwnerInbox(
       markSkipped(ledger, 'inbox', 'sessions root unavailable')
       continue
     }
-    const sessionNames = scanSessionFileNames(sessionsRoot)
-    if (sessionNames === null) {
+    // AIDEV-NOTE (PMR-KT90): the recursive sessions walk is hoisted into a
+    // lazily-computed cache — the result cannot change during a single
+    // sweep, so it runs at most once per pruneOwnerInbox call instead of
+    // once per aged inbox dir. `undefined` = not yet scanned.
+    if (cachedSessionIds === undefined) {
+      cachedSessionIds = scanSessionIds(sessionsRoot)
+    }
+    if (cachedSessionIds === null) {
       markSkipped(ledger, 'inbox', 'session scan failed')
       continue
     }
-    if (sessionNames.has(`${entry}.jsonl`)) {
+    // AIDEV-NOTE (PMR-KT90): match the SESSION ID, not the file name — pi
+    // names session files `<ISO-ts>_<sessionId>.jsonl`, so a bare
+    // `${entry}.jsonl` name check never matches a real session file and the
+    // resumability guard would be dead code.
+    if (cachedSessionIds.has(entry)) {
       markSkipped(ledger, 'inbox', 'parent session file still exists')
       continue
     }
@@ -573,6 +596,13 @@ function pruneOwnerInbox(
  * Scopes in use (index.ts / subagent-done.ts): `<childId>` (ask replies +
  * peer inbox), `<ownerSessionId>` (owner inbox), `control:<childId>`.
  * Returns null when a source scan itself fails — keep the marker.
+ *
+ * AIDEV-NOTE (PMR-KT90): `scope` here is the ON-DISK marker dir name, which
+ * was written through delivered.ts sanitizeScope — ':' maps to '_', so the
+ * control scope arrives as `control_<childId>`, never `control:<childId>`.
+ * Match the sanitized prefix and slice the (already sanitized) childId off;
+ * controlRecordPath re-applies the same mapping, so this mirrors the write
+ * side exactly.
  */
 function deliveredSourceExists(
   scope: string,
@@ -601,9 +631,10 @@ function deliveredSourceExists(
     }
   }
 
-  // Control source: control:<childId> scope, asks/<childId>.control.json.
-  if (scope.startsWith('control:')) {
-    const childId = scope.slice('control:'.length)
+  // Control source: control_<childId> scope (sanitized on disk),
+  // asks/<childId>.control.json.
+  if (scope.startsWith('control_')) {
+    const childId = scope.slice('control_'.length)
     const control = readJson(controlRecordPath(childId, root))
     if (control !== null && control.requestId === requestId) return true
   }
@@ -614,8 +645,8 @@ function deliveredSourceExists(
   const peerInboxMissing = !existsSync(join(root, 'peers', scope, 'inbox'))
   const ownerInboxMissing = !existsSync(join(root, 'inbox', scope))
   const controlMissing =
-    !scope.startsWith('control:') ||
-    !existsSync(controlRecordPath(scope.slice('control:'.length), root))
+    !scope.startsWith('control_') ||
+    !existsSync(controlRecordPath(scope.slice('control_'.length), root))
   if (peerInboxMissing && ownerInboxMissing && controlMissing) return false
   return null
 }
@@ -796,6 +827,11 @@ export function pruneSubagentsData(options: {
   // class's records (asks reads assignments/peers; tool-effects and
   // peer-bindings resolve via assignments/peers) run BEFORE those source
   // classes are pruned, so one sweep never prunes its own evidence mid-pass.
+  // Concretely: pruneAsks runs BEFORE prunePeers — a peer pruned first
+  // would drop askChildNotLive into its no-evidence fallback instead of the
+  // accurate presence-lock check. pruneDelivered scans asks/peers/inbox
+  // sources, so it also runs before all three. prunePeers itself reads no
+  // other pruned class, so moving it after pruneAsks breaks nothing.
   pruneResults(join(root, 'results'), ledger)
   pruneImmutableTimestampedRecords(
     join(root, 'retired'),
@@ -819,8 +855,8 @@ export function pruneSubagentsData(options: {
     ledger,
     root,
   )
-  prunePeers(join(root, 'peers'), ledger, root)
   pruneAsks(join(root, 'asks'), ledger, root)
+  prunePeers(join(root, 'peers'), ledger, root)
   pruneAssignments(join(root, 'assignments'), ledger, root)
 
   // Owner inbox needs the sessions root OUTSIDE the data root. Only this

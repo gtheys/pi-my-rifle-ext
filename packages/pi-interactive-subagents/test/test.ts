@@ -9660,6 +9660,37 @@ describe('retention.ts (PMR-KT90 prune sweep)', () => {
     assert.ok(existsSync(join(root, 'inbox', 'parent-1', 'msg.json')))
   })
 
+  it('keeps a control delivered marker while its control source record exists', () => {
+    freshFixture()
+    // AIDEV-NOTE (PMR-KT90): the marker dir uses the ON-DISK sanitized scope
+    // (sanitizeScope maps ':' → '_'), matching how markDelivered writes
+    // `control:<childId>` markers — the prune scan only ever sees the
+    // sanitized shape.
+    writeJson(join(root, 'asks', 'kid.control.json'), {
+      requestId: 'req-ctl',
+      kind: 'interrupt',
+    })
+    const keptMarker = join(root, 'delivered', 'control_kid', 'req-ctl')
+    writeRaw(keptMarker, '')
+    utimesSync(keptMarker, new Date(OLD_MS), new Date(OLD_MS))
+    // Same sanitized control scope but no source record → prunable.
+    const goneMarker = join(root, 'delivered', 'control_gone', 'req-ctl')
+    writeRaw(goneMarker, '')
+    utimesSync(goneMarker, new Date(OLD_MS), new Date(OLD_MS))
+
+    const report = prune()
+
+    assert.ok(existsSync(keptMarker))
+    assert.ok(!existsSync(goneMarker))
+    assert.equal(report.removed.delivered, 1)
+    assert.equal(report.skipped.delivered, 1)
+    const reasons = report.skipReasons.join('\n')
+    assert.match(reasons, /delivered: source record still exists/)
+    // Negative space: the control source record itself is untouched (the
+    // asks class only touches it as a sibling of a prunable ask record).
+    assert.ok(existsSync(join(root, 'asks', 'kid.control.json')))
+  })
+
   it('prunes tool-effects only when the child session file is gone', () => {
     freshFixture()
     const resumableSession = sessionFileInAgentDir('resumable.jsonl')
@@ -9987,10 +10018,43 @@ describe('retention.ts (PMR-KT90 prune sweep)', () => {
     assert.match(reasons, /asks: session file still exists \(resumable\)/)
   })
 
+  it('reports a real unlink failure as delete failed, not removed', () => {
+    // AIDEV-NOTE (PMR-KT90): chmod injection (0o500 = readable, not
+    // writable) makes unlinkSync fail EACCES — a REAL failure, distinct from
+    // the expected ENOENT missing-sibling case. Root ignores permission
+    // bits, so the injection is a no-op there and the test skips itself.
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return
+    freshFixture()
+    const goneSession = join(agentDir, 'sessions', 'gone.jsonl')
+    writeJson(join(root, 'asks', 'gone.json'), {
+      askId: 'ask-gone',
+      childId: 'gone',
+      question: 'q',
+      sessionFile: goneSession,
+      createdAt: OLD_ISO,
+    })
+    const asksDir = join(root, 'asks')
+    chmodSync(asksDir, 0o500)
+    let report: PruneReport
+    try {
+      report = prune()
+    } finally {
+      chmodSync(asksDir, 0o700)
+    }
+
+    assert.ok(existsSync(join(root, 'asks', 'gone.json')))
+    assert.equal(report.removed.asks, undefined)
+    assert.equal(report.skipped.asks, 1)
+    assert.match(report.skipReasons.join('\n'), /asks: delete failed/)
+  })
+
   it('prunes owner inbox only when the parent session file is gone', () => {
     freshFixture()
-    // Parent session file exists under agentDir/sessions → keep.
-    sessionFileInAgentDir('parent-live.jsonl')
+    // Parent session file exists under agentDir/sessions → keep. The name
+    // uses the REAL pi session-file shape <ISO-ts>_<sessionId>.jsonl (built
+    // in index.ts spawn) — a bare <id>.jsonl fixture would leave the
+    // resumability guard uncovered.
+    sessionFileInAgentDir('2026-01-01T00-00-00-000Z_parent-live.jsonl')
     writeJson(join(root, 'inbox', 'parent-live', 'm1.json'), {
       version: 1,
       messageId: 'm1',
@@ -10156,6 +10220,51 @@ describe('session_start retention auto-prune (PMR-KT90)', () => {
       assert.match(notifications[0].message, /removed 1/)
     })
   })
+
+  it('configured but nothing removed: silent (skipped-only is steady state) (PMR-KT90)', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, globalDir }) => {
+      writeRetentionConfig(projectDir, 7)
+      const freshRecord = seedRetiredRecord(
+        globalDir,
+        'fresh.json',
+        new Date().toISOString(),
+      )
+      const { api, eventHandlers } = createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+      const { ctx, notifications } = notifyingCtx()
+      fireSessionStart(api, eventHandlers, ctx, projectDir)
+
+      assert.equal(existsSync(freshRecord), true)
+      assert.equal(notifications.length, 0)
+    })
+  })
+
+  it('child session: no sweep at all, record kept, no notify (PMR-KT90)', async () => {
+    await withIsolatedAgentEnv(async ({ projectDir, globalDir }) => {
+      writeRetentionConfig(projectDir, 7)
+      const oldRecord = seedRetiredRecord(
+        globalDir,
+        'old.json',
+        '2020-01-01T00:00:00.000Z',
+      )
+      const { api, eventHandlers } = createMockExtensionApi()
+      ;(subagentsModule as any).default(api)
+      const { ctx, notifications } = notifyingCtx()
+      // AIDEV-NOTE (PMR-KT90): simulate a subagent session — the sweep must
+      // not run in children (PI_SUBAGENT_ID/SESSION child-detection
+      // contract). Restore in finally: the module-level env scrub only ran
+      // once at import time.
+      process.env.PI_SUBAGENT_ID = 'retention-child-test'
+      try {
+        fireSessionStart(api, eventHandlers, ctx, projectDir)
+      } finally {
+        delete process.env.PI_SUBAGENT_ID
+      }
+
+      assert.equal(existsSync(oldRecord), true)
+      assert.equal(notifications.length, 0)
+    })
+  })
 })
 
 // AIDEV-NOTE (PMR-KT90): `/subagent prune` reserved-word subcommand — fires
@@ -10284,9 +10393,10 @@ describe('/subagent prune command (PMR-KT90)', () => {
       await getSubagentCommand(registeredCommands).handler('prune', ctx)
 
       assert.equal(existsSync(oldRecord), false)
-      // AIDEV-NOTE (PMR-KT90): notifications[0] may be session_start's own
-      // sweep summary (skipped-only records in the shared temp data root);
-      // the COMMAND's notify is the last one and reports the removed record.
+      // AIDEV-NOTE (PMR-KT90): session_start's own sweep stays silent here
+      // (nothing removed at that point, and skipped-only sweeps never
+      // notify); the COMMAND's notify is the last one and reports the
+      // removed record.
       const last = notifications[notifications.length - 1]
       assert.equal(last.level, 'info')
       assert.match(last.message, /removed 1/)
