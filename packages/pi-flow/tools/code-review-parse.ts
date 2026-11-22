@@ -5,6 +5,7 @@
 // injected ReviewDeps — tools/code-review.ts owns registration + wiring.
 
 import { resolve } from 'node:path'
+import { readFlowBase } from '../shared/flow-base.ts'
 import { type PersonalType, personalBranch } from '../worktree/branch.ts'
 import type { HerdrWorktree } from '../worktree/herdr.ts'
 import { extractResult, parseJson, pickString } from '../worktree/herdr.ts'
@@ -388,16 +389,27 @@ export async function openTuicrReview(
   worktreePath: string,
   deps: Pick<ReviewDeps, 'exec'>,
 ): Promise<OpenTuicrResult> {
+  // AIDEV-NOTE: PMR-7N3D — range against the RECORDED flow base branch
+  // (rebase-aware: merge-base moves with a mid-flow rebase), not a
+  // hardcoded 'main', which swept unrelated commits into the human's pane
+  // for flows based on develop/staging. Unbound worktrees keep the legacy
+  // 'main' behavior — fail-open on purpose: this opens the human's review
+  // pane, it is not a gate, so a missing binding must not block it.
+  let baseBranch = 'main'
+  const recorded = await readFlowBase(deps.exec, worktreePath)
+  if (recorded.ok) {
+    baseBranch = recorded.value.branch
+  }
   const baseResult = await deps.exec(
     'git',
-    ['-C', worktreePath, 'merge-base', 'main', 'HEAD'],
+    ['-C', worktreePath, 'merge-base', baseBranch, 'HEAD'],
     {},
   )
   if (baseResult.code !== 0) {
     const detail = baseResult.stderr || baseResult.stdout
     return {
       ok: false,
-      reason: `git merge-base main HEAD failed in ${worktreePath}: ${detail}`,
+      reason: `git merge-base ${baseBranch} HEAD failed in ${worktreePath}: ${detail}`,
       command: `cd ${worktreePath} && tuicr tui`,
     }
   }

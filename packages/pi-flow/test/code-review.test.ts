@@ -333,6 +333,12 @@ for (const failing of ['/repo', '/session']) {
 
 // --- openTuicrReview: exec-injected open sequence ---
 
+// AIDEV-NOTE: PMR-7N3D — openTuicrReview now reads the recorded flowbase
+// branch via readFlowBase before the merge-base call, so these exec maps
+// may carry the readFlowBase argv (rev-parse --abbrev-ref HEAD +
+// config branch.<feature>.flowbase, shapes as in test/flow-base.test.ts).
+// Without a binding, readFlowBase fails and the opener keeps the legacy
+// 'main' fallback (calls[0] here is the failed rev-parse).
 test('openTuicrReview: tab create + pane run asserted verbatim', async () => {
   const calls: Array<{ cmd: string; args: string[]; opts: unknown }> = []
   const deps = {
@@ -361,10 +367,15 @@ test('openTuicrReview: tab create + pane run asserted verbatim', async () => {
   }
   assert.deepEqual(calls[0], {
     cmd: 'git',
+    args: ['rev-parse', '--abbrev-ref', 'HEAD'],
+    opts: { cwd: '/repo/.wt/a' },
+  })
+  assert.deepEqual(calls[1], {
+    cmd: 'git',
     args: ['-C', '/repo/.wt/a', 'merge-base', 'main', 'HEAD'],
     opts: {},
   })
-  assert.deepEqual(calls[1], {
+  assert.deepEqual(calls[2], {
     cmd: 'herdr',
     args: [
       'tab',
@@ -377,11 +388,93 @@ test('openTuicrReview: tab create + pane run asserted verbatim', async () => {
     ],
     opts: {},
   })
-  assert.deepEqual(calls[2], {
+  assert.deepEqual(calls[3], {
     cmd: 'herdr',
     args: ['pane', 'run', 'w1:p9', 'tuicr', 'tui', '-r', 'abc123..HEAD'],
     opts: {},
   })
+})
+
+test('openTuicrReview: ranges against the recorded flowbase branch', async () => {
+  const calls: Array<{ cmd: string; args: string[] }> = []
+  const deps = {
+    exec: async (cmd: string, args: string[]) => {
+      calls.push({ cmd, args })
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: 'feat/x\n', stderr: '' }
+      }
+      if (args[0] === 'config' && args[1] === 'branch.feat/x.flowbase') {
+        return { code: 0, stdout: 'develop\n', stderr: '' }
+      }
+      if (args[2] === 'merge-base') {
+        return { code: 0, stdout: 'abc123\n', stderr: '' }
+      }
+      if (args[0] === 'tab') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            result: { root_pane: { pane_id: 'w1:p9' } },
+          }),
+          stderr: '',
+        }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  }
+  const result = await openTuicrReview('PMR-ABC1', '/repo/.wt/a', deps)
+  assert.equal(result.ok, true)
+  const mergeBase = calls.find((c) => c.args.includes('merge-base'))
+  assert.ok(mergeBase)
+  assert.deepEqual(mergeBase.args, [
+    '-C',
+    '/repo/.wt/a',
+    'merge-base',
+    'develop',
+    'HEAD',
+  ])
+  if (result.ok) {
+    assert.equal(result.command, 'cd /repo/.wt/a && tuicr tui -r abc123..HEAD')
+  }
+})
+
+test('openTuicrReview: unbound worktree (no flowbase config) keeps main', async () => {
+  const calls: Array<{ cmd: string; args: string[] }> = []
+  const deps = {
+    exec: async (cmd: string, args: string[]) => {
+      calls.push({ cmd, args })
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: 'feat/x\n', stderr: '' }
+      }
+      if (args[2] === 'merge-base') {
+        return { code: 0, stdout: 'abc123\n', stderr: '' }
+      }
+      if (args[0] === 'tab') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            result: { root_pane: { pane_id: 'w1:p9' } },
+          }),
+          stderr: '',
+        }
+      }
+      // config branch.feat/x.flowbase unset -> readFlowBase fails
+      if (args[0] === 'config') {
+        return { code: 1, stdout: '', stderr: '' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  }
+  const result = await openTuicrReview('PMR-ABC1', '/repo/.wt/a', deps)
+  assert.equal(result.ok, true)
+  const mergeBase = calls.find((c) => c.args.includes('merge-base'))
+  assert.ok(mergeBase)
+  assert.deepEqual(mergeBase.args, [
+    '-C',
+    '/repo/.wt/a',
+    'merge-base',
+    'main',
+    'HEAD',
+  ])
 })
 
 test('openTuicrReview: tab create failure is fail-closed with manual command', async () => {
