@@ -2,7 +2,7 @@ import { join } from 'node:path'
 
 // AIDEV-NOTE: The devctl repository name is fixed (machine-specific layout is
 // handled by workRoots in pi-flow config, which must contain the parent dir of
-// this repo, e.g. /home/geert/Code/salaryhero). If SalaryHero ever renames the
+// this repo, e.g. /home/dev/Code/salaryhero). If SalaryHero ever renames the
 // repo, change it here.
 export const DEVCTL_REPO_NAME = 'sh-devctl'
 

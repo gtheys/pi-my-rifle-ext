@@ -85,7 +85,6 @@
     "plan/args.ts",
     "plan/prompt.ts",
     "plan/size-check.ts",
-    "plan/split-gate.ts",
     "pr-quality/index.ts",
     "brainstorm/args.ts",
     "brainstorm/artifact.ts",

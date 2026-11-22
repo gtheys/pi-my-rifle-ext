@@ -138,7 +138,7 @@ checkout) instead of machine-wide.
 {
   "$schema": "https://raw.githubusercontent.com/gtheys/pi-my-rifle-ext/main/packages/pi-flow/config.schema.json",
   "workRoots": [
-    "/home/geert/Code/salaryhero"
+    "/home/dev/Code/salaryhero"
   ],
   "avenWorkspace": "personal",
   "yolo": false,
