@@ -90,7 +90,7 @@ flowchart TD
     epic --> psr
     psr --> appr["APPROVAL GATE<br/>WAIT — /spec-review, then you say<br/>'approve PMR-ABC1'<br/>spec_approve → plan-state=approved"]
     appr --> lblP["label: planned<br/>(flow_phase_complete)"]
-    lblP --> impl["IMPLEMENT phase<br/>worktree + feat/slug branch<br/>route: bug | plan | oneshot"]
+    lblP --> impl["IMPLEMENT phase<br/>worktree + feat/<REF>-<slug> branch<br/>route: bug | plan | oneshot"]
     impl --> tests{"tests green in<br/>≤ 3 attempts?<br/>(flow_run_attempt)"}
     tests -- "3rd fail" --> esc["status: blocked<br/>evidence note<br/>ESCALATE to you"]
     tests -- green --> lblA["label: active<br/>(flow_phase_complete)"]
@@ -320,15 +320,16 @@ oneshot: one implement→test→commit cycle.
 **Hard rules for every route:**
 
 - **Worktree isolation**: all work happens in an isolated git worktree; the
-  main checkout is read-only. Personal branch: `feat/<slug>` from the ticket
-  slug.
+  main checkout is read-only. Personal branch: `feat/<REF>-<slug>` from the
+  ticket slug, where `<REF>` is the flow's feature ref (e.g. `feat/PMR-AB12-my-slug`).
 - **Retry budget 3**: every test attempt is reported to `flow_run_attempt`.
   Attempts 1–2 failing → retry (the tool tells the agent how many are left).
   3rd failure → tool error "ESCALATE", evidence note (commands, last error,
   hypothesis) on the ref, status `blocked`, and further attempts are
   refused until a human restarts. A pass clears the budget.
 - **Each task = implement → tests → commit**; done only when green AND
-  committed. Conventional commit subjects.
+  committed. Conventional commit subjects shaped `type(scope): [REF] subject`,
+  where `[REF]` is the flow's feature ref (e.g. `feat(pi-flow): [PMR-902B] …`).
 
 **Exit:** `flow_phase_complete(phase="implement")` → `active` label → AUTO
 to validate.
@@ -459,7 +460,7 @@ Artifact paths:
 | plan.md | `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md` |
 | Run journal | `~/.pi/agent/pi-flow/runs/<ref>.json` + `<ref>.journal.jsonl` |
 | Config | `~/.pi/agent/pi-flow/config.json` (`workRoots`, `avenWorkspace`) |
-| Branch | `feat/<slug>` (slug: lowercase, alphanumeric, max 5 words, dashes) |
+| Branch | `feat/<REF>-<slug>` (flow's feature ref + slug: lowercase, alphanumeric, max 5 words, dashes) |
 
 ---
 

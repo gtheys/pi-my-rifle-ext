@@ -284,8 +284,8 @@ present but not `approved` → plan still in draft/review → route back to
    parse the metadata block; `--json` omits metadata on aven 0.1.39).
    `- [x]` items are done.
 
-3. **Branch** — no automation; if on main, suggest `feat/<slug>` in one
-   sentence.
+3. **Branch** — no automation; if on main, suggest `feat/<REF>-<slug>`
+   (the epic's own ref) in one sentence.
 
 4. **Load companion skills** — `coding-standards` + `tdd-workflow` before
    first edit. Surface failure if either won't load.
@@ -379,6 +379,10 @@ and `list --json` omit metadata on aven 0.1.39 — read metadata via
   interaction (no acli, no writes/transitions).
 - `implement-plan-aven` never authors plans; ad-hoc bugs without a plan →
   direct fix or `/skill:debug`.
-- Task refs stay local — never in commit messages, PR descriptions, or
-  external systems.
+<!-- AIDEV-NOTE: this boundary is mode-dependent. Work mode keeps refs local;
+     personal-mode flows deliberately embed the feature ref in flow-created
+     branches and commit subjects. Keep in sync with piv-flow-personal.md. -->
+- Work mode: task refs stay local — never in commit messages, PR descriptions,
+  or external systems. Personal mode embeds the flow's feature ref in
+  flow-created branches and commit subjects (see piv-flow-personal.md).
 - Titles: sentence case (first word + proper nouns capitalized).
