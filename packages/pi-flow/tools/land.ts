@@ -474,6 +474,11 @@ const execAsFlowBase: Exec = async (cmd, args, options) => {
 //     equals the recorded branch.<branch>.flowbasesha while the branch is
 //     unrebased and self-heals after the guided rebase, which the recorded
 //     config value cannot (no rebase updates it).
+//     PMR-7N3D: the same self-healing applies to the validate gate's pinned
+//     BASE_SHA, so the refusal text tells the agent to re-pin it (step 6a)
+//     after the rebase — the pre-rebase BASE_SHA is stale and would sweep
+//     the rebased-in commits into every later gate spread. TEXT ONLY: no
+//     code path, ordering, or PMR-5PQH re-authorization semantics change.
 // (2) Local-base freshness: after `git fetch origin`, the local <base> being
 //     a strict ancestor of origin/<base> means origin is ahead — refuse with
 //     the fetch+fast-forward guidance so the landing never integrates onto a
@@ -522,7 +527,7 @@ export async function checkMainAdvancement(
   if (mergeBase.sha !== tipSha) {
     return {
       ok: false,
-      reason: `main advancement detected: merge-base of flow branch '${branch}' and '${base.branch}' is ${mergeBase.sha} but '${base.branch}' tip is ${tipSha} — the flow branch is stale and the merge would not fast-forward. Rebase-then-reland: in the flow worktree run git rebase '${base.branch}', re-run the flow's checks, then call flow_land again — re-authorization re-evaluates staleness fresh and re-pins the merge command from the current resolution, never a stored no-op (guard against PMR-5PQH).`,
+      reason: `main advancement detected: merge-base of flow branch '${branch}' and '${base.branch}' is ${mergeBase.sha} but '${base.branch}' tip is ${tipSha} — the flow branch is stale and the merge would not fast-forward. Rebase-then-reland: in the flow worktree run git rebase '${base.branch}', re-run the flow's checks and re-run the validate gate to re-pin BASE_SHA (step 6a: \`git merge-base HEAD $(git config branch.$(git branch --show-current).flowbase)\`) — the pre-rebase BASE_SHA is stale, then call flow_land again — re-authorization re-evaluates staleness fresh and re-pins the merge command from the current resolution, never a stored no-op (guard against PMR-5PQH).`,
     }
   }
   const fetched = await exec('git', ['fetch', 'origin'], { cwd: mainRepo })

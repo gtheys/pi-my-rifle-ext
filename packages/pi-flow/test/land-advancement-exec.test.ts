@@ -172,6 +172,14 @@ test('stale flow branch is refused with the rebase-then-reland guidance (PMR-1KA
   assert.equal(result.ok, false)
   if (result.ok) throw new Error('unreachable')
   assert.match(result.reason, /rebase/)
+  // AIDEV-NOTE: PMR-7N3D — the guided rebase also invalidates the validate
+  // gate's pinned BASE_SHA, so the refusal must carry the re-pin
+  // instruction (step 6a merge-base vs the recorded flowbase branch).
+  assert.match(result.reason, /re-pin BASE_SHA/)
+  assert.match(
+    result.reason,
+    /git merge-base HEAD \$\(git config branch\.\$\(git branch --show-current\)\.flowbase\)/,
+  )
   assert.match(result.reason, /flow branch 'flow-branch'/)
   assert.match(result.reason, /'main' tip is ti1111/)
   assert.match(result.reason, /ba2222/)
