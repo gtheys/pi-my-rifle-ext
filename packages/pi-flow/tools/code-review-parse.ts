@@ -80,10 +80,16 @@ export function parseAvenTitle(stdout: string): string | null {
 }
 
 /** Expected personal branch for a ticket title: `feat(pi-flow): subject`
- * -> `feat/<slug of subject>` via worktree/branch.ts personalBranch.
+ * -> `<type>/<slug of subject>` via worktree/branch.ts personalBranch.
  * A recognizable conventional-commit type prefix sets the branch type;
- * anything else falls back to 'feat'. */
-export function titleBranch(title: string): string {
+ * anything else falls back to 'feat'.
+ *
+ * AIDEV-NOTE: PMR-902B — while a personal flow is active the branch carries
+ * the flow's aven ref (`<type>/<REF>-<slug>`, e.g. feat/PMR-AB12-alpha-gate),
+ * because that is what createFlow names the worktree. Callers inside the
+ * review resolver pass the ref they are resolving for; pass null only when
+ * there is no flow ref, which keeps the bare legacy shape. */
+export function titleBranch(title: string, ref: string | null): string {
   let type: PersonalType = 'feat'
   let name = title
   const match = /^([a-z]+)(?:\([^)]*\))?:\s+(.+)$/.exec(title)
@@ -94,7 +100,7 @@ export function titleBranch(title: string): string {
     type = match[1] as PersonalType
     name = match[2] ?? title
   }
-  return personalBranch(name, type)
+  return personalBranch(name, type, ref)
 }
 
 /** Parse the ask_user_question answer text into pass/fail (null = unclear). */
@@ -339,7 +345,10 @@ export async function resolveReviewWorktree(
   if (title === null) {
     failures.push('herdr: no title parsed from aven show output')
   } else {
-    expected = titleBranch(title)
+    // AIDEV-NOTE: PMR-902B — ref-prefixed expectation: the resolver's ref is
+    // the flow ref, so a personal-mode worktree is found as
+    // `<type>/<REF>-<slug>` (lockstep with worktree/index.ts createFlow).
+    expected = titleBranch(title, ref)
   }
   let hit: HerdrWorktree | null = matchHerdrWorktree(worktrees, ref)
   if (hit === null && expected !== null) {

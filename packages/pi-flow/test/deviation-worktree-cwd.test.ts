@@ -72,14 +72,18 @@ EOF
 })
 
 test('resolveDeviationCwd: herdr source resolves the verified worktree cwd', async () => {
-  const deps = depsWith()
+  // AIDEV-NOTE: PMR-902B — the title-derived herdr expectation is
+  // ref-prefixed (`fix/<REF>-<slug>`), matching the branch createFlow makes
+  // during a personal flow, so HEAD must echo that branch to verify.
+  const herdrBranch = 'fix/PMR-TEST1-external-worktree'
+  const deps = depsWith({ headBranch: herdrBranch })
   deps.avenShowFull = async () =>
     'PMR-TEST1 status=todo title="fix(pi-flow): external worktree"\n'
   deps.herdrWorktreeList = async () => [
     {
       path: WORKTREE,
-      branch: BRANCH,
-      label: BRANCH,
+      branch: herdrBranch,
+      label: herdrBranch,
       workspaceId: 'w1',
       isLinked: true,
     },

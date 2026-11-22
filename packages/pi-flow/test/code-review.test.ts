@@ -116,20 +116,35 @@ test('parseAvenTitle: null when no title or empty title', () => {
   assert.equal(parseAvenTitle('PMR-ABC1 status=todo title=""'), null)
 })
 
+// AIDEV-NOTE: PMR-902B — titleBranch must produce the SAME branch the worktree
+// tool creates during a flow: with a ref the slug is ref-prefixed
+// (`<type>/<REF>-<slug>`), with null it keeps the bare `<type>/<slug>` shape.
 test('titleBranch: conventional prefix maps to branch type + slug', () => {
   assert.equal(
-    titleBranch('feat(pi-flow): human code-review gate'),
+    titleBranch('feat(pi-flow): human code-review gate', 'PMR-AB12'),
+    'feat/PMR-AB12-human-code-review-gate',
+  )
+  assert.equal(
+    titleBranch('fix: off-by-one in parser', 'PMR-AB12'),
+    'fix/PMR-AB12-off-by-one-in-parser',
+  )
+  assert.equal(
+    titleBranch('feat(pi-flow): human code-review gate', null),
     'feat/human-code-review-gate',
   )
   assert.equal(
-    titleBranch('fix: off-by-one in parser'),
+    titleBranch('fix: off-by-one in parser', null),
     'fix/off-by-one-in-parser',
   )
 })
 
 test('titleBranch: no recognizable prefix falls back to feat', () => {
   assert.equal(
-    titleBranch('Human code review gate'),
+    titleBranch('Human code review gate', 'PMR-AB12'),
+    'feat/PMR-AB12-human-code-review-gate',
+  )
+  assert.equal(
+    titleBranch('Human code review gate', null),
     'feat/human-code-review-gate',
   )
 })
@@ -199,20 +214,21 @@ test('resolveReviewWorktree: title-derived exact branch match resolves', async (
   deps.exists = (p: string) => p !== '/gone/stale'
   deps.herdrWorktreeList = async () => [
     wt('main', '/repo'),
-    wt('feat/alpha-gate', '/repo/.wt/a'),
+    wt('feat/PMR-ABC1-alpha-gate', '/repo/.wt/a'),
   ]
   deps.exec = async (_cmd, args) => {
     if (args.includes('--abbrev-ref')) {
-      return { code: 0, stdout: 'feat/alpha-gate\n', stderr: '' }
+      return { code: 0, stdout: 'feat/PMR-ABC1-alpha-gate\n', stderr: '' }
     }
     return { code: 0, stdout: '/repo\n', stderr: '' }
   }
   const result = await resolveReviewWorktree('PMR-ABC1', deps)
-  // AIDEV-NOTE: the stale notes fail verification, so the herdr source
-  // (exact match on the title-derived branch) provides the verified worktree.
+  // AIDEV-NOTE: PMR-902B — the stale notes fail verification, so the herdr
+  // source provides the verified worktree, matched on the ref-prefixed
+  // title-derived branch (what createFlow names a personal flow worktree).
   assert.deepEqual(result, {
     path: '/repo/.wt/a',
-    branch: 'feat/alpha-gate',
+    branch: 'feat/PMR-ABC1-alpha-gate',
     source: 'herdr',
   })
 })
@@ -235,7 +251,7 @@ test('resolveReviewWorktree: no herdr match names the expected branch', async ()
   deps.herdrWorktreeList = async () => [wt('feat/other', '/repo/.wt/o')]
   await assert.rejects(
     () => resolveReviewWorktree('PMR-ABC1', deps),
-    /expected branch feat\/alpha-gate/,
+    /expected branch feat\/PMR-ABC1-alpha-gate/,
   )
 })
 
@@ -617,7 +633,7 @@ function gateExec(tuicr: { listStdout: string; commentsStdout: string }): {
           result: {
             worktrees: [
               {
-                branch: 'feat/alpha-gate',
+                branch: 'feat/PMR-ABC1-alpha-gate',
                 path: CR_WT_DIR,
                 label: 'alpha',
                 open_workspace_id: 'w1',
@@ -633,7 +649,7 @@ function gateExec(tuicr: { listStdout: string; commentsStdout: string }): {
       return { code: 0, stdout: '/repo/.git\n', stderr: '' }
     }
     if (cmd === 'git' && args.includes('--abbrev-ref')) {
-      return { code: 0, stdout: 'feat/alpha-gate\n', stderr: '' }
+      return { code: 0, stdout: 'feat/PMR-ABC1-alpha-gate\n', stderr: '' }
     }
     if (cmd === 'git' && args.includes('merge-base')) {
       return { code: 0, stdout: 'abc123\n', stderr: '' }

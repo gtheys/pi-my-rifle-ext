@@ -70,13 +70,24 @@ EOF
 
 test('resolveReviewWorktree: Herdr discovery accepts an external worktree of the session repo', async () => {
   const deps = externalWorktreeDeps()
+  // AIDEV-NOTE: PMR-902B — the title-derived expectation is ref-prefixed
+  // (`fix/<REF>-<slug>`) because that is the branch createFlow makes for a
+  // personal flow; HEAD stub must echo it for verification to pass.
+  const herdrBranch = 'fix/PMR-ABC1-external-worktree'
+  const baseExec = deps.exec
+  deps.exec = async (cmd, args, opts) => {
+    if (args.includes('--abbrev-ref')) {
+      return { code: 0, stdout: `${herdrBranch}\n`, stderr: '' }
+    }
+    return baseExec(cmd, args, opts)
+  }
   deps.avenShowFull = async () =>
     'PMR-ABC1 status=todo title="fix(pi-flow): external worktree"\n'
   deps.herdrWorktreeList = async () => [
     {
       path: WORKTREE,
-      branch: BRANCH,
-      label: BRANCH,
+      branch: herdrBranch,
+      label: herdrBranch,
       workspaceId: 'w1',
       isLinked: true,
     },
@@ -86,7 +97,7 @@ test('resolveReviewWorktree: Herdr discovery accepts an external worktree of the
 
   assert.deepEqual(result, {
     path: WORKTREE,
-    branch: BRANCH,
+    branch: herdrBranch,
     source: 'herdr',
   })
 })

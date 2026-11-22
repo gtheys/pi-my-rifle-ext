@@ -161,7 +161,11 @@ test('code_review: lost module binding is healed via herdr fixture and tool succ
     resetBinding()
     assert.equal(getActiveFlowRef(), null)
     assert.equal(getFlowWorktree(), null)
-    const { execute } = codeReviewExecute(herdrFixtureExec('feat/heal-gate'))
+    // AIDEV-NOTE: PMR-902B — the herdr fixture carries the ref-prefixed
+    // branch the resolver now expects for a flow ref (feat/<REF>-<slug>).
+    const { execute } = codeReviewExecute(
+      herdrFixtureExec('feat/PMR-HEAL1-heal-gate'),
+    )
     const result = await execute(
       't1',
       { ref: 'PMR-HEAL1' },
@@ -175,7 +179,7 @@ test('code_review: lost module binding is healed via herdr fixture and tool succ
     assert.deepEqual(getFlowWorktree(), {
       ref: 'PMR-HEAL1',
       path: HEAL_WT_DIR,
-      branch: 'feat/heal-gate',
+      branch: 'feat/PMR-HEAL1-heal-gate',
     })
     assert.equal(getActiveFlowRef(), 'PMR-HEAL1')
     resetBinding()
