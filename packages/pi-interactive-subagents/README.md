@@ -274,6 +274,126 @@ Boundary: **generic tools (Bash, file edits) have no exactly-once protection.** 
 
 Receive-side delivery dedup (`delivered` sentinels) is a separate mechanism (PMR-KY0E) and is unchanged by this.
 
+### Co-extension state events #state-events
+
+Other extensions can observe subagent state without parsing the status widget,
+importing internal stores, or reading durable records. This extension publishes
+versioned snapshots on the Pi extension event bus
+(`ExtensionAPI.events`). Declarations below are the public contract, reproduced
+from `pi-extension/subagents/state-events.ts`.
+
+```ts
+export const SUBAGENT_STATE_CHANNEL = 'pi-my-rifle-subagents:state'
+
+export const SUBAGENT_STATE_EVENT_VERSION = 1
+
+export type SubagentStateStatus =
+  | 'starting'
+  | 'working'
+  | 'blocked'
+  | 'waiting'
+  | 'stalled'
+  | 'lost'
+
+export interface SubagentStateEntry {
+  id: string
+  name: string
+  status: SubagentStateStatus
+}
+
+export interface SubagentStateEvent {
+  type: 'snapshot' | 'stopped'
+  version: 1
+  incarnation: string
+  seq: number
+  emittedAt: string
+  agents: SubagentStateEntry[]
+}
+```
+
+#### Semantics
+
+- **Push-only full snapshots.** No deltas. Every event carries the complete set
+  of live agents, so a consumer replaces its view instead of merging.
+- **Disappearance = settled.** A child that completed or was lost is simply
+  absent from the next snapshot. `'lost'` is a **reserved** status value that is
+  never emitted live; it stays in the union so exhaustive `switch` statements are
+  forward-stable.
+- **Durable records stay authoritative for outcome detail.** The exit status,
+  result payload, activity file, etc. are not in this event — read the durable
+  assignment/result records (or `inspectResultRef`) for that. The state event is
+  observation only.
+- **Envelope.** `version` (schema version, currently `1`), `incarnation` (UUID
+  per publisher module load — a `/reload` starts a new incarnation and `seq`
+  restarts at 1), `seq` (1-based, strictly monotonic **within** an incarnation),
+  `emittedAt` (ISO 8601), `type` (`'snapshot'` | `'stopped'`).
+- **`'stopped'`.** Emitted once, with `agents: []`, when the parent session shuts
+  down cleanly. Use it to clear your view.
+- **Ordering.** Track the latest `incarnation` you have seen and drop events from
+  older ones. Use `seq` only to detect out-of-order or duplicated delivery inside
+  the current incarnation — it is not a cross-restart cursor.
+- **Nothing else is projected.** Per entry only `id`, `name`, `status`. Task
+  prompts, message bodies, `cwd`, session/activity file paths, claim PIDs, pane
+  and tab ids, worktree paths, and usage are deliberately excluded and are
+  covered by a key-set contract test.
+
+#### Subscribing
+
+Subscribe at **extension-body load**, not inside your own `session_start`
+handler. The publisher emits its initial snapshot from the parent session's
+`session_start`; if you wait for your own `session_start` you may miss it and see
+nothing until the next transition.
+
+```ts
+// The subscriber's own copy of the contract, trimmed to the fields it reads.
+// Type-only imports of the published declarations are fine; importing the
+// publisher's module to READ state is not (see "Dual module instances").
+type StateEventView = {
+  type: 'snapshot' | 'stopped'
+  incarnation: string
+  seq: number
+  agents: Array<{ id: string; name: string; status: string }>
+}
+
+export default function (pi: ExtensionAPI) {
+  // Extension-body load — guarantees receipt of the initial snapshot.
+  pi.events.on('pi-my-rifle-subagents:state', (event: StateEventView) => {
+    // v1 is additive-only: read the documented keys, ignore unknown fields.
+    if (event.type === 'stopped') return // publisher session ended
+    renderAgentList(event.agents) // full snapshot: replace, never merge
+  })
+}
+```
+
+Keep a `'lost'` arm in any exhaustive `switch` on `status` even though it never
+arrives live — it is part of the v1 union and removing it would be a breaking
+change.
+
+#### Scope caveats
+
+- **Per-process bus only.** There is no cross-process delivery. Subscribers must
+  run in the same Pi process as the publisher.
+- **Children never publish.** Only the parent session emits; subagent sessions
+  do not publish state events even though their own `session_start` /
+  `session_shutdown` hooks run.
+- **Dual module instances.** Pi loads this extension's entrypoint directly, while
+  a co-extension may import the same source through the workspace package root —
+  those can be distinct module instances, and only the entrypoint instance wires
+  emissions. Subscribe via `pi.events`; never read state from a module import
+  (importing the types is fine, importing the sequencer or a store is not).
+- **Status refresh disabled.** With `status.enabled: false` the 1s status tick
+  does not run, so live kind drift (`stalled`, `waiting`, recovered) is not
+  published. Spawn, `working`, settlement and `stopped` emissions still fire —
+  they hang on the durable/Map seams, not the tick.
+
+#### Versioning policy
+
+`SUBAGENT_STATE_EVENT_VERSION` is `1` and **v1 is additive-only**: consumers MUST
+ignore unknown fields, and publishers MAY add fields without bumping the version.
+Breaking changes (removed or renamed fields, changed semantics) bump the constant.
+A key-set contract test pins the current payload so any addition is a deliberate
+version-policy decision rather than silent drift.
+
 ## Configuration
 
 Config lives at `~/.pi/agent/pi-subagents/config.json` (created with defaults on first run).
