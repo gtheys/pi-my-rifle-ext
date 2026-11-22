@@ -3,7 +3,7 @@
 // Harness mirrors land-tool.test.ts landExecute, extended with the
 // healBinding seam (last positional dep).
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { after, test } from 'node:test'
@@ -16,8 +16,9 @@ import {
 import { setAvenSessionCwd } from '../index.ts'
 import type { SuiteRunner } from '../tools/land.ts'
 import { createLandingState, registerLandTool } from '../tools/land.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
-const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-land-heal-bin-'))
+const BIN_DIR = mkTmpDir('pi-flow-land-heal-bin-')
 writeFileSync(
   path.join(BIN_DIR, 'aven'),
   `#!/bin/sh\necho '{"ref":"PMR-ABC1","labels":["review-passed"]}'\n`,

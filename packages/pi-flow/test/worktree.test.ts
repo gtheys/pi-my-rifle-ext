@@ -783,7 +783,6 @@ test('parseCreateResult: non-JSON returns empty fields, never throws', () => {
 
 // --- worktree tool: bind action (PMR-8JVY) ---
 
-import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
@@ -794,6 +793,7 @@ import {
   setFlowWorktree,
 } from '../flow/worktree-context.ts'
 import worktreeExtension from '../worktree/index.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 type BindExecute = (
   toolCallId: string,
@@ -894,7 +894,7 @@ test('worktree bind: rejects a nonexistent path', async () => {
 
 test('worktree bind: refuses without an active flow ref', async () => {
   const execute = makeWorktreeTool()
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const dir = mkTmpDir('wt-bind-')
   setActiveFlowRef(null)
   const result = await execute(
     'call-3',
@@ -919,7 +919,7 @@ test('setFlowWorktree: reports skipped bind when no flow is active (create path)
 })
 
 test('worktree bind: binds the worktree to the active flow ref', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const dir = mkTmpDir('wt-bind-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }])
   setActiveFlowRef('PMR-TEST')
   const result = await execute(
@@ -939,7 +939,7 @@ test('worktree bind: binds the worktree to the active flow ref', async () => {
 })
 
 test('worktree bind: resolves a relative path against the session cwd', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const dir = mkTmpDir('wt-bind-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }])
   setActiveFlowRef('PMR-TEST')
   const result = await execute(
@@ -954,7 +954,7 @@ test('worktree bind: resolves a relative path against the session cwd', async ()
 })
 
 test('worktree bind: rejects a path herdr does not know', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const dir = mkTmpDir('wt-bind-')
   const execute = makeWorktreeTool([])
   setActiveFlowRef('PMR-TEST')
   const result = await execute(
@@ -969,7 +969,7 @@ test('worktree bind: rejects a path herdr does not know', async () => {
 })
 
 test('worktree bind: rejects a branch mismatch and reports the actual branch', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const dir = mkTmpDir('wt-bind-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/actual' }])
   setActiveFlowRef('PMR-TEST')
   const result = await execute(
@@ -984,7 +984,7 @@ test('worktree bind: rejects a branch mismatch and reports the actual branch', a
 })
 
 test('worktree bind: reports a replaced binding', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wt-bind-'))
+  const dir = mkTmpDir('wt-bind-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }])
   setActiveFlowRef('PMR-TEST')
   setFlowWorktree('/tmp/old-binding', 'fix/old')

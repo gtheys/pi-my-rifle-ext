@@ -6,7 +6,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { promises as fs } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
@@ -30,9 +29,10 @@ import {
   SERVER_PROTOCOL_VERSION,
 } from '../server/daemon.ts'
 import { PENDING_SCHEMA } from '../server/pending.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
-function mkAgentDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'pi-flow-daemon-test-'))
+function mkAgentDir(): string {
+  return mkTmpDir('pi-flow-daemon-test-')
 }
 
 function makeEvent(ref: string, kind: 'run-start'): FlowRunEvent {
@@ -318,7 +318,7 @@ test('pendingDirPath sits next to runs/ under pi-flow/', () => {
 })
 
 test('maintainPending: parked state writes a record, stable across rescan', async () => {
-  const pendingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-flow-pend-'))
+  const pendingDir = mkTmpDir('pi-flow-pend-')
   const state = parkedState('PMR-PP1', '2026-11-15T01:00:00Z')
   await maintainPending(pendingDir, 'PMR-PP1', state)
   const raw = await fs.readFile(path.join(pendingDir, 'PMR-PP1.json'), 'utf8')

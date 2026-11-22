@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import { test } from 'node:test'
 import { collectSpawnNotes, parseSpawnNote } from '../flow/cost.ts'
 import {
@@ -11,6 +8,7 @@ import {
   recordRunEvent,
   runStatePath,
 } from '../run-state.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 type SpawnRecordEvent = Extract<
   import('../run-state.ts').FlowRunEvent,
@@ -229,7 +227,7 @@ test('spawn-record: mixed journal rolls up structured and legacy notes', () => {
 })
 
 test('spawn-record: recordRunEvent appends the journal line and never touches the projection', async () => {
-  const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-spawn-record-'))
+  const agentDir = mkTmpDir('pi-flow-spawn-record-')
   const ref = 'PMR-C998'
   const statePath = runStatePath(agentDir, ref)
   assert.ok(statePath !== null)

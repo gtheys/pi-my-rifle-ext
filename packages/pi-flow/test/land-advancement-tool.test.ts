@@ -6,8 +6,7 @@
 // registerLandTool argument; before the gate exists the argument is ignored,
 // which is exactly the bug these tests pin.
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
+import { chmodSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { after, test } from 'node:test'
 import { setAvenSessionCwd } from '../index.ts'
@@ -20,8 +19,9 @@ import type {
 import { effectDeclarationId } from '../run-state.ts'
 import type { SuiteRunner } from '../tools/land.ts'
 import { createLandingState, registerLandTool } from '../tools/land.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
-const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-land-adv-bin-'))
+const BIN_DIR = mkTmpDir('pi-flow-land-adv-bin-')
 writeFileSync(
   path.join(BIN_DIR, 'aven'),
   `#!/bin/sh\necho '{"ref":"PMR-ABC1","labels":["review-passed"]}'\n`,

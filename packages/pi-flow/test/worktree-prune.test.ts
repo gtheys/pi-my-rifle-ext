@@ -3,8 +3,7 @@
 // encode prior intent and are not modified.
 
 import assert from 'node:assert/strict'
-import { mkdtemp, symlink } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { symlink } from 'node:fs/promises'
 import path from 'node:path'
 import { afterEach, test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
@@ -17,6 +16,7 @@ import {
 } from '../run-state.ts'
 import { parseWorkspaces, workspaceList } from '../worktree/herdr.ts'
 import worktreeExtension from '../worktree/index.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 // --- parseWorkspaces (herdr.ts defensive parsing) ---
 
@@ -320,10 +320,10 @@ function makePruneTool(
 }
 
 // A dangling fixture needs a checkout_path that genuinely does not exist on
-// disk (the prune action stats it): mkdtemp gives a guaranteed-fresh base,
+// disk (the prune action stats it): mkTmpDir gives a guaranteed-fresh base,
 // so anything under it named 'gone' does not exist.
 async function makeDanglingBase(): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), 'wt-prune-'))
+  return mkTmpDir('wt-prune-')
 }
 
 function danglingWorkspace(checkoutPath: string, workspaceId = 'wPR'): unknown {

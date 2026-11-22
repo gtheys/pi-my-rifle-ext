@@ -4,15 +4,15 @@
 // (same pattern as aven-workspace-cwd.test.ts) to satisfy the review-passed
 // label gate.
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
+import { chmodSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { after, test } from 'node:test'
 import { readAvenLabels, setAvenSessionCwd } from '../index.ts'
 import type { SuiteRunner } from '../tools/land.ts'
 import { createLandingState, registerLandTool } from '../tools/land.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
-const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-land-bin-'))
+const BIN_DIR = mkTmpDir('pi-flow-land-bin-')
 writeFileSync(
   path.join(BIN_DIR, 'aven'),
   `#!/bin/sh\necho '{"ref":"PMR-ABC1","labels":["review-passed"]}'\n`,
@@ -633,7 +633,7 @@ test('receipt adoption: labels failing landDecision are refused before the looku
     // Point the fake aven at labels WITHOUT review-passed: the writeable
     // label fixture lives in the shim; use a second bin dir whose aven
     // returns no labels.
-    const noLabelBin = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-nolabel-'))
+    const noLabelBin = mkTmpDir('pi-flow-nolabel-')
     const avenPath = path.join(noLabelBin, 'aven')
     writeFileSync(
       avenPath,

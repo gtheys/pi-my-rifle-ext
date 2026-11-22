@@ -8,20 +8,19 @@ import assert from 'node:assert/strict'
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { after, test } from 'node:test'
 import { setAvenSessionCwd } from '../index.ts'
 import type { ReceiptJournal, ReceiptQuery } from '../run-state.ts'
 import { registerPhaseCompleteTool } from '../tools/phase-complete.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
-const BIN_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-pc-bin-'))
+const BIN_DIR = mkTmpDir('pi-flow-pc-bin-')
 const LABEL_STATE = path.join(BIN_DIR, 'labels.txt')
 const EDIT_FAILS = path.join(BIN_DIR, 'edit-fails')
 // PMR-3MTZ: the spec-answer receipt file the fake `aven show --full` serves

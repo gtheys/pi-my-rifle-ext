@@ -11,7 +11,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
@@ -19,8 +18,9 @@ import {
   defaultSuiteRunner,
   detectLandTestCommand,
 } from '../tools/land.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
-const TMP_ROOT = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-land-detect-'))
+const TMP_ROOT = mkTmpDir('pi-flow-land-detect-')
 
 function makeRepo(files: string[]): string {
   const dir = mkdtempSync(path.join(TMP_ROOT, 'repo-'))

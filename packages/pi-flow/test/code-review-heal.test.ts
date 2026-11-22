@@ -4,8 +4,7 @@
 // (resolveReviewWorktree underneath) and keep the existing refusal prefixes
 // byte-for-byte, appending only the /flow recovery line.
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
+import { chmodSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
@@ -22,12 +21,13 @@ import {
   registerDeviationReviewTool,
   resolveDeviationCwd,
 } from '../tools/deviation.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 // productionReviewDeps wires exists to real existsSync, so the herdr fixture
 // must point at a real temp dir (same pattern as test/code-review.test.ts).
-const HEAL_WT_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-heal-wt-'))
+const HEAL_WT_DIR = mkTmpDir('pi-flow-heal-wt-')
 
-const AVEN_FAKE_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-heal-bin-'))
+const AVEN_FAKE_DIR = mkTmpDir('pi-flow-heal-bin-')
 writeFileSync(path.join(AVEN_FAKE_DIR, 'aven'), '#!/bin/sh\nexit 0\n')
 chmodSync(path.join(AVEN_FAKE_DIR, 'aven'), 0o755)
 

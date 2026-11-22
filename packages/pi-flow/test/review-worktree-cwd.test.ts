@@ -5,18 +5,18 @@
 // merge-base --is-ancestor ancestor check; aven/herdr probes fail so the
 // fallback sources fail honestly.
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { setActiveFlowRef, setFlowWorktree } from '../flow/worktree-context.ts'
 import reviewExtension, { resolveCommitReviewCwd } from '../review/review.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 const SESSION_CWD = '/tmp/main-checkout'
 // productionReviewDeps wires exists to real existsSync, so the bound path
 // must exist on disk even in scripted tests.
-const WORKTREE = mkdtempSync(path.join(tmpdir(), 'rev-cwd-'))
+const WORKTREE = mkTmpDir('rev-cwd-')
 const COMMON_DIR = '/repo/.git'
 const BRANCH = 'fix/something'
 const SHA = 'a'.repeat(40)
@@ -261,7 +261,7 @@ test('/review commit with an active flow runs against the verified worktree', as
   assert.ok(handler, 'review command registered')
   // A worktree carrying project review guidelines; their presence in the
   // sent prompt proves the prompt was built with the worktree cwd.
-  const wt = mkdtempSync(path.join(tmpdir(), 'rev-cmd-wt-'))
+  const wt = mkTmpDir('rev-cmd-wt-')
   mkdirSync(path.join(wt, '.pi'), { recursive: true })
   // loadProjectReviewGuidelines: .pi marks the project root; the file sits
   // NEXT to it, not inside it.
@@ -334,7 +334,7 @@ test('/review commit with the sha off the flow branch keeps the session checkout
   reviewExtension(mockPi)
   const handler = commands.get('review')
   assert.ok(handler, 'review command registered')
-  const wt = mkdtempSync(path.join(tmpdir(), 'rev-cmd-wt-off-'))
+  const wt = mkTmpDir('rev-cmd-wt-off-')
   mkdirSync(path.join(wt, '.pi'), { recursive: true })
   // loadProjectReviewGuidelines: .pi marks the project root; the file sits
   // NEXT to it, not inside it.

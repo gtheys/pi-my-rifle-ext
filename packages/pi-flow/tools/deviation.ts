@@ -8,6 +8,7 @@
 // 0 deviations. Pure seams (prompt composition + result mapping) are exported
 // for tests; execute only wires them to the subagent path.
 
+import { rmSync } from 'node:fs'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -392,55 +393,88 @@ export function registerDeviationReviewTool(
       }
       // AIDEV-NOTE: large diffs go to a temp file, not the prompt (see
       // DeviationReviewInput.diffPath). Falls back to inline on write failure.
+      // AIDEV-NOTE: PMR-ESPA — the deviation-diff- mkdtemp dir must not leak:
+      // it is removed in the finally below once startDeviationReview has
+      // settled, covering the success path AND every error return (spawn
+      // failure, nonzero exit, gate-verification failure, diff_lines_read
+      // mismatch, parse error). A write failure after a successful mkdtemp
+      // removes the orphaned dir immediately.
       let diffPath: string | undefined
+      let diffDir: string | undefined
       if (resolved.value.diff.length > DEVIATION_INLINE_DIFF_MAX) {
         try {
-          const dir = await mkdtemp(join(tmpdir(), 'deviation-diff-'))
-          diffPath = join(dir, 'pinned.diff')
+          diffDir = await mkdtemp(join(tmpdir(), 'deviation-diff-'))
+          diffPath = join(diffDir, 'pinned.diff')
           await writeFile(diffPath, resolved.value.diff)
         } catch {
+          if (diffDir !== undefined) {
+            rmSync(diffDir, { recursive: true, force: true })
+            diffDir = undefined
+          }
           diffPath = undefined
         }
       }
-      const prompt = deviationReviewPromptFrom(
-        params,
-        resolved.value,
-        target,
-        diffPath,
-      )
-      const rangeLine = describeRange(resolved.value.flowRange)
-      let result: SubagentResult
       try {
-        result = await startDeviationReview({ ...ctx, cwd }, prompt, params.ref)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        return toolResult(
-          `deviation_review: reviewer spawn failed — ${message}. Re-run the deviation_review tool when the subagent mux is available. NEVER treat this as 0 deviations.`,
-          { ok: false as const, reason: message },
-          { isError: true },
-        )
-      }
-      if (result.exitCode !== 0 || result.errorMessage !== undefined) {
-        return toolResult(
-          failedResult(result),
-          {
-            ok: false as const,
-            reason: result.errorMessage ?? `exit code ${result.exitCode}`,
-          },
-          { isError: true },
-        )
-      }
-      // AIDEV-NOTE: PMR-6EEW — verify the verifier BEFORE parsing findings:
-      // echo contract first, staleness second. A mismatch or stale verdict
-      // is a hard error; the gate re-runs on the (possibly new) range.
-      if (target !== null) {
-        const verification = await verifyDeviationGateResult(
-          exec,
-          cwd,
+        const prompt = deviationReviewPromptFrom(
+          params,
+          resolved.value,
           target,
-          result.summary,
+          diffPath,
         )
-        if (!verification.ok) {
+        const rangeLine = describeRange(resolved.value.flowRange)
+        let result: SubagentResult
+        try {
+          result = await startDeviationReview(
+            { ...ctx, cwd },
+            prompt,
+            params.ref,
+          )
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return toolResult(
+            `deviation_review: reviewer spawn failed — ${message}. Re-run the deviation_review tool when the subagent mux is available. NEVER treat this as 0 deviations.`,
+            { ok: false as const, reason: message },
+            { isError: true },
+          )
+        }
+        if (result.exitCode !== 0 || result.errorMessage !== undefined) {
+          return toolResult(
+            failedResult(result),
+            {
+              ok: false as const,
+              reason: result.errorMessage ?? `exit code ${result.exitCode}`,
+            },
+            { isError: true },
+          )
+        }
+        // AIDEV-NOTE: PMR-6EEW — verify the verifier BEFORE parsing findings:
+        // echo contract first, staleness second. A mismatch or stale verdict
+        // is a hard error; the gate re-runs on the (possibly new) range.
+        if (target !== null) {
+          const verification = await verifyDeviationGateResult(
+            exec,
+            cwd,
+            target,
+            result.summary,
+          )
+          if (!verification.ok) {
+            await journalGateEvent(
+              {
+                kind: 'gate-decision',
+                at: new Date().toISOString(),
+                ref: params.ref,
+                gate: 'deviation',
+                targetId: gateTargetId(target),
+                status: verification.status,
+              },
+              writer,
+            )
+            return toolResult(
+              `deviation_review: gate integrity check FAILED (${verification.status}) — ${verification.reason}. The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
+              { ok: false as const, reason: verification.reason },
+              { isError: true },
+            )
+          }
           await journalGateEvent(
             {
               kind: 'gate-decision',
@@ -448,44 +482,32 @@ export function registerDeviationReviewTool(
               ref: params.ref,
               gate: 'deviation',
               targetId: gateTargetId(target),
-              status: verification.status,
+              status: 'pass',
             },
             writer,
           )
-          return toolResult(
-            `deviation_review: gate integrity check FAILED (${verification.status}) — ${verification.reason}. The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
-            { ok: false as const, reason: verification.reason },
-            { isError: true },
-          )
         }
-        await journalGateEvent(
-          {
-            kind: 'gate-decision',
-            at: new Date().toISOString(),
-            ref: params.ref,
-            gate: 'deviation',
-            targetId: gateTargetId(target),
-            status: 'pass',
-          },
-          writer,
-        )
-      }
-      if (diffPath !== undefined) {
-        const check = checkDiffLinesRead(resolved.value.diff, result.summary)
-        if (!check.ok) {
-          return toolResult(
-            `deviation_review: reviewer did not prove it read the whole diff file (diff_lines_read: expected ${check.expected}, got ${check.got ?? 'none'}). The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
-            { ok: false as const, reason: 'diff_lines_read mismatch' },
-            { isError: true },
-          )
+        if (diffPath !== undefined) {
+          const check = checkDiffLinesRead(resolved.value.diff, result.summary)
+          if (!check.ok) {
+            return toolResult(
+              `deviation_review: reviewer did not prove it read the whole diff file (diff_lines_read: expected ${check.expected}, got ${check.got ?? 'none'}). The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
+              { ok: false as const, reason: 'diff_lines_read mismatch' },
+              { isError: true },
+            )
+          }
+        }
+        const mapped = deviationResultToToolResult(result.summary)
+        const first = mapped.content[0]
+        if (first !== undefined && first.type === 'text') {
+          first.text = `Resolved ${rangeLine}\n${first.text}`
+        }
+        return mapped
+      } finally {
+        if (diffDir !== undefined) {
+          rmSync(diffDir, { recursive: true, force: true })
         }
       }
-      const mapped = deviationResultToToolResult(result.summary)
-      const first = mapped.content[0]
-      if (first !== undefined && first.type === 'text') {
-        first.text = `Resolved ${rangeLine}\n${first.text}`
-      }
-      return mapped
     },
   })
 }

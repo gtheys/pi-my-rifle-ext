@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
+import { chmodSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import type { ReceiptJournal } from '../run-state.ts'
@@ -21,6 +20,7 @@ import {
   titleBranch,
 } from '../tools/code-review-parse.ts'
 import type { HerdrWorktree } from '../worktree/herdr.ts'
+import { mkTmpDir } from './tmpdir.ts'
 
 // --- aven note parser (worktree notes) ---
 
@@ -451,7 +451,7 @@ test('buildCodeReviewGatePrompt: instructs the code_review tool call', () => {
 
 // --- registered execute: ask-unavailable fail-closed (PMR-R5VB phase 4) ---
 
-const AVEN_FAKE_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-cr-bin-'))
+const AVEN_FAKE_DIR = mkTmpDir('pi-flow-cr-bin-')
 writeFileSync(path.join(AVEN_FAKE_DIR, 'aven'), '#!/bin/sh\nexit 0\n')
 chmodSync(path.join(AVEN_FAKE_DIR, 'aven'), 0o755)
 
@@ -594,7 +594,7 @@ test('execute: ask_user_question unavailable fails closed (no marker, no note)',
 // dir. Resolution settles on the herdr source: aven show returns a title but
 // no notes.
 
-const CR_WT_DIR = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-cr-wt-'))
+const CR_WT_DIR = mkTmpDir('pi-flow-cr-wt-')
 
 function gateExec(tuicr: { listStdout: string; commentsStdout: string }): {
   exec: MockExec
