@@ -71,7 +71,7 @@ Agent-callable tools registered by pi-flow:
 | `flow_run_attempt` | Owns the implement-phase retry budget: 3 total attempts, the 3rd failure escalates and further attempts are refused. |
 | `flow_submit` | Advisory step-output journal: reports step evidence (plan written, test run, PR/gate check, merge outcome) per phase. Never gates completion — a warned submission never blocks a phase. |
 | `spec_approve` | Only path from plan-state `review` → `approved` (pins the `plan` label, moves the ticket to todo). |
-| `resolve_spec_path` / `resolve_feature_path` | Canonical spec/plan.md path resolution for a Jira ticket or personal feature (absorbed from pi-planning). |
+| `resolve_spec_path` / `resolve_feature_path` / `resolve_notes_path` | Canonical flow-document path resolution — spec/plan.md for a Jira ticket or personal feature, and generic notes paths via `resolve_notes_path` (`subdir` allowlist: `""` root, `prs`, `specs`, `research`, `tickets`). The single contract for every document path — never hand-roll (absorbed from pi-planning). |
 | `open_in_pane` | Opens a file with nvim in a herdr pane for review (absorbed from pi-planning). Call it only after the file write returned; it polls ~1s for the file. Called from a subagent, it opens a durable `spec-review` tab instead so the pane survives subagent cleanup. |
 | `jira_create_branch` | Derives and creates a git branch from a Jira issue (absorbed from pi-planning). Requires `acli` + `git-town`. |
 | `review` | Starts a code review of uncommitted changes / branch / commit / PR / folder / custom instructions (absorbed from pi-review). |

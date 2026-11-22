@@ -412,17 +412,16 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
 ### plan-tools/ (absorbed from pi-planning)
 
 - **Files:** `packages/pi-flow/plan-tools/` (`resolve-spec-path.ts`,
-  `resolve-feature-path.ts`, `jira-branch-tool.ts`, `jira-branch.ts`,
-  `helpers.ts`); `open_in_pane` lives in `spec-review/open-in-pane.ts`.
-- **Tools:** `resolve_spec_path`, `resolve_feature_path`, `open_in_pane`,
-  `jira_create_branch`.
+  `resolve-feature-path.ts`, `resolve-notes-path.ts`, `jira-branch-tool.ts`,
+  `jira-branch.ts`, `helpers.ts`); `open_in_pane` lives in `spec-review/open-in-pane.ts`.
+- **Tools:** `resolve_spec_path`, `resolve_feature_path`, `resolve_notes_path`,
+  `open_in_pane`, `jira_create_branch`.
 - **Command:** `/review-spec <path>` — opens a plan/spec with **nvim** in a
   herdr `spec-review` pane; non-fatal when herdr is missing.
-- **Spec path convention:** `<notes-root-or-repo>/notes/specs/<JIRA_ID>__<slug>.md`
-  (slug = first 5 lowercase words, non-alnum stripped; `$LLM_NOTES_ROOT` overrides
-  for a central notes vault).
-- **Feature path convention:** `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`
-  if set, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md`.
+- **Path conventions:** the three resolver tools (`resolve_spec_path`,
+  `resolve_feature_path`, `resolve_notes_path`) are the contract for every
+  flow-document path — never hand-roll one. See the **Flow document paths**
+  section in the repo `AGENTS.md` for the layout.
 - **`jira_create_branch`** derives a branch from a Jira issue (type → prefix,
   summary → slug), optional git-town parent to `develop`. Requires `acli` +
   `git-town`. `/plan` is owned solely by pi-interactive-subagents; pi-flow

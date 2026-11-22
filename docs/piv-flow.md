@@ -94,10 +94,9 @@ lifecycle (`/flow`) starts at plan and requires an existing ticket ref;
    subagents to map the code. **Debug flow** (`--debug` or symptom input):
    drive the user's `debug` skill to a root cause, then optionally scout.
 2. Write a markdown artifact to `notes/brainstorm/<date>-<slug>.md`
-   (`$LLM_NOTES_ROOT/<repo>/notes/brainstorm/` when set, else
-   `<git-toplevel>/notes/brainstorm/`). Feature sections: Questions,
-   Findings, Diagrams, Ticket implications. Debug sections: Questions,
-   Findings, Hypothesis chain, Evidence.
+   (root per the **Flow document paths** contract in the repo `AGENTS.md`).
+   Feature sections: Questions, Findings, Diagrams, Ticket implications.
+   Debug sections: Questions, Findings, Hypothesis chain, Evidence.
 3. **Ticket-creation gate**: propose destination (work: Jira project via
    acli; personal: aven workspace + project) and wait for an explicit
    "Confirm". Only then create the ticket, set the type label
@@ -143,8 +142,8 @@ workitem view` fallback.
   3. `oneshot`: type label `oneshot`, no epic — the ticket description IS
      the plan.
   4. `plan`: create the epic + subtasks (`aven epic add`), label `plan`,
-     write `plan.md` to `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`
-     (env fallback) or `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md`.
+     write `plan.md` to the path from `resolve_feature_path` (layout: **Flow
+     document paths** in the repo `AGENTS.md`).
   5. Status `todo` + `planned` label either way.
 
 Gate precondition for later phases: the `planned` label.
@@ -306,8 +305,8 @@ Example runs:
 | What | Rule |
 | --- | --- |
 | Devctl scripts (validate, work mode) | `<first workRoot>/sh-devctl/scripts` (`resolveDevctlScriptsDir`). No `workRoots` configured → config error surfaced to the user, never a guess. |
-| Brainstorm artifacts | `$LLM_NOTES_ROOT/<repo>/notes/brainstorm/<date>-<slug>.md`, else `<git-toplevel>/notes/brainstorm/…` |
-| Personal plan.md | `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md` |
+| Brainstorm artifacts | `notes/brainstorm/<date>-<slug>.md` under the root named by the **Flow document paths** contract in the repo `AGENTS.md` |
+| Personal plan.md | `resolve_feature_path` — layout in the **Flow document paths** contract in the repo `AGENTS.md` |
 | Branch (work) | `jira_create_branch` from the Jira ref |
 | Branch (personal) | `feat/<slug>` from the ticket slug |
 

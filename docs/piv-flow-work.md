@@ -305,9 +305,9 @@ on. It lands no lifecycle label; `/flow` starts at plan.
 **Steps:** one-question-at-a-time interview (each answer is a WAIT) →
 parallel scout subagents (async; codegraph is synced and named in scout
 tasks when available) → artifact to
-`$LLM_NOTES_ROOT/<repo>/notes/brainstorm/<date>-<slug>.md`, else
-`<git-toplevel>/notes/brainstorm/…`, with Questions / Findings / Diagrams /
-Ticket implications sections (debug: Hypothesis chain / Evidence) → gate.
+`notes/brainstorm/<date>-<slug>.md` under the root named by the **Flow
+document paths** contract in the repo `AGENTS.md`, with Questions / Findings /
+Diagrams / Ticket implications sections (debug: Hypothesis chain / Evidence) → gate.
 
 **WAIT — ticket-creation gate** (topic flow only). The agent proposes the
 most likely Jira project key via `ask_user_question` and requires an
@@ -515,7 +515,7 @@ Artifact and path resolution:
 | Artifact | Path |
 | --- | --- |
 | Devctl scripts (validate steps 2–3) | `<first workRoot>/sh-devctl/scripts` — no workRoots configured → loud config error, never a guess |
-| Brainstorm artifact | `$LLM_NOTES_ROOT/<repo>/notes/brainstorm/<date>-<slug>.md`, else `<git-toplevel>/notes/brainstorm/…` |
+| Brainstorm artifact | `notes/brainstorm/<date>-<slug>.md` under the root named by the **Flow document paths** contract in the repo `AGENTS.md` |
 | plan.md | owned by the `feature-plan-aven` skill (spec path resolution) |
 | Run journal | `~/.pi/agent/pi-flow/runs/<ref>.json` + `<ref>.journal.jsonl` |
 | Config | `~/.pi/agent/pi-flow/config.json` (`workRoots`, `avenWorkspace`) |

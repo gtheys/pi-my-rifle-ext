@@ -24,6 +24,20 @@ When working in this repository, read the OpenWiki quickstart first, then follow
 - Avoid `any`, `@ts-ignore`, and unchecked prototype assumptions. Use narrow structural types for Pi internals.
 - Conventional Commit subjects: `fix(pi-tree): ...`, `feat(pi-mention-skill): ...`.
 
+## Flow document paths #paths
+
+Every flow document — `plan.md`, Jira specs, brainstorm research, scout findings, review artifacts, generic notes, PR descriptions — follows the env-var standard. This section is the **single source of truth** for the layout; OpenWiki and `docs/piv-flow*.md` reference it instead of restating the full shape.
+
+- **Personal mode:** write under `$PERSONAL_FEATURES/<repo>/…`.
+- **Work mode:** write under `$LLM_NOTES_ROOT/<repo>/…`.
+- **Neither env var set:** repo-local fallback (`<git-toplevel>/…`) only. A repo-local write is never taken while the corresponding env var is set.
+- **Paths come from the pi-flow resolver tools — never hand-rolled:**
+  - `resolve_feature_path` — personal `plan.md` (and its directory, the shared artifact dir for `scout-context.md` / `review.md`).
+  - `resolve_spec_path` — Jira-linked specs (`…/notes/specs/<JIRA>__<slug>.md`).
+  - `resolve_notes_path` — generic notes paths; takes a `subdir` from a fixed allowlist (`""` for the notes root, `prs`, `specs`, `research`, `tickets`) and returns `$LLM_NOTES_ROOT/<repo>/notes[/<subdir>]` (or the repo-local fallback).
+- **Brainstorm research** uses the same env-var standard with `notes/brainstorm/` as the fixed subdir; pi-flow exposes this internally as `resolveBrainstormDir` (`packages/pi-flow/brainstorm/paths.ts`) rather than as a registered resolver tool, because the subdir is not configurable.
+- **AIDEV comments near resolver tools in `packages/pi-flow/plan-tools/helpers.ts` are the inline record of these contracts** — update them together with this section.
+
 ## Extension-specific guidance
 
 - Packages are independently installable. Avoid cross-package runtime dependencies unless the target is published and declared in the consuming package.

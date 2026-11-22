@@ -243,9 +243,9 @@ on. It lands no lifecycle label; `/flow` still starts at plan.
 **Steps:** one-question-at-a-time interview (each answer is a WAIT) →
 parallel scout subagents (async; if codegraph is available it is synced and
 named in scout tasks) → artifact to
-`$LLM_NOTES_ROOT/<repo>/notes/brainstorm/<date>-<slug>.md`, else
-`<git-toplevel>/notes/brainstorm/…`, with Questions / Findings / Diagrams /
-Ticket implications sections (debug: Hypothesis chain / Evidence) → gate.
+`notes/brainstorm/<date>-<slug>.md` under the root named by the **Flow
+document paths** contract in the repo `AGENTS.md`, with Questions / Findings /
+Diagrams / Ticket implications sections (debug: Hypothesis chain / Evidence) → gate.
 
 **WAIT — ticket-creation gate.** The agent proposes an aven workspace AND
 project via `ask_user_question` and requires an explicit "Confirm" before
@@ -281,8 +281,8 @@ own flow:
    - **plan**: ticket becomes the epic (`aven edit <ref> --epic on`),
      subtasks created (`aven add … --status backlog`, `aven epic add`),
      `plan` type label, plan.md written to
-     `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md` or
-     `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md`, location recorded as
+     the path from `resolve_feature_path` (layout: **Flow document paths** in
+     the repo `AGENTS.md`), location recorded as
      `plan-path` metadata, and the file opened in a herdr nvim pane
      (`open_in_pane`, skippable — never blocks).
 6. **Spec review, both routes**: status → `todo`, metadata
@@ -456,8 +456,8 @@ Artifact paths:
 
 | Artifact | Path |
 | --- | --- |
-| Brainstorm artifact | `$LLM_NOTES_ROOT/<repo>/notes/brainstorm/<date>-<slug>.md`, else `<git-toplevel>/notes/brainstorm/…` |
-| plan.md | `$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else `<git-toplevel>/.pi/plans/<date>-<slug>/plan.md` |
+| Brainstorm artifact | `notes/brainstorm/<date>-<slug>.md` under the root named by the **Flow document paths** contract in the repo `AGENTS.md` |
+| plan.md | `resolve_feature_path` — layout in the **Flow document paths** contract in the repo `AGENTS.md` |
 | Run journal | `~/.pi/agent/pi-flow/runs/<ref>.json` + `<ref>.journal.jsonl` |
 | Config | `~/.pi/agent/pi-flow/config.json` (`workRoots`, `avenWorkspace`) |
 | Branch | `feat/<REF>-<slug>` (flow's feature ref + slug: lowercase, alphanumeric, max 5 words, dashes) |

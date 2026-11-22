@@ -185,11 +185,11 @@ with `unknown-ref`, check routing with `aven doctor`.
    Skim README/AGENTS.md/package.json enough to brief the scout.
 
 2. **Resolve plan path** — `resolve_feature_path(summary)` returns the
-   canonical absolute `plan.md` path
-   (`$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else
-   `.pi/plans/<date>-<slug>/plan.md`). Use verbatim; never hand-roll. Run this
-   before the scout: the directory containing that path is the artifact dir the
-   scout writes into.
+   canonical absolute `plan.md` path (layout: **Flow document paths** in the
+   repo `AGENTS.md`). Use verbatim; never hand-roll. Run this before the
+   scout: the directory containing that path is the artifact dir the scout
+   writes into — `scout-context.md` lives there too, so its path comes from
+   the resolver, never hand-rolled.
 
 3. **Scout** — read-only `scout` subagent maps the affected area (file
    structure, modules, conventions, similar features) into
