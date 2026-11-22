@@ -133,4 +133,8 @@ test('cleanupSandboxes: removes the roots and tightens the guard again', () => {
     () => assertSandboxCwd(root, 'after cleanup'),
     /is outside every registered sandbox root/,
   )
+  // AIDEV-NOTE: PMR-0RDM — cleanupSandboxes() emptied the PROCESS-WIDE
+  // registry, making every test appended after this one order-dependent.
+  // Re-register a throwaway root so later tests keep a valid sandbox.
+  registerSandbox(mkdtempSync(path.join(tmpdir(), 'gs-after-clean-')))
 })
