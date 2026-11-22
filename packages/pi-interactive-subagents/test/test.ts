@@ -16,7 +16,14 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { after, afterEach, before, describe, it } from 'node:test'
+import {
+  after,
+  afterEach,
+  before,
+  describe,
+  it,
+  type TestContext,
+} from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { visibleWidth } from '@mariozechner/pi-tui'
@@ -109,6 +116,19 @@ import {
 } from '../pi-extension/subagents/watermark.ts'
 
 const resolveDenyTools = subagentsModule.__test__.resolveDenyTools
+
+// AIDEV-NOTE (PMR-70GJ): chmod-based failure injection (chmodSync(dir,
+// 0o500) → EACCES) only forces the failure when the suite runs as NON-root —
+// as root the write succeeds and the test fails loudly (or worse, an
+// early-return variant reports green with zero coverage). Skip these tests
+// with a clear message when root.
+function skipIfRoot(t: TestContext): boolean {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    t.skip('chmod failure injection is ineffective as root (EACCES bypassed)')
+    return true
+  }
+  return false
+}
 
 /** withTempDir for async bodies: the temp dir must outlive the awaited run. */
 async function withTempDirAsync<T>(
@@ -7843,7 +7863,8 @@ describe('peer-bindings.ts (PMR-77KT)', () => {
     assert.equal(JSON.parse(readFileSync(path, 'utf8')).version, 1)
   })
 
-  it('touchPeerBinding is best-effort: an unwritable binding file does not throw', () => {
+  it('touchPeerBinding is best-effort: an unwritable binding file does not throw', (t) => {
+    if (skipIfRoot(t)) return
     // AIDEV-NOTE (PMR-77KT): touch runs AFTER writeEffectMemo in the handler,
     // so a throwing touch would fail an already-completed send. Lock the
     // best-effort contract: EACCES on the record must be swallowed and the
@@ -8874,7 +8895,8 @@ describe('subagent-done.ts message tools replay windows (PMR-JBEX / PMR-ZJCP)', 
     )
   })
 
-  it('(j) first-write failure then replay delivers to bound gen-1 despite same-name gen-2', async () => {
+  it('(j) first-write failure then replay delivers to bound gen-1 despite same-name gen-2', async (t) => {
+    if (skipIfRoot(t)) return
     await withTempDirAsync((dir) =>
       withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
         const releaseGen1 = publishPresence(
@@ -8965,7 +8987,8 @@ describe('subagent-done.ts message tools replay windows (PMR-JBEX / PMR-ZJCP)', 
     )
   })
 
-  it('(k) dead bound recipient fails closed: replay throws, no retarget to same-name gen-2', async () => {
+  it('(k) dead bound recipient fails closed: replay throws, no retarget to same-name gen-2', async (t) => {
+    if (skipIfRoot(t)) return
     await withTempDirAsync((dir) =>
       withMessageToolsEnv(dir, async ({ childId, root, messagePeerTool }) => {
         const releaseGen1 = publishPresence(
