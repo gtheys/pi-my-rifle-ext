@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
@@ -106,6 +109,56 @@ test('review tool: branch target with an empty resolved range fails loudly', asy
   assert.equal(result.isError, true)
   assert.match(result.content[0]?.text ?? '', /empty/i)
   assert.match(result.content[0]?.text ?? '', /main/)
+})
+
+// AIDEV-NOTE: PMR-1W7N — a non-flow branch review must never load pi-flow
+// config: a malformed config file used to make resolveMode throw BEFORE the
+// flow-base guard ran, replacing the friendly empty-range refusal with a raw
+// "config is invalid" exception. Mode is now a thunk resolved only after a
+// flow base is recorded, so this scenario keeps the friendly refusal.
+test('review tool: empty-range refusal survives a malformed pi-flow config', async () => {
+  const agentDir = mkdtempSync(path.join(tmpdir(), 'review-bad-config-'))
+  mkdirSync(path.join(agentDir, 'pi-flow'), { recursive: true })
+  writeFileSync(
+    path.join(agentDir, 'pi-flow', 'config.json'),
+    JSON.stringify({ workRoots: 'not-an-array' }),
+  )
+  const savedAgentDir = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = agentDir
+  try {
+    const { tools, mockPi } = makeGitMockPi({
+      mergeBase: 'abc123',
+      head: 'abc123',
+    })
+    reviewExtension(mockPi)
+    const tool = tools.find((t) => t.name === 'review')
+    assert.ok(tool, 'review tool registered')
+
+    const result = await tool.execute(
+      'call-1',
+      { target: { type: 'branch', branch: 'main' } },
+      new AbortController().signal,
+      undefined,
+      {
+        cwd: '/tmp/main-checkout',
+        hasUI: false,
+        mode: 'tui',
+        ui: { notify: () => {} },
+        sessionManager: {},
+      },
+    )
+
+    assert.equal(result.isError, true)
+    assert.match(result.content[0]?.text ?? '', /empty/i)
+    assert.doesNotMatch(result.content[0]?.text ?? '', /must be array/)
+  } finally {
+    if (savedAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR
+    } else {
+      process.env.PI_CODING_AGENT_DIR = savedAgentDir
+    }
+    rmSync(agentDir, { recursive: true, force: true })
+  }
 })
 
 test('review tool: branch target with a non-empty range proceeds past the guard', async () => {

@@ -350,11 +350,21 @@ export async function resolveBranchRefForReview(
   pi: ExtensionAPI,
   requestedBranch: string,
   cwd: string,
-  mode: WorkMode,
+  mode: WorkMode | (() => Promise<WorkMode>),
 ): Promise<string> {
   const recorded = await readFlowBase(execOf(pi), cwd)
   if (!recorded.ok) return requestedBranch
-  if (MODE_PROFILE[mode].baseResolution !== 'merge-base-local') {
+  // AIDEV-NOTE: PMR-1W7N — the mode is resolved LAZILY, only once a flow
+  // base is actually recorded: a non-flow branch review (or a hermetic mock
+  // test) never touches pi-flow config, so a malformed config file cannot
+  // turn the friendly empty-range refusal into a raw tool exception.
+  let resolvedMode: WorkMode
+  if (typeof mode === 'function') {
+    resolvedMode = await mode()
+  } else {
+    resolvedMode = mode
+  }
+  if (MODE_PROFILE[resolvedMode].baseResolution !== 'merge-base-local') {
     if (recorded.value.sha !== null) return recorded.value.sha
     return requestedBranch
   }
@@ -2618,12 +2628,15 @@ ${result.summary}`
       // name the agent typed or origin/<branch>.
       let branchRef = ''
       if (p.type === 'branch') {
-        const mode = await resolveMode(pi, reviewCwd)
+        // AIDEV-NOTE: PMR-1W7N — thunk, not a value: resolveMode loads
+        // pi-flow config (and throws on a malformed file), which must only
+        // happen once resolveBranchRefForReview confirms a recorded flow
+        // base. Plain non-flow `/review branch main` stays config-free.
         branchRef = await resolveBranchRefForReview(
           pi,
           p.branch,
           reviewCwd,
-          mode,
+          () => resolveMode(pi, reviewCwd),
         )
       }
       if (
