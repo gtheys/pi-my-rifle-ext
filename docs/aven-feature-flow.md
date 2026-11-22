@@ -151,7 +151,7 @@ The flow then runs on the EPIC, never on the synced ticket.
         │   "oneshot REF" → worker → tests → commit → done          │
         │                                                            │
         ▼  feature-plan-aven, stage 1 (author)                       │
-pickup → scout → path → interview → planner writes plan.md           │
+pickup → path → scout → interview → planner writes plan.md           │
         → plan-state=review         ★ gate: NO tree yet              │
         │                                                            │
         ▼  user reviews (possibly a later session)                   │
@@ -184,15 +184,18 @@ with `unknown-ref`, check routing with `aven doctor`.
    is the local epic. Then `aven show <REF> --full` + `aven context <REF>`.
    Skim README/AGENTS.md/package.json enough to brief the scout.
 
-2. **Scout** — read-only `scout` subagent maps the affected area (file
-   structure, modules, conventions, similar features) into
-   `scout-context.md`. Parallel scouts OK. Main session ends turn and waits
-   for the `subagent_result` steer.
-
-3. **Resolve plan path** — `resolve_feature_path(summary)` returns the
+2. **Resolve plan path** — `resolve_feature_path(summary)` returns the
    canonical absolute `plan.md` path
    (`$PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md`, else
-   `.pi/plans/<date>-<slug>/plan.md`). Use verbatim; never hand-roll.
+   `.pi/plans/<date>-<slug>/plan.md`). Use verbatim; never hand-roll. Run this
+   before the scout: the directory containing that path is the artifact dir the
+   scout writes into.
+
+3. **Scout** — read-only `scout` subagent maps the affected area (file
+   structure, modules, conventions, similar features) into
+   `<resolved artifact dir>/scout-context.md` (for Jira-linked tickets, next to
+   the resolved spec: `<JIRA>__<slug>.scout-context.md`). Parallel scouts OK.
+   Main session ends turn and waits for the `subagent_result` steer.
 
 4. **Interview** — one focused round, 3–6 questions (Goal / Behavior / Done
    when / Out of scope). Always offer "use your judgment" → defaults marked

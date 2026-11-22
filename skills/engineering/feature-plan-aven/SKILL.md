@@ -46,9 +46,9 @@ If the resolved target is not where this feature belongs, pass explicit
 ```mermaid
 flowchart TD
   A[Ticket in aven inbox/todo] --> B["aven show REF --full + aven context REF"]
-  B --> C[scout subagent -> scout-context.md]
-  C --> D[interview: one round<br/>Goal / Behavior / Done when<br/>Constraints / Verification / Out of scope]
-  D --> E["resolve_feature_path tool -> plan.md path"]
+  B --> C["resolve_feature_path / resolve_spec_path tool -> plan.md path"]
+  C --> D["scout subagent -> scout-context.md<br/>(in the directory of the resolved plan path)"]
+  D --> E[interview: one round<br/>Goal / Behavior / Done when<br/>Constraints / Verification / Out of scope]
   E --> F[interactive planner subagent writes plan.md]
   F --> G["aven edit REF --epic on --status todo<br/>--metadata plan-path=ABS, plan-state=draft→review"]
   G --> GATE{user approves?<br/>possibly a later session}  GATE -->|iterate| F
@@ -137,22 +137,10 @@ reads — the synced aven copy is the source. Skim `README.md`,
 `AGENTS.md`, `package.json`, and the area the feature touches — just enough to
 brief the scout.
 
-### 2. Scout
+### 2. Resolve the plan artifact path
 
-Spawn read-only scout subagent(s) — parallel is fine:
-
-```
-subagent({
-  name: "scout: <area>",
-  agent: "scout",
-  task: "Feature context: <summary>\n\nMap the affected area: file structure, key modules, conventions, similar existing features. Focus on what a planner needs before designing this feature. Save findings to: <artifact-folder>/scout-context.md",
-});
-```
-
-End your turn after spawning. Wait for the `subagent_result` steer message(s),
-then read the scout context back.
-
-### 3. Resolve the plan artifact path
+Run this BEFORE spawning scouts: the resolved path is what gives the scouts
+their artifact target, so nothing invents a folder name.
 
 - **Local ticket**: call `resolve_feature_path` with the feature summary (tool
   from pi-flow — taskwarrior-agnostic, reused as-is).
@@ -162,6 +150,37 @@ then read the scout context back.
 
 Use the returned absolute `plan.md` path verbatim everywhere below — never
 hand-roll it, never shorten it, never `mkdir notes/` yourself.
+
+**Artifact dir** = the directory containing that returned path (its `dirname`).
+It is where the scout writes its findings (step 3) and where `plan.md` lives —
+substitute the real absolute directory into the scout task text before
+spawning.
+
+### 3. Scout
+
+Spawn read-only scout subagent(s) — parallel is fine:
+
+```
+subagent({
+  name: "scout: <area>",
+  agent: "scout",
+  task: "Feature context: <summary>\n\nMap the affected area: file structure, key modules, conventions, similar existing features. Focus on what a planner needs before designing this feature. Save findings to: /home/me/notes/personal-spec/my-repo/2026-11-22-feature-slug/scout-context.md",
+});
+```
+
+The `Save findings to:` path is the resolved artifact dir from step 2 with
+`scout-context.md` appended — the path above is illustrative. Always build it
+from the resolver output and pass the real absolute path; never spawn a scout
+with an unresolved placeholder or an invented directory.
+
+For Jira-linked tickets the resolved path is a file inside the shared specs
+dir, so a plain `scout-context.md` in that directory would collide across
+tickets — there the scout target is the spec's own sibling:
+`<specs dir>/<JIRA>__<slug>.scout-context.md` (the resolved spec path's
+directory and stem, both taken from the resolver output).
+
+End your turn after spawning. Wait for the `subagent_result` steer message(s),
+then read the scout context back.
 
 ### 4. Interview — one focused round
 
@@ -195,6 +214,7 @@ EOF
 
 # Feature ticket becomes the epic container for the whole tree
 # plan-state=draft now (plan.md not written yet); flip to review after the planner finishes
+# plan-path is the path resolved in step 2 — verbatim, never recomputed
 aven edit <REF> --epic on --status todo \
   --metadata plan-path=<absolute plan.md path> --metadata plan-state=draft
 ```
@@ -224,7 +244,7 @@ subagent({
     "Plan: <request>",
     "",
     "Scout findings:",
-    "<scout-context summary or path>",
+    "<the scout-context.md path from step 3, or an inline summary of it>",
     "",
     "Interview answers:",
     "<Goal/Behavior/Done when/Constraints/Verification/Out of scope>",
@@ -315,9 +335,11 @@ through the contract commands.
 
 ### Fallback — no `subagent` tool
 
-Do the scout work in the main session (`fast_context_search` / `grep` /
-`read`) and write `plan.md` yourself. The two-stage split still applies:
-plan first, tree only after explicit user approval, using the identical
+Resolve the artifact path first (step 2 — the resolver tools do not need the
+`subagent` tool), then do the scout work in the main session
+(`fast_context_search` / `grep` / `read`) writing `scout-context.md` into that
+resolved directory, and write `plan.md` yourself. The two-stage split still
+applies: plan first, tree only after explicit user approval, using the identical
 commands from the contract below. Everything else — interview, notes,
 metadata, verification — is unchanged. After the write has returned (never in parallel), call `open_in_pane` with the
 plan path (skippable on request; tool failure never blocks).
