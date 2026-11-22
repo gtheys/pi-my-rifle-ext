@@ -1,13 +1,13 @@
 import { expect, test } from 'bun:test'
 import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { findPendingSummaries } from './index.ts'
+import { mkTmpDir } from './tmpdir-test-helper.ts'
 
 const VTT = 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n<v Hine> hello'
 
 async function stage(files: Record<string, string>): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(tmpdir(), 'pending-summaries-'))
+  const dir = mkTmpDir('pending-summaries-')
   for (const [rel, body] of Object.entries(files)) {
     const file = path.join(dir, rel)
     await fs.mkdir(path.dirname(file), { recursive: true })
@@ -34,7 +34,7 @@ test('.vtt whose note was pushed (pushed/) is not re-bootstrapped', async () => 
 
 test('.vtt whose note already sits in the vault is not re-bootstrapped', async () => {
   const dir = await stage({ 'vtt/2026-11-11_sync__def.vtt': VTT })
-  const vault = await fs.mkdtemp(path.join(tmpdir(), 'vault-'))
+  const vault = mkTmpDir('vault-')
   await fs.writeFile(
     path.join(vault, '2026-11-11_sync__def.md'),
     '---\n---\n# done\n## Summary\n- x',

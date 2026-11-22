@@ -1,11 +1,11 @@
 import { expect, test } from 'bun:test'
 import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pushStagingToVault } from './index.ts'
+import { mkTmpDir } from './tmpdir-test-helper.ts'
 
 async function stage(files: Record<string, string>): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(tmpdir(), 'vault-push-'))
+  const dir = mkTmpDir('vault-push-')
   for (const [rel, body] of Object.entries(files)) {
     const file = path.join(dir, rel)
     await fs.mkdir(path.dirname(file), { recursive: true })
@@ -20,7 +20,7 @@ test('pushes new .md, skips existing, moves to pushed/, leaves .vtt in place', a
     'other__def.md': '---\ntitle: other\n---\nbody',
     'vtt/standup__abc.vtt': 'WEBVTT\n\n00:00 text',
   })
-  const vault = await fs.mkdtemp(path.join(tmpdir(), 'vault-'))
+  const vault = mkTmpDir('vault-')
   await fs.writeFile(
     path.join(vault, 'other__def.md'),
     '---\ntitle: other\n---\nexisting vault copy',
