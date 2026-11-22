@@ -93,6 +93,30 @@ test('bind heal: single candidate is adopted and bound', async () => {
   })
 })
 
+test('bind heal: a refused bind after adoption leaves the active ref unchanged', async () => {
+  // PMR-NN5A regression: adoption is applied only after target and branch
+  // verification — a branch-mismatch refusal must NOT leak an orphaned
+  // active ref.
+  const dir = mkTmpDir('wt-heal-')
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/actual' }], {
+    deps: {
+      deriveFlowRefs: async () => ['PMR-HEAL9'],
+    },
+  })
+  setActiveFlowRef(null)
+  const result = await execute(
+    'heal-5',
+    { action: 'bind', path: dir, branch: 'fix/claimed' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  const text = result.content[0]?.text ?? ''
+  assert.match(text, /on branch fix\/actual, not fix\/claimed/)
+  assert.equal(getActiveFlowRef(), null, 'no adoption on a refused bind')
+  assert.equal(getFlowWorktree(), null)
+})
+
 test('bind heal: multiple candidates refuse with per-ref /flow commands', async () => {
   const dir = mkTmpDir('wt-heal-')
   const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }], {

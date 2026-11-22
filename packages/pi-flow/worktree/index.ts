@@ -399,7 +399,10 @@ async function bindFlow(
     }
     ref = candidate
     adopted = true
-    setActiveFlowRef(ref)
+    // AIDEV-NOTE: PMR-NN5A — adoption is applied (setActiveFlowRef) only
+    // AFTER target and branch verification below, just before
+    // setFlowWorktree. Setting it here would leak an orphaned active ref
+    // when the bind is refused.
   }
   let worktrees: HerdrWorktree[]
   try {
@@ -417,6 +420,9 @@ async function bindFlow(
     )
   }
   const previous = getFlowWorktree()
+  if (adopted && ref !== null) {
+    setActiveFlowRef(ref)
+  }
   setFlowWorktree(wtPath, params.branch)
   let replaced = ''
   if (previous) {
