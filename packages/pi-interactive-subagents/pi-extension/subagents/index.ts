@@ -3286,16 +3286,27 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     // honored on the next session. Throws on invalid config — fail fast.
     loadAndCacheStatusConfig(ctx.cwd)
     // AIDEV-NOTE (PMR-KT90): retention sweep. Only runs when retentionDays is
-    // configured (absent config ⇒ zero behavior change). The whole sweep is
-    // try/caught — pruning must NEVER abort session startup; a thrown error is
-    // reported as a warning notify at most (which itself is failure-tolerant).
+    // configured (absent config ⇒ zero behavior change) AND this is not a
+    // subagent session — session_start also fires in every child, and N
+    // children would each run a synchronous full data-root walk; only the
+    // parent that owns the data root sweeps (same env contract as the
+    // PI_DENY_TOOLS child detection below). The whole sweep is try/caught —
+    // pruning must NEVER abort session startup; a thrown error is reported
+    // as a warning notify at most (which itself is failure-tolerant).
     const retentionDays = getRetentionDays()
-    if (retentionDays !== undefined) {
+    const isChildSession =
+      !!process.env.PI_SUBAGENT_SESSION || !!process.env.PI_SUBAGENT_ID
+    if (retentionDays !== undefined && !isChildSession) {
       try {
         const report = pruneSubagentsData({ retentionDays })
         const removedTotal = sumPruneCounts(report.removed)
         const skippedTotal = sumPruneCounts(report.skipped)
-        if (removedTotal > 0 || skippedTotal > 0) {
+        // AIDEV-NOTE (PMR-KT90): session-start notifies ONLY when something
+        // was actually removed — the ordinary 'not old enough' case counts
+        // as a reason-less skip, so skippedTotal > 0 is the steady state of
+        // any populated data root and would notify on every session start.
+        // The explicit /subagent prune command still reports skipped totals.
+        if (removedTotal > 0) {
           ctx.ui.notify(
             `Retention sweep (>${retentionDays}d): removed ${removedTotal}, skipped ${skippedTotal}`,
             'info',
