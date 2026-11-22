@@ -132,11 +132,22 @@ export function parseDeviationArtifact(artifact: string): DeviationArtifact {
   const scoped = scanSection(extractDeviationSection(artifact))
   const counts = scoped.counts
   const deviations = scoped.deviations
+  // AIDEV-NOTE (PMR-6YC7): the verdict-section scoping above can exclude
+  // well-formed "- deviation:" lines that live OUTSIDE the extracted
+  // section (a restated trailing verdict heading wins the LAST-heading
+  // rule; a subheading between the count and the lines cuts the section
+  // early) — the PMR-C0YV 8ed3ad1 run failed "declares 3 but 0 parsed"
+  // with 3 well-formed lines plainly visible in the raw artifact. Scan the
+  // WHOLE artifact as a cross-check so scoping misses are recoverable and
+  // diagnostics can distinguish scoping exclusion from transport loss.
+  // PMR-F3VC: computed BEFORE the no-count early return so that diagnostic
+  // can carry the artifact-wide count too — a bare restated trailing
+  // heading can scope out the count line itself.
+  const full = scanSection(stripFences(artifact))
   if (counts.length === 0) {
     return {
       ok: false,
-      reason:
-        'deviation artifact has no "deviations_count: <N>" line — re-run the deviation reviewer and ensure the artifact ends with the count',
+      reason: `deviation artifact has no "deviations_count: <N>" line (${full.deviations.length} well-formed "- deviation:" line(s) artifact-wide) — re-run the deviation reviewer and ensure the artifact ends with the count`,
     }
   }
   if (counts.length > 1) {
@@ -149,15 +160,6 @@ export function parseDeviationArtifact(artifact: string): DeviationArtifact {
   if (!Number.isInteger(count) || count < 0) {
     return { ok: false, reason: `invalid deviations_count value: ${count}` }
   }
-  // AIDEV-NOTE (PMR-6YC7): the verdict-section scoping above can exclude
-  // well-formed "- deviation:" lines that live OUTSIDE the extracted
-  // section (a restated trailing verdict heading wins the LAST-heading
-  // rule; a subheading between the count and the lines cuts the section
-  // early) — the PMR-C0YV 8ed3ad1 run failed "declares 3 but 0 parsed"
-  // with 3 well-formed lines plainly visible in the raw artifact. Scan the
-  // WHOLE artifact as a cross-check so scoping misses are recoverable and
-  // diagnostics can distinguish scoping exclusion from transport loss.
-  const full = scanSection(stripFences(artifact))
   // AIDEV-NOTE: a declared 0 must be corroborated artifact-wide — with the
   // lines scoped out, a bare "deviations_count: 0" would otherwise skip the
   // human gate while well-formed findings sit elsewhere in the artifact.
