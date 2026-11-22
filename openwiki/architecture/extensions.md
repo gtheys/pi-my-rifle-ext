@@ -511,7 +511,16 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   `remove` / `prune`).
 - **What:** Parallel feature work via [Herdr](https://github.com/pi-edubot/herdr)
   worktree workspaces. `create` derives a branch from a Jira ID (acli), a
-  conventional `name`+`type`, or a literal `branch`; creates the worktree, bootstraps
+  conventional `name`+`type`, or a literal `branch`. During an active personal
+  flow, the `name`+`type` path injects the flow's aven ref into the branch —
+  `<type>/<REF>-<slug>` (e.g. `feat/PMR-AB12-add-save-button`), mirroring the
+  Jira-derived `<JIRA_ID>-<slug>` shape; outside a flow the shape stays the
+  bare `<type>/<slug>` and literal/Jira branches are untouched. (The ref is
+  used bare — no brackets — because git refnames reject `[`.)
+  <!-- AIDEV-NOTE: PMR-902B ref injection — createFlow reads getActiveFlowRef()
+       and threads it into BranchInput.personal.flowRef; validate in
+       packages/pi-flow/worktree/branch.ts (personalBranch). -->
+  Creates the worktree, bootstraps
   dependencies by lockfile (bun/yarn/npm/pnpm/cargo/go — best-effort, failures never
   block creation, and the action waits for bootstrap to finish before returning),
   copies missing `.env*` files from the main checkout (point-in-time snapshot, never
