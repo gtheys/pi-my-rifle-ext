@@ -5,25 +5,53 @@
 // rebase, refuse while origin/main is ahead of local main, and only pass
 // once the local base is fast-forwarded AND the branch rebased onto it.
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { defaultCheckMainAdvancement } from '../tools/land.ts'
+// AIDEV-NOTE: PMR-W9TE round 2 — `defaultCheckMainAdvancement` is the DEFAULT
+// checker, so it shells out through land.ts's own execFileAsync and there is
+// no seam to wrap here: isolation has to cover the fixture's direct calls
+// (runInSandbox) AND the inherited env of the whole fixture process
+// (isolateProcessGitEnv) — the leak the review proved, where this fixture
+// created `main` + an initial commit in an unrelated checkout.
+// See test/git-sandbox.ts.
+import {
+  cleanupSandboxes,
+  isolateProcessGitEnv,
+  registerSandbox,
+  runInSandbox,
+} from './git-sandbox.ts'
+
+isolateProcessGitEnv()
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  return runInSandbox('git', args, cwd)
 }
 
 function commit(cwd: string, file: string, msg: string): void {
-  execFileSync('sh', ['-c', `echo "${msg}" >> ${file}`], { cwd })
+  runInSandbox('sh', ['-c', `echo "${msg}" >> ${file}`], cwd)
   git(cwd, 'add', '-A')
   git(cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', msg)
 }
 
+function rebaseOntoMain(repo: string): void {
+  git(
+    repo,
+    '-c',
+    'user.name=t',
+    '-c',
+    'user.email=t@t',
+    'rebase',
+    '-q',
+    'main',
+    'flow-branch',
+  )
+}
+
 function setupRepo(): { root: string; repo: string } {
-  const root = mkdtempSync(path.join(tmpdir(), 'land-adv-'))
+  const root = registerSandbox(mkdtempSync(path.join(tmpdir(), 'land-adv-')))
   const origin = path.join(root, 'origin.git')
   const repo = path.join(root, 'repo')
   git(root, 'init', '-q', '--bare', origin)
@@ -39,6 +67,10 @@ function setupRepo(): { root: string; repo: string } {
   git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/main')
   return { root, repo }
 }
+
+after(() => {
+  cleanupSandboxes()
+})
 
 test('real git: stale branch refuses, guided rebase heals, landing proceeds (PMR-1KAE)', async () => {
   const { repo } = setupRepo()
@@ -57,20 +89,7 @@ test('real git: stale branch refuses, guided rebase heals, landing proceeds (PMR
   // the flow worktree in production; here the same repo doubles as the flow
   // checkout, so restore the base branch as the checked-out state afterwards
   // (the main checkout must sit on the base for the landing).
-  execFileSync(
-    'git',
-    [
-      '-c',
-      'user.name=t',
-      '-c',
-      'user.email=t@t',
-      'rebase',
-      '-q',
-      'main',
-      'flow-branch',
-    ],
-    { cwd: repo },
-  )
+  rebaseOntoMain(repo)
   git(repo, 'checkout', '-q', 'main')
   const healed = await defaultCheckMainAdvancement(repo, 'flow-branch')
   assert.deepEqual(healed, { ok: true })
@@ -89,20 +108,7 @@ test('real git: origin ahead refuses until local base is ff-forwarded, then reba
   // pushed from another clone make origin/main strictly ahead of local main
   // (a diverged origin would not be "ahead" and would legitimately pass).
   git(repo, 'push', '-q', 'origin', 'main')
-  execFileSync(
-    'git',
-    [
-      '-c',
-      'user.name=t',
-      '-c',
-      'user.email=t@t',
-      'rebase',
-      '-q',
-      'main',
-      'flow-branch',
-    ],
-    { cwd: repo },
-  )
+  rebaseOntoMain(repo)
   git(repo, 'checkout', '-q', 'main')
 
   // A second clone pushes new main commits: origin/main is now ahead of
@@ -132,20 +138,7 @@ test('real git: origin ahead refuses until local base is ff-forwarded, then reba
 
   // Guided rebase onto the now-current main (and restore the base as the
   // checked-out branch of the main checkout): the landing proceeds.
-  execFileSync(
-    'git',
-    [
-      '-c',
-      'user.name=t',
-      '-c',
-      'user.email=t@t',
-      'rebase',
-      '-q',
-      'main',
-      'flow-branch',
-    ],
-    { cwd: repo },
-  )
+  rebaseOntoMain(repo)
   git(repo, 'checkout', '-q', 'main')
   const healed = await defaultCheckMainAdvancement(repo, 'flow-branch')
   assert.deepEqual(healed, { ok: true })

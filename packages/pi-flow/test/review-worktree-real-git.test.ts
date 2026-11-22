@@ -5,65 +5,50 @@
 // — the exact field failure from PMR-1KAE validate, kept as contrast.
 // Template: test/flow-base-real-git.test.ts.
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { setActiveFlowRef, setFlowWorktree } from '../flow/worktree-context.ts'
 import { buildReviewGatePin, resolveCommitReviewCwd } from '../review/review.ts'
-import type { Exec } from '../shared/diff-base.ts'
 import {
   reviewedRangeLine,
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
+// AIDEV-NOTE: PMR-W9TE round 2 — the isolation helpers now live in
+// test/git-sandbox.ts, shared by every real-git fixture in this package.
+import {
+  cleanupSandboxes,
+  isolateProcessGitEnv,
+  makeSandboxExec,
+  registerSandbox,
+  runInSandbox,
+} from './git-sandbox.ts'
 
-const exec: Exec = async (cmd, args, options) => {
-  try {
-    const stdout = execFileSync(cmd, args, {
-      cwd: options?.cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    return { stdout, code: 0 }
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string }
-    return { stdout: err.stdout ?? '', stderr: err.stderr ?? '', code: 1 }
-  }
-}
+isolateProcessGitEnv()
 
-// Full-shape pi.exec wrapper over the same real git — used by the seam's
-// productionReviewDeps wiring (aven/herdr probes fail honestly: the binding
-// verifies first, so the fallback sources are never reached).
+const exec = makeSandboxExec()
+
+// Full-shape pi.exec wrapper over the same isolated real git — used by the
+// seam's productionReviewDeps wiring (aven/herdr probes fail honestly: the
+// binding verifies first, so the fallback sources are never reached).
+// AIDEV-NOTE: PMR-W9TE — it delegates to makeSandboxExec(), so the cwd guard
+// and the GIT_* env scrub cannot be forgotten at this call site; only the
+// extra pi.exec result fields are added here.
 function makeRealPi(): ExtensionAPI {
   const piExec = async (
     cmd: string,
     args: string[],
     options?: { cwd?: string },
   ) => {
-    try {
-      const stdout = execFileSync(cmd, args, {
-        cwd: options?.cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
-      return {
-        code: 0,
-        stdout,
-        stderr: '',
-        killed: false,
-        signal: null,
-      }
-    } catch (e) {
-      const err = e as { stdout?: string; stderr?: string }
-      return {
-        code: 1,
-        stdout: err.stdout ?? '',
-        stderr: err.stderr ?? '',
-        killed: false,
-        signal: null,
-      }
+    const result = await exec(cmd, args, options)
+    return {
+      code: result.code,
+      stdout: result.stdout,
+      stderr: result.stderr ?? '',
+      killed: false,
+      signal: null,
     }
   }
   return {
@@ -72,17 +57,21 @@ function makeRealPi(): ExtensionAPI {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  return runInSandbox('git', args, cwd)
 }
 
 function commit(cwd: string, file: string, msg: string): void {
-  execFileSync('sh', ['-c', `echo "${msg}" >> ${file}`], { cwd })
+  runInSandbox('sh', ['-c', `echo "${msg}" >> ${file}`], cwd)
   git(cwd, 'add', '-A')
   git(cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', msg)
 }
 
+after(() => {
+  cleanupSandboxes()
+})
+
 test('real git: commit review of the worktree HEAD verifies non-stale through the binding', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'rev-wt-'))
+  const root = registerSandbox(mkdtempSync(path.join(tmpdir(), 'rev-wt-')))
   const origin = path.join(root, 'origin.git')
   const repo = path.join(root, 'repo')
   git(root, 'init', '-q', '--bare', origin)

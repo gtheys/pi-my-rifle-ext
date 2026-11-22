@@ -11,11 +11,10 @@
 // stale-resolution no-op message; the bound resolution must pin a command
 // that actually fast-forwards main to the flow branch head.
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import {
   clearFlowWorktree,
   setActiveFlowRef,
@@ -32,12 +31,27 @@ import {
   registerLandTool,
   type SuiteRunner,
 } from '../tools/land.ts'
+// AIDEV-NOTE: PMR-W9TE round 2 — this fixture deliberately exercises the
+// DEFAULT land resolvers, so the git calls happen inside tools/land.ts with
+// the inherited env and no injectable seam: isolateProcessGitEnv() is what
+// keeps them off the invoking checkout, while runInSandbox() guards every
+// call the fixture makes itself. See test/git-sandbox.ts.
+import {
+  cleanupSandboxes,
+  isolateProcessGitEnv,
+  registerSandbox,
+  runInSandbox,
+} from './git-sandbox.ts'
+
+isolateProcessGitEnv()
 
 const REF = 'PMR-5PQH'
 
 // Fake aven binary on PATH answers the review-passed label read (same
 // pattern as land-advancement-tool.test.ts; no real aven, no real journal).
-const BIN_DIR = mkdtempSync(path.join(tmpdir(), 'pi-flow-land-resolution-bin-'))
+const BIN_DIR = registerSandbox(
+  mkdtempSync(path.join(tmpdir(), 'pi-flow-land-resolution-bin-')),
+)
 writeFileSync(
   path.join(BIN_DIR, 'aven'),
   `#!/bin/sh\necho '{"ref":"${REF}","labels":["review-passed"]}'\n`,
@@ -104,20 +118,26 @@ function memReceipts(): ReceiptJournal & { entries: ReceiptQuery[] } {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  return runInSandbox('git', args, cwd)
 }
 
 function commit(cwd: string, file: string, msg: string): void {
-  execFileSync('sh', ['-c', `echo "${msg}" >> ${file}`], { cwd })
+  runInSandbox('sh', ['-c', `echo "${msg}" >> ${file}`], cwd)
   git(cwd, 'add', '-A')
   git(cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', msg)
 }
+
+after(() => {
+  cleanupSandboxes()
+})
 
 // The field layout: a main checkout plus a linked flow worktree. The flow
 // branch starts behind main (another flow landed), then the guided rebase
 // heals it INSIDE the flow worktree — the exact state after a rebase-reland.
 function setupRepo(): { repo: string; flowWt: string } {
-  const root = mkdtempSync(path.join(tmpdir(), 'land-resolution-'))
+  const root = registerSandbox(
+    mkdtempSync(path.join(tmpdir(), 'land-resolution-')),
+  )
   const origin = path.join(root, 'origin.git')
   const repo = path.join(root, 'repo')
   const flowWt = path.join(root, 'flow-wt')
@@ -131,10 +151,15 @@ function setupRepo(): { repo: string; flowWt: string } {
   git(repo, 'worktree', 'add', '-q', flowWt, 'flow-branch')
   commit(flowWt, 'f.txt', 'flow work')
   commit(repo, 'a.txt', 'other flow landed on main')
-  execFileSync(
-    'git',
-    ['-c', 'user.name=t', '-c', 'user.email=t@t', 'rebase', '-q', 'main'],
-    { cwd: flowWt },
+  git(
+    flowWt,
+    '-c',
+    'user.name=t',
+    '-c',
+    'user.email=t@t',
+    'rebase',
+    '-q',
+    'main',
   )
   // AIDEV-NOTE: PMR-RGA0 — git worktree list (which defaultResolveMainRepo
   // parses) prints REALPATH'd paths. On macOS, tmpdir() lives under
@@ -275,7 +300,7 @@ test('real git, bound flow worktree: landing branch resolves to the flow branch 
       )
       // The done-when: the pinned command must be able to MOVE main to the
       // flow branch head. Execute the pinned operation as the human would.
-      execFileSync('git', ['merge', '--ff-only', 'flow-branch'], { cwd: repo })
+      git(repo, 'merge', '--ff-only', 'flow-branch')
       assert.equal(
         git(repo, 'rev-parse', 'main'),
         git(repo, 'rev-parse', 'flow-branch'),

@@ -5,46 +5,50 @@
 // fails exactly as before (the old misleading behavior, kept as contrast).
 // Template: test/flow-base-real-git.test.ts.
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { setActiveFlowRef, setFlowWorktree } from '../flow/worktree-context.ts'
-import type { Exec } from '../shared/diff-base.ts'
 import { readFlowBase, recordFlowBase } from '../shared/flow-base.ts'
 import type { ReviewDeps } from '../tools/code-review-parse.ts'
 import {
   resolveDeviationCwd,
   resolveDeviationRange,
 } from '../tools/deviation.ts'
+// AIDEV-NOTE: PMR-W9TE round 2 — the isolation helpers were hoisted out of
+// flow-base-real-git.test.ts into test/git-sandbox.ts; every real-git fixture
+// in this package now shares them (see that module's header for the leak
+// classes: inherited GIT_* env re-pointing child git at the invoking
+// checkout, and a missing cwd falling back to process.cwd()).
+import {
+  cleanupSandboxes,
+  isolateProcessGitEnv,
+  makeSandboxExec,
+  registerSandbox,
+  runInSandbox,
+} from './git-sandbox.ts'
 
-const exec: Exec = async (cmd, args, options) => {
-  try {
-    const stdout = execFileSync(cmd, args, {
-      cwd: options?.cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    return { stdout, code: 0 }
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string }
-    return { stdout: err.stdout ?? '', stderr: err.stderr ?? '', code: 1 }
-  }
-}
+isolateProcessGitEnv()
+
+const exec = makeSandboxExec()
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  return runInSandbox('git', args, cwd)
 }
 
 function commit(cwd: string, file: string, msg: string): void {
-  execFileSync('sh', ['-c', `echo "${msg}" >> ${file}`], { cwd })
+  runInSandbox('sh', ['-c', `echo "${msg}" >> ${file}`], cwd)
   git(cwd, 'add', '-A')
   git(cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', msg)
 }
 
+after(() => {
+  cleanupSandboxes()
+})
+
 test('real git: deviation resolves the range through the bound external worktree', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'dev-wt-'))
+  const root = registerSandbox(mkdtempSync(path.join(tmpdir(), 'dev-wt-')))
   const origin = path.join(root, 'origin.git')
   const repo = path.join(root, 'repo')
   git(root, 'init', '-q', '--bare', origin)

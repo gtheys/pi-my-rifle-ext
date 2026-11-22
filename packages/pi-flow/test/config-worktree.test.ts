@@ -6,15 +6,28 @@
 // worktree (git rev-parse --git-common-dir), the nearest config still wins,
 // and main-checkout behavior is unchanged. Real git, no fakes.
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import { loadConfig, loadConfigWithOrigins } from '../config.ts'
+// AIDEV-NOTE: PMR-W9TE round 2 — grep of the test dir showed this is a fifth
+// REAL-git fixture with the same leak as the four named in the review: its
+// own git calls inherit the environment (under a leaked GIT_DIR it created
+// branches + a linked worktree INSIDE an unrelated checkout), and
+// loadConfig() itself shells out to `git rev-parse` in config.ts, which only
+// process-level isolation can reach. Helpers: test/git-sandbox.ts.
+import {
+  cleanupSandboxes,
+  isolateProcessGitEnv,
+  registerSandbox,
+  runInSandbox,
+} from './git-sandbox.ts'
+
+isolateProcessGitEnv()
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  return runInSandbox('git', args, cwd)
 }
 
 function writeProjectConfig(
@@ -56,7 +69,7 @@ interface WorktreeScenario {
 // Main repo with one commit + a linked worktree carrying NO .pi config —
 // exactly the state a fresh herdr bootstrap leaves behind (only .env* copied).
 function makeScenario(): WorktreeScenario {
-  const root = mkdtempSync(path.join(tmpdir(), 'pi-flow-wt-'))
+  const root = registerSandbox(mkdtempSync(path.join(tmpdir(), 'pi-flow-wt-')))
   const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-agent-'))
   const mainRepo = path.join(root, 'main')
   git(root, 'init', '-q', '-b', 'main', mainRepo)
@@ -81,6 +94,12 @@ function cleanup(scenario: WorktreeScenario): void {
   rmSync(scenario.root, { recursive: true, force: true })
   rmSync(scenario.agentDir, { recursive: true, force: true })
 }
+
+// Safety net for an aborted test: the per-scenario cleanup() above still runs
+// in finally, this one catches what never got that far.
+after(() => {
+  cleanupSandboxes()
+})
 
 test('PMR-BF8W: linked worktree resolves landTestCommand from main checkout project config', async () => {
   const scenario = makeScenario()
@@ -171,7 +190,9 @@ test('PMR-BF8W: main checkout behavior unchanged — project config wins over gl
 })
 
 test('PMR-BF8W: non-git cwd — no main-checkout layer, resolution unchanged', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'pi-flow-nogit-'))
+  const root = registerSandbox(
+    mkdtempSync(path.join(tmpdir(), 'pi-flow-nogit-')),
+  )
   const agentDir = mkdtempSync(path.join(tmpdir(), 'pi-flow-agent-'))
   try {
     writeGlobalConfig(agentDir, {

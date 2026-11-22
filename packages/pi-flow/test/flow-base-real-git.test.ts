@@ -3,15 +3,13 @@
 // local merges), the feature worktree branches from local develop. The flow
 // range must contain ONLY the feature commits.
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, realpathSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import {
   commitMessagesForRange,
   diffForRange,
-  type Exec,
   resolveFlowRange,
 } from '../shared/diff-base.ts'
 import {
@@ -21,126 +19,36 @@ import {
   resolveBaseSha,
 } from '../shared/flow-base.ts'
 import { worktreeCreateArgs } from '../worktree/herdr.ts'
+// AIDEV-NOTE: PMR-W9TE — fixture isolation lives in test/git-sandbox.ts
+// (sandboxEnv / assertSandboxCwd / registerSandbox, plus the combined
+// runInSandbox + makeSandboxExec helpers); this file is the template the
+// other real-git fixtures follow. See that module's header for the two leak
+// paths it closes.
+import {
+  cleanupSandboxes,
+  isolateProcessGitEnv,
+  makeSandboxExec,
+  registerSandbox,
+  runInSandbox,
+} from './git-sandbox.ts'
 
-// AIDEV-NOTE: PMR-W9TE — fixture isolation. Two ways the git calls below could
-// reach the INVOKING checkout (a real flow worktree) instead of the mkdtemp
-// sandbox, both observed corrupting that checkout:
-//
-//  1. env leak (the pre-push case). Inside a git hook (lefthook pre-push,
-//     post-checkout, ...) git exports repo-pointing vars: GIT_DIR,
-//     GIT_WORK_TREE, GIT_INDEX_FILE, GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, ...
-//     execFileSync inherits process.env, and an ABSOLUTE GIT_DIR wins over the
-//     `cwd` option — so every fixture git command silently ran against the
-//     hook's repo no matter how correct the cwd was. Fix: sandboxEnv() drops
-//     every GIT_* key. The fixture sets its identity with `-c user.name` /
-//     `-c user.email`, so GIT_AUTHOR_* / GIT_COMMITTER_* are not needed.
-//  2. cwd fallback. `execFileSync(cmd, args, { cwd: undefined })` runs in
-//     process.cwd() — the invoking checkout. Fix: assertSandboxCwd() turns any
-//     cwd that is not inside a registered mkdtemp root into a loud test error
-//     instead of checkout corruption.
-//
-// Same leak class as PMR-S6W3 (childGitEnv() in pi-interactive-subagents), but
-// cross-package runtime imports are repo-verboten, so this file keeps its own
-// minimal version.
-const sandboxRoots = new Set<string>()
+isolateProcessGitEnv()
 
-/** Realpath when the path exists, plain resolve otherwise (ENOENT-safe). */
-function normalizeDir(target: string): string {
-  try {
-    return realpathSync(target)
-  } catch {
-    return path.resolve(target)
-  }
-}
-
-/** Register a test's mkdtemp root and return it for use as the sandbox base. */
-function registerSandbox(root: string): string {
-  sandboxRoots.add(normalizeDir(root))
-  return root
-}
-
-/**
- * Guard every cwd handed to a child process. Throws (never an error result)
- * so a leak surfaces as a failing test, not as a mangled real repo.
- */
-function assertSandboxCwd(cwd: string | undefined, site: string): string {
-  if (!cwd) {
-    throw new Error(
-      `PMR-W9TE fixture isolation: ${site} has no cwd — it would run in the invoking checkout ('${process.cwd()}')`,
-    )
-  }
-  const resolved = normalizeDir(cwd)
-  for (const root of sandboxRoots) {
-    const rel = path.relative(root, resolved)
-    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
-      return cwd
-    }
-  }
-  throw new Error(
-    `PMR-W9TE fixture isolation: ${site} cwd '${cwd}' is outside every registered sandbox root (${[
-      ...sandboxRoots,
-    ].join(', ')}) — refusing to touch a real repo`,
-  )
-}
-
-/** process.env without any GIT_* var (repo-pointing and identity both). */
-function sandboxEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue
-    if (key.startsWith('GIT_')) continue
-    env[key] = value
-  }
-  return env
-}
-
-const exec: Exec = async (cmd, args, options) => {
-  // AIDEV-NOTE: PMR-W9TE — the guard runs BEFORE the try block: an
-  // out-of-sandbox cwd must escape as a test error, not be swallowed by the
-  // catch below into a `{ code: 1 }` result the production code handles
-  // gracefully.
-  assertSandboxCwd(options?.cwd, `exec '${cmd} ${args.join(' ')}'`)
-  try {
-    const stdout = execFileSync(cmd, args, {
-      cwd: options?.cwd,
-      env: sandboxEnv(),
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    return { stdout, code: 0 }
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string }
-    return { stdout: err.stdout ?? '', stderr: err.stderr ?? '', code: 1 }
-  }
-}
+const exec = makeSandboxExec()
 
 function git(cwd: string, ...args: string[]): string {
-  const sandbox = assertSandboxCwd(cwd, `git '${args.join(' ')}'`)
-  return execFileSync('git', args, {
-    cwd: sandbox,
-    env: sandboxEnv(),
-    encoding: 'utf8',
-  }).trim()
+  return runInSandbox('git', args, cwd)
 }
 
 function commit(cwd: string, file: string, msg: string): void {
-  const sandbox = assertSandboxCwd(cwd, `commit '${msg}'`)
-  execFileSync('sh', ['-c', `echo "${msg}" >> ${file}`], {
-    cwd: sandbox,
-    env: sandboxEnv(),
-  })
-  git(sandbox, 'add', '-A')
-  git(
-    sandbox,
-    '-c',
-    'user.name=t',
-    '-c',
-    'user.email=t@t',
-    'commit',
-    '-qm',
-    msg,
-  )
+  runInSandbox('sh', ['-c', `echo "${msg}" >> ${file}`], cwd)
+  git(cwd, 'add', '-A')
+  git(cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', msg)
 }
+
+after(() => {
+  cleanupSandboxes()
+})
 
 for (const baseBranch of ['main', 'develop', 'staging']) {
   test(`real git: range == feature commits only (base ${baseBranch}, origin behind local)`, async () => {
