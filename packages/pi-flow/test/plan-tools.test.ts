@@ -4,7 +4,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { resolveFeaturePath, resolveNotesPath } from '../plan-tools/helpers.ts'
+import {
+  resolveFeaturePath,
+  resolveNotesPath,
+  resolveSpecPath,
+} from '../plan-tools/helpers.ts'
 import { slugify } from '../slugify.ts'
 
 const GIT_TOPLEVEL = '/home/dev/Code/acme/widgets'
@@ -75,6 +79,39 @@ test('resolveNotesPath: $LLM_NOTES_ROOT unset → <git-toplevel>/notes', async (
   try {
     const path = await resolveNotesPath(fakePi(), 'specs')
     assert.equal(path, `${GIT_TOPLEVEL}/notes/specs`)
+  } finally {
+    if (prev === undefined) delete process.env.LLM_NOTES_ROOT
+    else process.env.LLM_NOTES_ROOT = prev
+  }
+})
+
+// AIDEV-NOTE: PMR-BHM2 — behavior-pinning tests for resolveSpecPath. The
+// repo-local fallback (no $LLM_NOTES_ROOT → <git-toplevel>/notes/specs/) is
+// INTENTIONAL: repo writes are allowed when no centralised notes root is
+// configured. These tests exist so a "fail-fast when env unset" refactor
+// cannot be reintroduced accidentally. See helpers.ts resolveSpecPath.
+test('resolveSpecPath: $LLM_NOTES_ROOT set → <root>/<repo>/notes/specs/<JIRA>__<slug>.md', async () => {
+  const prev = process.env.LLM_NOTES_ROOT
+  process.env.LLM_NOTES_ROOT = '/home/dev/notes'
+  try {
+    const path = await resolveSpecPath(fakePi(), 'PMR-1', 'Add dark mode')
+    assert.equal(
+      path,
+      '/home/dev/notes/widgets/notes/specs/PMR-1__add-dark-mode.md',
+    )
+  } finally {
+    if (prev === undefined) delete process.env.LLM_NOTES_ROOT
+    else process.env.LLM_NOTES_ROOT = prev
+  }
+})
+
+test('resolveSpecPath: $LLM_NOTES_ROOT unset → repo-local <git-toplevel>/notes/specs (no throw)', async () => {
+  const prev = process.env.LLM_NOTES_ROOT
+  delete process.env.LLM_NOTES_ROOT
+  try {
+    // Must not throw — the repo-local fallback is intentional (PMR-BHM2).
+    const path = await resolveSpecPath(fakePi(), 'PMR-1', 'Add dark mode')
+    assert.equal(path, `${GIT_TOPLEVEL}/notes/specs/PMR-1__add-dark-mode.md`)
   } finally {
     if (prev === undefined) delete process.env.LLM_NOTES_ROOT
     else process.env.LLM_NOTES_ROOT = prev

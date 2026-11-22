@@ -19,6 +19,13 @@ export async function getRepoName(pi: ExtensionAPI): Promise<string> {
   return 'unknown'
 }
 
+// AIDEV-NOTE: Spec path contract — if $LLM_NOTES_ROOT is set, specs live in
+// $LLM_NOTES_ROOT/<repo>/notes/specs/<JIRA>__<slug>.md (work mode, centralised
+// notes root). Otherwise fall back to repo-local <git-toplevel>/notes/specs/.
+// The repo-local fallback is INTENTIONAL (repo writes allowed when no env var
+// is set) — it was previously assumed to fail fast; that was wrong. Pinned by
+// the resolveSpecPath tests in test/plan-tools.test.ts (PMR-BHM2). Do not
+// convert this branch to a throw without updating those tests.
 export async function resolveSpecPath(
   pi: ExtensionAPI,
   jiraId: string,
