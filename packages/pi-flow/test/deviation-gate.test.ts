@@ -231,6 +231,48 @@ test('parseDeviationArtifact: declared 0 with well-formed lines present is an er
   if (!result.ok) assert.match(result.reason, /declares 0 but 1 well-formed/)
 })
 
+// --- PMR-J129: fenced EXAMPLES are excluded from the artifact-wide scan ---
+
+test('parseDeviationArtifact: a filled fenced example does not contradict a genuine count 0', () => {
+  // The reviewer illustrates the contract shape with a FILLED fenced example
+  // and genuinely declares zero deviations. Before fence exclusion this hit
+  // the contradictory-artifact error (a blind re-run loop).
+  const artifact = [
+    'The contract shape looks like this when filled:',
+    '```',
+    '- deviation: example finding | why: example reason (inferred: diff) | src/example.ts:1',
+    'deviations_count: 1',
+    '```',
+    '',
+    DEVIATION_VERDICT_HEADING,
+    'deviations_count: 0',
+  ].join('\n')
+  const result = parseDeviationArtifact(artifact)
+  assert.equal(result.ok, true)
+  if (result.ok) {
+    assert.equal(result.deviationsCount, 0)
+    assert.equal(result.deviations.length, 0)
+  }
+})
+
+test('parseDeviationArtifact: recovery never accepts a fenced example as the payload', () => {
+  // Real payload missing (truncated artifact); only a fenced EXAMPLE carries
+  // count-matching well-formed lines. Recovery must NOT adopt the fence's
+  // fabricated content — the strict truncated-artifact error stands.
+  const artifact = [
+    'For illustration, a filled verdict would look like:',
+    '```',
+    '- deviation: example finding | why: example reason (inferred: diff) | src/example.ts:1',
+    '```',
+    '',
+    DEVIATION_VERDICT_HEADING,
+    'deviations_count: 1',
+  ].join('\n')
+  const result = parseDeviationArtifact(artifact)
+  assert.equal(result.ok, false)
+  if (!result.ok) assert.match(result.reason, /truncated or malformed/)
+})
+
 // --- decideDeviationRoute (pure gate decision) ---
 
 test('decideDeviationRoute: zero deviations proceeds to validate complete', () => {

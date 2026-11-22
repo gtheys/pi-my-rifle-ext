@@ -117,6 +117,17 @@ export function extractDeviationSection(artifact: string): string {
   return artifact
 }
 
+// AIDEV-NOTE (PMR-J129): strip fenced regions before the artifact-wide
+// cross-check — a fenced EXAMPLE of the contract shape (an illustration of
+// what a filled verdict looks like) is not a verdict payload. Without this,
+// a reviewer that quotes a filled fenced example while genuinely declaring
+// deviations_count: 0 trips the contradictory-artifact error, and a
+// count-matching fenced example could back a recovery the real payload
+// never carried. Same fence shape as extractDeviationSection.
+function stripFences(text: string): string {
+  return text.replace(/^```[^\n]*\n[\s\S]*?^```/gm, '')
+}
+
 export function parseDeviationArtifact(artifact: string): DeviationArtifact {
   const scoped = scanSection(extractDeviationSection(artifact))
   const counts = scoped.counts
@@ -146,7 +157,7 @@ export function parseDeviationArtifact(artifact: string): DeviationArtifact {
   // with 3 well-formed lines plainly visible in the raw artifact. Scan the
   // WHOLE artifact as a cross-check so scoping misses are recoverable and
   // diagnostics can distinguish scoping exclusion from transport loss.
-  const full = scanSection(artifact)
+  const full = scanSection(stripFences(artifact))
   // AIDEV-NOTE: a declared 0 must be corroborated artifact-wide — with the
   // lines scoped out, a bare "deviations_count: 0" would otherwise skip the
   // human gate while well-formed findings sit elsewhere in the artifact.
