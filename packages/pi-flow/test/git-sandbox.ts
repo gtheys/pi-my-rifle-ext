@@ -82,11 +82,23 @@ export function assertSandboxCwd(
 // leaked cwd would.
 /** The `<path>` of a leading `git -C <path>` pin, if the args carry one. */
 function pinnedWorkDir(args: string[]): string | undefined {
-  const index = args.indexOf('-C')
-  if (index === -1) {
-    return undefined
+  // AIDEV-NOTE: PMR-T0S0 — only GLOBAL options (before the subcommand) can
+  // pin a directory. Scan leading `-C <dir>` / `-c <kv>` args and stop at the
+  // first non-global arg: a `-C` after the subcommand (e.g.
+  // `git switch -C <branch>`) is a subcommand flag and must NOT be read as a
+  // directory pin.
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]
+    if (arg === '-C') {
+      return args[index + 1]
+    }
+    if (arg === '-c') {
+      index++
+      continue
+    }
+    break
   }
-  return args[index + 1]
+  return undefined
 }
 
 /** Guard the spawn cwd, the `-C` target, or (when neither) fail loudly. */

@@ -64,6 +64,33 @@ test('runInSandbox: guards the spawn cwd AND a `git -C` pinned target', () => {
   )
 })
 
+test('runInSandbox: `git switch -C <branch>` is not misread as a directory pin', () => {
+  // PMR-T0S0 regression: only a LEADING `git -C <dir>` pins a work dir; the
+  // `-C` of `git switch -C` is a branch flag. With the old indexOf('-C')
+  // parse the branch name was resolved against process.cwd() and the guard
+  // threw "outside every registered sandbox root".
+  const root = registerSandbox(mkdtempSync(path.join(tmpdir(), 'gs-switch-')))
+  const repo = path.join(root, 'repo')
+  runInSandbox('git', ['init', '-q', repo], root)
+  runInSandbox(
+    'git',
+    [
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    ],
+    repo,
+  )
+  runInSandbox('git', ['switch', '-C', 'topic'], repo)
+  assert.equal(runInSandbox('git', ['branch', '--show-current'], repo), 'topic')
+})
+
 test('makeSandboxExec: an out-of-sandbox cwd is a thrown error, not a code-1 result', async () => {
   registerSandbox(mkdtempSync(path.join(tmpdir(), 'gs-exec-')))
   // A `{ code: 1 }` result would be handled gracefully by production code and
