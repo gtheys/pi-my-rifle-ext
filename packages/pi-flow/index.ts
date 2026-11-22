@@ -164,10 +164,7 @@ import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
 import { registerTelemetry } from './telemetry/index.ts'
-import {
-  productionReviewDeps,
-  registerCodeReviewTool,
-} from './tools/code-review.ts'
+import { registerCodeReviewTool } from './tools/code-review.ts'
 import { buildCodeReviewGatePrompt } from './tools/code-review-parse.ts'
 import { registerDeviationReviewTool } from './tools/deviation.ts'
 import { registerFlowSubmitTool } from './tools/flow-submit.ts'
@@ -177,6 +174,7 @@ import {
   registerLandTool,
 } from './tools/land.ts'
 import { registerPhaseCompleteTool } from './tools/phase-complete.ts'
+import { productionReviewDeps } from './tools/review-deps.ts'
 import {
   createAttemptLedger,
   registerRunAttemptTool,

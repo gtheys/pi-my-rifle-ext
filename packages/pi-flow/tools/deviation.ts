@@ -54,9 +54,9 @@ import {
   gateTargetId,
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
-import { productionReviewDeps } from './code-review.ts'
 import type { ReviewDeps } from './code-review-parse.ts'
 import { toolResult } from './result.ts'
+import { productionReviewDeps } from './review-deps.ts'
 
 export interface DeviationReviewToolParams {
   mode: 'work' | 'personal'

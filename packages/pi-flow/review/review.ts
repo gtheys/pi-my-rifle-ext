@@ -68,11 +68,11 @@ import {
 } from '../server/writer.ts'
 import { type Exec, getMergeBase } from '../shared/diff-base.ts'
 import { readFlowBase } from '../shared/flow-base.ts'
-import { productionReviewDeps } from '../tools/code-review.ts'
 import {
   type ResolvedWorktree,
   resolveReviewWorktree,
 } from '../tools/code-review-parse.ts'
+import { productionReviewDeps } from '../tools/review-deps.ts'
 import {
   buildGateTarget,
   deriveSubtaskAttribution,

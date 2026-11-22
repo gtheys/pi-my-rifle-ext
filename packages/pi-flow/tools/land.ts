@@ -41,8 +41,8 @@ import {
   resolveBaseSha,
   resolveMergeBase,
 } from '../shared/flow-base.ts'
-import { productionReviewDeps } from './code-review.ts'
 import { toolResult } from './result.ts'
+import { productionReviewDeps } from './review-deps.ts'
 
 // AIDEV-NOTE: PMR-DRKH — injectable heal seam for flow_land. Production
 // default resolves the ref's worktree via healFlowBinding (aven note → herdr

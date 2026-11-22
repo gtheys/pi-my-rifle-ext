@@ -15,7 +15,6 @@
 // directing the human to the durable, human-only /flow answer <ref>
 // pass|fail command (accepted by flow_land). No code path here sets
 // humanReviewPassed outside that blocking ask.
-import { existsSync } from 'node:fs'
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -25,55 +24,20 @@ import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { writeAvenNote } from '../aven/client.ts'
 import { healFlowBinding } from '../flow/binding-heal.ts'
-import { getFlowWorktree } from '../flow/worktree-context.ts'
 import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
-import { worktreeList } from '../worktree/herdr.ts'
 import {
   openTuicrReview,
   parseAskAnswer,
   pickLatestSessionSlug,
-  type ReviewDeps,
   routeReviewFail,
   routeReviewPass,
 } from './code-review-parse.ts'
 import { defaultResolveHead } from './land.ts'
 import { toolResult } from './result.ts'
+import { productionReviewDeps } from './review-deps.ts'
 
 export { buildCodeReviewGatePrompt } from './code-review-parse.ts'
-
-// AIDEV-NOTE: PMR-0KMQ — shared factory: the fresh-context review gate
-// (review/review.ts, commit mode) and the deviation gate (tools/deviation.ts)
-// reuse this exact wiring so all three gates resolve the same VERIFIED bound
-// flow worktree (resolveReviewWorktree: binding → aven note → herdr, each
-// candidate verified via common-git-dir + branch). Takes a bare repoRoot
-// instead of the tool context so non-code-review callers can pass ctx.cwd.
-export function productionReviewDeps(
-  pi: ExtensionAPI,
-  repoRoot: string,
-): ReviewDeps {
-  return {
-    getFlowWorktree,
-    avenShowFull: async (ref: string) => {
-      const result = await pi.exec('aven', ['show', ref, '--full'], {
-        cwd: repoRoot,
-      })
-      if (result.code !== 0) {
-        throw new Error(result.stderr || `aven show ${ref} failed`)
-      }
-      return result.stdout
-    },
-    herdrWorktreeList: () => worktreeList(pi, repoRoot),
-    exec: async (cmd: string, args: string[], opts?: { cwd?: string }) => {
-      const result = await pi.exec(cmd, args, {
-        cwd: opts?.cwd ?? repoRoot,
-      })
-      return { code: result.code, stdout: result.stdout, stderr: result.stderr }
-    },
-    exists: (p: string) => existsSync(p),
-    repoRoot,
-  }
-}
 
 export function registerCodeReviewTool(
   pi: ExtensionAPI,
