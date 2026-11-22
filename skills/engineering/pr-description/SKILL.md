@@ -9,6 +9,25 @@ You are tasked with generating a comprehensive pull request description followin
 
 ## Resolving the Notes Directory
 
+Whatever route you take below, use the resolved **absolute** path directly in
+all subsequent steps — don't store it in a variable.
+
+**Primary — use the resolver tool.** When `resolve_notes_path` is available (it
+is registered by the pi-flow extension), call it: it returns the canonical
+notes directory, honoring `$LLM_NOTES_ROOT` when set and the repo-local
+`notes/` directory otherwise. Pass `subdir: ""` for the notes root, or
+`subdir: "prs"` to resolve the PR descriptions directory
+(`<notes root>/prs/`) in one call — prefer the `prs` form for reading and
+writing descriptions. Prefer this — it matches what the rest of the flow
+tooling resolves to, and never hand-roll the path when the tool answered.
+
+AIDEV-NOTE: resolver-with-fallback is deliberate — this skill must stay usable
+when pi-flow is absent, so the tool is "call it when present" and the prose
+below is explicitly the fallback, not the contract. Keep both in sync with
+`resolveNotesPath()` in packages/pi-flow/plan-tools/helpers.ts.
+
+**Fallback — only when the tool is unavailable** (pi-flow is not installed):
+
 1. **Get the current repo name**:
 
    ```bash
@@ -33,7 +52,7 @@ You are tasked with generating a comprehensive pull request description followin
      repos** at `$LLM_NOTES_ROOT/_default/notes/prs/pr_description.md` — a repo
      only needs its own copy to override. See Step 1 for the full fallback chain.
    - Generated descriptions (`{number}_description.md`) are written **per-repo**
-     at the resolved notes path from step 2.
+     at the resolved PR descriptions directory (`<notes root>/prs/`).
 
 ## Steps
 
@@ -43,7 +62,9 @@ Resolve the template with a fallback chain — use the first one that exists:
 
 1. Repo-specific override: `<resolved notes path>/prs/pr_description.md`
    (i.e. `$LLM_NOTES_ROOT/<repo>/notes/prs/pr_description.md`, or repo-local
-   `notes/prs/pr_description.md` when `$LLM_NOTES_ROOT` is unset)
+   `notes/prs/pr_description.md` when `$LLM_NOTES_ROOT` is unset; this is the
+   `prs` directory returned by `resolve_notes_path` with `subdir: "prs"`, plus
+   the filename)
 2. Shared default: `$LLM_NOTES_ROOT/_default/notes/prs/pr_description.md`
    (only when `$LLM_NOTES_ROOT` is set)
 
