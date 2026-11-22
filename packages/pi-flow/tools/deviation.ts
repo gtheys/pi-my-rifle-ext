@@ -21,6 +21,7 @@ import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import type { SubagentResult } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
 import { healFlowBinding } from '../flow/binding-heal.ts'
+import { MODE_PROFILE } from '../mode-profile.ts'
 import {
   buildDeviationReviewPrompt,
   checkDiffLinesRead,
@@ -54,6 +55,7 @@ import {
   gateTargetId,
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
+import type { WorkMode } from '../work-mode.ts'
 import type { ReviewDeps } from './code-review-parse.ts'
 import { toolResult } from './result.ts'
 import { productionReviewDeps } from './review-deps.ts'
@@ -117,18 +119,28 @@ export async function resolveDeviationCwd(
 // resolver (shared/diff-base.ts, same one pi-review uses) -> diff + commit
 // messages. Missing base, unresolvable base or empty range is an error —
 // the gate never runs on an empty diff.
+// AIDEV-NOTE: PMR-7N3D — the baseRef handed to the shared resolver is
+// mode-keyed data (MODE_PROFILE[mode].baseResolution), so BOTH gates resolve
+// personal mode through the ONE shared local-only resolver (resolveFlowRange)
+// and can never disagree (PMR-R4AP). personal: the recorded flowbase BRANCH,
+// i.e. merge-base(HEAD, <local branch>) — rebase-aware, because a mid-flow
+// rebase (PMR-1KAE) moves the merge-base while the recorded flowbasesha
+// cannot self-heal and sweeps every commit other flows landed on main since
+// worktree create. NEVER the base's upstream ref (PMR-MH1Y/DQ7Z). work: the
+// flowbasesha recorded at worktree create (legacy fallback: the branch) —
+// byte-for-byte the previous behavior.
 export async function resolveDeviationRange(
   exec: Exec,
   cwd: string,
+  mode: WorkMode,
 ): Promise<ResolvedRangeResult> {
   const base = await readFlowBase(exec, cwd)
   if (!base.ok) return base
-  const range = await resolveFlowRange(
-    exec,
-    cwd,
-    base.value.branch,
-    base.value.sha ?? base.value.branch,
-  )
+  let baseRef = base.value.sha ?? base.value.branch
+  if (MODE_PROFILE[mode].baseResolution === 'merge-base-local') {
+    baseRef = base.value.branch
+  }
+  const range = await resolveFlowRange(exec, cwd, base.value.branch, baseRef)
   if (!range.ok) return range
   try {
     const diff = await diffForRange(exec, cwd, range.value.range)
@@ -327,7 +339,7 @@ export function registerDeviationReviewTool(
       }
       const cwd = resolution.cwd
       const exec: Exec = (cmd, args, options) => pi.exec(cmd, args, options)
-      const resolved = await resolveDeviationRange(exec, cwd)
+      const resolved = await resolveDeviationRange(exec, cwd, params.mode)
       if (!resolved.ok) {
         return toolResult(
           `deviation_review: cannot resolve the diff range — ${resolved.reason}. No reviewer was spawned. Tell the human; NEVER treat this as 0 deviations.`,

@@ -11,6 +11,12 @@ export interface ModeProfile {
    *  merges the flow branch into main LOCALLY in the main (non-worktree)
    *  checkout — never a push (PMR-HYZA). */
   landingRoute: 'pr' | 'merge-main'
+  /** Gate-time diff-base resolution. work: the flowbasesha recorded at
+   *  worktree create (legacy fallback: the recorded branch). personal:
+   *  merge-base of HEAD and the LOCAL flowbase branch at gate time —
+   *  rebase-aware (PMR-7N3D); never the base's upstream ref (PMR-MH1Y,
+   *  DQ7Z): personal never pushes, upstream lags local main. */
+  baseResolution: 'recorded-sha' | 'merge-base-local'
   /** Env var naming the external notes/artifact root for this mode. */
   artifactRootEnv: 'LLM_NOTES_ROOT' | 'PERSONAL_FEATURES'
   /** Whether Jira IDs are valid flow/research refs (work repos sync Jira;
@@ -30,6 +36,7 @@ export interface ModeProfile {
 export const MODE_PROFILE: Record<WorkMode, ModeProfile> = {
   work: {
     landingRoute: 'pr',
+    baseResolution: 'recorded-sha',
     artifactRootEnv: 'LLM_NOTES_ROOT',
     acceptsJiraRefs: true,
     branchRule: 'jira_create_branch',
@@ -37,6 +44,7 @@ export const MODE_PROFILE: Record<WorkMode, ModeProfile> = {
   },
   personal: {
     landingRoute: 'merge-main',
+    baseResolution: 'merge-base-local',
     artifactRootEnv: 'PERSONAL_FEATURES',
     acceptsJiraRefs: false,
     branchRule: 'ref-prefixed-slug',

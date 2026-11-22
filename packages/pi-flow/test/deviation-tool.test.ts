@@ -146,19 +146,46 @@ function gitFake(
   }
 }
 
+// AIDEV-NOTE: PMR-7N3D — GOOD_GIT now serves BOTH base resolutions: the
+// recorded sha 'bbb' (work) and the recorded branch 'develop' (personal,
+// merge-base-local). The unrebased sandbox makes them agree on values
+// (merge-base HEAD develop == merge-base HEAD bbb == 'bbb') while the ARGV
+// differs, so each case pins which ref its mode handed the resolver.
 const GOOD_GIT = {
   'rev-parse --abbrev-ref HEAD': { stdout: 'feat/x\n' },
   'config branch.feat/x.flowbase': { stdout: 'develop\n' },
   'config branch.feat/x.flowbasesha': { stdout: 'bbb\n' },
   'merge-base HEAD bbb': { stdout: 'bbb\n' },
+  'merge-base HEAD develop': { stdout: 'bbb\n' },
   'rev-parse HEAD': { stdout: 'ccc\n' },
   'rev-list --count bbb..HEAD': { stdout: '2\n' },
   'diff bbb..HEAD': { stdout: 'diff --git a/x\n+y\n' },
   'log bbb..HEAD': { stdout: 'commit ccc\n    feat: y\n' },
 }
 
-test('resolveDeviationRange resolves base, diff and commits itself', async () => {
-  const r = await resolveDeviationRange(gitFake(GOOD_GIT), '/w')
+// A fake that records which merge-base ref it was asked about, so a test can
+// assert the mode-keyed baseRef and not merely the resolved values.
+function gitFakeWithMergeBase(
+  map: Record<string, { stdout?: string; code?: number }>,
+): {
+  exec: Exec
+  mergeBaseRefs: string[]
+} {
+  const mergeBaseRefs: string[] = []
+  const exec: Exec = async (_cmd, args) => {
+    if (args[0] === 'merge-base') {
+      mergeBaseRefs.push(args[args.length - 1])
+    }
+    const hit = map[args.join(' ')]
+    if (hit === undefined) return { stdout: '', code: 1 }
+    return { stdout: hit.stdout ?? '', code: hit.code ?? 0 }
+  }
+  return { exec, mergeBaseRefs }
+}
+
+test('resolveDeviationRange (work) resolves base, diff and commits itself', async () => {
+  const { exec, mergeBaseRefs } = gitFakeWithMergeBase(GOOD_GIT)
+  const r = await resolveDeviationRange(exec, '/w', 'work')
   assert.equal(r.ok, true)
   if (r.ok) {
     assert.equal(r.value.flowRange.baseSha, 'bbb')
@@ -166,12 +193,45 @@ test('resolveDeviationRange resolves base, diff and commits itself', async () =>
     assert.match(r.value.diff, /diff --git/)
     assert.match(r.value.commitMessages, /feat: y/)
   }
+  // PMR-7N3D / ISC-4: work mode keeps the recorded-sha baseRef.
+  assert.deepEqual(mergeBaseRefs, ['bbb'])
+})
+
+test('resolveDeviationRange (personal) resolves the base via the recorded branch', async () => {
+  const { exec, mergeBaseRefs } = gitFakeWithMergeBase(GOOD_GIT)
+  const r = await resolveDeviationRange(exec, '/w', 'personal')
+  assert.equal(r.ok, true)
+  if (r.ok) {
+    assert.equal(r.value.flowRange.baseSha, 'bbb')
+    assert.equal(r.value.flowRange.range, 'bbb..HEAD')
+  }
+  // PMR-7N3D: personal mode hands the LOCAL flowbase BRANCH to the shared
+  // resolver (merge-base-aware, never the recorded sha, never upstream).
+  assert.deepEqual(mergeBaseRefs, ['develop'])
+})
+
+test('resolveDeviationRange (personal legacy, no flowbasesha) still resolves via the branch', async () => {
+  // Legacy worktree: the flowbasesha config read fails → readFlowBase yields
+  // sha null; personal resolution never depended on it.
+  const legacyGit = {
+    ...GOOD_GIT,
+    'config branch.feat/x.flowbasesha': { stdout: '', code: 1 },
+  }
+  const { exec, mergeBaseRefs } = gitFakeWithMergeBase(legacyGit)
+  const r = await resolveDeviationRange(exec, '/w', 'personal')
+  assert.equal(r.ok, true)
+  if (r.ok) {
+    assert.equal(r.value.flowRange.baseSha, 'bbb')
+    assert.equal(r.value.flowRange.range, 'bbb..HEAD')
+  }
+  assert.deepEqual(mergeBaseRefs, ['develop'])
 })
 
 test('resolveDeviationRange errors when flow base is not recorded', async () => {
   const r = await resolveDeviationRange(
     gitFake({ 'rev-parse --abbrev-ref HEAD': { stdout: 'feat/x\n' } }),
     '/w',
+    'personal',
   )
   assert.equal(r.ok, false)
 })
@@ -180,6 +240,7 @@ test('resolveDeviationRange errors on empty range', async () => {
   const r = await resolveDeviationRange(
     gitFake({ ...GOOD_GIT, 'rev-parse HEAD': { stdout: 'bbb\n' } }),
     '/w',
+    'work',
   )
   assert.equal(r.ok, false)
   if (!r.ok) assert.match(r.reason, /empty range/)
@@ -189,6 +250,7 @@ test('resolveDeviationRange errors on empty diff', async () => {
   const r = await resolveDeviationRange(
     gitFake({ ...GOOD_GIT, 'diff bbb..HEAD': { stdout: '  \n' } }),
     '/w',
+    'work',
   )
   assert.equal(r.ok, false)
 })

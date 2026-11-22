@@ -84,10 +84,12 @@ test('real git: deviation resolves the range through the bound external worktree
     const cwdResolution = await resolveDeviationCwd('PMR-TEST', deps)
     assert.deepEqual(cwdResolution, { ok: true, cwd: wt })
 
-    // The gate path: resolveDeviationRange(exec, worktree) → readFlowBase
+    // The gate path: resolveDeviationRange(exec, worktree, mode) → readFlowBase
     // reads branch.feat/x.flowbase from the feature-branch checkout and the
-    // range covers ONLY the worktree-only commit.
-    const range = await resolveDeviationRange(exec, wt)
+    // range covers ONLY the worktree-only commit. Work mode pins the
+    // recorded-sha baseRef (PMR-7N3D leaves it byte-for-byte); this sandbox
+    // is unrebased, so personal would resolve identically.
+    const range = await resolveDeviationRange(exec, wt, 'work')
     assert.equal(range.ok, true)
     if (range.ok) {
       assert.equal(range.value.flowRange.headSha, wtHead)
@@ -99,7 +101,7 @@ test('real git: deviation resolves the range through the bound external worktree
     // branch.main.flowbase) fails exactly as before — the misleading
     // "flow worktree is not bound" refusal this ticket removes from the
     // happy path.
-    const fromSession = await resolveDeviationRange(exec, repo)
+    const fromSession = await resolveDeviationRange(exec, repo, 'work')
     assert.equal(fromSession.ok, false)
     if (!fromSession.ok) {
       assert.match(fromSession.reason, /not bound|flow base/)
