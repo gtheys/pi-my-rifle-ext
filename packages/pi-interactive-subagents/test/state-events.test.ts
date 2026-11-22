@@ -12,6 +12,17 @@
 // so the file stays green regardless of how many events an earlier test built.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+// AIDEV-NOTE (PMR-3QMY): importing the extension entrypoint into a node:test
+// file is safe and is the established pattern (test/test.ts and
+// test/system-prompt-mode.test.ts both `import * as subagentsModule`). We
+// need the live `subagentStateEntries` derivation + the globalThis-backed
+// runningSubagents map exposed on `__test__`, so the derivation is tested
+// against the REAL projection seam, not a copy.
+import {
+  __test__,
+  type RunningSubagent,
+  subagentStateEntries,
+} from '../pi-extension/subagents/index.ts'
 import {
   buildSubagentStateSnapshot,
   buildSubagentStateStopped,
@@ -21,6 +32,10 @@ import {
   type SubagentStateEntry,
   type SubagentStateEvent,
 } from '../pi-extension/subagents/state-events.ts'
+import {
+  createStatusState,
+  type SubagentStatusState,
+} from '../pi-extension/subagents/status.ts'
 
 // toISOString() always renders milliseconds + a trailing `Z` (UTC).
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
@@ -236,4 +251,87 @@ test('publishStateEvent: a throwing bus handler never escapes', () => {
     threw = true
   }
   assert.equal(threw, false, 'publishStateEvent must swallow emit errors')
+})
+
+// ── Derivation (index.ts seam) ──
+//
+// AIDEV-NOTE (PMR-3QMY): `subagentStateEntries` is the live projection of
+// the in-memory runningSubagents map (durable records stay authoritative).
+// This test imports it from the entrypoint and drives it against fabricated
+// RunningSubagent entries inserted into the SAME globalThis-backed map the
+// production code reads (__test__.runningSubagents), so it exercises the
+// real derivation seam. It asserts entries are sorted by id, carry exactly
+// id/name/status, and that task/cwd/sessionFile are NOT projected (ISC-1,
+// ISC-A-1). The insertions are cleaned up in a finally so no other test
+// observes them.
+function makeRunningSubagentFixture(
+  overrides: Partial<RunningSubagent>,
+): RunningSubagent {
+  const base: RunningSubagent = {
+    id: 'base',
+    name: 'Base',
+    task: 'do-not-leak-this-prompt',
+    surface: 'pane-1',
+    startTime: 0,
+    sessionFile: '/tmp/secret-session.jsonl',
+    statusState: createStatusState({ source: 'pi', startTimeMs: 0 }),
+    interactive: false,
+  }
+  return { ...base, ...overrides }
+}
+
+// A present + blocked snapshot classifies to the `blocked` widget kind
+// deterministically (statusKindOf does not depend on wall-clock for the
+// blocked branch), so we can assert an exact status string.
+function makeBlockedStatusState(): SubagentStatusState {
+  const fresh = createStatusState({ source: 'pi', startTimeMs: 0 })
+  return {
+    ...fresh,
+    snapshotState: 'present',
+    phase: 'blocked',
+    activeNow: false,
+  }
+}
+
+test('subagentStateEntries: sorts by id, projects exactly id/name/status, drops task/cwd/sessionFile', () => {
+  const runningMap = __test__.runningSubagents as Map<string, RunningSubagent>
+  // Two ids chosen so insertion order (b1 then a2) is the REVERSE of sorted
+  // order — a real check that the helper sorts rather than relying on Map
+  // insertion order.
+  runningMap.set(
+    'b1',
+    makeRunningSubagentFixture({
+      id: 'b1',
+      name: 'Beta',
+      starting: true,
+    }),
+  )
+  runningMap.set(
+    'a2',
+    makeRunningSubagentFixture({
+      id: 'a2',
+      name: 'Alpha',
+      statusState: makeBlockedStatusState(),
+    }),
+  )
+  try {
+    const entries = subagentStateEntries()
+    assert.deepEqual(entries, [
+      { id: 'a2', name: 'Alpha', status: 'blocked' },
+      { id: 'b1', name: 'Beta', status: 'starting' },
+    ])
+    // Sorted by id ascending.
+    assert.deepEqual(
+      entries.map((entry) => entry.id),
+      ['a2', 'b1'],
+    )
+    // Each entry carries exactly the three contracted keys — task/cwd/
+    // sessionFile and every other RunningSubagent field are not projected.
+    for (const entry of entries) {
+      assert.deepEqual(Object.keys(entry).sort(), ['id', 'name', 'status'])
+    }
+  } finally {
+    runningMap.delete('b1')
+    runningMap.delete('a2')
+  }
 })

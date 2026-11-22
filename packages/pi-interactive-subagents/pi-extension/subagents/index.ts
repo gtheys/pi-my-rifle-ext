@@ -92,6 +92,11 @@ import {
 } from './spawn.ts'
 import { allocateSpawnIdentity } from './spawnseq.ts'
 import {
+  buildSubagentStateSnapshot,
+  publishStateEvent,
+  type SubagentStateEntry,
+} from './state-events.ts'
+import {
   advanceStatusState,
   applyPendingAck,
   capStatusLines,
@@ -1077,6 +1082,51 @@ export function usageSuffixFor(
     suffix += ' (coverage incomplete)'
   }
   return suffix
+}
+
+// AIDEV-NOTE (PMR-3QMY): live state-snapshot derivation + emission helpers
+// for the `pi-my-rifle-subagents:state` co-extension contract (see
+// state-events.ts for the payload + its exclusion list). Derivation here is
+// a LIVE PROJECTION of the in-memory `runningSubagents` map — the durable
+// assignment/result records remain the sole authority for outcomes; this is
+// observation only. `statusKindOf`'s return (`WidgetStateKind`) is the same
+// 6-value set as `SubagentStateStatus`, so it is projected verbatim with no
+// mapping. Emission must NEVER throw into callers (spawn / tick / settle /
+// session hooks): the whole body is wrapped in try/catch, and
+// `publishStateEvent` additionally isolates a stale/throwing bus (ISC-6).
+// The child-session gate mirrors the retention-sweep contract (see
+// session_start) — subagent child processes never publish.
+
+/** Derive the public state entries from the live running map, sorted by id.
+ * Exported for tests. */
+export function subagentStateEntries(): SubagentStateEntry[] {
+  const entries: SubagentStateEntry[] = []
+  for (const running of runningSubagents.values()) {
+    entries.push({
+      id: running.id,
+      name: running.name,
+      status: statusKindOf(running, Date.now()),
+    })
+  }
+  entries.sort((a, b) => a.id.localeCompare(b.id))
+  return entries
+}
+
+/** Publish a full state snapshot on the co-extension channel. No-op for
+ * child sessions (ISC-7) and for a missing/stale bus (ISC-8, via
+ * `publishStateEvent`). Never throws into callers (ISC-6). */
+function emitSubagentStateSnapshot(): void {
+  const isChildSession =
+    !!process.env.PI_SUBAGENT_SESSION || !!process.env.PI_SUBAGENT_ID
+  if (isChildSession) {
+    return
+  }
+  try {
+    const event = buildSubagentStateSnapshot(subagentStateEntries())
+    publishStateEvent(latestPi?.events, event)
+  } catch {
+    // Observation must never break the caller; swallow defensively.
+  }
 }
 
 /** A clickable region of a rendered row. `from`/`to` are visible columns. */
