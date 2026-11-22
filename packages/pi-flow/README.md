@@ -167,6 +167,19 @@ once (atomic rename) and `/flow <ref>` is re-presented automatically.
 Loop state (blocker retries, validate cutoff), the attempt ledger, and the
 human code-review pass receipt are all journaled and re-seeded on resume.
 
+**Resume consent**: a parked run is never silently taken over by a different
+session. A clean session that starts in a repo with live flow runs *asks*
+first — one `Resume <ref> — <phase>, <status>, updated <age>` row per run
+plus `None — leave this session clean` (a run whose owner session still looks
+alive is labelled as such) — and only the run you pick is restored, healed
+and re-presented. Declining (or Esc) leaves the session completely clean: no
+binding, nothing injected, just one line naming the recovery command. A run
+that parked *after* startup is caught by the same prompt on the next settle,
+at most once per process. A session with no UI is never prompted at all — it
+lists `recover with /flow <ref>` per parked run and stays clean. The session
+that already owns the run (its binding came back with the session history)
+still resumes automatically, no question asked.
+
 On-disk layout under `<agentDir>/pi-flow/`: `server.pid`, `server.log`,
 `pending/`, `runs/`.
 
@@ -177,7 +190,8 @@ On-disk layout under `<agentDir>/pi-flow/`: `server.pid`, `server.log`,
   rebuildable caches. Known limits: the projection lags ≤~1s while the daemon
   owns it (only `/flow-view` reads it — receipts and gates read the journal
   and aven directly), and a brand-new session in the same worktree without a
-  restored binding is not re-presented (binding-scoped only).
+  restored binding is never auto-bound — it only gets the resume prompt above
+  (or the `recover with /flow <ref>` lines when there is no UI).
 
 **Binding self-heal after resume**: when a resumed session has no replayable
 flow binding (cross-session resume, fork), the flow gate tools

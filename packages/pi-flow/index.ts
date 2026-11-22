@@ -330,6 +330,10 @@ export default function (
   // AIDEV-NOTE: the ref of the restored session binding (PMR-PJM0), when
   // one exists — the only ref the agent_settled consumer checks. session_start
   // fires before any settle, so this is always populated before use.
+  // PMR-T9ZQ 3.2: a NULL boundRef no longer means "the settle path does
+  // nothing" — it means this session owns no restored run, so the settle path
+  // may run the consent picker for a late parked candidate (never a silent
+  // rebind).
   let boundRef: string | null = null
 
   // AIDEV-NOTE: PMR-XTQQ subtask 3.3 — shared consumer deps. Pure-ish:
@@ -1182,7 +1186,7 @@ export default function (
   // hasInFlightSubagent guard keeps those settles from halting the flow.
   // The loop re-reads aven labels and either injects the next phase prompt
   // or halts — advancement is code, not model.
-  pi.on('agent_settled', () => {
+  pi.on('agent_settled', (_event, ctx) => {
     // AIDEV-NOTE: PMR-2KH5 — the refresh must run AFTER the loop's settle
     // work: phase-complete/phase-start are journaled only inside onSettled
     // (after an aven readLabels shell-out) and the widget projects
@@ -1207,7 +1211,47 @@ export default function (
     const resumeRef = boundRef
     if (resumeRef !== null) {
       void resumeParkedRun(resumeConsumerDeps(resumeRef))
+      return
     }
+    // AIDEV-NOTE: PMR-T9ZQ 3.2 — belt-and-braces CONSENT gate for a LATE
+    // parked candidate (the daemon parked the run after session_start's scan
+    // found nothing, and a session with no binding used to let it stall
+    // silently). boundRef === null now runs the SAME askResumeThenArm gate as
+    // startup, once per process. Three guards carry the contract: the sync
+    // door check (a settle landing while the startup picker is open never
+    // stacks a second menu); the post-scan re-check (askResumeThenArm guards
+    // 'asking' but never 'done', so an ask that completed during our scan
+    // must not be spent again); and the live-binding check — a session that
+    // started /flow HERE owns a run without boundRef being set (that var
+    // only tracks the session_start restore), and adopting its own parked run
+    // would drop a real worktree binding back to null. A headless fallback
+    // never reaches a menu, so the latch is pinned here too — otherwise every
+    // settle would re-print those recovery lines. Net effect: this path
+    // reaches resumeParkedRun for NO ref that did not pass the gate.
+    if (getActiveFlowRef() !== null || resumeAskState !== 'idle') {
+      return
+    }
+    void (async () => {
+      let candidates: ParkedCandidate[]
+      try {
+        candidates = await durableRebind.deriveCandidates()
+      } catch {
+        return
+      }
+      if (candidates.length === 0) {
+        // nothing parked (yet): leave the latch armed for a later settle
+        return
+      }
+      // the scan is async — a startup ask may have opened (or finished)
+      // while it ran, so the latch is re-checked before spending the ask
+      if (resumeAskState !== 'idle') {
+        return
+      }
+      await askResumeThenArm(ctx, candidates)
+      if (resumeAskState === 'idle') {
+        resumeAskState = 'done'
+      }
+    })()
   })
 
   registerPhaseCommands(pi)
