@@ -343,7 +343,13 @@ test('journal append triggers a pane re-render containing the appended note', as
 })
 
 async function waitFor(predicate, what) {
-  const deadline = Date.now() + 5_000
+  // AIDEV-NOTE: PMR-KWQW — 30s wall-clock bound, not 5s: under full parallel
+  // `bun run test` load the spawned pane's node startup + fs.watch attach +
+  // first render occasionally exceeded 5s and flaked the suite (and a
+  // flow_land gate run). The poll loop returns as soon as the predicate
+  // holds, so the headroom costs nothing on a healthy machine — it only
+  // lets a genuinely slow-but-working render finish.
+  const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {
     if (predicate()) {
       return
