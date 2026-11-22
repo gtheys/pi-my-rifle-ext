@@ -207,7 +207,7 @@ sequenceDiagram
     alt phase label present
         E->>A: inject NEXT phase prompt (AUTO)
     else label missing, no subagent in flight
-        E->>Av: note "flow halted at <phase>"
+        E->>Av: note "flow halted at PHASE"
     else plan phase, plan-state=review
         E->>U: paused — awaiting spec approval
     end
@@ -238,12 +238,17 @@ intercepted and blocked.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> planned: plan phase + YOUR approval
-    planned --> active: implement green + committed
-    active --> review-passed: cluster gate + manual tests<br/>+ /review clean
-    review-passed --> done: feedback triage complete
-    active --> active: validate step fail → fix → re-validate
-    active --> active: manual test fail / review blockers → implement again
+    [*] --> Plan
+    Plan: plan — feature-plan-aven and YOUR approval
+    Implement: implement — Jira branch, epic subtasks, commits
+    Validate: validate — ordered cluster gate, review gate, deviations
+    Feedback: feedback — Sonar and PR comment triage
+    Plan --> Implement: planned lands (only after your approve receipt)
+    Implement --> Validate: active lands
+    Validate --> Feedback: review-passed lands (after flow_land authorizes push and PR)
+    Feedback --> [*]: done lands
+    Plan --> Plan: no approve receipt — the loop pauses at plan
+    Validate --> Implement: gate fail, manual test fail or blockers — retry budget reset
 ```
 
 ### 4.2 Type labels — the routing contract

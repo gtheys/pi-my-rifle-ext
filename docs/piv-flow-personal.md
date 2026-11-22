@@ -157,7 +157,7 @@ sequenceDiagram
     alt phase label present
         E->>A: inject NEXT phase prompt (AUTO)
     else label missing, no subagent in flight
-        E->>Av: note "flow halted at <phase>"
+        E->>Av: note "flow halted at PHASE"
     else plan phase, plan-state=review
         E->>U: paused — awaiting spec approval
     end
@@ -188,12 +188,17 @@ intercepted and blocked.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> planned: plan phase + YOUR approval
-    planned --> active: implement green + committed
-    active --> review-passed: human test passed + /review clean
-    review-passed --> done: outcome summary written
-    active --> active: validate fail → implement again<br/>(budget reset)
-    active --> active: review blockers → implement again
+    [*] --> Plan
+    Plan: plan — size check and YOUR route confirm
+    Implement: implement — worktree, tests, commits
+    Validate: validate — YOUR human test, review gate, deviations, YOUR tuicr pass
+    Feedback: feedback — outcome summary and review-feedback tickets
+    Plan --> Implement: planned lands (only after your approve receipt)
+    Implement --> Validate: active lands
+    Validate --> Feedback: review-passed lands (after flow_land and the local ff-only merge)
+    Feedback --> [*]: done lands
+    Plan --> Plan: no approve receipt — the loop pauses at plan
+    Validate --> Implement: test fail, blockers or deviations — retry budget reset
 ```
 
 ### 4.2 Type labels — the routing contract
