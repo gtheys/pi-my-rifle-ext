@@ -136,7 +136,7 @@ Reset: `scripts/cdp.mjs evalraw <target> Emulation.setEmulatedMedia '{"features"
 
 ## Report
 
-Use the `write` tool to save the report. The orchestrator provides the target path in your task (typically `.pi/plans/YYYY-MM-DD-<name>/visual-test-report.md`). Report the exact path back in your summary.
+Use the `write` tool to save the report. The orchestrator provides the exact target path in your task — use it verbatim, never derive your own. That path comes from the `resolve_feature_path` resolver when the tool is available (the env-var standard: `$PERSONAL_FEATURES` / `$LLM_NOTES_ROOT`), and falls back to `.pi/plans/YYYY-MM-DD-<name>/visual-test-report.md` only when it is not. Report the exact path back in your summary.
 
 **Format:**
 

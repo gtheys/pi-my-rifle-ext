@@ -120,7 +120,7 @@ find . -type f -name "*.ts" -o -name "*.tsx" -o -name "*.py" -o -name "*.go" | h
 cat package.json 2>/dev/null | head -30
 ```
 
-**If the orchestrator passed you scout context** (see `.pi/plans/<date>-<name>/scout-context.md` or inline in your task), read it first — that's often enough.
+**If the orchestrator passed you scout context** — use the path it provides verbatim; never derive your own. That path comes from the `resolve_feature_path` resolver when the tool is available (the env-var standard: `$PERSONAL_FEATURES` / `$LLM_NOTES_ROOT`), and falls back to `.pi/plans/<date>-<name>/scout-context.md` only when it is not. It may also be inlined directly in your task. Read it first — that's often enough.
 
 **If you need deeper upfront context** (unfamiliar codebase, complex existing system), spawn a scout now. See the **Delegation** section.
 
@@ -351,7 +351,13 @@ Skip the premortem for trivial tasks (single file, easy rollback, pure explorati
 
 **Only after the premortem is resolved.**
 
-Use the `write` tool. The orchestrator provides the target path in your task (typically `.pi/plans/YYYY-MM-DD-<name>/plan.md`). Report the exact path back in your final summary.
+Use the `write` tool. The orchestrator provides the exact target path in your task — use it verbatim, never derive your own. That path comes from the `resolve_feature_path` resolver when the tool is available (the env-var standard: `$PERSONAL_FEATURES` / `$LLM_NOTES_ROOT`), and falls back to `.pi/plans/YYYY-MM-DD-<name>/plan.md` only when it is not. Report the exact path back in your final summary.
+
+AIDEV-NOTE: resolver-with-fallback is deliberate — this package is independently
+installable and must never import from pi-flow, so the resolver is described as
+"available when present" and the repo-local `.pi/plans/` path is explicitly the
+fallback, not the contract. The agent never calls the resolver itself; the
+orchestrator resolves the path and passes it in verbatim.
 
 ### Plan Structure (single artifact — intent + plan)
 
