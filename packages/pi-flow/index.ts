@@ -142,6 +142,7 @@ import {
 import { MODE_PROFILE } from './mode-profile.ts'
 import { registerJiraCreateBranch } from './plan-tools/jira-branch-tool.ts'
 import { registerResolveFeaturePath } from './plan-tools/resolve-feature-path.ts'
+import { registerResolveNotesPath } from './plan-tools/resolve-notes-path.ts'
 import { registerResolveSpecPath } from './plan-tools/resolve-spec-path.ts'
 import prQualityExtension from './pr-quality/index.ts'
 import reviewExtension from './review/review.ts'
@@ -897,6 +898,7 @@ export default function (
   // jira_create_branch; /review-spec lives in spec-review/commands.ts).
   registerResolveSpecPath(pi)
   registerResolveFeaturePath(pi)
+  registerResolveNotesPath(pi)
   registerOpenInPane(pi)
   registerJiraCreateBranch(pi)
 

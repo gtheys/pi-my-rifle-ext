@@ -39,6 +39,40 @@ export async function resolveSpecPath(
   return join(specDir, `${jiraId}__${slug}.md`)
 }
 
+// AIDEV-NOTE: Notes subdir allowlist — resolve_notes_path only ever appends
+// one of these fixed segments to the notes root, never an arbitrary path, so
+// the tool cannot be used for path injection. '' means the notes root itself.
+// Mirror this list in resolve-notes-path.ts's TypeBox union (PMR-TF0R).
+export const NOTES_SUBDIRS = [
+  '',
+  'prs',
+  'specs',
+  'research',
+  'tickets',
+] as const
+export type NotesSubdir = (typeof NOTES_SUBDIRS)[number]
+
+// AIDEV-NOTE: Notes path contract — if $LLM_NOTES_ROOT is set, notes live in
+// $LLM_NOTES_ROOT/<repo>/notes[/<subdir>] (work mode, centralised notes root).
+// Otherwise fall back to <git-toplevel>/notes[/<subdir>] (repo-local). This is
+// the generic counterpart of resolveSpecPath (which hardcodes 'specs').
+export async function resolveNotesPath(
+  pi: ExtensionAPI,
+  subdir: NotesSubdir,
+): Promise<string> {
+  const notesRoot = process.env.LLM_NOTES_ROOT
+  let dir: string
+  if (notesRoot) {
+    const repoName = await getRepoName(pi)
+    dir = join(notesRoot, repoName, 'notes')
+  } else {
+    const r = await pi.exec('git', ['rev-parse', '--show-toplevel'], {})
+    dir = join(r.stdout.trim(), 'notes')
+  }
+
+  return join(dir, subdir)
+}
+
 // AIDEV-NOTE: Feature path contract — if $PERSONAL_FEATURES is set, feature
 // plans live in $PERSONAL_FEATURES/<repo>/<date>-<slug>/plan.md (personal
 // cross-repo features collection). Otherwise fall back to the repo-local

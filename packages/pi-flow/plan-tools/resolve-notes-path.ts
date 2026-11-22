@@ -1,0 +1,40 @@
+/**
+ * resolve_notes_path tool — compute the canonical notes directory path.
+ * Added for PMR-TF0R (feature PMR-HHS8: make all flow document paths env-standard).
+ */
+
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { Type } from 'typebox'
+import { resolveNotesPath } from './helpers.ts'
+
+export function registerResolveNotesPath(pi: ExtensionAPI) {
+  pi.registerTool({
+    name: 'resolve_notes_path',
+    label: 'Resolve Notes Path',
+    description:
+      'Compute the canonical notes directory path for this repo. If $LLM_NOTES_ROOT is set, uses $LLM_NOTES_ROOT/<repo>/notes[/<subdir>]; otherwise falls back to <git-toplevel>/notes[/<subdir>]. subdir is restricted to a fixed allowlist ("" for the notes root, or "prs", "specs", "research", "tickets"). Returns the full absolute path.',
+    promptSnippet: 'Compute the canonical notes directory path for this repo',
+    parameters: Type.Object({
+      subdir: Type.Union(
+        [
+          Type.Literal(''),
+          Type.Literal('prs'),
+          Type.Literal('specs'),
+          Type.Literal('research'),
+          Type.Literal('tickets'),
+        ],
+        {
+          description:
+            'Optional notes subdirectory ("" for the notes root; allowlist: prs, specs, research, tickets)',
+        },
+      ),
+    }),
+    async execute(_id, params) {
+      const notesPath = await resolveNotesPath(pi, params.subdir)
+      return {
+        content: [{ type: 'text', text: notesPath }],
+        details: { notesPath },
+      }
+    },
+  })
+}
