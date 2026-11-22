@@ -2404,6 +2404,14 @@ function persistAssignment(
     })
     running.assignmentStatus = 'working'
   } catch {}
+  // AIDEV-NOTE (PMR-3QMY): the `working` upgrade seam for the co-extension
+  // state snapshot. Emitted outside the try/catch because the snapshot
+  // projects the in-memory entry, which was written before the durable call —
+  // it must publish even when the durable write failed. Callers that
+  // registered the entry immediately before this call publish one extra
+  // snapshot of the same content; that is harmless (full-snapshot payload,
+  // consumers overwrite) and keeps every mutation site self-contained.
+  emitSubagentStateSnapshot()
 }
 
 /** Persist a status transition to the assignment record (on change only). */
@@ -2416,6 +2424,13 @@ function syncAssignmentStatus(
   try {
     updateAssignmentStatus(running.id, status)
   } catch {}
+  // AIDEV-NOTE (PMR-3QMY): kind-change seam for the co-extension state
+  // snapshot, placed AFTER the unchanged-early-return guard so the 1s status
+  // tick only publishes on real transitions. This site doubles as the
+  // blocked-on-ask signal: deliverAskSteer calls syncAssignmentStatus(running,
+  // 'blocked'), so a child parked on ask_owner / ask_peer reaches subscribers
+  // here without any extra wiring.
+  emitSubagentStateSnapshot()
 }
 
 // AIDEV-NOTE (PMR-Z5KR): removal ONLY on a verified completion signal
@@ -2791,6 +2806,9 @@ async function launchSubagent(
     }),
   }
   runningSubagents.set(id, running)
+  // AIDEV-NOTE (PMR-3QMY): agent appears in the observed state (entry
+  // registered as the transient `starting` record).
+  emitSubagentStateSnapshot()
   startWidgetRefresh()
 
   // ── Background tab spawn: `tab create --no-focus` (the user's focus never
@@ -2799,6 +2817,9 @@ async function launchSubagent(
   const workspaceId = resolveHerdrWorkspaceId()
   if (!workspaceId) {
     runningSubagents.delete(id)
+    // AIDEV-NOTE (PMR-3QMY): spawn-failure cleanup — the transient entry
+    // disappears again.
+    emitSubagentStateSnapshot()
     updateWidget()
     throw new Error(
       'Not running inside herdr (HERDR_WORKSPACE_ID/HERDR_PANE_ID unset). ' +
@@ -2819,6 +2840,9 @@ async function launchSubagent(
     })
   } catch (err) {
     runningSubagents.delete(id)
+    // AIDEV-NOTE (PMR-3QMY): spawn-failure cleanup — the transient entry
+    // disappears again.
+    emitSubagentStateSnapshot()
     // AIDEV-NOTE (PMR-YKAC): a CLEAN spawn failure (throw, not crash) retires
     // the 'starting' record as 'lost' so a retry allocates fresh instead of
     // replaying a spawn whose inputs may be broken. A crash (no throw) keeps
@@ -2952,6 +2976,12 @@ async function watchSubagent(
       closeSurface(surface, running.tabId)
       runningSubagents.delete(running.id)
       settleAssignment(running.id, verifiedExit)
+      // AIDEV-NOTE (PMR-3QMY): settlement seam — emitted at the CALL SITE,
+      // after the completed delete+settle sequence, never inside
+      // settleAssignment itself: the three settle paths differ in the order of
+      // the Map delete vs the settle call, so only here is the observed state
+      // final. Agent disappears from the snapshot.
+      emitSubagentStateSnapshot()
 
       return {
         name,
@@ -2984,6 +3014,10 @@ async function watchSubagent(
     closeSurface(surface, running.tabId)
     runningSubagents.delete(running.id)
     settleAssignment(running.id, verifiedExit)
+    // AIDEV-NOTE (PMR-3QMY): settlement seam — see the claude path above; the
+    // emission must follow the completed delete+settle sequence, not live
+    // inside settleAssignment.
+    emitSubagentStateSnapshot()
 
     return {
       name,
@@ -3019,6 +3053,12 @@ async function watchSubagent(
       settleAssignment(running.id, false)
     }
     runningSubagents.delete(running.id)
+    // AIDEV-NOTE (PMR-3QMY): catch-path settlement — emitted AFTER the delete
+    // so the sequence is complete regardless of the spared branch (a spared
+    // child skips settleAssignment but still leaves the live Map, so it
+    // disappears from the snapshot either way). The /reload abort path above
+    // returns early, KEEPS the entry, and therefore emits nothing.
+    emitSubagentStateSnapshot()
 
     if (signal.aborted) {
       return {
@@ -3332,6 +3372,12 @@ export default function subagentsExtension(pi: ExtensionAPI) {
     // AIDEV-NOTE: parent session id names THIS session's owner inbox —
     // children spawned by us route message_owner records here (PMR-QCVA).
     ownerSessionId = ctx.sessionManager.getSessionId() ?? null
+    // AIDEV-NOTE (PMR-3QMY): initial state snapshot — publish the live map as
+    // soon as the parent session starts so subscribers (who register at
+    // extension-body load) get a full picture without waiting for the first
+    // mutation. Entries survive an extension /reload on globalThis, so a
+    // reattach shows up here too; child sessions are gated inside the emitter.
+    emitSubagentStateSnapshot()
     // AIDEV-NOTE: load per session so a project override written mid-run is
     // honored on the next session. Throws on invalid config — fail fast.
     loadAndCacheStatusConfig(ctx.cwd)
@@ -4069,6 +4115,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                 }),
               }
               runningSubagents.set(running.id, running)
+              // AIDEV-NOTE (PMR-3QMY): agent appears in the observed state
+              // (discovered record re-registered under this parent).
+              emitSubagentStateSnapshot()
               // Re-claim under THIS parent: the fresh claim pid makes
               // listAssignments classify the record owned again, so the
               // orphaned marker + resume hint disappear from subagents_list.
@@ -4220,6 +4269,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
           }),
         }
         runningSubagents.set(id, running)
+        // AIDEV-NOTE (PMR-3QMY): agent appears in the observed state (resumed
+        // session registered as a live entry).
+        emitSubagentStateSnapshot()
         persistAssignment(running, ctx.cwd, sessionId ?? null)
         // AIDEV-NOTE (PMR-HFK1): journal-grade takeover signal — a resume
         // is a reassignment of the recorded subtask's work to this parent.
