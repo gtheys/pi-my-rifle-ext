@@ -96,6 +96,7 @@ import {
   buildSubagentStateStopped,
   publishStateEvent,
   type SubagentStateEntry,
+  type SubagentStateStatus,
 } from './state-events.ts'
 import {
   advanceStatusState,
@@ -1099,34 +1100,79 @@ export function usageSuffixFor(
 // session_start) — subagent child processes never publish.
 
 /** Derive the public state entries from the live running map, sorted by id.
- * Exported for tests. */
-export function subagentStateEntries(): SubagentStateEntry[] {
+ * Exported for tests.
+ *
+ * AIDEV-NOTE (PMR-3QMY): `overrides` lets a transition seam publish the
+ * status it just authoritatively moved to even before the child's activity
+ * file reflects it. This closes the blocked-on-ask race: at the
+ * `syncAssignmentStatus(running, 'blocked')` seam the activity has NOT yet
+ * flipped to `phase:'blocked'` (the child writes the `.ask` sidecar first and
+ * `onAsk` runs before `onTick`), so `statusKindOf` would still report the
+ * pre-ask kind (working/starting). Without the override the emitted snapshot
+ * carries that stale kind and the correction never arrives — the 1s tick hits
+ * the unchanged-early-return guard and a blocked child is stall-watchdog
+ * exempt, so nothing re-emits for the whole blocked window.
+ */
+export function subagentStateEntries(
+  overrides?: Readonly<Record<string, SubagentStateStatus>>,
+): SubagentStateEntry[] {
   const entries: SubagentStateEntry[] = []
   for (const running of runningSubagents.values()) {
+    let status: SubagentStateStatus
+    const override = overrides?.[running.id]
+    if (override !== undefined) {
+      status = override
+    } else {
+      status = statusKindOf(running, Date.now())
+    }
     entries.push({
       id: running.id,
       name: running.name,
-      status: statusKindOf(running, Date.now()),
+      status,
     })
   }
   entries.sort((a, b) => a.id.localeCompare(b.id))
   return entries
 }
 
+// AIDEV-NOTE (PMR-3QMY): terminal-published flag for the `stopped` event.
+// `stopped` is terminal within a module incarnation: once published, no
+// further `snapshot` may follow, otherwise subscribers see a snapshot with a
+// higher seq than the terminal stopped (breaking the README's "stopped is
+// terminal" contract). The trailing-snapshot source is the aborted-watcher
+// catch path, which calls emitSubagentStateSnapshot() AFTER session_shutdown
+// has already emitted `stopped`. Must NOT move to globalThis — a /reload is a
+// fresh module load and correctly resets this flag so a new incarnation starts
+// fresh (same rationale as the sequencer in state-events.ts).
+let stoppedPublished = false
+
 /** Publish a full state snapshot on the co-extension channel. No-op for
  * child sessions (ISC-7) and for a missing/stale bus (ISC-8, via
  * `publishStateEvent`). Never throws into callers (ISC-6). */
-function emitSubagentStateSnapshot(): void {
+function emitSubagentStateSnapshot(
+  overrides?: Readonly<Record<string, SubagentStateStatus>>,
+): void {
   const isChildSession =
     !!process.env.PI_SUBAGENT_SESSION || !!process.env.PI_SUBAGENT_ID
   if (isChildSession) {
     return
   }
+  // AIDEV-NOTE (PMR-3QMY): `stopped` is terminal — once published, suppress
+  // every later snapshot so aborted-watcher catch paths cannot emit a
+  // snapshot with a higher seq than the terminal stopped event.
+  if (stoppedPublished) {
+    return
+  }
   try {
-    const event = buildSubagentStateSnapshot(subagentStateEntries())
+    const event = buildSubagentStateSnapshot(subagentStateEntries(overrides))
     publishStateEvent(latestPi?.events, event)
-  } catch {
-    // Observation must never break the caller; swallow defensively.
+  } catch (err) {
+    // Observation must never break the caller; swallow defensively (ISC-6),
+    // but surface the failure under the existing debug flag so a derivation
+    // throw is not silently invisible.
+    if (process.env.PI_SUBAGENTS_SNAPSHOT_DEBUG) {
+      console.error('[subagent-state] emit failed', err)
+    }
   }
 }
 
@@ -1142,10 +1188,18 @@ function emitSubagentStateStopped(): void {
   if (isChildSession) {
     return
   }
+  // AIDEV-NOTE (PMR-3QMY): mark the publisher terminal BEFORE publishing so
+  // even a null/failed bus still suppresses trailing snapshots — the session
+  // is ending regardless, and a /reload (fresh module load) resets the flag.
+  stoppedPublished = true
   try {
     publishStateEvent(latestPi?.events, buildSubagentStateStopped())
-  } catch {
-    // Observation must never break shutdown; swallow defensively.
+  } catch (err) {
+    // Observation must never break shutdown; swallow defensively (ISC-6),
+    // but surface the failure under the existing debug flag.
+    if (process.env.PI_SUBAGENTS_SNAPSHOT_DEBUG) {
+      console.error('[subagent-state] emit failed', err)
+    }
   }
 }
 
@@ -2449,8 +2503,13 @@ function syncAssignmentStatus(
   // tick only publishes on real transitions. This site doubles as the
   // blocked-on-ask signal: deliverAskSteer calls syncAssignmentStatus(running,
   // 'blocked'), so a child parked on ask_owner / ask_peer reaches subscribers
-  // here without any extra wiring.
-  emitSubagentStateSnapshot()
+  // here without any extra wiring. It now passes { [running.id]: status } so
+  // the snapshot publishes the just-transitioned status DIRECTLY — closing the
+  // blocked-on-ask race where statusKindOf still reports the pre-ask activity
+  // kind (the child's `.ask` sidecar flips before the watchdog phase does),
+  // instead of relying on the derivation picking it up later (it never did —
+  // the next tick hits the early-return and a blocked child is watchdog-exempt).
+  emitSubagentStateSnapshot({ [running.id]: status })
 }
 
 // AIDEV-NOTE (PMR-Z5KR): removal ONLY on a verified completion signal

@@ -31,6 +31,7 @@ import {
   SUBAGENT_STATE_EVENT_VERSION,
   type SubagentStateEntry,
   type SubagentStateEvent,
+  type SubagentStateStatus,
 } from '../pi-extension/subagents/state-events.ts'
 import {
   createStatusState,
@@ -333,5 +334,44 @@ test('subagentStateEntries: sorts by id, projects exactly id/name/status, drops 
   } finally {
     runningMap.delete('b1')
     runningMap.delete('a2')
+  }
+})
+
+// AIDEV-NOTE (PMR-3QMY): the per-id `overrides` argument on
+// `subagentStateEntries` is what fixes the blocked-on-ask race. At the
+// `syncAssignmentStatus(running, 'blocked')` seam the child's activity has not
+// yet flipped to `phase:'blocked'` (the `.ask` sidecar is written first and
+// onAsk runs before onTick), so the DERIVED kind still reports the pre-ask
+// state. The seam passes { [id]: status } so the published snapshot carries the
+// authoritative transitioned status instead of the stale derivation. This test
+// fabricates a running entry whose derived kind is NOT 'blocked' (a `starting`
+// child), proves the derived path reports 'starting', then proves the override
+// path reports 'blocked' — i.e. the override is exactly what changed the value.
+test('subagentStateEntries: a per-id override wins over the stale activity-derived kind', () => {
+  const runningMap = __test__.runningSubagents as Map<string, RunningSubagent>
+  runningMap.set(
+    'ov1',
+    makeRunningSubagentFixture({
+      id: 'ov1',
+      name: 'Over',
+      starting: true,
+    }),
+  )
+  try {
+    // Without the override, the live derivation reports the pre-ask kind.
+    const derived = subagentStateEntries()
+    const derivedEntry = derived.find((entry) => entry.id === 'ov1')
+    assert.ok(derivedEntry, 'fixture must appear in the derived entries')
+    assert.equal(derivedEntry.status, 'starting')
+
+    // With the seam override, the published status is the just-transitioned
+    // value even though the activity-derived kind lags behind.
+    const overrides: Record<string, SubagentStateStatus> = { ov1: 'blocked' }
+    const overridden = subagentStateEntries(overrides)
+    const overriddenEntry = overridden.find((entry) => entry.id === 'ov1')
+    assert.ok(overriddenEntry, 'fixture must appear in the overridden entries')
+    assert.equal(overriddenEntry.status, 'blocked')
+  } finally {
+    runningMap.delete('ov1')
   }
 })
