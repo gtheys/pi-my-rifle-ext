@@ -19,6 +19,7 @@ import type {
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import type { SubagentResult } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
+import { healFlowBinding } from '../flow/binding-heal.ts'
 import {
   buildDeviationReviewPrompt,
   checkDiffLinesRead,
@@ -53,7 +54,7 @@ import {
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
 import { productionReviewDeps } from './code-review.ts'
-import { type ReviewDeps, resolveReviewWorktree } from './code-review-parse.ts'
+import type { ReviewDeps } from './code-review-parse.ts'
 import { toolResult } from './result.ts'
 
 export interface DeviationReviewToolParams {
@@ -92,8 +93,13 @@ export async function resolveDeviationCwd(
   deps: ReviewDeps,
 ): Promise<DeviationCwdResolution> {
   try {
-    const wt = await resolveReviewWorktree(ref, deps)
-    return { ok: true, cwd: wt.path }
+    // AIDEV-NOTE: PMR-DRKH — heal-first: resolving doubles as re-arming the
+    // module binding after a pi reload; the fail-closed shape is unchanged.
+    const heal = await healFlowBinding(ref, deps)
+    if (heal.ok) {
+      return { ok: true, cwd: heal.worktree.path }
+    }
+    return { ok: false, reason: heal.reason }
   } catch (error) {
     let msg: string
     if (error instanceof Error) {
@@ -313,7 +319,7 @@ export function registerDeviationReviewTool(
       )
       if (!resolution.ok) {
         return toolResult(
-          `deviation_review: cannot resolve the flow worktree for ${params.ref} — checkout mismatch: ${resolution.reason}. The flow base is recorded on the feature branch (branch.<feature>.flowbase), so the diff range cannot be resolved from the session checkout (${ctx.cwd}). Fix or re-bind the flow worktree, then re-run. No reviewer was spawned. NEVER treat this as 0 deviations.`,
+          `deviation_review: cannot resolve the flow worktree for ${params.ref} — checkout mismatch: ${resolution.reason}. The flow base is recorded on the feature branch (branch.<feature>.flowbase), so the diff range cannot be resolved from the session checkout (${ctx.cwd}). Fix or re-bind the flow worktree, then re-run. No reviewer was spawned. NEVER treat this as 0 deviations.\nRecovery: run /flow ${params.ref} to re-arm the flow binding, then re-call.`,
           { ok: false as const, reason: resolution.reason },
           { isError: true },
         )

@@ -32,6 +32,11 @@ function setupRepo(): { root: string; repo: string } {
   commit(repo, 'a.txt', 'initial')
   git(repo, 'push', '-q', 'origin', 'main')
   git(repo, 'branch', '-q', '--set-upstream-to', 'origin/main')
+  // AIDEV-NOTE: pin the bare origin's HEAD to main. CI git defaults the
+  // initial branch to 'master', so a later clone gets an unborn HEAD and
+  // `git push origin main` from it fails with "src refspec main does not
+  // match any" (red main CI since 2026-11-21).
+  git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/main')
   return { root, repo }
 }
 
