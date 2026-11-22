@@ -59,7 +59,7 @@ flowchart TD
   I --> I2["aven epic add SUB REF (+ dep add SUB PHASE for gating)"]
   I2 --> J["aven epic list REF  (verify)"]
   J --> K["implement-plan-aven: sort by N./N.M prefix,<br/>first non-done = resume pointer"]
-  K -->|per phase| L["run tests -> commit<br/>then aven edit PHASE --status done"]
+  K -->|per subtask| L["run tests -> commit (Subtask: trailer)<br/>then aven edit SUB --status done"]
   L -->|next phase| K
 ```
 
@@ -260,9 +260,12 @@ later, in stage 2. Design points the plan must satisfy:
   the verification command (test runner, script, or manual check) captured in
   the interview, so a worker proves the phase done instead of guessing.
 - **Phases must be testable blocks**: the planner designs each phase so the repo
-  is left green at its end — tests pass, then one commit scoped to that phase.
-  A phase that can't end with `tests → commit` is too big or too small; split
-  or merge it.
+  is left green at its end. Commits are scoped per SUBTASK, not per phase:
+  the implement-phase flow rules mandate one commit per subtask whose message
+  ends with a `Subtask: <subtask-ref>` trailer (review gates derive
+  per-subtask diff ranges from these trailers). A phase closes only after all
+  its subtasks are green and committed. A phase whose subtasks can't each end
+  with `tests → commit` is too big or too small; split or merge it.
 - The planner must NOT commit code, must NOT create aven tasks, and must NOT
   set status beyond `todo`.
 
@@ -397,18 +400,21 @@ Repeat per phase, incrementing `N` (`1.`, `2.`, ...); subtasks `1.1`, `1.2`,
 ## Phase discipline (execution)
 
 Every phase ends with the same cycle — this is what makes phases testable
-blocks rather than arbitrary buckets:
+blocks rather than arbitrary buckets. Execution is per SUBTASK (matching the
+implement-phase flow rules):
 
 ```bash
 # 1. Run the project's tests (repo-defined runner, e.g. `bun run check`)
-# 2. Commit with a phase-scoped message (explain the why, conventional subject)
-# 3. Close the phase in aven
-aven edit <PHASE_REF> --status done
+# 2. Commit with a subtask-scoped message (explain the why, conventional
+#    subject) ending with a `Subtask: <SUBTASK_REF>` trailer — review gates
+#    derive per-subtask diff ranges from these trailers
+# 3. Close the subtask in aven
+aven edit <SUBTASK_REF> --status done
 ```
 
-Only then does the next phase start. If tests fail, the phase is not done —
-fix forward inside the same phase. The commit is the phase's artifact; the
-aven status is its ledger entry.
+Only when ALL of a phase's subtasks are done does the next phase start. If
+tests fail, the subtask is not done — fix forward inside the same subtask.
+The per-subtask commit is the artifact; the aven status is its ledger entry.
 
 ## What We're NOT Doing
 
