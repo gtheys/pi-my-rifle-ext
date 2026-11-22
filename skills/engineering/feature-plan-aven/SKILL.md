@@ -438,6 +438,14 @@ Only when ALL of a phase's subtasks are done does the next phase start. If
 tests fail, the subtask is not done — fix forward inside the same subtask.
 The per-subtask commit is the artifact; the aven status is its ledger entry.
 
+Once all of a phase's subtasks are done and green, the ORCHESTRATOR closes the
+phase container ticket itself before starting the next phase (workers own
+subtask closure; nobody else owns this step):
+
+```bash
+aven edit <PHASE_REF> --status done
+```
+
 ## What We're NOT Doing
 
 - No taskwarrior — no UUID plumbing, no `work_state` UDA, no `jiraid`. This
