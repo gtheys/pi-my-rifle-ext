@@ -23,6 +23,13 @@ When working in this repository, read the OpenWiki quickstart first, then follow
 - No ternary expressions in TypeScript — prefer clear `if` / `else` assignments.
 - Avoid `any`, `@ts-ignore`, and unchecked prototype assumptions. Use narrow structural types for Pi internals.
 - Conventional Commit subjects: `fix(pi-tree): ...`, `feat(pi-mention-skill): ...`.
+- **Markdown diagrams are code.** ` ```mermaid ` fences in `docs/` render on GitHub and are
+  linted by `bun run check:mermaid` (`scripts/check-mermaid.mjs`, wired into lefthook
+  pre-commit for `**/*.md` and into `bun run check`). Two rules bite hardest:
+  a `stateDiagram` state ID **rejects `-` and `.`**, so never use a lifecycle label
+  (`review-passed`) as a state name — states are the phases and the label belongs in
+  the transition text; and `<br/>` / raw `<placeholder>` are unsupported there, so
+  write placeholders in words (#docs-diagrams).
 
 ## Flow document paths #paths
 

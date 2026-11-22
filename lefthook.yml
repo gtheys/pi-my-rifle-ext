@@ -5,6 +5,21 @@ pre-commit:
       glob: "packages/**/*.{ts,tsx,js,jsx,mjs,json,jsonc,md,toml,yml,yaml}"
       run: bunx @biomejs/biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
+    # AIDEV-NOTE: markdown mermaid fences are invisible to Biome and to the type
+    # checker, yet GitHub renders them — a hyphenated stateDiagram ID (the lifecycle
+    # labels are hyphenated) or a `<br/>` in a state diagram silently replaces the
+    # diagram with a parse-error box. Rules and rationale: scripts/check-mermaid.mjs.
+    mermaid:
+      # lefthook's `**/*.md` matches nested paths only, so root files (AGENTS.md,
+      # README.md) need the single-star form too — otherwise the top-level docs
+      # stay unlinted while every docs/*.md file is checked.
+      glob:
+        - "*.md"
+        - "**/*.md"
+      run: node scripts/check-mermaid.mjs {staged_files}
+      exclude:
+        - "**/node_modules/**"
+        - "reference/**"
 
 pre-push:
   commands:
