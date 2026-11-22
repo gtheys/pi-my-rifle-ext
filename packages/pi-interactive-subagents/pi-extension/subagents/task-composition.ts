@@ -3,9 +3,10 @@
 // deterministic given the same role inputs, safe to cache/prefix-stabilize
 // across spawns) and a dynamic layer (the task body, which differs per
 // spawn). No fs/process/env access by design so it stays unit-testable and
-// side-effect free. Extracted from subagents/index.ts spawn logic; the
-// wrapper string constants below must stay byte-identical to the originals
-// around index.ts:2502–2507.
+// side-effect free. Extracted from subagents/index.ts spawn logic (PMR-ECJK
+// removed the originals). The wrapper strings below are load-bearing: the
+// byte-exactness invariant is enforced by the top-level asserts in
+// test/task-composition.test.ts.
 
 export type SystemPromptMode = 'append' | 'replace'
 
@@ -23,7 +24,9 @@ export interface ComposeChildTaskResult {
   taskMessage: string
 }
 
-// Copied byte-for-byte from packages/pi-interactive-subagents/pi-extension/subagents/index.ts (~2502–2507).
+// Historical: copied byte-for-byte from subagents/index.ts (~2502–2507),
+// since removed (PMR-ECJK). The byte-exact values are pinned by the
+// top-level asserts in test/task-composition.test.ts — change them together.
 export const AUTO_EXIT_HINT = 'Complete your task autonomously.'
 export const DEFAULT_HINT =
   'Complete your task. When finished, call the subagent_done tool. The user can interact with you at any time.'

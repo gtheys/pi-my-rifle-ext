@@ -8,7 +8,9 @@ import {
   DEFAULT_SUMMARY_INSTRUCTION,
 } from '../pi-extension/subagents/task-composition.ts'
 
-// Wrapper strings must stay byte-identical to index.ts constants.
+// Byte-exactness enforcement point for the wrapper strings (PMR-ECQK): the
+// originals these were copied from were removed from index.ts by PMR-ECJK,
+// so these asserts ARE the invariant — update them only deliberately.
 assert.equal(AUTO_EXIT_HINT, 'Complete your task autonomously.')
 assert.equal(
   DEFAULT_HINT,
