@@ -83,6 +83,34 @@ function startYoloInput() {
   }
 }
 
+test('start: work-mode yolo is refused loudly and never starts', async () => {
+  // PMR-ZRMQ — yolo is personal-only: the receipt-gate exemptions fire on
+  // the journaled yolo bit regardless of mode, so a work-mode yolo run must
+  // be refused at loop start (covers --yolo, config yolo, seed resumes).
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({
+    ref: 'TP-1',
+    phase: 'plan',
+    promptInput: { ...PROMPT_INPUT, mode: 'work', yolo: true },
+    yolo: true,
+  })
+  assert.equal(loop.isActive(), false)
+  assert.equal(h.sent.length, 0, 'no phase prompt sent')
+  assert.equal(h.events.length, 0, 'nothing journaled')
+  assert.equal(h.notifications.length, 1)
+  assert.match(h.notifications[0].message, /personal-mode only/)
+  assert.equal(h.notifications[0].level, 'warning')
+})
+
+test('start: personal-mode yolo still starts', async () => {
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startYoloInput())
+  assert.equal(loop.isActive(), true)
+  assert.equal(h.sent.length, 1)
+})
+
 test('start: sends one phase prompt and awaits outcome', async () => {
   const h = makeHarness([])
   const loop = createFlowLoop(h.deps)

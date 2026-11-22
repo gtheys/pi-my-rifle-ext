@@ -170,6 +170,20 @@ class FlowLoopImpl implements FlowLoop {
   }
 
   async start(input: FlowStartInput): Promise<void> {
+    // AIDEV-NOTE: PMR-ZRMQ — yolo is PERSONAL-mode only. The prompt layer
+    // already keeps work prompts gate-full, but the receipt-gate exemptions
+    // (phase-complete.ts / spec-approve.ts) fire on the journaled yolo bit
+    // regardless of mode; loop start is the single choke point covering the
+    // --yolo flag, config yolo, and journaled-seed resumes alike, so refuse
+    // loudly here instead of letting a work-mode run silently skip the
+    // human receipt gates.
+    if (input.yolo === true && input.promptInput.mode === 'work') {
+      this.deps.notify(
+        `/flow ${input.ref}: --yolo is personal-mode only — refusing to start a work-mode run without the receipt gates. Remove --yolo (or the yolo config) to run here.`,
+        'warning',
+      )
+      return
+    }
     if (this.state !== null) {
       this.deps.notify(
         `/flow: superseding active flow for ${this.state.ref} with ${input.ref}`,

@@ -37,7 +37,7 @@ const PiFlowConfigSchema = Type.Object({
   yolo: Type.Optional(
     Type.Boolean({
       description:
-        'Run /flow phases without confirmation gates. Only applies when the --yolo flag is absent on the /flow invocation — an explicit flag wins over config',
+        'Run /flow phases without confirmation gates (personal mode only — work-mode runs refuse yolo at loop start). Only applies when the --yolo flag is absent on the /flow invocation — an explicit flag wins over config',
     }),
   ),
   viewerPlacement: Type.Optional(
