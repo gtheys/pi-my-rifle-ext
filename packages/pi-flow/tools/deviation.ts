@@ -20,6 +20,7 @@ import type {
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import type { SubagentResult } from '@gtheys/pi-interactive-subagents'
 import { Type } from 'typebox'
+import { loadConfig } from '../config.ts'
 import { healFlowBinding } from '../flow/binding-heal.ts'
 import { MODE_PROFILE } from '../mode-profile.ts'
 import {
@@ -55,7 +56,7 @@ import {
   gateTargetId,
   verifyGateWithExec,
 } from '../validate/gate-target.ts'
-import type { WorkMode } from '../work-mode.ts'
+import { modeForToplevel, type WorkMode } from '../work-mode.ts'
 import type { ReviewDeps } from './code-review-parse.ts'
 import { toolResult } from './result.ts'
 import { productionReviewDeps } from './review-deps.ts'
@@ -122,13 +123,43 @@ export async function resolveDeviationCwd(
 // AIDEV-NOTE: PMR-7N3D — the baseRef handed to the shared resolver is
 // mode-keyed data (MODE_PROFILE[mode].baseResolution), so BOTH gates resolve
 // personal mode through the ONE shared local-only resolver (resolveFlowRange)
-// and can never disagree (PMR-R4AP). personal: the recorded flowbase BRANCH,
+// and can never disagree (PMR-R4AP). PMR-K74M: the mode itself is DERIVED
+// inside execute (deriveGateMode) — a wrong LLM-supplied params.mode can no
+// longer flip the base between the recorded sha and the local merge-base,
+// which makes the never-disagree claim literally true. personal: the
+// recorded flowbase BRANCH,
 // i.e. merge-base(HEAD, <local branch>) — rebase-aware, because a mid-flow
 // rebase (PMR-1KAE) moves the merge-base while the recorded flowbasesha
 // cannot self-heal and sweeps every commit other flows landed on main since
 // worktree create. NEVER the base's upstream ref (PMR-MH1Y/DQ7Z). work: the
 // flowbasesha recorded at worktree create (legacy fallback: the branch) —
 // byte-for-byte the previous behavior.
+// AIDEV-NOTE: PMR-K74M — same derivation review.ts gets from resolveMode
+// (config.ts), but pinned to the flow worktree: resolveMode runs its
+// rev-parse in the session cwd, while this gate must classify the WORKTREE
+// toplevel (a work-repo worktree can sit outside the session checkout).
+// A derivation failure (e.g. malformed pi-flow config) is a fail-closed
+// error result in execute, never a silent params.mode fallback.
+async function deriveGateMode(exec: Exec, cwd: string): Promise<WorkMode> {
+  const { stdout } = await exec('git', ['rev-parse', '--show-toplevel'], {
+    cwd,
+  })
+  const config = await loadConfig(cwd)
+  return modeForToplevel(stdout.trim(), config.workRoots)
+}
+
+// AIDEV-NOTE: PMR-8HST/PMR-S4W0 — best-effort temp-dir removal shared by the
+// write-failure catch and the finally in execute: a throwing rmSync
+// (busy/shared TMPDIR) must never replace the tool result with an unhandled
+// exception. Mirrors sweepTmpDirs in test/tmpdir.ts.
+export function tryRemove(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // swallow: cleanup is best-effort and must not mask the tool result
+  }
+}
+
 export async function resolveDeviationRange(
   exec: Exec,
   cwd: string,
@@ -306,7 +337,10 @@ export function registerDeviationReviewTool(
       'The gate pins its review target at spawn and verifies the reviewer echoed the pinned range (PMR-6EEW). A target_mismatch or stale result invalidates the verdict — re-run the tool; do not hand-wave a verdict around it.',
     ],
     parameters: Type.Object({
-      mode: Type.Union([Type.Literal('work'), Type.Literal('personal')]),
+      mode: Type.Union([Type.Literal('work'), Type.Literal('personal')], {
+        description:
+          'The flow mode — advisory only: the tool derives the authoritative mode from the flow worktree (PMR-K74M) and uses the derived value when they disagree',
+      }),
       ref: Type.String({ description: 'Aven ticket ref, e.g. PMR-ABC1' }),
       spec: Type.String({
         description:
@@ -339,7 +373,25 @@ export function registerDeviationReviewTool(
       }
       const cwd = resolution.cwd
       const exec: Exec = (cmd, args, options) => pi.exec(cmd, args, options)
-      const resolved = await resolveDeviationRange(exec, cwd, params.mode)
+      // AIDEV-NOTE: PMR-K74M — the gate's mode (and therefore its diff base)
+      // is DERIVED from the flow worktree toplevel + pi-flow config, the same
+      // inputs review.ts feeds resolveMode: an LLM-supplied params.mode can
+      // no longer flip the base between the recorded sha and the local
+      // merge-base (they diverge exactly after a mid-flow rebase). A
+      // derivation failure is fail-closed — never a silent params.mode
+      // fallback.
+      let mode: WorkMode
+      try {
+        mode = await deriveGateMode(exec, cwd)
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        return toolResult(
+          `deviation_review: cannot derive the flow mode — ${reason}. No reviewer was spawned. Fix the pi-flow config and re-run. NEVER treat this as 0 deviations.`,
+          { ok: false as const, reason: 'mode derivation failed' },
+          { isError: true },
+        )
+      }
+      const resolved = await resolveDeviationRange(exec, cwd, mode)
       if (!resolved.ok) {
         return toolResult(
           `deviation_review: cannot resolve the diff range — ${resolved.reason}. No reviewer was spawned. Tell the human; NEVER treat this as 0 deviations.`,
@@ -405,7 +457,7 @@ export function registerDeviationReviewTool(
       }
       // AIDEV-NOTE: large diffs go to a temp file, not the prompt (see
       // DeviationReviewInput.diffPath). Falls back to inline on write failure.
-      // AIDEV-NOTE: PMR-ESPA — the deviation-diff- mkdtemp dir must not leak:
+      // AIDEV-NOTE: PMR-MVSX — the deviation-diff- mkdtemp dir must not leak:
       // it is removed in the finally below once startDeviationReview has
       // settled, covering the success path AND every error return (spawn
       // failure, nonzero exit, gate-verification failure, diff_lines_read
@@ -420,7 +472,10 @@ export function registerDeviationReviewTool(
           await writeFile(diffPath, resolved.value.diff)
         } catch {
           if (diffDir !== undefined) {
-            rmSync(diffDir, { recursive: true, force: true })
+            // AIDEV-NOTE: PMR-8HST — guarded via tryRemove: a throwing rmSync
+            // here would escape as an unhandled tool exception and replace
+            // the inline-fallback tool result.
+            tryRemove(diffDir)
             diffDir = undefined
           }
           diffPath = undefined
@@ -428,7 +483,7 @@ export function registerDeviationReviewTool(
       }
       try {
         const prompt = deviationReviewPromptFrom(
-          params,
+          { ...params, mode },
           resolved.value,
           target,
           diffPath,
@@ -512,19 +567,22 @@ export function registerDeviationReviewTool(
         const mapped = deviationResultToToolResult(result.summary)
         const first = mapped.content[0]
         if (first !== undefined && first.type === 'text') {
-          first.text = `Resolved ${rangeLine}\n${first.text}`
+          // AIDEV-NOTE: PMR-K74M — surface a params.mode correction instead
+          // of silently overriding it, so a confused caller sees which mode
+          // the gate actually used.
+          let modeNote = ''
+          if (params.mode !== mode) {
+            modeNote = ` (note: params.mode said "${params.mode}" but the gate derived "${mode}" from the flow worktree — the derived mode was used)`
+          }
+          first.text = `Resolved ${rangeLine}${modeNote}\n${first.text}`
         }
         return mapped
       } finally {
         if (diffDir !== undefined) {
           // AIDEV-NOTE: cleanup must never mask the computed verdict — a
           // throwing rmSync (busy/shared TMPDIR) would replace `return
-          // mapped` with an exception. Mirrors test/tmpdir.ts.
-          try {
-            rmSync(diffDir, { recursive: true, force: true })
-          } catch {
-            // swallow: the verdict already computed stands
-          }
+          // mapped` with an exception. PMR-8HST/PMR-S4W0: shared tryRemove.
+          tryRemove(diffDir)
         }
       }
     },

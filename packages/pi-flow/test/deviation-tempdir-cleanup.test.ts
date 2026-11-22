@@ -24,7 +24,7 @@ import type {
   DeviationReviewDetails,
   DeviationReviewToolParams,
 } from '../tools/deviation.ts'
-import { registerDeviationReviewTool } from '../tools/deviation.ts'
+import { registerDeviationReviewTool, tryRemove } from '../tools/deviation.ts'
 // AIDEV-NOTE: PMR-ZMX0 review fix — this real-git fixture must use the
 // shared isolation helpers like every other real-git fixture in the
 // package: it ran with an inherited process.env and a leaked GIT_DIR made
@@ -56,13 +56,20 @@ after(() => {
   cleanupSandboxes()
 })
 
-function deviationDiffDirs(): Set<string> {
-  return new Set(
-    readdirSync(tmpdir()).filter((entry) =>
-      entry.startsWith('deviation-diff-'),
-    ),
-  )
-}
+// AIDEV-NOTE: PMR-SN81/PMR-S4W0 — the leak assertion is scoped to a private
+// TMPDIR instead of scanning the shared os.tmpdir() namespace: the tool's
+// mkdtemp respects process.env.TMPDIR, so deviation-diff- dirs created by
+// this execute run can only appear inside the scope dir. A global scan
+// reddened spuriously whenever any concurrent creator (a live Pi session
+// running deviation_review, another test) held a deviation-diff- dir.
+
+// AIDEV-NOTE: PMR-8HST — tryRemove must swallow a throwing rmSync so a
+// cleanup failure can never replace the tool result with an unhandled
+// exception. ENAMETOOLONG is a deterministic rmSync throw (force:true only
+// swallows ENOENT) that touches no real filesystem state.
+test('tryRemove swallows a throwing rmSync', () => {
+  assert.doesNotThrow(() => tryRemove(`/${'x'.repeat(5000)}`))
+})
 
 /** No-op journal writer — gate journaling is out of scope for this test. */
 function nullWriter(): EventWriter {
@@ -73,6 +80,9 @@ function nullWriter(): EventWriter {
 }
 
 test('oversized-diff path removes the deviation-diff- temp dir on the spawn-failure error return', async () => {
+  const tmpScope = registerSandbox(
+    mkdtempSync(path.join(tmpdir(), 'deviation-tmp-scope-')),
+  )
   const root = registerSandbox(mkdtempSync(path.join(tmpdir(), 'dev-tmpdir-')))
   const origin = path.join(root, 'origin.git')
   const repo = path.join(root, 'repo')
@@ -98,7 +108,8 @@ test('oversized-diff path removes the deviation-diff- temp dir on the spawn-fail
 
   setActiveFlowRef('PMR-TMPDIR')
   setFlowWorktree(wt, 'feat/x')
-  const before = deviationDiffDirs()
+  const savedTmpdir = process.env.TMPDIR
+  process.env.TMPDIR = tmpScope
   try {
     const tools: { name: string }[] = []
     const mockPi = {
@@ -139,13 +150,20 @@ test('oversized-diff path removes the deviation-diff- temp dir on the spawn-fail
     assert.ok(block !== undefined && block.type === 'text')
     assert.match(block.text ?? '', /reviewer spawn failed/)
 
-    const leaked = [...deviationDiffDirs()].filter((d) => !before.has(d))
+    const leaked = readdirSync(tmpScope).filter((entry) =>
+      entry.startsWith('deviation-diff-'),
+    )
     assert.deepEqual(
       leaked,
       [],
       `deviation-diff- temp dir(s) leaked: ${leaked.join(', ')}`,
     )
   } finally {
+    if (savedTmpdir === undefined) {
+      delete process.env.TMPDIR
+    } else {
+      process.env.TMPDIR = savedTmpdir
+    }
     setActiveFlowRef(null)
     rmSync(root, { recursive: true, force: true })
   }
