@@ -2,8 +2,19 @@
 // registration via registerSpecCommands and the result mapping (only the
 // worker's PUBLISH OK marker is a success; everything else is a loud tool
 // error). No real worker, git, or aven side effects: the exec mock rejects
-// so the shared runSpecPublish path exits at the git-repo check.
+// so the shared runSpecPublish path exits at the git-repo check, and the one
+// deep runSpecPublish test (PMR-HHS8 fix round 2) drives a fake `aven` on
+// PATH against a temp plan file and stops at the worker spawn.
 import assert from 'node:assert/strict'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
@@ -32,7 +43,15 @@ type CapturedTool = {
   ) => Promise<ToolResultShape>
 }
 
-function makeMockPi(execImpl?: () => Promise<never>) {
+// AIDEV-NOTE: PMR-HHS8 fix round 2 — execImpl widened to the command-aware
+// shape the worktree test needs (getRepoName now issues a second git call).
+// The throw-only call sites stay assignable (Promise<never>).
+type ExecImpl = (
+  cmd: string,
+  args: string[],
+) => Promise<{ stdout: string; stderr?: string; code?: number }>
+
+function makeMockPi(execImpl?: ExecImpl) {
   const commands: CapturedCommand[] = []
   const tools: CapturedTool[] = []
   const mockPi = {
@@ -138,6 +157,122 @@ test('spec_publish execute surfaces git-repo failure as a tool error', async () 
     (result.content[0] as { type: string; text: string }).text,
     /not a git repository/,
   )
+})
+
+// AIDEV-NOTE: PMR-HHS8 fix round 2 — runSpecPublish must derive the publish
+// `repo` from getRepoName (the origin remote name), NOT from
+// path.basename(toplevel). In a herdr worktree the two diverge (dir
+// `feat-x`, remote `widgets`), so resolvePublishRoot's `<root>/<repo>/`
+// boundary no longer matches the resolver-produced plan path and silently
+// downgrades to the project-repo fallback — the worker then `git add`s a file
+// outside the repo (exit 128) and the user is told the notes root env var was
+// unset. This drives the registered spec_publish tool end-to-end (command-aware
+// fake git exec, fake aven on PATH, real temp plan file) and pins the resolved
+// publish root via the manual-publish block returned when the worker cannot
+// spawn (no session file → launchSubagent throws before any side effect).
+async function withFakeAven<T>(opts: {
+  root: string
+  planPath: string
+  run: () => Promise<T>
+}): Promise<T> {
+  const bin = path.join(opts.root, 'bin')
+  mkdirSync(bin, { recursive: true })
+  const script = [
+    '#!/bin/sh',
+    'cat <<BLOCK',
+    'metadata field_id=planpath key=plan-path',
+    'value<<EOF',
+    opts.planPath,
+    'EOF',
+    'BLOCK',
+    '',
+  ].join('\n')
+  const avenPath = path.join(bin, 'aven')
+  writeFileSync(avenPath, script)
+  chmodSync(avenPath, 0o755)
+  const oldPath = process.env.PATH
+  process.env.PATH = `${bin}:${oldPath ?? ''}`
+  try {
+    return await opts.run()
+  } finally {
+    process.env.PATH = oldPath
+  }
+}
+
+test('spec_publish: publish repo is the origin remote name, not the worktree dir', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'spec-publish-wt-'))
+  try {
+    const notesRoot = path.join(root, 'notes')
+    // Worktree checkout dir (`feat-some-branch`) deliberately differs from the
+    // origin remote basename (`widgets`) — exactly the herdr worktree case.
+    const toplevel = path.join(root, 'feat-some-branch')
+    const planPath = path.join(notesRoot, 'widgets', 'plan.md')
+    mkdirSync(path.dirname(planPath), { recursive: true })
+    writeFileSync(planPath, '# plan\n')
+
+    const { tools, mockPi } = makeMockPi(
+      async (_cmd: string, args: string[]) => {
+        if (args[0] === 'remote') {
+          return { stdout: 'https://github.com/acme/widgets.git\n', code: 0 }
+        }
+        return { stdout: `${toplevel}\n`, code: 0 }
+      },
+    )
+    registerSpecCommands(mockPi)
+    const specPublish = tools.find((t) => t.name === 'spec_publish')
+    assert.ok(specPublish !== undefined)
+
+    const oldNotesRoot = process.env.LLM_NOTES_ROOT
+    const oldFeatures = process.env.PERSONAL_FEATURES
+    delete process.env.PERSONAL_FEATURES
+    process.env.LLM_NOTES_ROOT = notesRoot
+    let text = ''
+    try {
+      await withFakeAven({
+        root,
+        planPath,
+        run: async () => {
+          const ctx = {
+            sessionManager: {
+              getSessionFile: () => null,
+              getSessionId: () => 'test-session',
+            },
+          } as unknown as Record<string, unknown>
+          const result = await specPublish.execute(
+            'call-1',
+            { ref: 'PMR-TST1', workspace: 'ws-test' },
+            undefined,
+            undefined,
+            ctx,
+          )
+          text = (result.content[0] as { type: string; text: string }).text
+          return result
+        },
+      })
+    } finally {
+      if (oldNotesRoot === undefined) delete process.env.LLM_NOTES_ROOT
+      else process.env.LLM_NOTES_ROOT = oldNotesRoot
+      if (oldFeatures !== undefined) process.env.PERSONAL_FEATURES = oldFeatures
+    }
+
+    // The spawn must fail for the reason this harness relies on, not silently
+    // hit a real worker.
+    assert.match(text, /could not spawn publish worker/)
+    assert.ok(
+      text.includes(`cd ${path.join(notesRoot, 'widgets')}`),
+      `publish root must be the notes root + remote name, got:\n${text}`,
+    )
+    assert.ok(
+      !text.includes(`cd ${toplevel}`),
+      `must NOT downgrade to the project-repo fallback, got:\n${text}`,
+    )
+    assert.ok(
+      text.includes('docs(widgets): publish PMR-TST1 plan'),
+      `commit message must use the remote name, got:\n${text}`,
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 const SPAWN_INPUT = {

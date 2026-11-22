@@ -2,7 +2,10 @@
 // moved out of index.ts unchanged. /spec-review (PMR-MR36): ctx.ui.select is
 // modal and blocks the handler, so the picker collects a BATCH and ONE
 // combined sendUserMessage lands after the handler returns — review prompts
-// never interleave. Repo name = basename of the git toplevel (aven project).
+// never interleave. Repo name = basename of the git toplevel for the aven
+// project lookup only; /spec-publish derives its publish `repo` from
+// getRepoName (origin remote name) so the notes-root boundary matches the
+// resolver-produced plan path in worktrees (PMR-HHS8 fix round 2).
 // Approval is never done here: the injected prompt makes the session the
 // reviewer and gates approval on the user's explicit "approve <REF>".
 // /spec-publish (PMR-MR36 subtask PMR-2D2X): shared publish for /spec-review
@@ -22,6 +25,7 @@ import {
   avenOverrideArg,
   resolveSpecWorkspace,
 } from '../aven/client.ts'
+import { getRepoName } from '../plan-tools/helpers.ts'
 import { toolResult } from '../tools/result.ts'
 import { parseSpecReviewArgs } from './args.ts'
 import { listSpecsInReview, readPlanPath } from './aven-spec.ts'
@@ -88,8 +92,20 @@ async function runSpecPublish(
   if (!existsSync(plan.planPath)) {
     return failure(`plan file missing: ${plan.planPath}`)
   }
+  // AIDEV-NOTE: PMR-HHS8 fix round 2 — the publish `repo` MUST come from
+  // getRepoName (origin remote name, toplevel basename only as fallback), the
+  // SAME source the plan-path resolvers use. path.basename(toplevel) is the
+  // worktree dir name in a herdr worktree (e.g. `blog-monetize-oss` for the
+  // `blog` repo), so resolvePublishRoot's `<root>/<repo>/` boundary check
+  // would not match the resolver-produced plan path and would silently
+  // downgrade to the project-repo fallback — the worker then `git add`s a file
+  // outside that repo (exit 128) and reports a bogus "notes root was unset".
+  // Pinned by test/spec-publish-tool.test.ts. The aven `project` lookup in the
+  // /spec-review handler below stays on path.basename(toplevel): that is aven
+  // project naming, not notes-root layout.
+  const publishRepo = await getRepoName(pi)
   const resolved = resolvePublishRoot({
-    repo: path.basename(toplevel),
+    repo: publishRepo,
     planPath: plan.planPath,
     toplevel,
   })
@@ -98,7 +114,7 @@ async function runSpecPublish(
   }
   const outcome = await spawnPublishWorker(ctx, {
     ref: params.ref,
-    repo: path.basename(toplevel),
+    repo: publishRepo,
     root: resolved.root,
     planFile: resolved.planFile,
     name: `spec-publish: ${params.ref}`,
@@ -107,7 +123,7 @@ async function runSpecPublish(
     cwd: toplevel,
     task: buildPublishWorkerTask({
       ref: params.ref,
-      repo: path.basename(toplevel),
+      repo: publishRepo,
       root: resolved.root,
       planFile: resolved.planFile,
       isFallback: resolved.isFallback,
