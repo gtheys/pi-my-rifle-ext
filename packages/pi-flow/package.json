@@ -67,6 +67,7 @@
     "flow/ref-kind.ts",
     "flow/resume-picker.ts",
     "flow/resume.ts",
+    "flow/run-health.ts",
     "flow/status.ts",
     "flow/widget.ts",
     "flow/worktree-context.ts",

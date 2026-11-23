@@ -1,0 +1,375 @@
+// AIDEV-NOTE: tests for the journal-derived run-health exposition lines
+// (flow/run-health.ts). Frozen metric names/labels — dashboards in
+// piflow-health/runs are built against these exact lines, so treat changes
+// here as dashboard-breaking and update the dashboards together.
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { buildPushBody, buildWorkerRows } from '../flow/cost.ts'
+import { renderRunHealthLines } from '../flow/run-health.ts'
+import type { FlowPhase, FlowRunEvent, LoopRunStatus } from '../run-state.ts'
+
+const REF = 'PMR-H'
+const T0 = '2026-11-23T10:00:00.000Z'
+
+function shift(seconds: number): string {
+  return new Date(Date.parse(T0) + seconds * 1000).toISOString()
+}
+
+function runStart(): FlowRunEvent {
+  return { kind: 'run-start', at: T0, ref: REF, mode: 'personal' }
+}
+
+function loopState(
+  at: string,
+  status: LoopRunStatus,
+  blockerRetries = 0,
+  phase: FlowPhase = 'validate',
+): FlowRunEvent {
+  return {
+    kind: 'loop-state',
+    at,
+    ref: REF,
+    loop: {
+      phase,
+      awaitingOutcome: false,
+      blockerRetries,
+      validateStartedAt: at,
+      status,
+    },
+  }
+}
+
+function noteText(at: string, text: string): FlowRunEvent {
+  return { kind: 'note', at, ref: REF, text }
+}
+
+function gateAnswer(
+  at: string,
+  gate: 'spec-review' | 'code-review',
+  choice: 'approve' | 'reject' | 'pass' | 'fail',
+): FlowRunEvent {
+  return { kind: 'gate-answer', at, ref: REF, gate, choice }
+}
+
+function attemptRecord(
+  at: string,
+  outcome: 'passed' | 'retry' | 'escalate',
+  attempts: number,
+): FlowRunEvent {
+  return {
+    kind: 'attempt-record',
+    at,
+    ref: REF,
+    tool: 'flow_run_attempt',
+    outcome,
+    attempts,
+  }
+}
+
+function sweep(
+  at: string,
+  outcome: 'removed' | 'noop' | 'kept-all' | 'deferred',
+): FlowRunEvent {
+  return { kind: 'worktree-sweep', at, ref: REF, source: 'sweep', outcome }
+}
+
+function findLine(
+  lines: readonly string[],
+  prefix: string,
+): string | undefined {
+  return lines.find((line) => line.startsWith(prefix))
+}
+
+// ---------------------------------------------------------------- status
+
+test('renderRunHealthLines emits nothing for an empty journal', () => {
+  assert.deepEqual(renderRunHealthLines(REF, []), [])
+})
+
+test('run status metric comes from the projected loop record only', () => {
+  const withoutLoop = renderRunHealthLines(REF, [runStart()])
+  assert.equal(findLine(withoutLoop, 'pi_flow_run_status'), undefined)
+  assert.equal(findLine(withoutLoop, 'pi_flow_run_halt_reason'), undefined)
+
+  const running = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(10), 'running'),
+  ])
+  assert.equal(
+    findLine(running, 'pi_flow_run_status'),
+    'pi_flow_run_status{ref="PMR-H",status="running"} 1',
+  )
+})
+
+test('halt reason is the last projected note, escaped like cost labels', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    noteText(shift(1), 'first note'),
+    noteText(shift(2), 'halted on "gate"\nretry needed'),
+    loopState(shift(3), 'halted'),
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_run_halt_reason'),
+    'pi_flow_run_halt_reason{ref="PMR-H",reason="halted on \\"gate\\"\\nretry needed"} 1',
+  )
+})
+
+test('halt reason is an empty label when a halted run has no notes', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(3), 'halted'),
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_run_halt_reason'),
+    'pi_flow_run_halt_reason{ref="PMR-H",reason=""} 1',
+  )
+})
+
+test('no halt reason line while the run is not halted', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    noteText(shift(1), 'some note'),
+    loopState(shift(2), 'paused'),
+  ])
+  assert.equal(findLine(lines, 'pi_flow_run_halt_reason'), undefined)
+})
+
+// ------------------------------------------------------------ gate answers
+
+test('gate decisions count RAW answers per gate and choice', () => {
+  // The projection keeps only the latest answer per gate — the metric must
+  // count every raw gate-answer event instead.
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    gateAnswer(shift(1), 'spec-review', 'reject'),
+    gateAnswer(shift(2), 'spec-review', 'approve'),
+    gateAnswer(shift(3), 'spec-review', 'approve'),
+    gateAnswer(shift(4), 'code-review', 'pass'),
+  ])
+  assert.ok(
+    lines.includes(
+      'pi_flow_gate_decisions_total{ref="PMR-H",gate="spec-review",choice="reject"} 1',
+    ),
+  )
+  assert.ok(
+    lines.includes(
+      'pi_flow_gate_decisions_total{ref="PMR-H",gate="spec-review",choice="approve"} 2',
+    ),
+  )
+  assert.ok(
+    lines.includes(
+      'pi_flow_gate_decisions_total{ref="PMR-H",gate="code-review",choice="pass"} 1',
+    ),
+  )
+  assert.equal(
+    lines.filter((line) => line.startsWith('pi_flow_gate_decisions_total'))
+      .length,
+    3,
+  )
+})
+
+// ------------------------------------------------------------ human wait
+
+test('human wait sums paused windows from raw events', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+    noteText(shift(120), 'human answered'),
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_human_wait_seconds'),
+    'pi_flow_human_wait_seconds{ref="PMR-H"} 120',
+  )
+})
+
+test('consecutive paused snapshots do not restart the window', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+    loopState(shift(10), 'paused'),
+    loopState(shift(50), 'running'),
+  ])
+  // window opened at +0 (not restarted at +10) and closed at the
+  // running loop-state (+50), even though that event IS a loop-state.
+  assert.equal(
+    findLine(lines, 'pi_flow_human_wait_seconds'),
+    'pi_flow_human_wait_seconds{ref="PMR-H"} 50',
+  )
+})
+
+test('a never-closed paused window contributes nothing', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+  ])
+  assert.equal(findLine(lines, 'pi_flow_human_wait_seconds'), undefined)
+})
+
+test('multiple paused windows are summed', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+    loopState(shift(30), 'running'), // closes window 1: 30s
+    loopState(shift(40), 'paused'), // opens window 2
+    noteText(shift(70), 'resumed later'), // closes window 2: 30s
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_human_wait_seconds'),
+    'pi_flow_human_wait_seconds{ref="PMR-H"} 60',
+  )
+})
+
+// ------------------------------------------------------- attempts/retries
+
+test('retry attempts come from the projection and reset on passed', () => {
+  const retrying = renderRunHealthLines(REF, [
+    runStart(),
+    attemptRecord(shift(1), 'retry', 2),
+  ])
+  assert.equal(
+    findLine(retrying, 'pi_flow_retry_attempts'),
+    'pi_flow_retry_attempts{ref="PMR-H"} 2',
+  )
+  const passed = renderRunHealthLines(REF, [
+    runStart(),
+    attemptRecord(shift(1), 'retry', 2),
+    attemptRecord(shift(2), 'passed', 3),
+  ])
+  assert.equal(
+    findLine(passed, 'pi_flow_retry_attempts'),
+    'pi_flow_retry_attempts{ref="PMR-H"} 0',
+  )
+})
+
+test('retry attempts and blocker retries emit zero without their events', () => {
+  const lines = renderRunHealthLines(REF, [runStart()])
+  assert.ok(
+    lines.includes('pi_flow_retry_attempts{ref="PMR-H"} 0'),
+    lines.join('\n'),
+  )
+  assert.ok(
+    lines.includes('pi_flow_blocker_retries{ref="PMR-H"} 0'),
+    lines.join('\n'),
+  )
+})
+
+test('blocker retries come from the projected loop record', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(1), 'running', 3),
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_blocker_retries'),
+    'pi_flow_blocker_retries{ref="PMR-H"} 3',
+  )
+})
+
+// ------------------------------------------------------------ worktree sweep
+
+test('worktree sweep counts group raw events per outcome', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    sweep(shift(1), 'removed'),
+    sweep(shift(2), 'removed'),
+    sweep(shift(3), 'deferred'),
+  ])
+  assert.ok(
+    lines.includes(
+      'pi_flow_worktree_sweep_total{ref="PMR-H",outcome="removed"} 2',
+    ),
+  )
+  assert.ok(
+    lines.includes(
+      'pi_flow_worktree_sweep_total{ref="PMR-H",outcome="deferred"} 1',
+    ),
+  )
+  assert.equal(
+    lines.filter((line) => line.startsWith('pi_flow_worktree_sweep_total'))
+      .length,
+    2,
+  )
+})
+
+// -------------------------------------------------------------- wiring
+
+function costRows() {
+  return buildWorkerRows(
+    [
+      {
+        childId: 'c1',
+        name: 'w',
+        kind: 'spawn' as const,
+        subtask: null,
+        sessionFile: '/s1.jsonl',
+        at: '',
+        phase: 'implement' as const,
+      },
+    ],
+    [],
+    new Map<string, readonly unknown[]>([
+      [
+        '/s1.jsonl',
+        [
+          {
+            type: 'message',
+            message: {
+              role: 'assistant',
+              usage: {
+                input: 10,
+                output: 5,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: { total: 0.5 },
+              },
+            },
+          },
+        ],
+      ],
+    ]),
+  )
+}
+
+test('buildPushBody appends health lines when events are provided', () => {
+  const rows = costRows()
+  const events: FlowRunEvent[] = [
+    runStart(),
+    loopState(shift(1), 'halted', 1),
+    noteText(shift(2), 'halt: human said no'),
+  ]
+  const body = buildPushBody(
+    REF,
+    rows,
+    [{ phase: 'implement', seconds: 5 }],
+    events,
+  )
+  const lines = body.split('\n')
+  // one trailing newline, same as before
+  assert.equal(lines[lines.length - 1], '')
+  assert.equal(body.endsWith('\n'), true)
+  assert.ok(!body.endsWith('\n\n'))
+  // cost lines still come first, health lines appended after them
+  const costIndex = lines.findIndex((line) =>
+    line.startsWith('pi_flow_run_cost_usd'),
+  )
+  const statusIndex = lines.findIndex((line) =>
+    line.startsWith('pi_flow_run_status'),
+  )
+  const haltIndex = lines.findIndex((line) =>
+    line.startsWith('pi_flow_run_halt_reason'),
+  )
+  assert.ok(costIndex >= 0 && statusIndex > costIndex)
+  assert.equal(
+    lines[haltIndex],
+    'pi_flow_run_halt_reason{ref="PMR-H",reason="halt: human said no"} 1',
+  )
+})
+
+test('buildPushBody is unchanged when the events parameter is omitted', () => {
+  const rows = costRows()
+  const durations = [{ phase: 'implement' as FlowPhase, seconds: 5 }]
+  const omitted = buildPushBody(REF, rows, durations)
+  assert.ok(!omitted.includes('pi_flow_run_status'))
+  assert.ok(!omitted.includes('pi_flow_human_wait_seconds'))
+  // an empty events list appends nothing either (byte-identical)
+  assert.equal(buildPushBody(REF, rows, durations, []), omitted)
+})

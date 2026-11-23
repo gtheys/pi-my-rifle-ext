@@ -77,6 +77,13 @@ export type CostRollup =
       /** ref the run is tracked by (Jira key in work mode); the metric `ref` label */
       trackRef: string
       mode: 'work' | 'personal'
+      /**
+       * AIDEV-NOTE: the raw journal events the rollup was computed from —
+       * the push call sites forward them to buildPushBody so the run-health
+       * metrics ride the same push (optional for back-compat with rollups
+       * built by older code or tests).
+       */
+      events?: readonly FlowRunEvent[]
     }
 
 /**
@@ -148,6 +155,7 @@ export async function computeCostRollup(
     rows,
     durations: phaseDurations(events),
     trackRef,
+    events,
     mode,
   }
   if (steps.length > 0) okRollup.steps = steps
@@ -192,7 +200,7 @@ export function registerFlowCostCommand(
         )
         return
       }
-      const { rows, durations, trackRef, mode, steps } = rollup
+      const { rows, durations, trackRef, mode, steps, events } = rollup
       ctx.ui.notify(
         formatCostReport(parsed.ref, rows, durations, steps ?? []),
         'info',
@@ -200,7 +208,7 @@ export function registerFlowCostCommand(
       if (parsed.push) {
         const result = await deps.push(
           trackRef,
-          buildPushBody(trackRef, rows, durations),
+          buildPushBody(trackRef, rows, durations, events),
           mode,
         )
         if (result.ok) {

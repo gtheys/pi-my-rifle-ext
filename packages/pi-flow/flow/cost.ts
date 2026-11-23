@@ -19,6 +19,7 @@ import {
 } from '@gtheys/pi-interactive-subagents'
 import type { FlowPhase, FlowRunEvent } from '../run-state.ts'
 import { agentRole, ORCHESTRATOR_ROLE } from './agent-role.ts'
+import { renderRunHealthLines } from './run-health.ts'
 
 /** One parsed attribution note from the run journal. */
 export interface SpawnNote {
@@ -602,11 +603,13 @@ export function formatCostReport(
   return lines.join('\n')
 }
 
-function escapeLabelValue(value: string): string {
+// AIDEV-NOTE: exported so flow/run-health.ts reuses the exact escaping
+// instead of duplicating it (Prometheus text exposition rules).
+export function escapeLabelValue(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"')
 }
 
-function labelString(labels: Record<string, string>): string {
+export function labelString(labels: Record<string, string>): string {
   const parts: string[] = []
   for (const key of Object.keys(labels)) {
     parts.push(`${key}="${escapeLabelValue(labels[key])}"`)
@@ -618,11 +621,17 @@ function labelString(labels: Record<string, string>): string {
  * Render the Prometheus text exposition for the Pushgateway (PMR-EA8X
  * `--push`). Only sessions that actually reported usage contribute — a
  * coverage gap contributes nothing rather than an invented zero.
+ *
+ * AIDEV-NOTE: the optional 4th `events` parameter appends the journal-derived
+ * run-health lines (flow/run-health.ts) after the cost/duration lines. When
+ * omitted the body is byte-identical to the historical output — existing
+ * push consumers rely on that.
  */
 export function buildPushBody(
   ref: string,
   rows: readonly WorkerRow[],
   durations: readonly PhaseDuration[],
+  events?: readonly FlowRunEvent[],
 ): string {
   const lines: string[] = []
   const roleSeen = new Set<string>()
@@ -673,6 +682,11 @@ export function buildPushBody(
     lines.push(
       `pi_flow_run_duration_seconds{${labelString({ ref, phase: duration.phase })}} ${duration.seconds}`,
     )
+  }
+  if (events !== undefined) {
+    for (const line of renderRunHealthLines(ref, events)) {
+      lines.push(line)
+    }
   }
   return `${lines.join('\n')}\n`
 }

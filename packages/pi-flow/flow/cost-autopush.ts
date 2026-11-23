@@ -34,7 +34,12 @@ export function createCostAutoPush(
       if (rollup.kind !== 'ok') return
       const result = await deps.push(
         rollup.trackRef,
-        buildPushBody(rollup.trackRef, rollup.rows, rollup.durations),
+        buildPushBody(
+          rollup.trackRef,
+          rollup.rows,
+          rollup.durations,
+          rollup.events,
+        ),
         rollup.mode,
       )
       if (result.ok) {
