@@ -440,7 +440,13 @@ test('a journal without a run-start event emits nothing, including no start line
   assert.deepEqual(lines, [])
 })
 
-test('run start line is appended last and existing lines keep their order', () => {
+// AIDEV-NOTE: additive-metric ordering. This test asserted the whole body
+// byte-for-byte, so it has to grow with every additive metric — the seven
+// lines it froze are still asserted verbatim; only the tail gained the
+// pi_flow_gate_wait_seconds line this fixture now produces (the gate-answer
+// at +3s closes no paused window, so its occurrence is a 0). New additive
+// metrics go AFTER pi_flow_run_start_seconds, in order of introduction.
+test('additive metrics are appended last and existing lines keep their order', () => {
   const lines = renderRunHealthLines(REF, [
     runStart(),
     loopState(shift(1), 'paused'),
@@ -449,15 +455,13 @@ test('run start line is appended last and existing lines keep their order', () =
     sweep(shift(4), 'removed'),
     attemptRecord(shift(5), 'retry', 2),
   ])
-  assert.equal(
-    lines[lines.length - 1],
-    `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
-  )
-  const withoutStart = lines.filter(
-    (line) => !line.startsWith('pi_flow_run_start_seconds'),
+  const withoutAdditive = lines.filter(
+    (line) =>
+      !line.startsWith('pi_flow_run_start_seconds') &&
+      !line.startsWith('pi_flow_gate_wait_seconds'),
   )
   assert.deepEqual(
-    withoutStart.map((line) => line.split('{')[0]),
+    withoutAdditive.map((line) => line.split('{')[0]),
     [
       'pi_flow_run_status',
       'pi_flow_gate_decisions_total',
@@ -468,7 +472,7 @@ test('run start line is appended last and existing lines keep their order', () =
     ],
   )
   // the whole body, byte-for-byte: six frozen lines in their original order,
-  // then the new start line last.
+  // then the additive lines (start epoch first, then the per-gate waits).
   assert.deepEqual(lines, [
     'pi_flow_run_status{ref="PMR-H",status="paused"} 1',
     'pi_flow_gate_decisions_total{ref="PMR-H",gate="spec-review",choice="approve"} 1',
@@ -477,6 +481,134 @@ test('run start line is appended last and existing lines keep their order', () =
     'pi_flow_blocker_retries{ref="PMR-H"} 0',
     'pi_flow_worktree_sweep_total{ref="PMR-H",outcome="removed"} 1',
     `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
+    'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="approve",n="1"} 0',
   ])
-  assert.equal(withoutStart.length, 6)
+  assert.equal(withoutAdditive.length, 6)
+})
+
+// ---------------------------------------------------------- per-gate wait
+
+const GATE_WAIT = 'pi_flow_gate_wait_seconds'
+
+test('gate wait seconds come from the paused window the gate-answer closed', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+    gateAnswer(shift(120), 'spec-review', 'approve'),
+  ])
+  assert.equal(
+    findLine(lines, GATE_WAIT),
+    'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="approve",n="1"} 120',
+  )
+  // the same 120s is in the aggregate: sum(gate waits) <= human wait.
+  assert.equal(
+    findLine(lines, 'pi_flow_human_wait_seconds'),
+    'pi_flow_human_wait_seconds{ref="PMR-H"} 120',
+  )
+})
+
+test('a second answer for the same gate gets n=2', () => {
+  // reject -> rework -> approve: each answer closes its own paused window.
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+    gateAnswer(shift(30), 'spec-review', 'reject'),
+    loopState(shift(40), 'paused'),
+    gateAnswer(shift(90), 'spec-review', 'approve'),
+  ])
+  const gateWait = lines.filter((line) => line.startsWith(GATE_WAIT))
+  assert.deepEqual(gateWait, [
+    'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="reject",n="1"} 30',
+    'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="approve",n="2"} 50',
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_human_wait_seconds'),
+    'pi_flow_human_wait_seconds{ref="PMR-H"} 80',
+  )
+})
+
+test('a gate-answer that closes no paused window emits 0', () => {
+  // The answer arrived while the run was 'running' — the occurrence is still
+  // emitted so n stays gapless and the board shows 'this step blocked nothing'.
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'running'),
+    gateAnswer(shift(10), 'code-review', 'pass'),
+  ])
+  assert.equal(
+    findLine(lines, GATE_WAIT),
+    'pi_flow_gate_wait_seconds{ref="PMR-H",gate="code-review",choice="pass",n="1"} 0',
+  )
+  assert.equal(findLine(lines, 'pi_flow_human_wait_seconds'), undefined)
+})
+
+test('a window closed by a non-gate-answer event attributes 0 to the later answer', () => {
+  // The 60s stay in pi_flow_human_wait_seconds only — the gate-answer at +70
+  // found no open window. Intentional asymmetry (see the run-health NOTE).
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+    loopState(shift(60), 'running'),
+    gateAnswer(shift(70), 'spec-review', 'approve'),
+  ])
+  assert.equal(
+    findLine(lines, GATE_WAIT),
+    'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="approve",n="1"} 0',
+  )
+  assert.equal(
+    findLine(lines, 'pi_flow_human_wait_seconds'),
+    'pi_flow_human_wait_seconds{ref="PMR-H"} 60',
+  )
+})
+
+test('n counts occurrences per gate, not per run', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+    gateAnswer(shift(20), 'spec-review', 'approve'),
+    loopState(shift(30), 'paused'),
+    gateAnswer(shift(45), 'code-review', 'pass'),
+  ])
+  assert.deepEqual(
+    lines.filter((line) => line.startsWith(GATE_WAIT)),
+    [
+      'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="approve",n="1"} 20',
+      'pi_flow_gate_wait_seconds{ref="PMR-H",gate="code-review",choice="pass",n="1"} 15',
+    ],
+  )
+})
+
+test('no gate wait lines when the journal has no gate-answer events', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(0), 'paused'),
+    noteText(shift(60), 'human answered'),
+  ])
+  assert.equal(findLine(lines, GATE_WAIT), undefined)
+  assert.equal(
+    findLine(lines, 'pi_flow_human_wait_seconds'),
+    'pi_flow_human_wait_seconds{ref="PMR-H"} 60',
+  )
+})
+
+test('gate wait lines follow journal order of the gate-answer events', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    gateAnswer(shift(5), 'code-review', 'fail'),
+    loopState(shift(10), 'paused'),
+    gateAnswer(shift(20), 'spec-review', 'approve'),
+  ])
+  assert.deepEqual(
+    lines.filter((line) => line.startsWith(GATE_WAIT)),
+    [
+      'pi_flow_gate_wait_seconds{ref="PMR-H",gate="code-review",choice="fail",n="1"} 0',
+      'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="approve",n="1"} 10',
+    ],
+  )
+  // additive block sits after every pre-existing line
+  const lastFrozen = lines.lastIndexOf(
+    `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
+  )
+  const firstGateWait = lines.findIndex((line) => line.startsWith(GATE_WAIT))
+  assert.ok(firstGateWait > lastFrozen, lines.join('\n'))
 })

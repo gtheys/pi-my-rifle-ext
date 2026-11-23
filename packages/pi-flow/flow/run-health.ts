@@ -20,8 +20,11 @@ function epochSeconds(at: string): number | undefined {
 }
 
 // AIDEV-NOTE: pi_flow_run_start_seconds is ADDITIVE — it joins the frozen
-// series above without renaming or reordering any existing line (it is always
-// appended last). Consumers: the homelab `piflow-runs` dashboard ("Started"
+// series above without renaming or reordering any existing line. It is no
+// longer literally the last line: additive metrics go after the frozen block
+// in order of introduction, so newer additive series
+// (pi_flow_gate_wait_seconds below) are appended AFTER this one.
+// Consumers: the homelab `piflow-runs` dashboard ("Started"
 // column and the run timeline panel), which needs an absolute epoch timestamp
 // per ref; gauge values alone only say "this ref exists", not when it began.
 // Derived from the journal: the FIRST 'run-start' event wins (a restart
@@ -46,10 +49,12 @@ function runStartSeconds(events: readonly FlowRunEvent[]): number | undefined {
 /**
  * Render the Prometheus exposition lines for run health (status gauge, halt
  * reason, gate decision counts, human wait seconds, retry/blocker counters,
- * worktree-sweep counts, run start epoch seconds). Pure: same journal events
- * in, same lines out.
+ * worktree-sweep counts, run start epoch seconds, per-gate wait seconds).
+ * Pure: same journal events in, same lines out.
  * Metric order is fixed; within a grouped metric lines follow first-seen
- * event order so pushes stay byte-stable for the Pushgateway group.
+ * event order so pushes stay byte-stable for the Pushgateway group. The
+ * FROZEN block (run status … worktree sweep) never moves; additive series are
+ * appended after it in order of introduction (run start, then gate waits).
  */
 export function renderRunHealthLines(
   ref: string,
@@ -89,26 +94,10 @@ export function renderRunHealthLines(
       })}} ${count}`,
     )
   }
-  // 4 — human wait: paused windows scanned over the RAW ordered events.
-  // A window opens at the first paused loop-state and closes at the next
-  // event that is NOT a paused loop-state (consecutive paused snapshots do
-  // not restart the clock). An unclosed window contributes nothing.
-  let openAt: string | null = null
-  let waitSeconds = 0
-  for (const event of events) {
-    let isPausedSnapshot = false
-    if (event.kind === 'loop-state' && event.loop.status === 'paused') {
-      isPausedSnapshot = true
-    }
-    if (openAt === null) {
-      if (isPausedSnapshot) openAt = event.at
-      continue
-    }
-    if (isPausedSnapshot) continue
-    const seconds = (Date.parse(event.at) - Date.parse(openAt)) / 1000
-    if (Number.isFinite(seconds) && seconds > 0) waitSeconds += seconds
-    openAt = null
-  }
+  // 4 — human wait: paused windows scanned over the RAW ordered events (see
+  // scanPausedWindows). The same scan feeds pi_flow_gate_wait_seconds below.
+  const windows = scanPausedWindows(events)
+  const waitSeconds = windows.waitSeconds
   if (waitSeconds > 0) {
     lines.push(
       `pi_flow_human_wait_seconds{${labelString({ ref })}} ${waitSeconds}`,
@@ -136,8 +125,9 @@ export function renderRunHealthLines(
       `pi_flow_worktree_sweep_total{${labelString({ ref, outcome })}} ${count}`,
     )
   }
-  // 8 — run start epoch seconds (additive, always last; see the AIDEV-NOTE
-  // above runStartSeconds). Appending here keeps every existing line
+  // 8 — run start epoch seconds (additive; see the AIDEV-NOTE
+  // above runStartSeconds). Appending here — after the frozen block and
+  // before the newer additive series below — keeps every existing line
   // byte-identical and in its original position.
   const startSeconds = runStartSeconds(events)
   if (startSeconds !== undefined) {
@@ -145,5 +135,87 @@ export function renderRunHealthLines(
       `pi_flow_run_start_seconds{${labelString({ ref })}} ${startSeconds}`,
     )
   }
+  // 9 — per-gate human wait (see the AIDEV-NOTE below the loop).
+  // AIDEV-NOTE: pi_flow_gate_wait_seconds is ADDITIVE — one line per
+  // 'gate-answer' event, in journal order, appended after every pre-existing
+  // series (nothing existing moves). Consumer: the homelab `piflow-runs`
+  // board, "Human wait per approve step" table — it wants the wait of an
+  // INDIVIDUAL approve step, which pi_flow_human_wait_seconds (total paused
+  // time per run) cannot answer.
+  // Value = seconds of the paused window THIS gate-answer closed, 0 when it
+  // closed none (the answer arrived while the run was still 'running', or the
+  // window was already closed by some other event). 0-occurrences are never
+  // skipped: n must stay gapless per (ref, gate) so a reject→approve retry
+  // reads n=1 then n=2, and the board can honestly show "this approve step
+  // blocked nothing". Because label sets must be unique inside one push body,
+  // n is part of the identity — two answers with the same (gate, choice) would
+  // otherwise collide.
+  // RELATIONSHIP to pi_flow_human_wait_seconds: sum(gate waits) <= total human
+  // wait. The asymmetry is intentional — a pause closed by a NON-gate-answer
+  // event (a note, a running loop-state snapshot, a re-spawned worker) keeps
+  // its seconds in the aggregate only, and the gate-answer that eventually
+  // arrives for that same step reports 0 rather than double-counting it.
+  const occurrences = new Map<string, number>()
+  events.forEach((event, index) => {
+    if (event.kind !== 'gate-answer') return
+    const seen = (occurrences.get(event.gate) ?? 0) + 1
+    occurrences.set(event.gate, seen)
+    lines.push(
+      `pi_flow_gate_wait_seconds{${labelString({
+        ref,
+        gate: event.gate,
+        choice: event.choice,
+        n: String(seen),
+      })}} ${windows.closedBy.get(index) ?? 0}`,
+    )
+  })
   return lines
+}
+
+interface PausedWindowScan {
+  /** Total paused seconds — the value behind pi_flow_human_wait_seconds. */
+  waitSeconds: number
+  /**
+   * Seconds per CLOSING event index (only for windows that measured a
+   * positive finite span), so per-gate callers can ask "which window did
+   * THIS event close?". An index that is absent from the map either is not
+   * a window closer or closed a window that measured 0 — both render as 0.
+   */
+  closedBy: Map<number, number>
+}
+
+/**
+ * Scan the RAW ordered events for paused windows. A window opens at the first
+ * paused loop-state snapshot and closes at the next event that is NOT a
+ * paused loop-state (consecutive paused snapshots do not restart the clock).
+ * An unclosed window contributes nothing.
+ *
+ * AIDEV-NOTE: single source of truth for BOTH the aggregate
+ * pi_flow_human_wait_seconds and the per-gate pi_flow_gate_wait_seconds — the
+ * arithmetic here is the arithmetic the frozen aggregate always used
+ * (unfloored millisecond math, only positive finite spans summed), so moving
+ * it out of renderRunHealthLines could not shift an existing value.
+ */
+function scanPausedWindows(events: readonly FlowRunEvent[]): PausedWindowScan {
+  let openAt: string | null = null
+  let waitSeconds = 0
+  const closedBy = new Map<number, number>()
+  events.forEach((event, index) => {
+    let isPausedSnapshot = false
+    if (event.kind === 'loop-state' && event.loop.status === 'paused') {
+      isPausedSnapshot = true
+    }
+    if (openAt === null) {
+      if (isPausedSnapshot) openAt = event.at
+      return
+    }
+    if (isPausedSnapshot) return
+    const seconds = (Date.parse(event.at) - Date.parse(openAt)) / 1000
+    if (Number.isFinite(seconds) && seconds > 0) {
+      waitSeconds += seconds
+      closedBy.set(index, seconds)
+    }
+    openAt = null
+  })
+  return { waitSeconds, closedBy }
 }
