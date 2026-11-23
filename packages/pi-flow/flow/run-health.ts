@@ -9,10 +9,45 @@ import type { FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
 import { labelString } from './cost.ts'
 
+// `at` is a raw journal string (readRunEvents casts JSON.parse output), so an
+// unparseable timestamp is possible in practice: treat it as "absent" instead
+// of letting NaN reach the exposition body. The human-wait window scan keeps
+// its own millisecond math — flooring there would change existing values.
+function epochSeconds(at: string): number | undefined {
+  const seconds = Math.floor(Date.parse(at) / 1000)
+  if (!Number.isFinite(seconds)) return undefined
+  return seconds
+}
+
+// AIDEV-NOTE: pi_flow_run_start_seconds is ADDITIVE — it joins the frozen
+// series above without renaming or reordering any existing line (it is always
+// appended last). Consumers: the homelab `piflow-runs` dashboard ("Started"
+// column and the run timeline panel), which needs an absolute epoch timestamp
+// per ref; gauge values alone only say "this ref exists", not when it began.
+// Derived from the journal: the FIRST 'run-start' event wins (a restart
+// re-records run-start, but the run's start stays the original one), falling
+// back to the earliest event timestamp when no run-start carries a parseable
+// `at`. No usable timestamp means no line at all.
+function runStartSeconds(events: readonly FlowRunEvent[]): number | undefined {
+  for (const event of events) {
+    if (event.kind !== 'run-start') continue
+    const seconds = epochSeconds(event.at)
+    if (seconds !== undefined) return seconds
+  }
+  let earliest: number | undefined
+  for (const event of events) {
+    const seconds = epochSeconds(event.at)
+    if (seconds === undefined) continue
+    if (earliest === undefined || seconds < earliest) earliest = seconds
+  }
+  return earliest
+}
+
 /**
  * Render the Prometheus exposition lines for run health (status gauge, halt
  * reason, gate decision counts, human wait seconds, retry/blocker counters,
- * worktree-sweep counts). Pure: same journal events in, same lines out.
+ * worktree-sweep counts, run start epoch seconds). Pure: same journal events
+ * in, same lines out.
  * Metric order is fixed; within a grouped metric lines follow first-seen
  * event order so pushes stay byte-stable for the Pushgateway group.
  */
@@ -99,6 +134,15 @@ export function renderRunHealthLines(
   for (const [outcome, count] of sweepCounts) {
     lines.push(
       `pi_flow_worktree_sweep_total{${labelString({ ref, outcome })}} ${count}`,
+    )
+  }
+  // 8 — run start epoch seconds (additive, always last; see the AIDEV-NOTE
+  // above runStartSeconds). Appending here keeps every existing line
+  // byte-identical and in its original position.
+  const startSeconds = runStartSeconds(events)
+  if (startSeconds !== undefined) {
+    lines.push(
+      `pi_flow_run_start_seconds{${labelString({ ref })}} ${startSeconds}`,
     )
   }
   return lines

@@ -373,3 +373,110 @@ test('buildPushBody is unchanged when the events parameter is omitted', () => {
   // an empty events list appends nothing either (byte-identical)
   assert.equal(buildPushBody(REF, rows, durations, []), omitted)
 })
+
+// ----------------------------------------------------------- run start epoch
+
+const START_SECONDS = Math.floor(Date.parse(T0) / 1000)
+
+function runStartAt(at: string): FlowRunEvent {
+  return { kind: 'run-start', at, ref: REF, mode: 'personal' }
+}
+
+test('run start seconds come from the run-start journal event', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(10), 'running'),
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_run_start_seconds'),
+    `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
+  )
+})
+
+test('run start uses the FIRST run-start, so a restart keeps the original start', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(10), 'running'),
+    runStartAt(shift(600)),
+    loopState(shift(610), 'running'),
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_run_start_seconds'),
+    `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
+  )
+})
+
+// AIDEV-NOTE: the fallback is the only reachable "no usable run-start" case —
+// projectRunState needs a run-start event to build any state at all, so a
+// journal genuinely missing one emits no lines (see the next test). A
+// leniently parsed run-start with an unparseable `at` is the real-world shape
+// where the earliest event timestamp stands in for the start.
+test('run start falls back to the earliest event when the run-start at is unusable', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStartAt('not-a-timestamp'),
+    loopState(shift(30), 'running'),
+    noteText(shift(10), 'early note'),
+  ])
+  assert.equal(
+    findLine(lines, 'pi_flow_run_start_seconds'),
+    `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS + 10}`,
+  )
+})
+
+test('no run start line when no event has a usable timestamp', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStartAt('not-a-timestamp'),
+    loopState('still-not-a-timestamp', 'running'),
+  ])
+  assert.equal(findLine(lines, 'pi_flow_run_start_seconds'), undefined)
+})
+
+test('a journal without a run-start event emits nothing, including no start line', () => {
+  // No projection is possible without run-start, so the whole body stays empty.
+  const lines = renderRunHealthLines(REF, [
+    loopState(shift(10), 'running'),
+    noteText(shift(20), 'orphan note'),
+  ])
+  assert.deepEqual(lines, [])
+})
+
+test('run start line is appended last and existing lines keep their order', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(1), 'paused'),
+    noteText(shift(2), 'human answered'),
+    gateAnswer(shift(3), 'spec-review', 'approve'),
+    sweep(shift(4), 'removed'),
+    attemptRecord(shift(5), 'retry', 2),
+  ])
+  assert.equal(
+    lines[lines.length - 1],
+    `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
+  )
+  const withoutStart = lines.filter(
+    (line) => !line.startsWith('pi_flow_run_start_seconds'),
+  )
+  assert.deepEqual(
+    withoutStart.map((line) => line.split('{')[0]),
+    [
+      'pi_flow_run_status',
+      'pi_flow_gate_decisions_total',
+      'pi_flow_human_wait_seconds',
+      'pi_flow_retry_attempts',
+      'pi_flow_blocker_retries',
+      'pi_flow_worktree_sweep_total',
+    ],
+  )
+  // the whole body, byte-for-byte: six frozen lines in their original order,
+  // then the new start line last.
+  assert.deepEqual(lines, [
+    'pi_flow_run_status{ref="PMR-H",status="paused"} 1',
+    'pi_flow_gate_decisions_total{ref="PMR-H",gate="spec-review",choice="approve"} 1',
+    'pi_flow_human_wait_seconds{ref="PMR-H"} 1',
+    'pi_flow_retry_attempts{ref="PMR-H"} 2',
+    'pi_flow_blocker_retries{ref="PMR-H"} 0',
+    'pi_flow_worktree_sweep_total{ref="PMR-H",outcome="removed"} 1',
+    `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
+  ])
+  assert.equal(withoutStart.length, 6)
+})
