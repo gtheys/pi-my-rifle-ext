@@ -27,9 +27,12 @@ const TRACK_REF = 'DP-236'
 
 /** Real filtered group-body lines (verified against the live gateway with
  *  `fetchGroupBody` on 2026-11-24, then re-labelled to a work group): cost +
- *  tokens + tool calls + durations + liveness + the gateway's own
- *  push_time_seconds. Note `pi_flow_tool_calls_total` carries its OWN
- *  `status="ok"` label — a decoy the surgery must never touch. */
+ *  tokens + tool calls + durations + liveness. The gateway's own
+ *  push_time_seconds / push_failure_time_seconds lines are NOT here: the
+ *  PMR-WBC2 fix drops them at read time (they carry the group labels but
+ *  re-POSTing them untyped 400s the whole push). Note
+ *  `pi_flow_tool_calls_total` carries its OWN `status="ok"` label — a decoy
+ *  the surgery must never touch. */
 const HALTED_LINES = [
   'pi_flow_blocker_retries{job="pi-flow",mode="work",ref="DP-236"} 0',
   'pi_flow_gate_wait_seconds{choice="reject",gate="spec-review",job="pi-flow",mode="work",n="1",ref="DP-236"} 1830',
@@ -40,7 +43,6 @@ const HALTED_LINES = [
   'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-236",status="halted"} 1',
   'pi_flow_tokens_total{agent="main",job="pi-flow",kind="input",mode="work",phase="plan",ref="DP-236",session="main-01a202f3"} 41943',
   'pi_flow_tool_calls_total{agent="main",job="pi-flow",mode="work",phase="plan",ref="DP-236",session="main-01a202f3",status="ok",tool="ask_user_question"} 2',
-  'push_time_seconds{job="pi-flow",mode="work",ref="DP-236"} 1.7954159528031516e+09',
 ]
 const HALTED_BODY = HALTED_LINES.join('\n')
 
@@ -713,7 +715,9 @@ test('runReconcilePass: tombstone body round-trips the full group (never rebuilt
   const pushed = rec.pushes[0].body
   assert.ok(pushed.includes('pi_flow_tokens_total'))
   assert.ok(pushed.includes('pi_flow_run_cost_usd'))
-  assert.ok(pushed.includes('push_time_seconds'))
+  // PMR-WBC2 (inverted): this assertion used to REQUIRE push_time_seconds in
+  // the re-POSTed body — pinning the bug that made every tombstone push 400.
+  assert.ok(!pushed.includes('push_time_seconds'))
   assert.ok(pushed.includes('pi_flow_human_wait_seconds'))
   assert.ok(!pushed.includes('pi_flow_run_halt_reason'))
   assert.ok(pushed.includes('status="stale"'))

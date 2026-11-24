@@ -339,6 +339,12 @@ changes and nothing else:
   and the board's value mappings simply stop matching a closed run.
 - `pi_flow_run_halt_reason{…}` is dropped — that series only exists for
   halted runs, which is what clears the run out of the needs-attention table.
+  Note (PMR-WBC2, verified live 2026-11-24): the homelab gateway MERGES on
+  write rather than applying official Pushgateway replace semantics, so a
+  series omitted from the body keeps being served — the stored halt_reason
+  survives the tombstone until it is overwritten. The table and the alerts
+  are unaffected: both gate on `status`, and the status flip to `stale` does
+  land (merge overwrites same-identity series in place).
 
 Every other line (cost, tokens, tool calls, durations, gate decisions, human
 wait, run start, gate waits) is re-emitted byte-identical, so done-run cost
@@ -441,8 +447,12 @@ light up.
 token, tool-call and duration lines plus the run-health lines, rendered
 through the SAME path the terminal autopush uses
 (`buildPushBody(trackRef, rows, durations, events)`). That is a requirement,
-not a style choice: a POST replaces the entire group, so a partial body would
-drop the cost series the terminal push owns. It also means the two pushes of
+not a style choice: on official Pushgateway semantics a POST replaces the
+entire group, so a partial body would drop the cost series the terminal push
+owns. (The homelab gateway was verified to MERGE on write instead — PMR-WBC2,
+2026-11-24 — but the full-body rule stays: it is correct under either
+semantics and does not depend on which build answers.) It also means the two
+pushes of
 one run differ only in the status line. Reading the stored group back with
 `fetchGroupBody` is deliberately NOT used here — that round-trip stays
 reserved for the tombstone reconcile above.

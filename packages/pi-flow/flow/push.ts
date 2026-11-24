@@ -21,9 +21,29 @@
 //       keeping them would change the group).
 // Grouping labels injected from the URL path (`job`, `ref`, and `mode` for
 // work pushes) come back inside the label set, which is what the filter keys
-// on. Note the gateway's own `push_time_seconds` / `push_failure_time_seconds`
-// lines also carry the group's labels and therefore survive the filter; the
-// gateway overwrites them on the next POST, so they are left untouched here.
+// on — but the label set alone is NOT enough. AIDEV-NOTE (PMR-WBC2): the
+// gateway's own bookkeeping metrics (`push_time_seconds` /
+// `push_failure_time_seconds`) carry the SAME group labels, and re-POSTing
+// them is fatal: the `#`-line drop strips their `# TYPE … gauge` family
+// comments, so the body arrives with those metrics UNTYPED while the gateway
+// stores them as gauge — the WHOLE push 400s ("… is not a GAUGE"). That made
+// every tombstone re-POST fail. They are not ours to send: the gateway
+// regenerates them on every accepted POST (observed live). The filter
+// therefore keeps only lines whose metric name starts with `pi_flow`.
+//
+// AIDEV-NOTE (PMR-WBC2, verified live 2026-11-24 against the homelab
+// gateway): this deployment MERGES on write — a series omitted from an
+// accepted POST KEEPS being served (probe: posted {A,B}, re-posted {A} only,
+// B survived; same mechanism is why tombstoned refs still serve
+// `pi_flow_run_halt_reason` — it does NOT age out). That contradicts the
+// official Pushgateway Replace semantics assumed by the P2-5 fail-closed rule
+// below and by plan PMR-MSDJ Risk #1. The fail-closed rule and the
+// full-body round-trip STAY: they are cheap, correct under official
+// semantics, and this gateway's merge behavior is an implementation detail
+// that could change with any redeploy. Consequence for tombstones: dropping
+// halt_reason from the body does not remove the stored series here — no
+// alert keys on halt_reason, so alerting is unaffected; dashboards may show
+// a stale halt reason until the series is overwritten.
 
 export interface PushResult {
   ok: boolean
@@ -34,7 +54,13 @@ export interface PushResult {
 export type PushFetch = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: string },
-) => Promise<{ status: number; statusText: string }>
+) => Promise<{
+  status: number
+  statusText: string
+  /** PMR-WBC2: read on non-2xx only — the gateway explains every 4xx in the
+   *  body. Optional so minimal test fakes keep working. */
+  text?: () => Promise<string>
+}>
 
 /** Fetch shape for reading the exposition back. `globalThis.fetch` satisfies
  *  it (only `status`/`statusText`/`text()` are used). */
@@ -103,15 +129,38 @@ export async function pushToGateway(
       body,
     })
     if (response.status < 200 || response.status >= 300) {
+      const reason = await errorSnippet(response)
       return {
         ok: false,
-        error: `pushgateway responded ${response.status} ${response.statusText}`,
+        error: `pushgateway responded ${response.status} ${response.statusText}${reason}`,
       }
     }
     return { ok: true }
   } catch (err) {
     const message = err instanceof Error ? err.message : `${err}`
     return { ok: false, error: message }
+  }
+}
+
+/** PMR-WBC2: Pushgateway always explains a 400 in the response body —
+ *  throwing it away made the tombstone 400s undiagnosable without a manual
+ *  repro. Keep a bounded, whitespace-flattened snippet in the error instead.
+ *  Never fails: an unreadable body degrades to the bare status line. */
+const ERROR_SNIPPET_MAX_CHARS = 300
+
+async function errorSnippet(response: {
+  text?: () => Promise<string>
+}): Promise<string> {
+  if (typeof response.text !== 'function') return ''
+  try {
+    const body = (await response.text()).trim().replace(/\s+/g, ' ')
+    if (body.length === 0) return ''
+    if (body.length > ERROR_SNIPPET_MAX_CHARS) {
+      return `: ${body.slice(0, ERROR_SNIPPET_MAX_CHARS)}…`
+    }
+    return `: ${body}`
+  } catch {
+    return ''
   }
 }
 
@@ -167,9 +216,10 @@ export async function fetchGroupBody(
       headers,
     })
     if (response.status < 200 || response.status >= 300) {
+      const reason = await errorSnippet(response)
       return {
         ok: false,
-        error: `pushgateway GET responded ${response.status} ${response.statusText}`,
+        error: `pushgateway GET responded ${response.status} ${response.statusText}${reason}`,
       }
     }
     const dump = await response.text()
@@ -296,13 +346,17 @@ function filterGroupLines(
         ? splitLabels(line.slice(open + 1, close))
         : null
     if (tokens === null) {
-      // Unreadable: either it is provably not ours (drop it — the gateway
-      // always labels a group's lines), or it might be ours and re-posting
-      // without it would erase it. Never guess: fail the read.
-      if (couldBelongToGroup(line, ref)) return unparseableLine(line)
+      // Unreadable: either it is provably not ours (drop it — every line this
+      // group owns starts with a `pi_flow` metric name), or it might be ours
+      // and re-posting without it would erase it. Never guess: fail the read.
+      if (couldBelongToGroup(line)) return unparseableLine(line)
       continue
     }
     if (!labelMatches(tokens, ref, mode)) continue
+    // PMR-WBC2: the gateway's own bookkeeping metrics (push_time_seconds,
+    // push_failure_time_seconds) carry the group labels but must never be
+    // re-POSTed — see the header note. Only `pi_flow*` metrics are ours.
+    if (!line.slice(0, open).trim().startsWith('pi_flow')) continue
     const survivors = tokens.filter(
       (token) => !(token.key === 'instance' && token.value === ''),
     )
@@ -314,15 +368,17 @@ function filterGroupLines(
 }
 
 /** True when a line an exposition parser rejected could still be one of the
- *  lines this group owns, judged on RAW text (parsing is what failed):
- *  a `pi_flow*` metric name, or the gateway's re-forced `job="pi-flow"` /
- *  `ref="<ref>"` label pairs. Foreign runtime metrics (`go_goroutines 11`) and
- *  other jobs' broken lines are therefore NOT fatal to this read — measured on
- *  the live gateway, the dump holds dozens of lines this parser cannot read
- *  and that provably do not belong to any pi-flow group. */
-function couldBelongToGroup(line: string, ref: string): boolean {
-  if (line.trim().startsWith('pi_flow')) return true
-  return line.includes('job="pi-flow"') || line.includes(`ref="${ref}"`)
+ *  lines this group owns, judged on RAW text (parsing is what failed).
+ *  AIDEV-NOTE (PMR-WBC2): the keep-rule requires a `pi_flow*` metric name, so
+ *  a line that does not start with one can never be ours — even when it
+ *  carries our group labels (the gateway's own broken `push_*` lines do
+ *  exactly that, and failing the read on them would block tombstoning on a
+ *  line we must drop anyway). Foreign runtime metrics (`go_goroutines 11`)
+ *  and other jobs' broken lines are therefore NOT fatal to this read —
+ *  measured on the live gateway, the dump holds dozens of lines this parser
+ *  cannot read and that provably do not belong to any pi-flow group. */
+function couldBelongToGroup(line: string): boolean {
+  return line.trim().startsWith('pi_flow')
 }
 
 /** The one P2-5 failure shape. The line is quoted (truncated: a dump line can

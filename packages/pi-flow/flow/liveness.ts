@@ -216,9 +216,19 @@ async function defaultReaddir(dir: string): Promise<string[]> {
 async function defaultPushFetch(
   url: string,
   init: { method: string; headers: Record<string, string>; body: string },
-): Promise<{ status: number; statusText: string }> {
+): Promise<{
+  status: number
+  statusText: string
+  text: () => Promise<string>
+}> {
   const response = await fetch(url, init)
-  return { status: response.status, statusText: response.statusText }
+  // PMR-WBC2: pass text() through so pushToGateway can put a bounded snippet
+  // of the gateway's reason body into PushResult.error on non-2xx.
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    text: () => response.text(),
+  }
 }
 
 // AIDEV-NOTE: the `LivenessDeps` contract is `{ok:false,error}` or a

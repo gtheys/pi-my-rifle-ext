@@ -10,7 +10,13 @@
 //     simply stop matching a closed run;
 //   • `pi_flow_run_halt_reason{…}` is DROPPED entirely, which is what makes
 //     the "needs attention" tables stop listing dead runs (the reason series
-//     only ever exists for halted runs);
+//     only ever exists for halted runs). AIDEV-NOTE (PMR-WBC2, verified live
+//     2026-11-24): the homelab gateway MERGES on write — an omitted series
+//     KEEPS being served, so this drop removes halt_reason only under
+//     official Pushgateway replace semantics; there it survives until
+//     overwritten. Tables and alerts still clear: both gate on `status`, and
+//     the status flip to `stale` lands (same-identity series are overwritten
+//     in place). The drop stays — correct under either semantics;
 //   • everything else is re-emitted byte-identical, so
 //     `sum(pi_flow_gate_wait_seconds)` / `pi_flow_human_wait_seconds` and all
 //     cost accounting are unaffected.
