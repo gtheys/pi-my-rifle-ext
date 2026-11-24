@@ -268,8 +268,10 @@ export interface LivenessReport {
   failed: number
 }
 
-/** The one log line per pass (the 3.2 timer prefixes it with `liveness: `).
- *  The exact shape is a contract — homelab log greps key on these names. */
+/** The one log line per pass. The factory (3.1) logs `formatSummary` output
+ *  VERBATIM (server/daemon.ts:592), so this line is the whole log entry — no
+ *  label prefix is applied. The exact shape is a contract — homelab log greps
+ *  key on these names. */
 export function livenessSummaryLine(report: LivenessReport): string {
   return `liveness pass: scanned=${report.scanned} pushed=${report.pushed} skipped=${report.skipped} failed=${report.failed}`
 }

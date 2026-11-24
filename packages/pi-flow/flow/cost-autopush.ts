@@ -6,6 +6,17 @@
 // even a journal read. Idempotent — the Pushgateway group for the ref is
 // replaced, so a rerun/resume simply refreshes the numbers. Never throws:
 // failures become one warning, and /flow-cost remains the ground truth.
+// AIDEV-NOTE (PMR-8MQH 4.2): this terminal push is no longer the ONLY push
+// of a run — while a run is in flight the daemon's liveness pass
+// (flow/liveness.ts) re-pushes the same full body every
+// liveness.intervalMinutes so `status="running"` reaches the board (the
+// DP-253 gap). Division of labour, both sides of it deliberate: in-flight
+// refresh is the DAEMON's job (never this session-side hook), and the
+// terminal push here stays the LAST writer for an ended run — the liveness
+// pass re-gates the journal immediately before its POST precisely so it
+// cannot land after this one.
+// Same render path on both sides (buildPushBody), so a liveness body and
+// a terminal body differ only in the status line.
 import { buildPushBody } from './cost.ts'
 import { computeCostRollup, type FlowCostDeps } from './cost-command.ts'
 

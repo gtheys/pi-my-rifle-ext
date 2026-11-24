@@ -136,6 +136,8 @@ checkout) instead of machine-wide.
 | `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
 | `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is neither active nor todo, so the alerts only ever fire on runs that still need you. Setting it to `false` on a RUNNING daemon takes effect on the next tick; setting it to `true` again only takes effect at daemon start — a daemon that started with `enabled: false` armed no timer, so restart the daemon (or run `/flow-reconcile-push` once). See [Reconcile](#reconcile-stale-run-tombstoning) |
 | `reconcile.intervalMinutes` | `integer` (≥ 1) | `360` | Daemon reconcile interval in minutes (6 h by default). An interval change applies on the next cycle — no daemon restart needed |
+| `liveness.enabled` | `boolean` | `true` | Push full run bodies — `pi_flow_run_status{status="running"}` refresh — to the Pushgateway while runs are in flight, so the board shows running flows. See [Liveness](#liveness-running-flow-visibility) |
+| `liveness.intervalMinutes` | `integer` (≥ 1) | `5` | Daemon liveness push interval in minutes (5 min by default). An interval change applies on the next cycle — no daemon restart needed |
 
 ```json
 {
@@ -152,6 +154,10 @@ checkout) instead of machine-wide.
   "reconcile": {
     "enabled": true,
     "intervalMinutes": 360
+  },
+  "liveness": {
+    "enabled": true,
+    "intervalMinutes": 5
   }
 }
 ```
@@ -288,7 +294,7 @@ export PI_FLOW_PUSHGATEWAY_TOKEN=<token>
 
 Push failures print a warning and never fail the command; rerun `/flow-cost <ref> --push` any time to re-export or backfill.
 
-**Automatic push**: with `PI_FLOW_PUSHGATEWAY_URL` set, the same rollup is pushed for you whenever a `/flow` run ends — completed, halted, or paused for spec approval. A one-line notice confirms it (`flow-cost <ref>: cost metrics pushed to the pushgateway.`); a failure shows a warning with the retry command. With the URL unset nothing happens. Pushing is idempotent (the ref's metric group is replaced), so a resumed flow just refreshes the numbers. The rollup covers spawned workers and, for runs started after the `main-session` journal event existed, the main session split across plan / implement / validate. It also includes a per-phase **step outputs** section summarizing `flow_submit` submissions (advisory evidence, never blocking).
+**Automatic push**: with `PI_FLOW_PUSHGATEWAY_URL` set, the same rollup is pushed for you whenever a `/flow` run ends — completed, halted, or paused for spec approval. A one-line notice confirms it (`flow-cost <ref>: cost metrics pushed to the pushgateway.`); a failure shows a warning with the retry command. With the URL unset nothing happens. Pushing is idempotent (the ref's metric group is replaced), so a resumed flow just refreshes the numbers. The rollup covers spawned workers and, for runs started after the `main-session` journal event existed, the main session split across plan / implement / validate. It also includes a per-phase **step outputs** section summarizing `flow_submit` submissions (advisory evidence, never blocking). While a run is still in flight the daemon refreshes the same body on its own timer — see [Liveness](#liveness-running-flow-visibility).
 
 ### Reconcile (stale run tombstoning)
 
@@ -418,6 +424,68 @@ On the Grafana side, the `piflow-runs` board maps the new value to a gray
 `status=~"running|paused|halted"`, so tombstoned runs drop out of it while
 their cost history stays browsable (homelab:
 `quadlets/grafana/provisioning/dashboards-piflow/piflow-runs.json`).
+
+### Liveness (running-flow visibility)
+
+Reconcile retires series for runs that are over. Liveness is the other half
+of that story: until PMR-8MQH the group was only ever pushed at a TERMINAL loop
+transition (`onRunEnd` → done/halt/pause, plus the manual
+`/flow-cost <ref> --push`), so a flow that was still running exported
+**nothing** — DP-253 ran 14:21–14:37 and the board stayed empty until the
+pause autopush landed at 14:37:05. The daemon now periodically re-pushes each
+run that is in flight, so `pi_flow_run_status{status="running"}` has a
+producer and the board's existing running/needs-attention mappings actually
+light up.
+
+**What it pushes.** Not a status-only patch — the FULL group body: cost,
+token, tool-call and duration lines plus the run-health lines, rendered
+through the SAME path the terminal autopush uses
+(`buildPushBody(trackRef, rows, durations, events)`). That is a requirement,
+not a style choice: a POST replaces the entire group, so a partial body would
+drop the cost series the terminal push owns. It also means the two pushes of
+one run differ only in the status line. Reading the stored group back with
+`fetchGroupBody` is deliberately NOT used here — that round-trip stays
+reserved for the tombstone reconcile above.
+
+**Terminal push stays the last writer.** The pass re-reads and re-gates the
+journal immediately before the POST, so a run that went terminal while the
+rollup was being computed is skipped rather than stamped over the terminal
+body. (A millisecond-scale window remains and is accepted: last-writer-wins,
+and a run that ends normally gets its terminal push anyway.) Refs projecting
+anything other than `running` — paused, halted, done, no projection — are
+never touched by liveness.
+
+**Where it runs.** The daemon timer only: first pass ~60 s after the daemon
+starts, then every `liveness.intervalMinutes` (default 5). A run too fresh to
+have any cost rows yet still gets a body pushed (the run-health and duration
+lines, no cost lines), so it appears on the board at the first tick instead
+of waiting for its first cost-bearing push. One summary line lands in
+`<agentDir>/pi-flow/server.log` per pass; a broken journal or a failed POST
+costs one warning and a `failed` count, never the pass.
+
+```
+liveness pass: scanned=42 pushed=2 skipped=40 failed=0
+```
+
+Like reconcile, the timer is gated on `PI_FLOW_PUSHGATEWAY_URL` — unset
+means no timer at all (one log line, no journal reads for liveness), and
+`liveness.enabled = false` arms nothing. There is no `/flow-liveness-push`
+command: the exported `runLivenessPassOnce` is the manual escape hatch for
+verification.
+
+**Only the global file counts for the timer.** Same dual-reader rule as
+`reconcile`: the session side reads the `liveness` block through `config.ts`
+(typed, throws on a malformed value), the daemon reads the raw global JSON
+tolerantly and falls back to the defaults with a warning. The daemon has no
+session directory, so a per-checkout `liveness` override does not affect it —
+only `~/.pi/agent/pi-flow/config.json` does.
+
+**Known limitation: a crashed run stays `running`.** Liveness only stamps
+what the journal projects, and a session that died mid-run never wrote a
+terminal loop state, so its series keeps refreshing (or, if the daemon died
+with it, simply stays) as `running` until either a terminal push happens for
+that ref or its group is cleaned up. Detecting crashed-running flows is out
+of scope for this feature — reconcile tombstones halted/paused only.
 
 ### Aven ref resolution
 

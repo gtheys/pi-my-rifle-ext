@@ -5,6 +5,14 @@
 // they keep working if cost attribution changes shape. Dashboards
 // `piflow-health/runs` consume these exact metric names/labels (frozen —
 // renaming a metric or label is a dashboard-breaking change).
+// AIDEV-NOTE (PMR-8MQH 4.2): WHO PUSHES these lines changed, WHAT they say
+// did not. `pi_flow_run_status` used to reach the gateway only from the
+// session-side terminal autopush; since PMR-8MQH the daemon's periodic
+// liveness pass (flow/liveness.ts) also pushes this same render for refs
+// whose journal projects `running`, so a `running` value now refreshes while
+// a run is in flight. No metric name, label key, label value or line ORDER
+// changed — the frozen rule above still holds, and both producers render
+// through the identical buildPushBody path.
 // AIDEV-NOTE (PMR-8MQH 1.2): labelString is imported from './cost-rows.ts',
 // NOT './cost.ts' — cost.ts value-imports the pi-interactive-subagents root
 // (heavy extension graph), so an edge there would silently drag the session-

@@ -5,9 +5,10 @@
 // flow-diagram/*, adhoc/tracker.ts, test/*) resolve the same symbols unchanged.
 // What stays HERE is the session-side report path: it is the only place that
 // imports the package ROOT for `totalTokens`, which is why the daemon contract
-// forbids reaching this file (server/daemon.ts:15-18). See cost-rows.ts for the
-// node-only contract and the one `run-health.ts -> cost.ts` edge that still
-// routes to this module from the moved half.
+// forbids reaching this file (server/daemon.ts:15-18). See cost-rows.ts for
+// the node-only contract — the moved half does not import back here (its
+// run-health seam takes `labelString` from cost-rows.ts), so nothing in the
+// daemon's closure reaches this file.
 
 import { totalTokens } from '@gtheys/pi-interactive-subagents'
 import type { PhaseDuration, PhaseStepSummary, WorkerRow } from './cost-rows.ts'
@@ -124,11 +125,19 @@ export function formatCostReport(
   return lines.join('\n')
 }
 
-// AIDEV-NOTE (PMR-8MQH 1.2): the rollup + push-body code lives in
-// flow/cost-rows.ts (node-only by its own import list — see its header for the
-// import contract and its AIDEV-QUESTION for the one closure edge still
-// blocking a real daemon caller). Re-exported here so every existing importer
-// keeps working unchanged; nothing was edited on the importing side.
+// AIDEV-NOTE (PMR-8MQH 1.2): the row/body half of the rollup + push-body
+// code lives in flow/cost-rows.ts (node-only by its own import list — see its
+// header for the import contract; its closure-edge AIDEV-QUESTION is
+// RESOLVED and recorded there: run-health.ts now imports `labelString` from
+// cost-rows.ts, so no session-side package-ROOT edge remains in the daemon's
+// closure). Re-exported here so every existing importer keeps working
+// unchanged; nothing was edited on the importing side.
+// AIDEV-NOTE (PMR-8MQH 1.3): `computeCostRollup` + `CostRollup` /
+// `CostRollupDeps` ALSO live in flow/cost-rows.ts (moved out of
+// flow/cost-command.ts), but they are deliberately re-exported from THERE,
+// not from this file — `flow/cost-autopush.ts` keeps its `./cost-command.ts`
+// import, and this file stays off the daemon's allowlist because of the ROOT
+// `totalTokens` import above.
 export {
   buildMainRows,
   buildPushBody,
