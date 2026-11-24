@@ -5,9 +5,15 @@
 // they keep working if cost attribution changes shape. Dashboards
 // `piflow-health/runs` consume these exact metric names/labels (frozen —
 // renaming a metric or label is a dashboard-breaking change).
+// AIDEV-NOTE (PMR-8MQH 1.2): labelString is imported from './cost-rows.ts',
+// NOT './cost.ts' — cost.ts value-imports the pi-interactive-subagents root
+// (heavy extension graph), so an edge there would silently drag the session-
+// side runtime into this daemon-reachable module's closure (and re-create the
+// old cost.ts <-> run-health.ts cycle). The closure guard in
+// test/cost-rows-node-only.test.ts keeps it that way.
 import type { FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
-import { labelString } from './cost.ts'
+import { labelString } from './cost-rows.ts'
 
 // `at` is a raw journal string (readRunEvents casts JSON.parse output), so an
 // unparseable timestamp is possible in practice: treat it as "absent" instead

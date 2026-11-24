@@ -45,6 +45,7 @@
     "flow/aven-resolve.ts",
     "flow/binding-heal.ts",
     "flow/cost.ts",
+    "flow/cost-rows.ts",
     "flow/push.ts",
     "flow/reconcile.ts",
     "flow/reconcile-deps.ts",
