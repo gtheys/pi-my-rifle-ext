@@ -81,7 +81,7 @@ export interface ReconcileCommandDeps {
 }
 
 const RECONCILE_USAGE =
-  'Usage: /flow-reconcile-push [--dry-run] — tombstone Pushgateway liveness for runs whose aven ticket is no longer active. No ref: one pass covers every run journal.'
+  'Usage: /flow-reconcile-push [--dry-run] — tombstone Pushgateway liveness for runs whose aven ticket is not live (neither `active` nor `todo`). No ref: one pass covers every run journal.'
 
 const NO_GATEWAY_MESSAGE =
   'reconcile needs PI_FLOW_PUSHGATEWAY_URL set — nothing to push to. Export the pushgateway endpoint (and PI_FLOW_PUSHGATEWAY_TOKEN when it needs auth), then rerun /flow-reconcile-push.'
@@ -212,7 +212,7 @@ export function registerReconcileCommand(
 ): void {
   pi.registerCommand('flow-reconcile-push', {
     description:
-      'Tombstone stale run-liveness metrics (halted/paused runs whose aven ticket is no longer active). Usage: /flow-reconcile-push [--dry-run]',
+      'Tombstone stale run-liveness metrics (halted/paused runs whose aven ticket is not live — neither `active` nor `todo`). Usage: /flow-reconcile-push [--dry-run]',
     handler: async (args, ctx) => {
       await runReconcileCommand(
         deps,

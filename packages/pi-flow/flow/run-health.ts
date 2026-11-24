@@ -16,9 +16,11 @@
 // AIDEV-NOTE (PMR-8MQH 1.2): labelString is imported from './cost-rows.ts',
 // NOT './cost.ts' — cost.ts value-imports the pi-interactive-subagents root
 // (heavy extension graph), so an edge there would silently drag the session-
-// side runtime into this daemon-reachable module's closure (and re-create the
-// old cost.ts <-> run-health.ts cycle). The closure guard in
-// test/cost-rows-node-only.test.ts keeps it that way.
+// side runtime into this daemon-reachable module's closure. The OLD
+// cost.ts <-> run-health.ts cycle is gone; the NEW one here (cost-rows <->
+// run-health) is deliberate and ESM-safe: both sides export only hoisted
+// function declarations consumed at call time, never at module init. The
+// closure guard in test/cost-rows-node-only.test.ts keeps cost.ts out of it.
 import type { FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
 import { labelString } from './cost-rows.ts'

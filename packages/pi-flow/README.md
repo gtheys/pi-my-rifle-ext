@@ -450,8 +450,13 @@ reserved for the tombstone reconcile above.
 **Terminal push stays the last writer.** The pass re-reads and re-gates the
 journal immediately before the POST, so a run that went terminal while the
 rollup was being computed is skipped rather than stamped over the terminal
-body. (A millisecond-scale window remains and is accepted: last-writer-wins,
-and a run that ends normally gets its terminal push anyway.) Refs projecting
+body. (A millisecond-scale window remains — the re-gate passes, the session
+dies, and the terminal push lands before the POST does. When it hits, the
+group sticks at `status="running"`: liveness never revisits the ref (the
+journal no longer projects running) and the tombstone reconcile only
+covers halted/paused journals, so nothing self-heals until the group is
+replaced — a restart under the same ref, or manual cleanup. Rare, accepted,
+documented rather than silent.) Refs projecting
 anything other than `running` — paused, halted, done, no projection — are
 never touched by liveness.
 
@@ -459,7 +464,10 @@ never touched by liveness.
 starts, then every `liveness.intervalMinutes` (default 5). A run too fresh to
 have any cost rows yet still gets a body pushed (the run-health and duration
 lines, no cost lines), so it appears on the board at the first tick instead
-of waiting for its first cost-bearing push. One summary line lands in
+of waiting for its first cost-bearing push — for personal runs only: a
+work-mode fresh run's trackRef is the shared Jira key, and a zero-cost body
+there would erase the previous run's cost series, so such refs wait for
+their first cost-bearing pass. One summary line lands in
 `<agentDir>/pi-flow/server.log` per pass; a broken journal or a failed POST
 costs one warning and a `failed` count, never the pass.
 
