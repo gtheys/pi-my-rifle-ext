@@ -425,16 +425,26 @@ async function scanRuns(
   }
 }
 
-// --- reconcile timer (PMR-MSDJ 2.2, plan PMR-V36Y decision 4a) ---
+// --- periodic pass timer (PMR-8MQH 3.1) ---
+// AIDEV-NOTE: PMR-8MQH 3.1 — the reconcile timer's loop generalized. The gate
+// check, the settings re-read, the re-arm-before-the-pass cadence, the
+// disabled skip, the in-flight guard and the error logging are ONE
+// implementation here so a second timer (liveness, subtask 3.2) cannot drift
+// from them. Byte-identical behavior to the pre-extraction
+// `startReconcileTimer`: the only difference in shape is that the log lines
+// are built from `label` + a message body, so an adapter with
+// `label: 'reconcile'` emits exactly the strings the tests assert.
+// `gateClosedMessage` exists because the startup-gate reason is adapter
+// knowledge (which env var / which config key), not the loop's.
 
-/** Delay before the FIRST pass after daemon start: long enough that a spawn
- *  storm (session start → ensureDaemon → reconcile) cannot reach the gateway
- *  before the projections exist, short enough that an operator who just ran
- *  `/flow-reconcile-push` sees the timer take over within a minute. */
-export const RECONCILE_FIRST_PASS_DELAY_MS = 60_000
-/** `intervalMinutes` → ms. Exported so the tests assert the re-read contract
- *  without a live daemon. */
-export const RECONCILE_MINUTE_MS = 60_000
+/** One minute in ms — the unit `intervalMinutes` is expressed in. Also the
+ *  fallback delay after a failed settings read: a read that failed once is
+ *  retried in a minute rather than at the configured (possibly 6-hour)
+ *  cadence. */
+const PERIODIC_MINUTE_MS = 60_000
+/** Default delay before the FIRST pass after daemon start (an adapter may
+ *  override it via `firstPassDelayMs`). */
+const PERIODIC_FIRST_PASS_DELAY_MS = 60_000
 
 /** One armed timer. `hasRef` exists so the keepalive posture is assertable —
  *  production handles are real `setTimeout`s, which are ref'd until cleared. */
@@ -445,46 +455,46 @@ export interface ReconcileTimerHandle {
 
 export interface ReconcileTimer extends ReconcileTimerHandle {}
 
-export interface ReconcileTimerOptions {
+/** The settings a periodic pass re-reads on every tick. */
+export interface PeriodicPassSettings {
+  enabled: boolean
+  intervalMinutes: number
+  /** a non-fatal problem reading the settings source; logged once per pass,
+   *  never fatal (defaults are still applied) */
+  warning?: string
+}
+
+export interface PeriodicPassTimerOptions<TReport> {
+  /** prefix for every log line this timer emits (`'reconcile'`,
+   *  `'liveness'`). Summary lines from `formatSummary` are logged verbatim —
+   *  they carry their own prefix. */
+  label: string
   agentDir: string
-  /** the daemon's log channel (`<agentDir>/pi-flow/server.log`) — also where
-   *  engine warnings go, via `runReconcilePassOnce`'s `warn` */
+  /** the daemon's log channel (`<agentDir>/pi-flow/server.log`) */
   log: (message: string) => void
-  env?: NodeJS.ProcessEnv
-  /** seam: defaults to reading `<agentDir>/pi-flow/config.json` as raw text */
-  readSettings?: (agentDir: string) => Promise<ReconcileSettings>
-  /** seam: defaults to the wired engine pass (never dry) */
-  runPass?: () => Promise<ReconcileReport | null>
+  readSettings: (agentDir: string) => Promise<PeriodicPassSettings>
+  /** the pass itself. `null` means "nothing to report" — no summary line. */
+  runPass: () => Promise<TReport | null>
+  formatSummary: (report: TReport) => string
+  /** startup-only gate, evaluated once. False ⇒ one log line, no timer at all
+   *  (a gate the daemon's fixed env/config can never satisfy later is not
+   *  worth an armed chain). */
+  gateOpen: () => boolean
+  /** body of the gate-failure log line (after `label: `) */
+  gateClosedMessage?: string
   /** seam: defaults to `setTimeout` — a REF'D handle (keepalive) */
   schedule?: (fn: () => void, ms: number) => ReconcileTimerHandle
   firstPassDelayMs?: number
 }
 
 /**
- * The daemon's stale-liveness reconcile loop: startup gate, then a recursive
- * `setTimeout` whose delay comes from a settings read on EVERY tick.
- *
- * Gates, in order, evaluated at startup:
- *  1. `PI_FLOW_PUSHGATEWAY_URL` unset → log once, NO timer at all (the
- *     autopush gate: no endpoint means there is nothing to reconcile, and the
- *     daemon's env is fixed at spawn so a later check could never succeed);
- *  2. `reconcile.enabled === false` → log once, NO timer at all.
- * Then on every tick the settings are re-read, so an `intervalMinutes` change
- * and a flip to `enabled: false` take effect WITHOUT restarting the daemon;
- * a tick that reads `enabled: false` skips the pass but stays armed (plan
- * behavior: "Each pass: settings disabled ⇒ skip").
- *
- * AIDEV-NOTE (PMR-MSDJ review P2-3 — what gate 2 really costs): a flip BACK
- * to `enabled: true` does NOT take effect unless the timer was armed at
- * startup. A daemon that STARTED with `enabled=false` has no timer left to
- * re-read settings (pinned by test/server-reconcile-timer.test.ts: "disabled
- * at startup creates no timer at all"), and `server/lifecycle.ts` respawns
- * only a DEAD daemon or a version mismatch — so disable, wait, re-enable
- * yields silence with no log line until the daemon restarts (kill it and the
- * next session's `ensureDaemon` re-spawns, or run `/flow-reconcile-push` for
- * one pass now). Arming unconditionally and letting the per-tick check skip
- * would close the gap; the startup gate is pinned behaviour, so this round
- * documents it instead of changing it.
+ * A startup-gated loop whose next delay comes from a settings read on EVERY
+ * tick, so `intervalMinutes` changes and a flip back to `enabled: true` take
+ * effect WITHOUT restarting the daemon — PROVIDED a timer exists: a flip
+ * BEFORE startup (disabled at startup) never arms one, see the gate-2 cost
+ * note on `startReconcileTimer` below. A tick that reads `enabled: false`
+ * skips the pass but stays armed (plan behavior: "Each pass: settings
+ * disabled ⇒ skip").
  *
  * AIDEV-NOTE: KEEPALIVE — the armed handle is intentionally NOT unref'd,
  * mirroring the pollTimer rule above (`hasRef` is exposed so a test pins it).
@@ -494,27 +504,22 @@ export interface ReconcileTimerOptions {
  * other, so `inFlight` keeps a slow pass from stacking a second one behind it
  * — a skipped tick re-arms and says so once.
  */
-export function startReconcileTimer(
-  options: ReconcileTimerOptions,
+export function startPeriodicPassTimer<TReport>(
+  options: PeriodicPassTimerOptions<TReport>,
 ): ReconcileTimer {
-  const schedule = options.schedule ?? scheduleReconcileTimer
-  const readSettings = options.readSettings ?? readReconcileSettings
-  const runPass =
-    options.runPass ??
-    (() =>
-      runReconcilePassOnce({
-        agentDir: options.agentDir,
-        env: options.env,
-        warn: options.log,
-      }))
+  const schedule = options.schedule ?? schedulePeriodicPassTimer
   const firstPassDelayMs =
-    options.firstPassDelayMs ?? RECONCILE_FIRST_PASS_DELAY_MS
+    options.firstPassDelayMs ?? PERIODIC_FIRST_PASS_DELAY_MS
 
   let handle: ReconcileTimerHandle | null = null
   let cancelled = false
   let inFlight = false
-  // Dedupe the two state-change notices so a 1-minute interval cannot spam.
+  // Dedupe the disabled notice so a 1-minute interval cannot spam.
   let disabledNoticed = false
+
+  const info = (message: string): void => {
+    options.log(`${options.label}: ${message}`)
+  }
 
   const arm = (delayMs: number): void => {
     if (cancelled) return
@@ -523,69 +528,74 @@ export function startReconcileTimer(
     }, delayMs)
   }
 
+  /** Reads the settings, logging the failure (and any source warning) in the
+   *  same order the pre-extraction timer did. `null` means the read failed. */
+  const readSettings = async (): Promise<PeriodicPassSettings | null> => {
+    try {
+      return await options.readSettings(options.agentDir)
+    } catch (err) {
+      info(`settings read failed: ${String(err)}`)
+      return null
+    }
+  }
+
+  const logWarning = (settings: PeriodicPassSettings): void => {
+    if (settings.warning !== undefined) {
+      info(settings.warning)
+    }
+  }
+
   const tick = async (): Promise<void> => {
     handle = null
     if (cancelled) return
-    let settings: ReconcileSettings
-    try {
-      settings = await readSettings(options.agentDir)
-    } catch (err) {
-      options.log(`reconcile: settings read failed: ${String(err)}`)
-      arm(RECONCILE_MINUTE_MS)
+    const settings = await readSettings()
+    if (settings === null) {
+      arm(PERIODIC_MINUTE_MS)
       return
     }
     if (cancelled) return
-    if (settings.warning !== undefined) {
-      options.log(`reconcile: ${settings.warning}`)
-    }
-    const delayMs = Math.max(1, settings.intervalMinutes) * RECONCILE_MINUTE_MS
+    logWarning(settings)
+    const delayMs = Math.max(1, settings.intervalMinutes) * PERIODIC_MINUTE_MS
     // Re-arm BEFORE the pass: the cadence must survive a slow or hung pass.
     arm(delayMs)
     if (!settings.enabled) {
       if (!disabledNoticed) {
         disabledNoticed = true
-        options.log('reconcile: disabled in config — passes skipped')
+        info('disabled in config — passes skipped')
       }
       return
     }
     disabledNoticed = false
     if (inFlight) {
-      options.log('reconcile: previous pass still running — pass skipped')
+      info('previous pass still running — pass skipped')
       return
     }
     inFlight = true
     try {
-      const report = await runPass()
+      const report = await options.runPass()
       if (report !== null) {
-        options.log(reconcileSummaryLine(report))
+        options.log(options.formatSummary(report))
       }
     } catch (err) {
-      options.log(`reconcile: pass failed: ${String(err)}`)
+      info(`pass failed: ${String(err)}`)
     } finally {
       inFlight = false
     }
   }
 
   const startup = async (): Promise<void> => {
-    if (pushgatewayEnv(options.env) === null) {
-      options.log(
-        'reconcile: PI_FLOW_PUSHGATEWAY_URL is not set — timer not started',
+    if (!options.gateOpen()) {
+      info(
+        options.gateClosedMessage ?? 'startup gate closed — timer not started',
       )
       return
     }
-    let settings: ReconcileSettings
-    try {
-      settings = await readSettings(options.agentDir)
-    } catch (err) {
-      options.log(`reconcile: settings read failed: ${String(err)}`)
-      return
-    }
+    const settings = await readSettings()
+    if (settings === null) return
     if (cancelled) return
-    if (settings.warning !== undefined) {
-      options.log(`reconcile: ${settings.warning}`)
-    }
+    logWarning(settings)
     if (!settings.enabled) {
-      options.log('reconcile: disabled in config — timer not started')
+      info('disabled in config — timer not started')
       return
     }
     disabledNoticed = false
@@ -609,7 +619,7 @@ export function startReconcileTimer(
 }
 
 /** Production scheduler: a real `setTimeout`, deliberately NOT unref'd. */
-function scheduleReconcileTimer(
+function schedulePeriodicPassTimer(
   fn: () => void,
   ms: number,
 ): ReconcileTimerHandle {
@@ -620,6 +630,80 @@ function scheduleReconcileTimer(
     },
     hasRef: () => timer.hasRef(),
   }
+}
+
+// --- reconcile timer (PMR-MSDJ 2.2, plan PMR-V36Y decision 4a) ---
+
+/** Delay before the FIRST pass after daemon start: long enough that a spawn
+ *  storm (session start → ensureDaemon → reconcile) cannot reach the gateway
+ *  before the projections exist, short enough that an operator who just ran
+ *  `/flow-reconcile-push` sees the timer take over within a minute. */
+export const RECONCILE_FIRST_PASS_DELAY_MS = PERIODIC_FIRST_PASS_DELAY_MS
+/** `intervalMinutes` → ms. Exported so the tests assert the re-read contract
+ *  without a live daemon. */
+export const RECONCILE_MINUTE_MS = PERIODIC_MINUTE_MS
+
+export interface ReconcileTimerOptions {
+  agentDir: string
+  /** the daemon's log channel (`<agentDir>/pi-flow/server.log`) — also where
+   *  engine warnings go, via `runReconcilePassOnce`'s `warn` */
+  log: (message: string) => void
+  env?: NodeJS.ProcessEnv
+  /** seam: defaults to reading `<agentDir>/pi-flow/config.json` as raw text */
+  readSettings?: (agentDir: string) => Promise<ReconcileSettings>
+  /** seam: defaults to the wired engine pass (never dry) */
+  runPass?: () => Promise<ReconcileReport | null>
+  /** seam: defaults to `setTimeout` — a REF'D handle (keepalive) */
+  schedule?: (fn: () => void, ms: number) => ReconcileTimerHandle
+  firstPassDelayMs?: number
+}
+
+/**
+ * The daemon's stale-liveness reconcile loop — the reconcile wiring of
+ * `startPeriodicPassTimer`. Gates, in order, evaluated at startup:
+ *  1. `PI_FLOW_PUSHGATEWAY_URL` unset → log once, NO timer at all (the
+ *     autopush gate: no endpoint means there is nothing to reconcile, and the
+ *     daemon's env is fixed at spawn so a later check could never succeed);
+ *  2. `reconcile.enabled === false` → log once, NO timer at all.
+ * Then on every tick the reconcile settings are re-read (see the factory for
+ * the rest of the loop contract).
+ *
+ * AIDEV-NOTE (PMR-MSDJ review P2-3 — what gate 2 really costs): a flip BACK
+ * to `enabled: true` does NOT take effect unless the timer was armed at
+ * startup. A daemon that STARTED with `enabled=false` has no timer left to
+ * re-read settings (pinned by test/server-reconcile-timer.test.ts: "disabled
+ * at startup creates no timer at all"), and `server/lifecycle.ts` respawns
+ * only a DEAD daemon or a version mismatch — so disable, wait, re-enable
+ * yields silence with no log line until the daemon restarts (kill it and the
+ * next session's `ensureDaemon` re-spawns, or run `/flow-reconcile-push` for
+ * one pass now). Arming unconditionally and letting the per-tick check skip
+ * would close the gap; the startup gate is pinned behaviour, so this round
+ * documents it instead of changing it. The liveness timer inherits the same
+ * posture by design.
+ */
+export function startReconcileTimer(
+  options: ReconcileTimerOptions,
+): ReconcileTimer {
+  const runPass =
+    options.runPass ??
+    (() =>
+      runReconcilePassOnce({
+        agentDir: options.agentDir,
+        env: options.env,
+        warn: options.log,
+      }))
+  return startPeriodicPassTimer<ReconcileReport>({
+    label: 'reconcile',
+    agentDir: options.agentDir,
+    log: options.log,
+    readSettings: options.readSettings ?? readReconcileSettings,
+    runPass,
+    formatSummary: reconcileSummaryLine,
+    gateOpen: () => pushgatewayEnv(options.env) !== null,
+    gateClosedMessage: 'PI_FLOW_PUSHGATEWAY_URL is not set — timer not started',
+    schedule: options.schedule,
+    firstPassDelayMs: options.firstPassDelayMs,
+  })
 }
 
 function main(): void {
