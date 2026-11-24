@@ -359,7 +359,18 @@ async function pushIfRunning(
     // tracking ref and the phase durations still come straight from the
     // journal — same `runTracking` derivation the terminal autopush uses —
     // which makes the push health-only rather than absent.
+    // AIDEV-NOTE (PMR-8MQH review P2): guarded to trackRef === ref. The
+    // Pushgateway group is keyed by TRACKREF, and in work mode several runs
+    // (across resume/restarts of one Jira issue) share one trackRef — a
+    // zero-cost health-only body would REPLACE that group and erase the
+    // previous run's cost/token series (measured: 85 series lost, and
+    // unrecoverable if the new run dies before its terminal push). An
+    // 'ok' rollup may still replace the shared group: it carries the full
+    // re-render of everything the current journal knows, matching the
+    // terminal autopush exactly. ISC-10 therefore covers personal-mode fresh
+    // runs; a work-mode fresh run appears at its first cost-bearing pass.
     const tracking = runTracking(events, ref)
+    if (tracking.trackRef !== ref) return 'skipped'
     trackRef = tracking.trackRef
     mode = tracking.mode
     durations = phaseDurations(events)

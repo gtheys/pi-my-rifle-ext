@@ -766,6 +766,38 @@ test('runLivenessPassOnce: an empty-rollup running ref is pushed health-only (IS
   assert.equal(body.includes('pi_flow_tokens_total'), false)
 })
 
+// AIDEV-NOTE (PMR-8MQH review P2): the empty-rollup push is keyed by
+// trackRef, and a work-mode journal's trackRef is the SHARED Jira key —
+// a health-only body there would erase the previous run's cost series of
+// the same issue. Such refs must be skipped until a cost-bearing rollup
+// exists (the `ok` path keeps its full-re-render semantics).
+test('runLivenessPassOnce: an empty-rollup WORK-mode ref (trackRef != ref) is skipped, never POSTed', async () => {
+  const workJournal: FlowRunEvent[] = [
+    {
+      kind: 'run-start',
+      at: AT_START,
+      ref: REF,
+      mode: 'work',
+      trackRef: TRACK_REF,
+    },
+    loopEvent(REF, 'running', '2026-11-24T06:00:09.000Z'),
+  ]
+  const t = fakeEngine({
+    refs: [REF, 'PMR-OK'],
+    events: eventsMap([
+      [REF, workJournal],
+      ['PMR-OK', healthOnlyJournal('PMR-OK', 'running')],
+    ]),
+  })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(report, { scanned: 2, pushed: 1, skipped: 1, failed: 0 })
+  assert.deepEqual(
+    t.posts.map((post) => post.trackRef),
+    ['PMR-OK'],
+  )
+  assert.equal(t.warns.length, 0)
+})
+
 // ---- failures never escape the pass (ISC-5) ------------------------------
 
 test('runLivenessPassOnce: a gateway failure is one warn and failed++, the pass still resolves', async () => {
