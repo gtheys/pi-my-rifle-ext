@@ -34,6 +34,12 @@
 //      what flow/cost.ts used to hold, and flow/cost.ts re-exports it so every
 //      existing importer keeps resolving the same functions.
 //
+// AIDEV-NOTE (PMR-8MQH 1.3): computeCostRollup + the CostRollup type moved
+// here from flow/cost-command.ts so the daemon can reach the rollup too, and
+// cost-command.ts re-exports them (no caller changed). Its dependencies are
+// narrowed to CostRollupDeps (journal + assignments + session files) instead
+// of Pick<FlowCostDeps, ...> — the push member stays session-side.
+//
 // AIDEV-NOTE (PMR-EA8X): offline ground-truth cost rollup for flow runs.
 // The session jsonl files stay the authority — this module only aggregates
 // what Pi already recorded. COVERAGE DISCIPLINE (same rule as usage.ts):
@@ -51,6 +57,7 @@ import {
   type UsageSummary,
 } from '@gtheys/pi-interactive-subagents/usage'
 import type { FlowPhase, FlowRunEvent } from '../run-state.ts'
+import { runTracking } from '../run-state.ts'
 import { agentRole, ORCHESTRATOR_ROLE } from './agent-role.ts'
 import { renderRunHealthLines } from './run-health.ts'
 
@@ -610,4 +617,105 @@ export function buildPushBody(
     }
   }
   return `${lines.join('\n')}\n`
+}
+
+/**
+ * What computeCostRollup reads: the run journal, the durable assignment
+ * records, and the raw session jsonl bodies. All reads — the push transport is
+ * session-side (flow/cost-command.ts's FlowCostDeps adds it), which is why the
+ * rollup takes this narrower interface instead of FlowCostDeps itself.
+ */
+export interface CostRollupDeps {
+  /** Journal events for a ref; null when no journal exists. */
+  readRunEvents: (ref: string) => Promise<FlowRunEvent[] | null>
+  /** Durable assignment records (subagents data dir). */
+  listAssignmentRecords: () => readonly AssignmentRecord[]
+  /** Raw session jsonl body, or null when unreadable (coverage gap). */
+  readSessionFile: (file: string) => string | null
+}
+
+export type CostRollup =
+  | { kind: 'no-journal' }
+  | { kind: 'empty' }
+  | {
+      kind: 'ok'
+      rows: WorkerRow[]
+      durations: PhaseDuration[]
+      /** Per-phase step-output submission counts (advisory evidence). */
+      steps?: PhaseStepSummary[]
+      /** ref the run is tracked by (Jira key in work mode); the metric `ref` label */
+      trackRef: string
+      mode: 'work' | 'personal'
+      /**
+       * AIDEV-NOTE: the raw journal events the rollup was computed from —
+       * the push call sites forward them to buildPushBody so the run-health
+       * metrics ride the same push (optional for back-compat with rollups
+       * built by older code or tests).
+       */
+      events?: readonly FlowRunEvent[]
+    }
+
+/**
+ * Journal + session files -> cost rows. Shared by `/flow-cost` and the
+ * automatic push at run end, so both always agree. 'empty' = the journal has
+ * neither worker spawn notes nor a main-session record (pre-attribution run).
+ */
+export async function computeCostRollup(
+  ref: string,
+  deps: CostRollupDeps,
+): Promise<CostRollup> {
+  const events = await deps.readRunEvents(ref)
+  if (events === null) return { kind: 'no-journal' }
+  const notes = collectSpawnNotes(events)
+  const mainFiles = collectMainSessionFiles(events)
+  if (notes.length === 0 && mainFiles.length === 0) return { kind: 'empty' }
+  const assignments = deps.listAssignmentRecords()
+  // read every distinct session file once (coverage gaps become flags)
+  const wanted = new Set<string>()
+  for (const note of notes) {
+    if (note.sessionFile !== null) wanted.add(note.sessionFile)
+  }
+  for (const file of mainFiles) wanted.add(file)
+  const byChild = new Map<string, AssignmentRecord>()
+  for (const record of assignments) {
+    byChild.set(record.childId, record)
+  }
+  for (const note of notes) {
+    if (note.sessionFile !== null) continue
+    const record = byChild.get(note.childId)
+    if (record !== undefined && record.sessionFile.length > 0) {
+      wanted.add(record.sessionFile)
+    }
+  }
+  const sessions = new Map<string, readonly unknown[]>()
+  for (const file of wanted) {
+    const raw = deps.readSessionFile(file)
+    if (raw === null) continue
+    sessions.set(file, parseSessionEntries(raw))
+  }
+  const rows = [
+    ...buildMainRows(events, sessions),
+    ...buildWorkerRows(notes, assignments, sessions),
+  ]
+  // AIDEV-NOTE: work/personal separation — the pushed `ref` label (and the
+  // Pushgateway group) is the run's TRACKING ref (Jira key in work mode),
+  // from the last run-start event; runs journaled before this existed fall
+  // back to the aven ref and personal mode. The derivation itself lives in
+  // run-state.ts's runTracking (PMR-MSDJ 1.2) so pushes and the PMR-05MQ
+  // tombstone group URL cannot drift apart.
+  const { trackRef, mode } = runTracking(events, ref)
+  // AIDEV-NOTE (PMR-C998): steps are advisory evidence from journal
+  // 'step-output' submissions; optional on the rollup for back-compat and
+  // omitted (not empty) so report consumers skip the section cleanly.
+  const steps = summarizeStepOutputs(events)
+  const okRollup: CostRollup & { steps?: PhaseStepSummary[] } = {
+    kind: 'ok' as const,
+    rows,
+    durations: phaseDurations(events),
+    trackRef,
+    events,
+    mode,
+  }
+  if (steps.length > 0) okRollup.steps = steps
+  return okRollup
 }

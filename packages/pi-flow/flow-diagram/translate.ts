@@ -669,7 +669,7 @@ function synthesizeSpawns(
   }
   const records: SpawnCallRecord[] = []
   for (const note of notes) {
-    // Mirrors computeCostRollup's byChild fallback (flow/cost-command.ts):
+    // Mirrors computeCostRollup's byChild fallback (flow/cost-rows.ts):
     // when the spawn note lacks a sessionFile, the assignment record supplies
     // sessionFile / agent type / subtask / end timestamp.
     let sessionFile: string | null = note.sessionFile
