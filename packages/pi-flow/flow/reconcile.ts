@@ -33,19 +33,49 @@
 // flow/push.ts + aven/status.ts (which is what this file does).
 import {
   type FlowRunEvent,
+  type LoopRunStatus,
   projectRunState,
   runTracking,
 } from '../run-state.ts'
 import type { GroupBodyResult, PushResult } from './push.ts'
 
-/** Liveness statuses that a tombstone retires. */
-const LIVENESS_STATUSES = ['halted', 'paused']
+/** Liveness statuses that a tombstone retires.
+ *  AIDEV-NOTE: EXPORTED because the gateway-less `--dry-run` half of
+ *  `/flow-reconcile-push` (flow/reconcile-command.ts) decides with the SAME
+ *  data this engine does. Keeping it private meant two places to update when a
+ *  status is ever added, i.e. a dry-run that could disagree with the real
+ *  pass. `livenessStatusOf` below is the shared projection rule. */
+export const LIVENESS_STATUSES = ['halted', 'paused']
+
+/** The ONE aven fail-closed warning, exported for the same reason: both entry
+ *  points must say the identical thing (the manual test counts it as exactly
+ *  one user-visible warning). */
+export const AVEN_FAILED_WARNING =
+  'reconcile: aven ticket statuses unavailable — tombstoned nothing this pass (fail-closed)'
 
 /** The tombstone status value (label-VALUE-only addition; frozen labels). */
 const STALE_STATUS = 'stale'
 
 const RUN_STATUS_METRIC = 'pi_flow_run_status{'
 const HALT_REASON_METRIC = 'pi_flow_run_halt_reason{'
+
+/**
+ * The liveness status a journal projects, or null when the run is NOT a
+ * reconcile candidate: no projection, no loop state, or a status outside
+ * `LIVENESS_STATUSES` (a `running` run is never retired; an unprojectable or
+ * empty journal is not either).
+ *
+ * Exported because `/flow-reconcile-push --dry-run` without a gateway runs
+ * exactly this filter and nothing else — one rule, two surfaces.
+ */
+export function livenessStatusOf(
+  events: readonly FlowRunEvent[],
+): LoopRunStatus | null {
+  const status = projectRunState(events)?.loop?.status
+  if (status === undefined) return null
+  if (!LIVENESS_STATUSES.includes(status)) return null
+  return status
+}
 
 /**
  * Pure liveness rule (interview decision 2): a halted/paused journal run is
@@ -305,11 +335,8 @@ export async function runReconcilePass(
   for (const ref of refs) {
     const events = await deps.readRunEvents(ref)
     if (events === null) continue
-    const state = projectRunState(events)
-    if (state === null) continue
-    const status = state.loop?.status
-    if (status === undefined) continue
-    if (!LIVENESS_STATUSES.includes(status)) continue
+    const status = livenessStatusOf(events)
+    if (status === null) continue
     // AIDEV-NOTE: PMR-MSDJ 2.2 — the candidate filter is deliberately
     // MODE-AGNOSTIC; this closes the TODO 2.1 left for the orchestrator, whose
     // decision is recorded here (do not "fix" it by adding `mode === 'work'`).
@@ -336,9 +363,7 @@ export async function runReconcilePass(
 
   const ticketStatus = await deps.listTicketStatuses()
   if (ticketStatus === null) {
-    deps.warn(
-      'reconcile: aven ticket statuses unavailable — tombstoned nothing this pass (fail-closed)',
-    )
+    deps.warn(AVEN_FAILED_WARNING)
     report.avenFailed = true
     return report
   }

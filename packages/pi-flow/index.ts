@@ -44,6 +44,7 @@ import {
   writeAvenNote,
   writeGateAnswer,
 } from './aven/client.ts'
+import { listTicketStatuses } from './aven/status.ts'
 import {
   loadConfig,
   resolveMode,
@@ -97,6 +98,11 @@ import {
   splitGateValue,
   TICKET_ROW_VALUE,
 } from './flow/picker.ts'
+import {
+  type ReconcileCommandDeps,
+  registerReconcileCommand,
+} from './flow/reconcile-command.ts'
+import { createReconcileDeps, listJournalRefs } from './flow/reconcile-deps.ts'
 import {
   parseRefKind,
   registerAvenPrefixes,
@@ -1302,6 +1308,24 @@ export default function (
     },
   }
   registerFlowCostCommand(pi, costDeps)
+
+  // AIDEV-NOTE (PMR-MSDJ 2.3): /flow-reconcile-push — the manual face of the
+  // tombstone reconcile. Every seam is the DAEMON'S OWN wiring
+  // (`flow/reconcile-deps.ts`): one env gate, one journal rule,
+  // one aven call, so the two surfaces cannot disagree about what is stale.
+  // The only session-side difference is the channel — `warn` lands in
+  // `ctx.ui.notify` here instead of `server.log`, and `agentDir` is
+  // `getAgentDir()` (Pi's own resolution) rather than the daemon's
+  // PI_FLOW_AGENT_DIR. See flow/reconcile-command.ts for the mode/URL
+  // semantics table (`--dry-run` answers WITHOUT a gateway, a real run does not).
+  const reconcileDeps: ReconcileCommandDeps = {
+    createEngineDeps: (warn) =>
+      createReconcileDeps({ agentDir: getAgentDir(), warn }),
+    listJournalRefs: () => listJournalRefs(getAgentDir()),
+    readRunEvents: (ref) => readRunEvents(getAgentDir(), ref),
+    listTicketStatuses: () => listTicketStatuses(),
+  }
+  registerReconcileCommand(pi, reconcileDeps)
 
   // AIDEV-NOTE (PMR-PVT5 4.2): /flow-diagram wiring — mirrors the costDeps
   // shapes (readRunEvents + filtered listAssignments + try/catch session

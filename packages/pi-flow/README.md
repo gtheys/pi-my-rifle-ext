@@ -50,6 +50,7 @@ Failure behavior:
 | `/pr-quality [pr]` | Unresolved GitHub review threads + SonarCloud issues in one triage pass (absorbed from pi-review). |
 | `/pr-watch` | Background-polls PR checks; auto-triggers `/pr-quality` when they complete (absorbed from pi-review). |
 | `/flow-cost <ref> [--push]` | Per-ticket cost rollup: replays the run journal, attributes each spawned session's token usage and tool calls to agent/subtask, prints the table. `--push` additionally exports the rollup as Prometheus metrics to a Pushgateway (env-gated, see below); failures warn and never fail the command. Reruns any time — it replays the journal, so it doubles as the backfill path. The rollup also prints a per-phase step outputs section (advisory, never blocking) summarizing the `flow_submit` step-output submissions per phase.
+| `/flow-reconcile-push [--dry-run]` | Runs the stale-liveness reconcile NOW instead of waiting for the daemon timer: tombstones the `pi_flow_run_status` liveness series of runs whose aven ticket is no longer active, so halted/paused alerts stop firing on tickets that closed weeks ago. Takes **no ref** — one pass covers every run journal. `--dry-run` decides without pushing. Output is one summary line plus one line per stale ref (`PMR-X (ticket done) journal=halted → tombstoned`); gateway and aven failures come out as warnings. Details under [Reconcile](#reconcile-stale-run-tombstoning). |
 | `/herdr-sync` | Links this repo as a Herdr plugin (idempotent, explicit-only). |
 | `/flow-view <ref> [placement]` | Opens/focuses a Herdr pane rendering the run-state journal for a ref. |
 | `/flow-diagram <ref> [run]` | Renders the per-ticket flow timeline as a self-contained HTML sequence diagram (one lane per subagent + orchestrator, phase markers, tool arrows with dashed returns, per-lane token totals). Writes to `pi-flow/diagrams/<ref>.run<k>.<stamp>.html` and best-effort opens it; the file path is always the deliverable. |
@@ -324,8 +325,32 @@ the group would erase those cost rows too.
 - `/flow-reconcile-push` for an immediate pass, with `--dry-run` to list what
   would be tombstoned without pushing anything.
 
-Both are gated on `PI_FLOW_PUSHGATEWAY_URL` — with the URL unset there is
-nothing to reconcile and the pass is skipped.
+Both are gated on `PI_FLOW_PUSHGATEWAY_URL`: the daemon timer is never armed
+without it, and a REAL `/flow-reconcile-push` run refuses with an error rather
+than silently doing nothing. A `--dry-run` is the documented exception — it
+still answers "which runs would be retired?" without a gateway, from the run
+journals + aven alone, and labels its output `candidates only, groups not
+inspected` so nobody mistakes an unverified body for a verified one.
+
+```
+DRY RUN — nothing pushed
+PI_FLOW_PUSHGATEWAY_URL unset — candidates only, groups not inspected
+reconcile pass: scanned=123 candidates=4 stale=4 tombstoned=0 skipped=0 dry-run
+  PMR-C0WG (ticket backlog) journal=halted → would tombstone
+  PMR-ESPA (ticket done) journal=halted → would tombstone
+  PMR-HHS8 (ticket done) journal=halted → would tombstone
+  PMR-XXXX (ticket todo) journal=halted → would tombstone
+```
+
+With the URL set, the `groups not inspected` header disappears (the groups ARE
+read) and the arrow shows what actually happened: `→ tombstoned`,
+`→ skipped: already clean`, `→ skipped: pushgateway responded 500 …` — the
+same pass above, run against a real gateway, reported
+`skipped=1 … → skipped: already clean` for a ref whose stored body held no
+liveness series to retire, a fact only the gateway can tell you. A
+`ticket missing` status is the ordinary case for a deleted or never-filed
+ticket — a missing ticket is stale. Refs that stayed live are not listed; the
+`candidates=N` count covers them.
 
 **Fail-closed on aven errors.** If `aven list` fails, times out, or returns
 something unexpected, the pass tombstones **nothing** and logs exactly one
@@ -338,9 +363,14 @@ directory, so the interval comes from `~/.pi/agent/pi-flow/config.json` only —
 per-checkout config does not affect it. `/flow-reconcile-push` is the escape
 hatch when you need a pass now, or for one checkout.
 
-**Personal-mode runs** (`TP-*`, no aven ticket) are not tombstoned: reconcile
-considers work-mode refs, whose group identity and ticket status come from
-the aven/Jira tracking ref.
+**Mode is not part of the decision.** The candidate filter asks only whether a
+JOURNAL projects a halted/paused loop state; liveness then comes from the aven
+ticket map, where a missing entry is stale. In practice `TP-*` personal runs
+carry no loop-state journal, so they never become candidates — but a
+personal-mode ref that DOES have a halted/paused journal and no aven ticket
+tombstones under the same rule. `mode` only picks the group URL suffix
+(`/mode/work`), so the tombstone replaces the RIGHT group instead of creating
+a duplicate personal one.
 
 On the Grafana side, the `piflow-runs` board maps the new value to a gray
 **stale (ticket closed)** and the needs-attention table is gated to
