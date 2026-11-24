@@ -8,6 +8,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import type { AssignmentRecord } from '@gtheys/pi-interactive-subagents'
 import { isValidRef } from '../herdr/viewer.ts'
 import type { FlowRunEvent } from '../run-state.ts'
+import { runTracking } from '../run-state.ts'
 import {
   buildMainRows,
   buildPushBody,
@@ -134,18 +135,10 @@ export async function computeCostRollup(
   // AIDEV-NOTE: work/personal separation — the pushed `ref` label (and the
   // Pushgateway group) is the run's TRACKING ref (Jira key in work mode),
   // from the last run-start event; runs journaled before this existed fall
-  // back to the aven ref and personal mode.
-  let trackRef = ref
-  let mode: 'work' | 'personal' = 'personal'
-  for (const event of events) {
-    if (event.kind !== 'run-start') continue
-    mode = event.mode
-    if (event.trackRef !== undefined && event.trackRef.length > 0) {
-      trackRef = event.trackRef
-    } else {
-      trackRef = ref
-    }
-  }
+  // back to the aven ref and personal mode. The derivation itself lives in
+  // run-state.ts's runTracking (PMR-MSDJ 1.2) so pushes and the PMR-05MQ
+  // tombstone group URL cannot drift apart.
+  const { trackRef, mode } = runTracking(events, ref)
   // AIDEV-NOTE (PMR-C998): steps are advisory evidence from journal
   // 'step-output' submissions; optional on the rollup for back-compat and
   // omitted (not empty) so report consumers skip the section cleanly.

@@ -352,6 +352,37 @@ export function isJournalOnlyEvent(event: FlowRunEvent): boolean {
   ]
   return kinds.some((k) => k === event.kind)
 }
+
+// AIDEV-NOTE (PMR-MSDJ 1.2, extracted from flow/cost-command.ts): runTracking
+// is the SINGLE source for a run's Pushgateway tracking ref + mode. The group
+// URL (and therefore which group a push REPLACES) is derived from these two
+// values, and the PMR-05MQ tombstone pushes depend on the work-mode
+// `/mode/work` suffix being preserved exactly — a drifted derivation here
+// would create a duplicate personal group instead of replacing the work one.
+// Semantics (pinned by test/run-state-tracking.test.ts): the LAST run-start
+// event wins; its `mode` FIELD decides work vs personal (NOT the presence of
+// trackRef — a stamped work run without a tracking ref still pushes to the
+// work group under the aven ref); an absent or empty trackRef falls back to
+// the caller's ref; no run-start event at all ⇒ personal + fallback (old
+// journals).
+export function runTracking(
+  events: readonly FlowRunEvent[],
+  fallbackRef: string,
+): { trackRef: string; mode: 'work' | 'personal' } {
+  let trackRef = fallbackRef
+  let mode: 'work' | 'personal' = 'personal'
+  for (const event of events) {
+    if (event.kind !== 'run-start') continue
+    mode = event.mode
+    if (event.trackRef !== undefined && event.trackRef.length > 0) {
+      trackRef = event.trackRef
+    } else {
+      trackRef = fallbackRef
+    }
+  }
+  return { trackRef, mode }
+}
+
 export interface RunInputRecord {
   mode: 'work' | 'personal'
   gitRoot: string
