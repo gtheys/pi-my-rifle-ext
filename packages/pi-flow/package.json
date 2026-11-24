@@ -1,7 +1,7 @@
 {
   "name": "@gtheys/pi-flow",
   "version": "0.1.0",
-  "description": "Pi extension \u2014 PIV flow orchestrator (phase commands, gate tools, review/sonarqube/pr-quality, work-mode detection, run-state journal)",
+  "description": "Pi extension — PIV flow orchestrator (phase commands, gate tools, review/sonarqube/pr-quality, work-mode detection, run-state journal)",
   "type": "module",
   "keywords": [
     "pi-package"
@@ -49,6 +49,7 @@
     "flow/push.ts",
     "flow/reconcile.ts",
     "flow/reconcile-deps.ts",
+    "flow/liveness.ts",
     "flow/reconcile-command.ts",
     "flow/cost-autopush.ts",
     "flow/cost-command.ts",
