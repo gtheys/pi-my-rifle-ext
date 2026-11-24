@@ -1,7 +1,7 @@
-// AIDEV-NOTE (PMR-8MQH 2.1): tests for flow/liveness.ts — the node-only
-// settings reader + io wiring behind the daemon's running-flow liveness push.
-// Subtask 2.2 appends the engine (`runLivenessPassOnce`) cases to THIS file;
-// the module's node-only import contract is already locked here (bottom
+// AIDEV-NOTE (PMR-8MQH 2.1 + 2.2): tests for flow/liveness.ts — the node-only
+// settings reader, io wiring, and the liveness engine behind the daemon's
+// running-flow liveness push.
+// The module's node-only import contract is already locked here (bottom
 // section) because the daemon starts importing it in 3.2. Same guard shape as
 // test/cost-rows-node-only.test.ts.
 //
@@ -17,11 +17,18 @@ import {
   createLivenessDeps,
   DEFAULT_LIVENESS_SETTINGS,
   type LivenessDeps,
+  type LivenessReport,
   type LivenessSettings,
+  livenessSummaryLine,
   parseLivenessSettings,
+  runLivenessPassOnce,
 } from '../flow/liveness.ts'
 import type { PushFetch, PushResult } from '../flow/push.ts'
-import { type FlowRunEvent, recordRunEventJournalOnly } from '../run-state.ts'
+import {
+  type FlowRunEvent,
+  type LoopRunStatus,
+  recordRunEventJournalOnly,
+} from '../run-state.ts'
 import { mkTmpDir } from './tmpdir.ts'
 
 const REF = 'PMR-8MQH'
@@ -437,6 +444,561 @@ test('createLivenessDeps: pushBody never throws when the fetch itself throws', a
 })
 
 // ---------------------------------------------------------------------------
+// engine: runLivenessPassOnce (2.2)
+//
+// Two fixture styles, both deliberate:
+//   - the wired cases build REAL journals (plus, where cost lines are
+//     asserted, a real session jsonl) in a mkTmpDir agent dir and run the
+//     engine on `createLivenessDeps` output with a capturing `fakeFetch`, so
+//     the whole path journal read -> projection gate -> rollup -> render ->
+//     POST is exercised, and the runs dir can be snapshotted to prove the
+//     engine never writes (ISC-A-1);
+//   - `fakeEngine` swaps in in-memory reads (scripted per-call readRunEvents
+//     for the ISC-8 terminal race) while recording pushBody/warn calls.
+// ---------------------------------------------------------------------------
+
+const AT_START = '2026-11-24T06:00:00.000Z'
+const SESSION_FILE = '/s/main-session.jsonl'
+
+function assistant(at: string, cost: number): unknown {
+  return {
+    type: 'message',
+    timestamp: at,
+    message: {
+      role: 'assistant',
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 15,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+      },
+    },
+  }
+}
+
+function loopEvent(
+  ref: string,
+  status: LoopRunStatus,
+  at: string,
+): FlowRunEvent {
+  return {
+    kind: 'loop-state',
+    at,
+    ref,
+    loop: {
+      phase: 'implement',
+      awaitingOutcome: false,
+      blockerRetries: 0,
+      validateStartedAt: at,
+      status,
+    },
+  }
+}
+
+/** A work-mode journal with cost evidence (main-session recorded inside the
+ *  implement phase window) and the given loop status. */
+function costJournal(ref: string, status: LoopRunStatus): FlowRunEvent[] {
+  return [
+    {
+      kind: 'run-start',
+      at: AT_START,
+      ref,
+      mode: 'work',
+      trackRef: TRACK_REF,
+    },
+    {
+      kind: 'phase-start',
+      at: '2026-11-24T06:00:01.000Z',
+      ref,
+      phase: 'implement',
+    },
+    {
+      kind: 'main-session',
+      at: '2026-11-24T06:00:02.000Z',
+      ref,
+      sessionFile: SESSION_FILE,
+    },
+    loopEvent(ref, status, '2026-11-24T06:00:09.000Z'),
+  ]
+}
+
+/** The session body `readSessionFile` answers for `SESSION_FILE`: one usage
+ *  block inside the implement window (06:00:01 .. 06:00:09). */
+function costSessionBody(): string {
+  return `${JSON.stringify(assistant('2026-11-24T06:00:05.000Z', 0.5))}\n`
+}
+
+/** A journal with NO cost evidence (no spawn notes, no main-session): the
+ *  rollup comes back 'empty', so the body is health-only (ISC-10). */
+function healthOnlyJournal(ref: string, status: LoopRunStatus): FlowRunEvent[] {
+  return [
+    { kind: 'run-start', at: AT_START, ref, mode: 'personal' },
+    loopEvent(ref, status, '2026-11-24T06:00:09.000Z'),
+  ]
+}
+
+/** Events that project NO run state at all (no 'run-start', so
+ *  `projectRunState` stays null). */
+function nullProjectionJournal(ref: string): FlowRunEvent[] {
+  return [{ kind: 'note', at: AT_START, ref, text: 'no run-start here' }]
+}
+
+function statusLine(ref: string, status: LoopRunStatus): string {
+  return `pi_flow_run_status{ref="${ref}",status="${status}"} 1`
+}
+
+interface FakeEngineOptions {
+  /** The refs the pass enumerates (journal basenames). */
+  refs: string[]
+  /** Per-ref journal events for every `readRunEvents` call. */
+  events?: Map<string, FlowRunEvent[] | null>
+  /** Per-ref scripted read results in CALL order (the last entry repeats).
+   *  Wins over `events` for that ref — this is the ISC-8 race seam. */
+  scripts?: Map<string, Array<FlowRunEvent[] | null>>
+  /** Refs whose journal read throws (a broken journal, not an absent one). */
+  readThrowsFor?: string[]
+  /** Refs (by pushed trackRef) whose POST throws instead of returning. */
+  pushThrowsFor?: string[]
+  /** Refs (by pushed trackRef) whose POST fails with a gateway error. */
+  pushFailsFor?: string[]
+}
+
+function fakeEngine(options: FakeEngineOptions): {
+  deps: LivenessDeps
+  posts: Array<{ trackRef: string; mode: string; body: string }>
+  warns: string[]
+  reads: string[]
+} {
+  const posts: Array<{ trackRef: string; mode: string; body: string }> = []
+  const warns: string[] = []
+  const reads: string[] = []
+  const readCalls = new Map<string, number>()
+  const deps: LivenessDeps = {
+    listJournalRefs: async () => [...options.refs],
+    readRunEvents: async (ref: string) => {
+      reads.push(ref)
+      if (options.readThrowsFor?.includes(ref)) {
+        throw new Error(`journal read exploded for ${ref}`)
+      }
+      const script = options.scripts?.get(ref)
+      if (script !== undefined) {
+        const index = readCalls.get(ref) ?? 0
+        readCalls.set(ref, index + 1)
+        return script[Math.min(index, script.length - 1)]
+      }
+      return options.events?.get(ref) ?? null
+    },
+    listAssignmentRecords: () => [],
+    readSessionFile: (file: string) => {
+      if (file === SESSION_FILE) return costSessionBody()
+      return null
+    },
+    pushBody: async (trackRef, mode, body) => {
+      if (options.pushThrowsFor?.includes(trackRef)) {
+        throw new Error(`push threw for ${trackRef}`)
+      }
+      posts.push({ trackRef, mode, body })
+      if (options.pushFailsFor?.includes(trackRef)) {
+        return { ok: false, error: 'pushgateway responded 503' }
+      }
+      return { ok: true }
+    },
+    warn: (message) => {
+      warns.push(message)
+    },
+  }
+  return { deps, posts, warns, reads }
+}
+
+function eventsMap(entries: Array<[string, FlowRunEvent[] | null]>) {
+  return new Map<string, FlowRunEvent[] | null>(entries)
+}
+
+async function journalFiles(dir: string): Promise<Map<string, string>> {
+  const wanted = path.join(dir, 'pi-flow', 'runs')
+  const snapshot = new Map<string, string>()
+  let names: string[]
+  try {
+    names = await fs.readdir(wanted)
+  } catch {
+    return snapshot
+  }
+  for (const name of names.sort()) {
+    snapshot.set(name, await fs.readFile(path.join(wanted, name), 'utf8'))
+  }
+  return snapshot
+}
+
+async function writeJournal(
+  dir: string,
+  events: FlowRunEvent[],
+): Promise<void> {
+  for (const event of events) {
+    await recordRunEventJournalOnly(dir, event)
+  }
+}
+
+// ---- the report + its summary line ---------------------------------------
+
+test('livenessSummaryLine: the exact daemon log shape', () => {
+  const report: LivenessReport = {
+    scanned: 9,
+    pushed: 2,
+    skipped: 6,
+    failed: 1,
+  }
+  assert.equal(
+    livenessSummaryLine(report),
+    'liveness pass: scanned=9 pushed=2 skipped=6 failed=1',
+  )
+  assert.equal(
+    livenessSummaryLine({ scanned: 0, pushed: 0, skipped: 0, failed: 0 }),
+    'liveness pass: scanned=0 pushed=0 skipped=0 failed=0',
+  )
+})
+
+test('runLivenessPassOnce: no refs enumerated means no read, no push, no warn', async () => {
+  const t = fakeEngine({ refs: [] })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(report, { scanned: 0, pushed: 0, skipped: 0, failed: 0 })
+  assert.deepEqual(t.posts, [])
+  assert.deepEqual(t.reads, [])
+  assert.deepEqual(t.warns, [])
+})
+
+// ---- the running gate (ISC-1 / ISC-3) ------------------------------------
+
+test('runLivenessPassOnce: a running work ref is pushed with status=running AND cost lines (ISC-1/2/7)', async () => {
+  const t = fakeEngine({
+    refs: [REF],
+    events: eventsMap([[REF, costJournal(REF, 'running')]]),
+  })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(report, { scanned: 1, pushed: 1, skipped: 0, failed: 0 })
+  assert.equal(t.posts.length, 1)
+  assert.equal(t.posts[0]?.trackRef, TRACK_REF)
+  assert.equal(t.posts[0]?.mode, 'work')
+  const body = t.posts[0]?.body ?? ''
+  assert.ok(
+    body.includes(statusLine(TRACK_REF, 'running')),
+    `expected a running status line, got:\n${body}`,
+  )
+  assert.match(body, /pi_flow_run_cost_usd\{[^}]*\} 0\.5\n/)
+  assert.match(body, /pi_flow_tokens_total\{[^}]*kind="input"[^}]*\} 10/)
+  assert.match(body, /pi_flow_run_duration_seconds\{[^}]*phase="implement"/)
+  assert.deepEqual(t.warns, [])
+})
+
+test('runLivenessPassOnce: a running personal ref pushes under its own ref in personal mode (ISC-7)', async () => {
+  const t = fakeEngine({
+    refs: [REF],
+    events: eventsMap([[REF, healthOnlyJournal(REF, 'running')]]),
+  })
+  await runLivenessPassOnce(t.deps)
+  assert.equal(t.posts[0]?.trackRef, REF)
+  assert.equal(t.posts[0]?.mode, 'personal')
+})
+
+test('runLivenessPassOnce: paused, halted, done, no-loop and null-projection refs are never pushed (ISC-3)', async () => {
+  const refs = [
+    'PMR-PAUSED',
+    'PMR-HALTED',
+    'PMR-DONE',
+    'PMR-NO-LOOP',
+    'PMR-NULL-STATE',
+  ]
+  const t = fakeEngine({
+    refs,
+    events: eventsMap([
+      ['PMR-PAUSED', costJournal('PMR-PAUSED', 'paused')],
+      ['PMR-HALTED', costJournal('PMR-HALTED', 'halted')],
+      ['PMR-DONE', costJournal('PMR-DONE', 'done')],
+      // A run-start with no loop-state projects a state with NO loop record,
+      // which is not "running" — exactly what the gate must refuse.
+      [
+        'PMR-NO-LOOP',
+        [
+          {
+            kind: 'run-start',
+            at: AT_START,
+            ref: 'PMR-NO-LOOP',
+            mode: 'personal',
+          },
+        ],
+      ],
+      ['PMR-NULL-STATE', nullProjectionJournal('PMR-NULL-STATE')],
+    ]),
+  })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(t.posts, [])
+  assert.deepEqual(t.warns, [])
+  assert.deepEqual(report, { scanned: 5, pushed: 0, skipped: 5, failed: 0 })
+  // the gate is the cheap read: the rollup never runs, so each ref is read once
+  assert.deepEqual(t.reads, refs)
+})
+
+test('runLivenessPassOnce: an absent journal is skipped, not failed', async () => {
+  const t = fakeEngine({
+    refs: [REF, 'PMR-GONE'],
+    events: eventsMap([
+      [REF, costJournal(REF, 'running')],
+      ['PMR-GONE', null],
+    ]),
+  })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(report, { scanned: 2, pushed: 1, skipped: 1, failed: 0 })
+  assert.equal(t.posts[0]?.trackRef, TRACK_REF)
+})
+
+test('runLivenessPassOnce: an empty-rollup running ref is pushed health-only (ISC-10)', async () => {
+  const t = fakeEngine({
+    refs: [REF],
+    events: eventsMap([[REF, healthOnlyJournal(REF, 'running')]]),
+  })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(report, { scanned: 1, pushed: 1, skipped: 0, failed: 0 })
+  const body = t.posts[0]?.body ?? ''
+  assert.ok(body.includes(statusLine(REF, 'running')), body)
+  assert.match(body, /pi_flow_run_start_seconds\{/)
+  assert.equal(body.includes('pi_flow_run_cost_usd'), false)
+  assert.equal(body.includes('pi_flow_tokens_total'), false)
+})
+
+// ---- failures never escape the pass (ISC-5) ------------------------------
+
+test('runLivenessPassOnce: a gateway failure is one warn and failed++, the pass still resolves', async () => {
+  const t = fakeEngine({
+    refs: [REF, 'PMR-OTHER'],
+    events: eventsMap([
+      [REF, costJournal(REF, 'running')],
+      ['PMR-OTHER', healthOnlyJournal('PMR-OTHER', 'running')],
+    ]),
+    pushFailsFor: [TRACK_REF],
+  })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(report, { scanned: 2, pushed: 1, skipped: 0, failed: 1 })
+  assert.equal(t.posts.length, 2)
+  assert.equal(t.warns.length, 1)
+  assert.match(t.warns[0] ?? '', new RegExp(`liveness ${REF}`))
+  assert.match(t.warns[0] ?? '', /503/)
+})
+
+test('runLivenessPassOnce: a throwing read or push counts that ref as failed and never rejects', async () => {
+  const read = fakeEngine({
+    refs: ['PMR-BROKEN', 'PMR-OK'],
+    events: eventsMap([['PMR-OK', healthOnlyJournal('PMR-OK', 'running')]]),
+    readThrowsFor: ['PMR-BROKEN'],
+  })
+  const readReport = await runLivenessPassOnce(read.deps)
+  assert.deepEqual(readReport, { scanned: 2, pushed: 1, skipped: 0, failed: 1 })
+  assert.equal(read.warns.length, 1)
+  assert.match(read.warns[0] ?? '', /liveness PMR-BROKEN/)
+  assert.match(read.warns[0] ?? '', /journal read exploded/)
+
+  const pushed = fakeEngine({
+    refs: [REF],
+    events: eventsMap([[REF, healthOnlyJournal(REF, 'running')]]),
+    pushThrowsFor: [REF],
+  })
+  const pushReport = await runLivenessPassOnce(pushed.deps)
+  assert.deepEqual(pushReport, { scanned: 1, pushed: 0, skipped: 0, failed: 1 })
+  assert.match(pushed.warns[0] ?? '', /push threw for/)
+})
+
+test('runLivenessPassOnce: a failing enumeration warns once and resolves an empty report', async () => {
+  const warns: string[] = []
+  const deps: LivenessDeps = {
+    listJournalRefs: async () => {
+      throw new Error('runs dir is gone')
+    },
+    readRunEvents: async () => null,
+    listAssignmentRecords: () => [],
+    readSessionFile: () => null,
+    pushBody: async () => ({ ok: true }),
+    warn: (message) => {
+      warns.push(message)
+    },
+  }
+  const report = await runLivenessPassOnce(deps)
+  assert.deepEqual(report, { scanned: 0, pushed: 0, skipped: 0, failed: 0 })
+  assert.equal(warns.length, 1)
+  assert.match(warns[0] ?? '', /liveness: journal enumeration failed/)
+  assert.match(warns[0] ?? '', /runs dir is gone/)
+})
+
+// ---- the pre-push re-check (ISC-8) ---------------------------------------
+
+test('runLivenessPassOnce: a ref that goes terminal between rollup and POST is skipped, no POST (ISC-8)', async () => {
+  const running = costJournal(REF, 'running')
+  const terminal = costJournal(REF, 'done')
+  const t = fakeEngine({
+    refs: [REF],
+    scripts: new Map([[REF, [running, running, terminal]]]),
+  })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(t.posts, [])
+  assert.deepEqual(t.warns, [])
+  assert.deepEqual(report, { scanned: 1, pushed: 0, skipped: 1, failed: 0 })
+  // gate read, rollup read, pre-push re-check read
+  assert.deepEqual(t.reads, [REF, REF, REF])
+})
+
+test('runLivenessPassOnce: a journal that vanishes before the POST is skipped', async () => {
+  const running = costJournal(REF, 'running')
+  const t = fakeEngine({
+    refs: [REF],
+    scripts: new Map([[REF, [running, running, null]]]),
+  })
+  const report = await runLivenessPassOnce(t.deps)
+  assert.deepEqual(t.posts, [])
+  assert.deepEqual(report, { scanned: 1, pushed: 0, skipped: 1, failed: 0 })
+})
+
+// ---- the env gate closes the whole pass (ISC-4) --------------------------
+
+test('runLivenessPassOnce: env unset means null deps, so no pass is wired and no io happens (ISC-4)', async () => {
+  const dir = agentDir()
+  await writeJournal(dir, healthOnlyJournal(REF, 'running'))
+  const before = await journalFiles(dir)
+  let readdirCalls = 0
+  let fetchCalls = 0
+  const deps = createLivenessDeps({
+    agentDir: dir,
+    warn: () => {},
+    env: {},
+    fetchImpl: async () => {
+      fetchCalls += 1
+      return { status: 202, statusText: 'Accepted' }
+    },
+    readdir: async () => {
+      readdirCalls += 1
+      return []
+    },
+  })
+  // The daemon's contract (3.2): a null deps value means no timer and no
+  // pass, so the engine is never even handed a deps object.
+  assert.equal(deps, null)
+  assert.equal(readdirCalls, 0)
+  assert.equal(fetchCalls, 0)
+  assert.deepEqual(await journalFiles(dir), before)
+})
+
+// ---- the wired path end to end, on real journals -------------------------
+
+test('runLivenessPassOnce: wired deps POST the work group URL from real journals (ISC-1/7)', async () => {
+  const dir = agentDir()
+  await writeJournal(dir, costJournal(REF, 'running'))
+  const { calls, fetchImpl } = fakeFetch()
+  const deps = createLivenessDeps({
+    agentDir: dir,
+    warn: () => {},
+    env: { PI_FLOW_PUSHGATEWAY_URL: URL },
+    fetchImpl,
+  })
+  if (deps === null) throw new Error('expected wired deps')
+  const report = await runLivenessPassOnce(deps)
+  assert.deepEqual(report, { scanned: 1, pushed: 1, skipped: 0, failed: 0 })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.method, 'POST')
+  assert.equal(
+    calls[0]?.url,
+    'https://g:4479/metrics/job/pi-flow/ref/DP-253/mode/work',
+  )
+  const body = calls[0]?.body ?? ''
+  assert.ok(body.includes(statusLine(TRACK_REF, 'running')), body)
+  // the journaled session file does not exist here: a coverage gap renders
+  // NO cost series (never an invented zero), only health lines.
+  assert.equal(body.includes('pi_flow_run_cost_usd'), false)
+})
+
+test('runLivenessPassOnce: wired deps render real cost lines from a real session file', async () => {
+  const dir = agentDir()
+  const session = path.join(dir, 'main-session.jsonl')
+  await fs.writeFile(session, costSessionBody(), 'utf8')
+  const events = costJournal(REF, 'running').map((event) => {
+    if (event.kind !== 'main-session') return event
+    return { ...event, sessionFile: session }
+  })
+  await writeJournal(dir, events)
+  const { calls, fetchImpl } = fakeFetch()
+  const deps = createLivenessDeps({
+    agentDir: dir,
+    warn: () => {},
+    env: { PI_FLOW_PUSHGATEWAY_URL: URL },
+    fetchImpl,
+  })
+  if (deps === null) throw new Error('expected wired deps')
+  const report = await runLivenessPassOnce(deps)
+  assert.deepEqual(report, { scanned: 1, pushed: 1, skipped: 0, failed: 0 })
+  assert.match(calls[0]?.body ?? '', /pi_flow_run_cost_usd\{[^}]*\} 0\.5\n/)
+  assert.match(
+    calls[0]?.body ?? '',
+    /pi_flow_tokens_total\{[^}]*kind="input"[^}]*\} 10/,
+  )
+})
+
+test('runLivenessPassOnce: a mixed pass reports every count and one summary line', async () => {
+  const dir = agentDir()
+  await writeJournal(dir, costJournal('PMR-RUN', 'running'))
+  await writeJournal(dir, costJournal('PMR-PAUSED', 'paused'))
+  const { calls, fetchImpl } = fakeFetch()
+  const deps = createLivenessDeps({
+    agentDir: dir,
+    warn: () => {},
+    env: { PI_FLOW_PUSHGATEWAY_URL: URL },
+    fetchImpl,
+    // enumerate a third ref that has no journal file at all
+    readdir: async (wanted: string) => {
+      const names = await fs.readdir(wanted)
+      names.push('PMR-GONE.journal.jsonl')
+      return names
+    },
+  })
+  if (deps === null) throw new Error('expected wired deps')
+  const report = await runLivenessPassOnce(deps)
+  assert.deepEqual(report, { scanned: 3, pushed: 1, skipped: 2, failed: 0 })
+  assert.equal(
+    livenessSummaryLine(report),
+    'liveness pass: scanned=3 pushed=1 skipped=2 failed=0',
+  )
+  assert.equal(calls.length, 1)
+  assert.equal(
+    calls[0]?.url,
+    'https://g:4479/metrics/job/pi-flow/ref/DP-253/mode/work',
+  )
+})
+
+// ---- the engine never writes to the runs dir (ISC-A-1) -------------------
+
+test('runLivenessPassOnce never writes to the runs dir (ISC-A-1)', async () => {
+  const dir = agentDir()
+  await writeJournal(dir, costJournal(REF, 'running'))
+  await writeJournal(dir, healthOnlyJournal('PMR-HEALTH', 'running'))
+  await writeJournal(dir, costJournal('PMR-HALTED', 'halted'))
+  const before = await journalFiles(dir)
+  const { calls, fetchImpl } = fakeFetch()
+  const deps = createLivenessDeps({
+    agentDir: dir,
+    warn: () => {},
+    env: { PI_FLOW_PUSHGATEWAY_URL: URL },
+    fetchImpl,
+  })
+  if (deps === null) throw new Error('expected wired deps')
+  const report = await runLivenessPassOnce(deps)
+  assert.deepEqual(report, { scanned: 3, pushed: 2, skipped: 1, failed: 0 })
+  assert.equal(calls.length, 2)
+  const after = await journalFiles(dir)
+  assert.deepEqual(after, before)
+  // no run-state projection file was ever written next to the journals
+  assert.equal(
+    [...after.keys()].some((name) => name.endsWith('.json')),
+    false,
+  )
+})
+
+// ---------------------------------------------------------------------------
 // module contract: flow/liveness.ts stays node-only (the daemon imports it
 // in 3.2, so the guard lands with the module, not with the timer)
 // ---------------------------------------------------------------------------
@@ -503,4 +1065,29 @@ test('the liveness import guard rejects the package root and the pi runtime', ()
   assert.ok(!isAllowed('./reconcile.ts'))
   assert.ok(isAllowed('@gtheys/pi-interactive-subagents/assignments'))
   assert.ok(isAllowed('node:fs'))
+})
+
+// AIDEV-NOTE (PMR-8MQH 2.2): the two write-side invariants of the liveness
+// pass, locked textually because the import allowlist cannot see them: both
+// `fetchGroupBody` and the journal appenders live in ALREADY-ALLOWED modules
+// (`./push.ts`, `../run-state.ts`), so only a source scan refuses them.
+// ISC-A-5: a group read-back would re-POST a partial body and drop the series
+// the terminal push owns; ISC-A-1: the daemon must never write run evidence.
+test('flow/liveness.ts never reads a group back and never appends journal events (ISC-A-1/5)', () => {
+  const code = withoutComments(readFileSync(livenessPath, 'utf8'))
+  const forbidden = [
+    'fetchGroupBody',
+    'GroupBodyResult',
+    'recordRunEvent',
+    'recordRunEventJournalOnly',
+    'appendFile',
+    'writeFile',
+    'mkdir',
+  ]
+  for (const symbol of forbidden) {
+    assert.ok(
+      !code.includes(symbol),
+      `flow/liveness.ts must not reference ${symbol}`,
+    )
+  }
 })

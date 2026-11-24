@@ -1,8 +1,9 @@
-// AIDEV-NOTE (PMR-8MQH 2.1, plan PMR-8MQH decision D3): node-only settings
-// reader + io wiring for the running-flow liveness push. This is the daemon's
-// half of the `liveness` config block plus the single place where the daemon's
-// world (agent dir + process env) becomes the engine's injected
-// `LivenessDeps` (the pass itself arrives in 2.2, the timer wiring in 3.2).
+// AIDEV-NOTE (PMR-8MQH 2.1 + 2.2, plan PMR-8MQH decision D3): node-only
+// settings reader, io wiring and the pass engine for the running-flow
+// liveness push. This is the daemon's half of the `liveness` config block plus
+// the single place where the daemon's world (agent dir + process env) becomes
+// the engine's injected `LivenessDeps`; only the timer wiring (3.2) is still
+// missing from this module.
 //
 // Home justification: reconcile's equivalent split lived in two files
 // (`flow/reconcile.ts` engine + `flow/reconcile-deps.ts` wiring) because a
@@ -39,7 +40,19 @@ import {
   type AssignmentRecord,
   listAssignments,
 } from '@gtheys/pi-interactive-subagents/assignments'
-import { type FlowRunEvent, readRunEvents } from '../run-state.ts'
+import {
+  type FlowRunEvent,
+  projectRunState,
+  readRunEvents,
+  runTracking,
+} from '../run-state.ts'
+import {
+  buildPushBody,
+  computeCostRollup,
+  type PhaseDuration,
+  phaseDurations,
+  type WorkerRow,
+} from './cost-rows.ts'
 import { type PushFetch, type PushResult, pushToGateway } from './push.ts'
 import { listJournalRefs, pushgatewayEnv } from './reconcile-deps.ts'
 
@@ -231,8 +244,141 @@ async function pushBodyOrError(
       mode,
     )
   } catch (err) {
-    let message = `${err}`
-    if (err instanceof Error) message = err.message
-    return { ok: false, error: message }
+    return { ok: false, error: errorText(err) }
   }
+}
+
+/** `unknown` from a catch becomes a loggable message, Error first (the one
+ *  shape every warning in this module uses). */
+function errorText(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return `${err}`
+}
+
+// the pass engine (PMR-8MQH 2.2): the report, its log line, and one pass.
+
+type RefOutcome = 'pushed' | 'skipped' | 'failed'
+
+/** What one pass did, as counts. `scanned` is every enumerated journal ref,
+ *  so `scanned === pushed + skipped + failed` always holds. */
+export interface LivenessReport {
+  scanned: number
+  pushed: number
+  skipped: number
+  failed: number
+}
+
+/** The one log line per pass (the 3.2 timer prefixes it with `liveness: `).
+ *  The exact shape is a contract — homelab log greps key on these names. */
+export function livenessSummaryLine(report: LivenessReport): string {
+  return `liveness pass: scanned=${report.scanned} pushed=${report.pushed} skipped=${report.skipped} failed=${report.failed}`
+}
+
+/**
+ * AIDEV-NOTE (PMR-8MQH 2.2, plan decisions D2/D4): one liveness pass. For
+ * every journal ref whose projection says the loop is `running`, re-render
+ * the FULL group body and POST it, so a running run never fades from the
+ * dashboard between phase pushes. Reading order per ref:
+ *   read journal -> gate on `running` -> `computeCostRollup` -> render ->
+ *   RE-READ + re-gate (ISC-8: a run that went terminal during the rollup must
+ *   not get a `running` body pushed after its terminal push) -> `pushBody`.
+ * Two invariants the call sites cannot give up:
+ *   - the body is `buildPushBody(trackRef, rows, durations, events)` — the
+ *     SAME render path as the terminal autopush, so the two pushes of one run
+ *     differ only in the status line (ISC-2, and why the rollup's own `events`
+ *     are preferred over the gate read when present);
+ *   - this function NEVER appends a journal event (ISC-A-1) and NEVER reads a
+ *     group back with `fetchGroupBody` (ISC-A-5): a partial body POST would
+ *     drop the series the terminal push owns.
+ * Never rejects: the enumeration and every ref are wrapped, so a broken runs
+ * dir costs one warning, and one broken journal or gateway costs a `failed`
+ * count plus one warning — never the pass (ISC-5).
+ */
+export async function runLivenessPassOnce(
+  deps: LivenessDeps,
+): Promise<LivenessReport> {
+  const report: LivenessReport = {
+    scanned: 0,
+    pushed: 0,
+    skipped: 0,
+    failed: 0,
+  }
+  let refs: string[]
+  try {
+    refs = await deps.listJournalRefs()
+  } catch (err) {
+    // The wired deps swallow a readdir failure to an empty list, so this only
+    // fires for hand-wired deps; an enumeration error is not a per-ref count.
+    deps.warn(`liveness: journal enumeration failed: ${errorText(err)}`)
+    return report
+  }
+  report.scanned = refs.length
+  for (const ref of refs) {
+    let outcome: RefOutcome
+    try {
+      outcome = await pushIfRunning(deps, ref)
+    } catch (err) {
+      outcome = 'failed'
+      deps.warn(`liveness ${ref}: pass aborted: ${errorText(err)}`)
+    }
+    if (outcome === 'pushed') report.pushed += 1
+    if (outcome === 'skipped') report.skipped += 1
+    if (outcome === 'failed') report.failed += 1
+  }
+  return report
+}
+
+/** The per-ref half of the pass. Skips are silent (a non-running ref is the
+ *  normal case); only a failed POST warns, because the caller's own throw
+ *  handling already warns on exceptions. */
+async function pushIfRunning(
+  deps: LivenessDeps,
+  ref: string,
+): Promise<RefOutcome> {
+  const events = await deps.readRunEvents(ref)
+  if (events === null) return 'skipped'
+  if (!projectsRunning(events)) return 'skipped'
+  const rollup = await computeCostRollup(ref, deps)
+  if (rollup.kind === 'no-journal') return 'skipped'
+  let trackRef = ref
+  let mode: 'work' | 'personal' = 'personal'
+  let rows: readonly WorkerRow[] = []
+  let durations: readonly PhaseDuration[] = []
+  let bodyEvents: readonly FlowRunEvent[] = events
+  if (rollup.kind === 'ok') {
+    trackRef = rollup.trackRef
+    mode = rollup.mode
+    rows = rollup.rows
+    durations = rollup.durations
+    if (rollup.events !== undefined) bodyEvents = rollup.events
+  } else {
+    // `empty` (plan ISC-10): a fresh run with no spawn notes and no
+    // main-session record yet, so there are no cost rows to render. The
+    // tracking ref and the phase durations still come straight from the
+    // journal — same `runTracking` derivation the terminal autopush uses —
+    // which makes the push health-only rather than absent.
+    const tracking = runTracking(events, ref)
+    trackRef = tracking.trackRef
+    mode = tracking.mode
+    durations = phaseDurations(events)
+  }
+  const latest = await deps.readRunEvents(ref)
+  if (latest === null) return 'skipped'
+  if (!projectsRunning(latest)) return 'skipped'
+  const body = buildPushBody(trackRef, rows, durations, bodyEvents)
+  const result = await deps.pushBody(trackRef, mode, body)
+  if (result.ok) return 'pushed'
+  deps.warn(
+    `liveness ${ref}: push failed: ${result.error ?? 'pushgateway POST failed'}`,
+  )
+  return 'failed'
+}
+
+/** The liveness gate: a journal that projects no state, or a state with no
+ *  loop record, or a loop that is not `running`, gets no push (ISC-3). Pure. */
+function projectsRunning(events: readonly FlowRunEvent[]): boolean {
+  const state = projectRunState(events)
+  if (state === null) return false
+  if (state.loop === undefined) return false
+  return state.loop.status === 'running'
 }
