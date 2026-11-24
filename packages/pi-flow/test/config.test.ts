@@ -147,3 +147,107 @@ test('readConfigFile: malformed yolo value → clear throw mentioning the proper
   await writeFile(file, JSON.stringify({ workRoots: [], yolo: 'yes' }))
   await assert.rejects(readConfigFile(file), /yolo/)
 })
+
+import { resolveReconcileSettings } from '../config.ts'
+// AIDEV-NOTE: PMR-MSDJ (2.1) — the `reconcile` config surface. These tests pin
+// the EXTENSION-side boundary (TypeBox `PiFlowConfigSchema` via readConfigFile:
+// invalid shapes throw loudly). The daemon path is deliberately different —
+// `flow/reconcile.ts` parseReconcileSettings reads the same file as raw text
+// and fails to defaults with a warning, because the daemon must stay
+// node-only. Both must agree on the defaults, pinned below.
+import { parseReconcileSettings } from '../flow/reconcile.ts'
+
+async function configWith(
+  t: { after(fn: () => Promise<unknown>): void },
+  obj: unknown,
+): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'pi-flow-reconcile-'))
+  t.after(async () => await rm(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'config.json')
+  await writeFile(file, JSON.stringify(obj))
+  return file
+}
+
+test('readConfigFile: reconcile block accepted and read back (PMR-MSDJ 2.1)', async (t) => {
+  const file = await configWith(t, {
+    workRoots: [],
+    reconcile: { enabled: false, intervalMinutes: 60 },
+  })
+  const cfg = await readConfigFile(file)
+  assert.deepEqual(cfg.reconcile, { enabled: false, intervalMinutes: 60 })
+})
+
+test('readConfigFile: reconcile absent → resolveReconcileSettings surfaces defaults', async (t) => {
+  const file = await configWith(t, { workRoots: [] })
+  const cfg = await readConfigFile(file)
+  assert.equal(cfg.reconcile, undefined)
+  assert.deepEqual(resolveReconcileSettings(cfg), {
+    enabled: true,
+    intervalMinutes: 360,
+  })
+})
+
+test('readConfigFile: reconcile partial block fills the other default', async (t) => {
+  const file = await configWith(t, {
+    workRoots: [],
+    reconcile: { enabled: false },
+  })
+  const cfg = await readConfigFile(file)
+  assert.deepEqual(resolveReconcileSettings(cfg), {
+    enabled: false,
+    intervalMinutes: 360,
+  })
+})
+
+test('config defaults agree with parseReconcileSettings defaults (PMR-MSDJ 2.1)', () => {
+  assert.deepEqual(resolveReconcileSettings({ workRoots: [] }), {
+    enabled: true,
+    intervalMinutes: 360,
+  })
+  assert.deepEqual(parseReconcileSettings(null), {
+    enabled: true,
+    intervalMinutes: 360,
+  })
+})
+
+// Pin exactly what the schema enforces: TypeBox Integer + minimum 1 rejects
+// 0, negatives and non-integers loudly on the extension side.
+for (const bad of [0, -5, 6.5]) {
+  test(`readConfigFile: reconcile.intervalMinutes ${bad} → clear throw`, async (t) => {
+    const file = await configWith(t, {
+      workRoots: [],
+      reconcile: { intervalMinutes: bad },
+    })
+    await assert.rejects(readConfigFile(file), /intervalMinutes/)
+  })
+}
+
+test('readConfigFile: reconcile.enabled non-boolean → clear throw', async (t) => {
+  const file = await configWith(t, {
+    workRoots: [],
+    reconcile: { enabled: 'no' },
+  })
+  await assert.rejects(readConfigFile(file), /enabled/)
+})
+
+// BEHAVIOUR PIN, not an aspiration: TypeBox `Value.Check` does NOT enforce
+// `additionalProperties` here (a top-level `bogus` key is accepted too), so a
+// stray key inside `reconcile` passes the extension boundary unchanged and is
+// simply ignored by both readers. The `"additionalProperties": false` in
+// config.schema.json is editor-facing (it matches the existing telemetry /
+// runServer blocks) — it is not what readConfigFile enforces.
+test('readConfigFile: unknown key inside reconcile → tolerated and ignored (pinned actual behavior)', async (t) => {
+  const file = await configWith(t, {
+    workRoots: [],
+    reconcile: { intervalMinutes: 60, cron: '*/5 * * * *' },
+  })
+  const cfg = await readConfigFile(file)
+  assert.deepEqual(resolveReconcileSettings(cfg), {
+    enabled: true,
+    intervalMinutes: 60,
+  })
+  assert.deepEqual(parseReconcileSettings(await readFile(file, 'utf8')), {
+    enabled: true,
+    intervalMinutes: 60,
+  })
+})

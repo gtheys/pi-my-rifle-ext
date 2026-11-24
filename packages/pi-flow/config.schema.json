@@ -80,6 +80,22 @@
         }
       },
       "additionalProperties": false
+    },
+    "reconcile": {
+      "type": "object",
+      "description": "Pushgateway liveness reconcile (PMR-V36Y). Tombstones halted/paused pi_flow_run_status series whose aven ticket is no longer active, so halted/paused alerts stop firing on closed runs.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Reconcile stale run-liveness metrics (tombstone halted/paused series whose aven ticket is no longer active). Default true"
+        },
+        "intervalMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Daemon reconcile interval in minutes. Default 360 (6h)"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "required": ["workRoots"],

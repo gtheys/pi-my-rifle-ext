@@ -148,6 +148,14 @@ function swapStatusLabel(line: string): string | null {
 }
 
 /** Defaults for a best-effort daemon: reconcile on, every 6 hours. */
+// AIDEV-NOTE: PMR-MSDJ (2.1) — these defaults are the daemon half of a
+// DELIBERATE two-reader split over the same `<agentDir>/pi-flow/config.json`.
+// `config.ts` PiFlowConfigSchema + resolveReconcileSettings are the typed
+// extension half and must return the identical `{ enabled: true,
+// intervalMinutes: 360 }` for an absent block (pinned by test/config.test.ts).
+// This function stays here, not delegating to config.ts, because the daemon
+// must remain node-only AND must not throw on a broken file — it warns and
+// keeps retires running instead.
 const DEFAULT_SETTINGS = { enabled: true, intervalMinutes: 360 }
 
 /**
@@ -301,6 +309,14 @@ export async function runReconcilePass(
     const status = state.loop?.status
     if (status === undefined) continue
     if (!LIVENESS_STATUSES.includes(status)) continue
+    // AIDEV-TODO: PMR-MSDJ 2.1 docs pass — plan decision 6 / ISC-5 say
+    // personal-mode (TP-*, no aven ticket) runs must be LEFT ALONE, but this
+    // candidate filter is mode-agnostic (only `runTracking` below picks the
+    // group suffix), so a personal halted/paused journal is treated as
+    // stale whenever its aven ref is not `active`. The 1.3 engine and its
+    // tests were built on that reading; adding `mode === 'work'` here would
+    // change 1.3 behavior and its test. Needs an explicit orchestrator
+    // decision (filter here, or amend decision 6) before 2.2 wires the timer.
     journalStates.set(ref, status)
     eventsByRef.set(ref, events)
   }

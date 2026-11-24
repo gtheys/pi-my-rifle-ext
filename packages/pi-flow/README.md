@@ -133,6 +133,8 @@ checkout) instead of machine-wide.
 | `telemetry.jiraBaseUrl` | `string` | unset | Base URL for Jira issue links, e.g. `https://example.atlassian.net/browse/`. Work-mode spans then carry `flow.url` = base + Jira key, so dashboards can link tickets to Jira. Unset = no links |
 | `telemetry.maxContentChars` | `integer` (100–100000) | `2000` | Max characters per captured content attribute; longer values end with `…[truncated N chars]`. Tempo drops anything past its `max_attribute_bytes` (default 2048) silently, so raise both together |
 | `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
+| `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is no longer active, so the alerts only ever fire on runs that still need you. See [Reconcile](#reconcile-stale-run-tombstoning) |
+| `reconcile.intervalMinutes` | `integer` (≥ 1) | `360` | Daemon reconcile interval in minutes (6 h by default). An interval change applies on the next cycle — no daemon restart needed |
 
 ```json
 {
@@ -145,6 +147,10 @@ checkout) instead of machine-wide.
   "landTestCommand": ["bun", "run", "test"],
   "runServer": {
     "enabled": true
+  },
+  "reconcile": {
+    "enabled": true,
+    "intervalMinutes": 360
   }
 }
 ```
@@ -282,6 +288,65 @@ export PI_FLOW_PUSHGATEWAY_TOKEN=<token>
 Push failures print a warning and never fail the command; rerun `/flow-cost <ref> --push` any time to re-export or backfill.
 
 **Automatic push**: with `PI_FLOW_PUSHGATEWAY_URL` set, the same rollup is pushed for you whenever a `/flow` run ends — completed, halted, or paused for spec approval. A one-line notice confirms it (`flow-cost <ref>: cost metrics pushed to the pushgateway.`); a failure shows a warning with the retry command. With the URL unset nothing happens. Pushing is idempotent (the ref's metric group is replaced), so a resumed flow just refreshes the numbers. The rollup covers spawned workers and, for runs started after the `main-session` journal event existed, the main session split across plan / implement / validate. It also includes a per-phase **step outputs** section summarizing `flow_submit` submissions (advisory evidence, never blocking).
+
+### Reconcile (stale run tombstoning)
+
+Pushgateway groups never expire on their own: a `/flow` run that halted or
+paused keeps exporting `pi_flow_run_status{status="halted"}` forever, so
+halted/paused alerts go on firing for tickets that closed weeks ago (PMR-V36Y
+started as exactly that — four alerts on four dead runs). Reconcile retires
+those series by **tombstoning** them.
+
+**What counts as stale.** A journal run whose projected loop status is
+`halted` or `paused` AND whose aven ticket status is not `active` (backlog,
+inbox, todo, done, canceled, or the ticket is gone). A live ticket keeps its
+series; a running journal is never touched.
+
+**What a tombstone does.** The run's Pushgateway group is re-pushed with two
+changes and nothing else:
+
+- `pi_flow_run_status{…status="halted"|"paused"}` becomes `status="stale"` — a
+  new status **value**; metric names and label keys stay frozen, so the alerts
+  and the board's value mappings simply stop matching a closed run.
+- `pi_flow_run_halt_reason{…}` is dropped — that series only exists for
+  halted runs, which is what clears the run out of the needs-attention table.
+
+Every other line (cost, tokens, tool calls, durations, gate decisions, human
+wait, run start, gate waits) is re-emitted byte-identical, so done-run cost
+history on the runs board is untouched. **Nothing is ever deleted** — deleting
+the group would erase those cost rows too.
+
+**Where it runs.** Two places, same engine:
+
+- The daemon timer: first pass ~60 s after the daemon starts, then every
+  `reconcile.intervalMinutes` (default 360 = 6 h). One summary line lands in
+  `<agentDir>/pi-flow/server.log` per pass.
+- `/flow-reconcile-push` for an immediate pass, with `--dry-run` to list what
+  would be tombstoned without pushing anything.
+
+Both are gated on `PI_FLOW_PUSHGATEWAY_URL` — with the URL unset there is
+nothing to reconcile and the pass is skipped.
+
+**Fail-closed on aven errors.** If `aven list` fails, times out, or returns
+something unexpected, the pass tombstones **nothing** and logs exactly one
+warning. Worst case the alerts keep firing on stale runs until aven recovers —
+status quo, visible, honest. A malformed config likewise falls back to the
+defaults with a warning instead of silently switching retires off.
+
+**Only the global file counts for the timer.** The daemon has no session
+directory, so the interval comes from `~/.pi/agent/pi-flow/config.json` only —
+per-checkout config does not affect it. `/flow-reconcile-push` is the escape
+hatch when you need a pass now, or for one checkout.
+
+**Personal-mode runs** (`TP-*`, no aven ticket) are not tombstoned: reconcile
+considers work-mode refs, whose group identity and ticket status come from
+the aven/Jira tracking ref.
+
+On the Grafana side, the `piflow-runs` board maps the new value to a gray
+**stale (ticket closed)** and the needs-attention table is gated to
+`status=~"running|paused|halted"`, so tombstoned runs drop out of it while
+their cost history stays browsable (homelab:
+`quadlets/grafana/provisioning/dashboards-piflow/piflow-runs.json`).
 
 ### Aven ref resolution
 

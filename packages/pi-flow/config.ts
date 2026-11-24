@@ -124,6 +124,43 @@ const PiFlowConfigSchema = Type.Object({
       { description: 'Durable run server (daemon) settings' },
     ),
   ),
+  // AIDEV-NOTE: PMR-MSDJ (2.1, plan PMR-V36Y decision 4) — `reconcile` is the
+  // pushgateway liveness-retire switch. TWO READERS, ONE FILE, DELIBERATE
+  // SPLIT (do not "unify" them):
+  //   • extension side (this schema + resolveReconcileSettings): strict —
+  //     an invalid shape throws at the readConfigFile boundary (AGENTS.md:
+  //     never silent defaults).
+  //   • daemon side (flow/reconcile.ts parseReconcileSettings): tolerant —
+  //     server/daemon.ts must stay node-only (no pi-coding-agent import), so
+  //     it reads the GLOBAL file as raw text and falls back to the same
+  //     defaults with a warning instead of throwing.
+  // Both agree on enabled=true / intervalMinutes=360; the split only changes
+  // what happens on a MALFORMED file (extension: loud throw, daemon: defaults
+  // + warning). The daemon has no session cwd, so it never sees project
+  // overrides — the manual /flow-reconcile-push command is the escape hatch.
+  // Unknown keys are NOT rejected by either reader (Value.Check does not
+  // enforce additionalProperties — true for the whole schema), so a stray key
+  // is silently ignored on both paths.
+  reconcile: Type.Optional(
+    Type.Object(
+      {
+        enabled: Type.Optional(
+          Type.Boolean({
+            description:
+              'Reconcile stale run-liveness metrics (tombstone halted/paused series whose aven ticket is no longer active). Default true',
+          }),
+        ),
+        intervalMinutes: Type.Optional(
+          Type.Integer({
+            minimum: 1,
+            description:
+              'Daemon reconcile interval in minutes. Default 360 (6h)',
+          }),
+        ),
+      },
+      { description: 'Pushgateway liveness reconcile (PMR-V36Y)' },
+    ),
+  ),
 })
 
 export type PiFlowConfig = Static<typeof PiFlowConfigSchema>
@@ -232,6 +269,31 @@ async function mainCheckoutRoot(cwd: string): Promise<string | undefined> {
  */
 export function resolveRunServerEnabled(config: PiFlowConfig): boolean {
   return config.runServer?.enabled !== false
+}
+
+/**
+ * AIDEV-NOTE: PMR-MSDJ (2.1) — typed read of the `reconcile` block with the
+ * SAME defaults as `flow/reconcile.ts` parseReconcileSettings (enabled=true,
+ * intervalMinutes=360). Keep the two in sync; the defaults are pinned by
+ * test/config.test.ts. Malformedness cannot reach here on the extension path
+ * (readConfigFile throws first); on the daemon path parseReconcileSettings
+ * handles it. Takes Partial so readConfigFile's return type plugs straight in.
+ */
+export function resolveReconcileSettings(config: Partial<PiFlowConfig>): {
+  enabled: boolean
+  intervalMinutes: number
+} {
+  const settings = {
+    enabled: true,
+    intervalMinutes: 360,
+  }
+  if (config.reconcile?.enabled !== undefined) {
+    settings.enabled = config.reconcile.enabled
+  }
+  if (config.reconcile?.intervalMinutes !== undefined) {
+    settings.intervalMinutes = config.reconcile.intervalMinutes
+  }
+  return settings
 }
 
 /**
