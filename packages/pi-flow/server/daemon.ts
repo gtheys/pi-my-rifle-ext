@@ -3,10 +3,21 @@
 // plugins/herdr/flow-viewer.mjs and the subagent-done.ts scar tissue; NEVER
 // put a watcher inside pi's extension process). The journal is authoritative
 // and written by sessions via O_APPEND; this daemon is the ONLY projection
-// writer, reprojecting per ref from journal events. Dependency-free beyond
-// node built-ins + run-state.ts (whose imports are node:fs/node:path only) —
-// it must NOT import @earendil-works/pi-coding-agent; the agent dir arrives
-// via PI_FLOW_AGENT_DIR from the spawner.
+// writer, reprojecting per ref from journal events.
+//
+// DEPENDENCY CONTRACT (corrected in PMR-MSDJ 2.2 — the PMR-XTQQ wording here
+// was stale): run-state.ts runtime-imports `@earendil-works/pi-coding-agent`
+// (run-state.ts:10, getAgentDir) and has since before this feature, so the
+// daemon transitively loads pi-coding-agent TODAY — "dependency-free beyond
+// node built-ins" was never literally true. The ENFORCEABLE contract is: every
+// module the daemon imports adds NO NEW runtime dependency beyond
+// run-state.ts + flow/reconcile.ts + flow/reconcile-deps.ts + flow/push.ts +
+// aven/status.ts (all node built-ins apart from that pre-existing one). Never
+// add `config.ts` (its readConfigFile THROWS on a malformed file — the daemon
+// is best-effort io), `flow/cost.ts` (runtime dep on
+// @gtheys/pi-interactive-subagents) or `aven/client.ts` (imports config.ts).
+// The agent dir arrives via PI_FLOW_AGENT_DIR from the spawner
+// (server/lifecycle.ts), never from getAgentDir().
 //
 // KEEPALIVE RULE (PMR-XTQQ review fix): the 1s poll interval is the daemon's
 // LIVENESS BACKSTOP and must NEVER be unref'd — fs.watch(runsDir) can fail at
@@ -32,6 +43,15 @@
 import { promises as fsp, watch } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { ReconcileReport } from '../flow/reconcile.ts'
+import {
+  journalRefsFromEntries,
+  pushgatewayEnv,
+  type ReconcileSettings,
+  readReconcileSettings,
+  reconcileSummaryLine,
+  runReconcilePassOnce,
+} from '../flow/reconcile-deps.ts'
 import {
   type FlowRunEvent,
   type FlowRunState,
@@ -269,8 +289,7 @@ export function createSerialQueue(): SerialQueue {
  * watcher into a self-triggering loop amplifier (see the scan model note in
  * main()). A null filename (some platforms never report one) conservatively
  * triggers a rescan — the 1s poll is the correctness backstop either way.
- */
-export function isJournalWatchEvent(filename: string | null): boolean {
+ */ export function isJournalWatchEvent(filename: string | null): boolean {
   if (filename === null) return true
   return filename.endsWith('.journal.jsonl')
 }
@@ -358,11 +377,7 @@ async function scanRuns(
   } catch {
     return // runs dir does not exist yet — nothing to scan
   }
-  const refs: string[] = []
-  for (const entry of entries) {
-    if (!entry.endsWith('.journal.jsonl')) continue
-    refs.push(entry.slice(0, -'.journal.jsonl'.length))
-  }
+  const refs = journalRefsFromEntries(entries)
   const pendingDir = pendingDirPath(agentDir)
   for (const ref of refs) {
     const sig = await journalSignature(agentDir, ref)
@@ -406,6 +421,191 @@ async function scanRuns(
     queue.push(async () => {
       await sweepConsumed(pendingDir)
     })
+  }
+}
+
+// --- reconcile timer (PMR-MSDJ 2.2, plan PMR-V36Y decision 4a) ---
+
+/** Delay before the FIRST pass after daemon start: long enough that a spawn
+ *  storm (session start → ensureDaemon → reconcile) cannot reach the gateway
+ *  before the projections exist, short enough that an operator who just ran
+ *  `/flow-reconcile-push` sees the timer take over within a minute. */
+export const RECONCILE_FIRST_PASS_DELAY_MS = 60_000
+/** `intervalMinutes` → ms. Exported so the tests assert the re-read contract
+ *  without a live daemon. */
+export const RECONCILE_MINUTE_MS = 60_000
+
+/** One armed timer. `hasRef` exists so the keepalive posture is assertable —
+ *  production handles are real `setTimeout`s, which are ref'd until cleared. */
+export interface ReconcileTimerHandle {
+  cancel(): void
+  hasRef(): boolean
+}
+
+export interface ReconcileTimer extends ReconcileTimerHandle {}
+
+export interface ReconcileTimerOptions {
+  agentDir: string
+  /** the daemon's log channel (`<agentDir>/pi-flow/server.log`) — also where
+   *  engine warnings go, via `runReconcilePassOnce`'s `warn` */
+  log: (message: string) => void
+  env?: NodeJS.ProcessEnv
+  /** seam: defaults to reading `<agentDir>/pi-flow/config.json` as raw text */
+  readSettings?: (agentDir: string) => Promise<ReconcileSettings>
+  /** seam: defaults to the wired engine pass (never dry) */
+  runPass?: () => Promise<ReconcileReport | null>
+  /** seam: defaults to `setTimeout` — a REF'D handle (keepalive) */
+  schedule?: (fn: () => void, ms: number) => ReconcileTimerHandle
+  firstPassDelayMs?: number
+}
+
+/**
+ * The daemon's stale-liveness reconcile loop: startup gate, then a recursive
+ * `setTimeout` whose delay comes from a settings read on EVERY tick.
+ *
+ * Gates, in order, evaluated at startup:
+ *  1. `PI_FLOW_PUSHGATEWAY_URL` unset → log once, NO timer at all (the
+ *     autopush gate: no endpoint means there is nothing to reconcile, and the
+ *     daemon's env is fixed at spawn so a later check could never succeed);
+ *  2. `reconcile.enabled === false` → log once, NO timer at all.
+ * Then on every tick the settings are re-read, so `intervalMinutes` changes
+ * and a flip back to `enabled: true` take effect WITHOUT restarting the
+ * daemon; a tick that reads `enabled: false` skips the pass but stays armed
+ * (plan behavior: "Each pass: settings disabled ⇒ skip").
+ *
+ * AIDEV-NOTE: KEEPALIVE — the armed handle is intentionally NOT unref'd,
+ * mirroring the pollTimer rule above (`hasRef` is exposed so a test pins it).
+ * AIDEV-NOTE: THE PASS NEVER TOUCHES THE SCAN QUEUE. It runs on its own async
+ * chain: a gateway round-trip (or a hung fetch) must not delay the 1s journal
+ * scan by even one tick. The flip side is that ticks do not wait for each
+ * other, so `inFlight` keeps a slow pass from stacking a second one behind it
+ * — a skipped tick re-arms and says so once.
+ */
+export function startReconcileTimer(
+  options: ReconcileTimerOptions,
+): ReconcileTimer {
+  const schedule = options.schedule ?? scheduleReconcileTimer
+  const readSettings = options.readSettings ?? readReconcileSettings
+  const runPass =
+    options.runPass ??
+    (() =>
+      runReconcilePassOnce({
+        agentDir: options.agentDir,
+        env: options.env,
+        warn: options.log,
+      }))
+  const firstPassDelayMs =
+    options.firstPassDelayMs ?? RECONCILE_FIRST_PASS_DELAY_MS
+
+  let handle: ReconcileTimerHandle | null = null
+  let cancelled = false
+  let inFlight = false
+  // Dedupe the two state-change notices so a 1-minute interval cannot spam.
+  let disabledNoticed = false
+
+  const arm = (delayMs: number): void => {
+    if (cancelled) return
+    handle = schedule(() => {
+      void tick()
+    }, delayMs)
+  }
+
+  const tick = async (): Promise<void> => {
+    handle = null
+    if (cancelled) return
+    let settings: ReconcileSettings
+    try {
+      settings = await readSettings(options.agentDir)
+    } catch (err) {
+      options.log(`reconcile: settings read failed: ${String(err)}`)
+      arm(RECONCILE_MINUTE_MS)
+      return
+    }
+    if (cancelled) return
+    if (settings.warning !== undefined) {
+      options.log(`reconcile: ${settings.warning}`)
+    }
+    const delayMs = Math.max(1, settings.intervalMinutes) * RECONCILE_MINUTE_MS
+    // Re-arm BEFORE the pass: the cadence must survive a slow or hung pass.
+    arm(delayMs)
+    if (!settings.enabled) {
+      if (!disabledNoticed) {
+        disabledNoticed = true
+        options.log('reconcile: disabled in config — passes skipped')
+      }
+      return
+    }
+    disabledNoticed = false
+    if (inFlight) {
+      options.log('reconcile: previous pass still running — pass skipped')
+      return
+    }
+    inFlight = true
+    try {
+      const report = await runPass()
+      if (report !== null) {
+        options.log(reconcileSummaryLine(report))
+      }
+    } catch (err) {
+      options.log(`reconcile: pass failed: ${String(err)}`)
+    } finally {
+      inFlight = false
+    }
+  }
+
+  const startup = async (): Promise<void> => {
+    if (pushgatewayEnv(options.env) === null) {
+      options.log(
+        'reconcile: PI_FLOW_PUSHGATEWAY_URL is not set — timer not started',
+      )
+      return
+    }
+    let settings: ReconcileSettings
+    try {
+      settings = await readSettings(options.agentDir)
+    } catch (err) {
+      options.log(`reconcile: settings read failed: ${String(err)}`)
+      return
+    }
+    if (cancelled) return
+    if (settings.warning !== undefined) {
+      options.log(`reconcile: ${settings.warning}`)
+    }
+    if (!settings.enabled) {
+      options.log('reconcile: disabled in config — timer not started')
+      return
+    }
+    disabledNoticed = false
+    arm(firstPassDelayMs)
+  }
+  void startup()
+
+  return {
+    cancel(): void {
+      cancelled = true
+      if (handle !== null) {
+        handle.cancel()
+        handle = null
+      }
+    },
+    hasRef(): boolean {
+      if (handle === null) return false
+      return handle.hasRef()
+    },
+  }
+}
+
+/** Production scheduler: a real `setTimeout`, deliberately NOT unref'd. */
+function scheduleReconcileTimer(
+  fn: () => void,
+  ms: number,
+): ReconcileTimerHandle {
+  const timer = setTimeout(fn, ms)
+  return {
+    cancel: () => {
+      clearTimeout(timer)
+    },
+    hasRef: () => timer.hasRef(),
   }
 }
 
@@ -481,6 +681,20 @@ function main(): void {
   const pollTimer = setInterval(() => {
     void scanRuns(agentDir, queue, scanCache)
   }, POLL_INTERVAL_MS)
+  // AIDEV-NOTE: PMR-MSDJ 2.2 — reconcile timer (plan PMR-V36Y decision 4a).
+  // Runs on its OWN async chain, never through `queue`, so a Pushgateway
+  // round-trip cannot delay a 1s scan; its handle is ref'd like pollTimer
+  // (keepalive), and `cancel()` on shutdown stops it from re-arming behind an
+  // in-flight pass. Startup gates (no endpoint / disabled) mean no timer is
+  // created at all; per-pass the config is re-read so interval and enable
+  // changes apply without restarting the daemon. Best-effort io: every failure
+  // is one log line.
+  const reconcile = startReconcileTimer({
+    agentDir,
+    log: (message) => {
+      log(agentDir, message)
+    },
+  })
   try {
     const watcher = watch(runsDir(agentDir), (_event, filename) => {
       if (isJournalWatchEvent(filename)) schedule()
@@ -495,6 +709,7 @@ function main(): void {
 
   const shutdown = (): void => {
     clearInterval(pollTimer)
+    reconcile.cancel()
     log(agentDir, 'daemon stopping')
     // AIDEV-NOTE: best-effort pidfile unlink on clean shutdown (SIGTERM/SIGINT)
     // so a drained daemon doesn't leave a stale server.pid behind. A SIGKILL

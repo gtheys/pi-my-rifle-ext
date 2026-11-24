@@ -27,9 +27,10 @@
 // no `aven/client.ts` (it imports config.ts → pi-coding-agent at runtime), no
 // `flow/cost.ts` (runtime dep on pi-interactive-subagents), no `config.ts`.
 // NOTE: run-state.ts itself does runtime-import pi-coding-agent today
-// (getAgentDir) — a pre-existing condition found in 1.2; the daemon contract
-// comment is stale. Fixing it is out of scope here; what matters is that
-// reconcile.ts adds NO new runtime dependency.
+// (getAgentDir) — a pre-existing condition found in 1.2. server/daemon.ts's
+// header contract was corrected for this in 2.2: what is enforceable is that
+// the reconcile modules add NO NEW runtime dependency beyond run-state.ts +
+// flow/push.ts + aven/status.ts (which is what this file does).
 import {
   type FlowRunEvent,
   projectRunState,
@@ -309,14 +310,24 @@ export async function runReconcilePass(
     const status = state.loop?.status
     if (status === undefined) continue
     if (!LIVENESS_STATUSES.includes(status)) continue
-    // AIDEV-TODO: PMR-MSDJ 2.1 docs pass — plan decision 6 / ISC-5 say
-    // personal-mode (TP-*, no aven ticket) runs must be LEFT ALONE, but this
-    // candidate filter is mode-agnostic (only `runTracking` below picks the
-    // group suffix), so a personal halted/paused journal is treated as
-    // stale whenever its aven ref is not `active`. The 1.3 engine and its
-    // tests were built on that reading; adding `mode === 'work'` here would
-    // change 1.3 behavior and its test. Needs an explicit orchestrator
-    // decision (filter here, or amend decision 6) before 2.2 wires the timer.
+    // AIDEV-NOTE: PMR-MSDJ 2.2 — the candidate filter is deliberately
+    // MODE-AGNOSTIC; this closes the TODO 2.1 left for the orchestrator, whose
+    // decision is recorded here (do not "fix" it by adding `mode === 'work'`).
+    // Plan PMR-V36Y decision 6's OPERATIVE rule is the one 1.3 implemented and
+    // the plan text was patched to before approval (interview Q2): a ref is a
+    // candidate when ITS JOURNAL projects a halted/paused loop state — in ANY
+    // mode — and liveness is then decided solely by the aven ticket map, where
+    // a MISSING ticket is stale. Consequences, both user-approved:
+    //  • TP-* personal runs carry no loop-state journal at all (the loop only
+    //    snapshots for flow-driven runs), so they never reach this filter and
+    //    ISC-5 ("personal runs never tombstoned") holds in practice;
+    //  • a personal-mode run that DOES have a halted/paused journal but no
+    //    aven ticket tombstones under the missing-ticket rule — that is the
+    //    approved behaviour, and test/reconcile.test.ts
+    //    ("personal-mode stale run uses the personal group") pins it
+    //    deliberately. `mode` plays no part in the decision; `runTracking`
+    //    below uses it only to pick the group URL suffix (work adds
+    //    /mode/work), so the tombstone replaces the RIGHT group.
     journalStates.set(ref, status)
     eventsByRef.set(ref, events)
   }
