@@ -161,6 +161,44 @@ const PiFlowConfigSchema = Type.Object({
       { description: 'Pushgateway liveness reconcile (PMR-V36Y)' },
     ),
   ),
+  // AIDEV-NOTE: PMR-8MQH (4.1) — `liveness` is the running-flow liveness-push
+  // switch. Same TWO READERS, ONE FILE, DELIBERATE SPLIT as `reconcile` above
+  // (do not "unify" them):
+  //   • extension side (this schema + resolveLivenessSettings): strict — an
+  //     invalid shape throws at the readConfigFile boundary (AGENTS.md: never
+  //     silent defaults).
+  //   • daemon side (flow/liveness.ts parseLivenessSettings): tolerant —
+  //     server/daemon.ts must stay node-only (no pi-coding-agent import), so
+  //     it reads the GLOBAL file as raw text and falls back to the same
+  //     defaults with a warning instead of throwing.
+  // Both agree on enabled=true / intervalMinutes=5; the defaults are pinned
+  // equal in test/config.test.ts against DEFAULT_LIVENESS_SETTINGS so the two
+  // readers cannot drift. The daemon has no session cwd, so it sees only the
+  // GLOBAL config — project overrides are invisible to it by design.
+  // Unknown keys are NOT rejected by either reader (Value.Check does not
+  // enforce additionalProperties — true for the whole schema), so a stray key
+  // is silently ignored on both paths.
+  liveness: Type.Optional(
+    Type.Object(
+      {
+        enabled: Type.Optional(
+          Type.Boolean({
+            description:
+              'Push run-liveness metrics for flows in flight. Default true',
+          }),
+        ),
+        intervalMinutes: Type.Optional(
+          Type.Integer({
+            minimum: 1,
+            description: 'Daemon liveness push interval in minutes. Default 5',
+          }),
+        ),
+      },
+      {
+        description: 'Run-liveness pushes while flows are in flight (PMR-8MQH)',
+      },
+    ),
+  ),
 })
 
 export type PiFlowConfig = Static<typeof PiFlowConfigSchema>
@@ -292,6 +330,32 @@ export function resolveReconcileSettings(config: Partial<PiFlowConfig>): {
   }
   if (config.reconcile?.intervalMinutes !== undefined) {
     settings.intervalMinutes = config.reconcile.intervalMinutes
+  }
+  return settings
+}
+
+/**
+ * AIDEV-NOTE: PMR-8MQH (4.1) — typed read of the `liveness` block with the
+ * SAME defaults as `flow/liveness.ts` DEFAULT_LIVENESS_SETTINGS /
+ * parseLivenessSettings (enabled=true, intervalMinutes=5). Keep the two in
+ * sync; the equality is pinned by test/config.test.ts. Malformedness cannot
+ * reach here on the extension path (readConfigFile throws first); on the
+ * daemon path parseLivenessSettings handles it. Takes Partial so
+ * readConfigFile's return type plugs straight in.
+ */
+export function resolveLivenessSettings(config: Partial<PiFlowConfig>): {
+  enabled: boolean
+  intervalMinutes: number
+} {
+  const settings = {
+    enabled: true,
+    intervalMinutes: 5,
+  }
+  if (config.liveness?.enabled !== undefined) {
+    settings.enabled = config.liveness.enabled
+  }
+  if (config.liveness?.intervalMinutes !== undefined) {
+    settings.intervalMinutes = config.liveness.intervalMinutes
   }
   return settings
 }

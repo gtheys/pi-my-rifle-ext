@@ -96,6 +96,24 @@
         }
       },
       "additionalProperties": false
+    },
+    "liveness": {
+      "type": "object",
+      "description": "Run-liveness pushes while flows are in flight (PMR-8MQH). Every interval the daemon stamps the current loop state of each running flow onto its pi_flow_run_status series, so `running` alerts and dashboards reflect a live loop instead of the last journal write.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Push run-liveness metrics for flows in flight. Default true"
+        },
+        "intervalMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Daemon liveness push interval in minutes. Default 5. An interval change applies on the next cycle — no daemon restart needed"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "required": ["workRoots"],

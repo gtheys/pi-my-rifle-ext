@@ -251,3 +251,159 @@ test('readConfigFile: unknown key inside reconcile → tolerated and ignored (pi
     intervalMinutes: 60,
   })
 })
+
+import { Value } from 'typebox/value'
+// AIDEV-NOTE: PMR-8MQH (4.1) — the `liveness` config surface, mirroring the
+// `reconcile` block above. TWO READERS, ONE FILE, DELIBERATE SPLIT (do not
+// "unify" them): the extension-side boundary here is strict (an invalid shape
+// throws loudly at readConfigFile), while the daemon half
+// (`flow/liveness.ts` parseLivenessSettings) stays node-only and fails to the
+// same defaults with a warning. Both must agree on the defaults, pinned below
+// against DEFAULT_LIVENESS_SETTINGS so the two readers cannot drift. Note the
+// daemon sees only the GLOBAL config file — project overrides are invisible to
+// it by design.
+import { resolveLivenessSettings } from '../config.ts'
+import {
+  DEFAULT_LIVENESS_SETTINGS,
+  parseLivenessSettings,
+} from '../flow/liveness.ts'
+
+test('readConfigFile: liveness block accepted and read back (PMR-8MQH 4.1)', async (t) => {
+  const file = await configWith(t, {
+    workRoots: [],
+    liveness: { enabled: false, intervalMinutes: 30 },
+  })
+  const cfg = await readConfigFile(file)
+  assert.deepEqual(cfg.liveness, { enabled: false, intervalMinutes: 30 })
+})
+
+test('readConfigFile: liveness absent → resolveLivenessSettings surfaces defaults', async (t) => {
+  const file = await configWith(t, { workRoots: [] })
+  const cfg = await readConfigFile(file)
+  assert.equal(cfg.liveness, undefined)
+  assert.deepEqual(resolveLivenessSettings(cfg), {
+    enabled: true,
+    intervalMinutes: 5,
+  })
+})
+
+test('readConfigFile: liveness partial block fills the other default', async (t) => {
+  const file = await configWith(t, {
+    workRoots: [],
+    liveness: { intervalMinutes: 15 },
+  })
+  const cfg = await readConfigFile(file)
+  assert.deepEqual(resolveLivenessSettings(cfg), {
+    enabled: true,
+    intervalMinutes: 15,
+  })
+})
+
+// Drift pin: the session-side reader and the daemon-side reader must be the
+// same answer for an absent block. If this test fails, one half was changed
+// without the other — the daemon would push on a different cadence than the
+// session advertises.
+test('config defaults agree with parseLivenessSettings defaults (PMR-8MQH 4.1)', () => {
+  assert.deepEqual(resolveLivenessSettings({ workRoots: [] }), {
+    enabled: true,
+    intervalMinutes: 5,
+  })
+  assert.deepEqual(resolveLivenessSettings({ workRoots: [] }), {
+    enabled: DEFAULT_LIVENESS_SETTINGS.enabled,
+    intervalMinutes: DEFAULT_LIVENESS_SETTINGS.intervalMinutes,
+  })
+  assert.deepEqual(parseLivenessSettings(null), DEFAULT_LIVENESS_SETTINGS)
+  const fileCfg = resolveLivenessSettings({
+    workRoots: [],
+    liveness: { enabled: false, intervalMinutes: 1 },
+  })
+  assert.deepEqual(fileCfg, { enabled: false, intervalMinutes: 1 })
+})
+
+for (const bad of [0, -5, 1.5]) {
+  test(`readConfigFile: liveness.intervalMinutes ${bad} → clear throw`, async (t) => {
+    const file = await configWith(t, {
+      workRoots: [],
+      liveness: { intervalMinutes: bad },
+    })
+    await assert.rejects(readConfigFile(file), /intervalMinutes/)
+  })
+}
+
+test('readConfigFile: liveness.enabled non-boolean → clear throw', async (t) => {
+  const file = await configWith(t, {
+    workRoots: [],
+    liveness: { enabled: 'no' },
+  })
+  await assert.rejects(readConfigFile(file), /enabled/)
+})
+
+// config.schema.json is the checked-in mirror of PiFlowConfigSchema (editor
+// facing). It must describe the liveness block with the documented defaults,
+// and it must validate the documented example config.
+test('config.schema.json: liveness section mirrors the schema (PMR-8MQH 4.1)', async () => {
+  const raw = await readFile(
+    new URL('../config.schema.json', import.meta.url),
+    'utf8',
+  )
+  const schema = JSON.parse(raw) as {
+    properties: Record<string, unknown>
+    additionalProperties: boolean
+  }
+  const liveness = schema.properties.liveness as {
+    type: string
+    properties: Record<
+      string,
+      { type: string; default?: unknown; minimum?: number }
+    >
+    additionalProperties: boolean
+  }
+  assert.equal(liveness.type, 'object')
+  assert.equal(liveness.properties.enabled.type, 'boolean')
+  assert.equal(liveness.properties.enabled.default, true)
+  assert.equal(liveness.properties.intervalMinutes.type, 'integer')
+  assert.equal(liveness.properties.intervalMinutes.minimum, 1)
+  assert.equal(liveness.properties.intervalMinutes.default, 5)
+  assert.equal(liveness.additionalProperties, false)
+})
+
+test('config.schema.json: validates the documented example config', async () => {
+  const raw = await readFile(
+    new URL('../config.schema.json', import.meta.url),
+    'utf8',
+  )
+  const schema = JSON.parse(raw)
+  const example = {
+    $schema:
+      'https://raw.githubusercontent.com/gtheys/pi-my-rifle-ext/main/packages/pi-flow/config.schema.json',
+    workRoots: ['/home/dev/Code/salaryhero'],
+    avenWorkspace: 'personal',
+    yolo: false,
+    landTestCommand: ['bun', 'run', 'test'],
+    runServer: { enabled: true },
+    reconcile: { enabled: true, intervalMinutes: 360 },
+    liveness: { enabled: true, intervalMinutes: 5 },
+  }
+  assert.equal(Value.Check(schema as never, example), true)
+  assert.equal(
+    Value.Check(schema as never, {
+      workRoots: [],
+      liveness: { intervalMinutes: 0 },
+    }),
+    false,
+  )
+  assert.equal(
+    Value.Check(schema as never, {
+      workRoots: [],
+      liveness: { intervalMinutes: 2.5 },
+    }),
+    false,
+  )
+  assert.equal(
+    Value.Check(schema as never, {
+      workRoots: [],
+      liveness: { enabled: 'no' },
+    }),
+    false,
+  )
+})
