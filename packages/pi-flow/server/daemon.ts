@@ -289,7 +289,8 @@ export function createSerialQueue(): SerialQueue {
  * watcher into a self-triggering loop amplifier (see the scan model note in
  * main()). A null filename (some platforms never report one) conservatively
  * triggers a rescan — the 1s poll is the correctness backstop either way.
- */ export function isJournalWatchEvent(filename: string | null): boolean {
+ */
+export function isJournalWatchEvent(filename: string | null): boolean {
   if (filename === null) return true
   return filename.endsWith('.journal.jsonl')
 }
@@ -468,10 +469,22 @@ export interface ReconcileTimerOptions {
  *     autopush gate: no endpoint means there is nothing to reconcile, and the
  *     daemon's env is fixed at spawn so a later check could never succeed);
  *  2. `reconcile.enabled === false` → log once, NO timer at all.
- * Then on every tick the settings are re-read, so `intervalMinutes` changes
- * and a flip back to `enabled: true` take effect WITHOUT restarting the
- * daemon; a tick that reads `enabled: false` skips the pass but stays armed
- * (plan behavior: "Each pass: settings disabled ⇒ skip").
+ * Then on every tick the settings are re-read, so an `intervalMinutes` change
+ * and a flip to `enabled: false` take effect WITHOUT restarting the daemon;
+ * a tick that reads `enabled: false` skips the pass but stays armed (plan
+ * behavior: "Each pass: settings disabled ⇒ skip").
+ *
+ * AIDEV-NOTE (PMR-MSDJ review P2-3 — what gate 2 really costs): a flip BACK
+ * to `enabled: true` does NOT take effect unless the timer was armed at
+ * startup. A daemon that STARTED with `enabled=false` has no timer left to
+ * re-read settings (pinned by test/server-reconcile-timer.test.ts: "disabled
+ * at startup creates no timer at all"), and `server/lifecycle.ts` respawns
+ * only a DEAD daemon or a version mismatch — so disable, wait, re-enable
+ * yields silence with no log line until the daemon restarts (kill it and the
+ * next session's `ensureDaemon` re-spawns, or run `/flow-reconcile-push` for
+ * one pass now). Arming unconditionally and letting the per-tick check skip
+ * would close the gap; the startup gate is pinned behaviour, so this round
+ * documents it instead of changing it.
  *
  * AIDEV-NOTE: KEEPALIVE — the armed handle is intentionally NOT unref'd,
  * mirroring the pollTimer rule above (`hasRef` is exposed so a test pins it).
