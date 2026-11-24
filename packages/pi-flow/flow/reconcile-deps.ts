@@ -3,6 +3,15 @@
 // dir + process env) is turned into the engine's injected `ReconcileDeps`, plus
 // the tolerant global-config reader the timer re-reads every pass.
 //
+// AIDEV-NOTE (PMR-MSDJ fix round, P2-1): the bounded single-ref confirmation
+// (`ticketStatusOf`) is wired HERE, from `aven/status.ts`, exactly like
+// `listTicketStatuses` — same node-only runner discipline, same injectable
+// seam for tests. Nothing on this path reads `avenWorkspace` from config: the
+// probe itself is workspace-EXPLICIT inside `aven/status.ts` (see its P2-1
+// note), which keeps the daemon node-only. The price: a workspace that is
+// neither pinned nor routed from the daemon's cwd stays invisible to BOTH the
+// listing and the probe, and such a ref still reads as missing.
+//
 // Home justification: this is flow-feature code, not daemon policy. The daemon
 // half of the reconcile (timer posture, keepalive, scan-queue independence)
 // lives in server/daemon.ts `createReconcileLoop`; everything here is
@@ -27,7 +36,11 @@
 // (PI_FLOW_AGENT_DIR, server/lifecycle.ts), never from getAgentDir().
 import { promises as fsp } from 'node:fs'
 import path from 'node:path'
-import { listTicketStatuses as avenListTicketStatuses } from '../aven/status.ts'
+import {
+  listTicketStatuses as avenListTicketStatuses,
+  ticketStatusOf as avenTicketStatusOf,
+  type TicketProbe,
+} from '../aven/status.ts'
 import { readRunEvents, runsDir } from '../run-state.ts'
 import {
   fetchGroupBody,
@@ -135,6 +148,8 @@ export interface ReconcileDepsOptions {
   env?: NodeJS.ProcessEnv
   fetchImpl?: ReconcileFetch
   listTicketStatuses?: () => Promise<Map<string, string> | null>
+  /** P2-1 single-ref confirmation seam (tests inject; default: aven shell-out) */
+  ticketStatusOf?: (ref: string) => Promise<TicketProbe | null>
   readdir?: (dir: string) => Promise<string[]>
 }
 
@@ -147,12 +162,14 @@ export function createReconcileDeps(
   if (gateway === null) return null
   const fetchImpl: ReconcileFetch = options.fetchImpl ?? defaultReconcileFetch
   const listStatuses = options.listTicketStatuses ?? avenListTicketStatuses
+  const probeStatus = options.ticketStatusOf ?? avenTicketStatusOf
   const readdir = options.readdir ?? ((dir: string) => fsp.readdir(dir))
   const { agentDir, warn } = options
   return {
     listJournalRefs: () => listJournalRefs(agentDir, readdir),
     readRunEvents: (ref: string) => readRunEvents(agentDir, ref),
     listTicketStatuses: () => listStatuses(),
+    ticketStatusOf: (ref: string) => probeStatus(ref),
     fetchGroupBody: (trackRef: string, mode: 'work' | 'personal') =>
       fetchGroupBodyOrError(gateway, trackRef, mode, fetchImpl),
     pushTombstone: (

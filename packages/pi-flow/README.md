@@ -134,7 +134,7 @@ checkout) instead of machine-wide.
 | `telemetry.jiraBaseUrl` | `string` | unset | Base URL for Jira issue links, e.g. `https://example.atlassian.net/browse/`. Work-mode spans then carry `flow.url` = base + Jira key, so dashboards can link tickets to Jira. Unset = no links |
 | `telemetry.maxContentChars` | `integer` (100–100000) | `2000` | Max characters per captured content attribute; longer values end with `…[truncated N chars]`. Tempo drops anything past its `max_attribute_bytes` (default 2048) silently, so raise both together |
 | `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
-| `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is neither active nor todo, so the alerts only ever fire on runs that still need you. See [Reconcile](#reconcile-stale-run-tombstoning) |
+| `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is neither active nor todo, so the alerts only ever fire on runs that still need you. Setting it to `false` on a RUNNING daemon takes effect on the next tick; setting it to `true` again only takes effect at daemon start — a daemon that started with `enabled: false` armed no timer, so restart the daemon (or run `/flow-reconcile-push` once). See [Reconcile](#reconcile-stale-run-tombstoning) |
 | `reconcile.intervalMinutes` | `integer` (≥ 1) | `360` | Daemon reconcile interval in minutes (6 h by default). An interval change applies on the next cycle — no daemon restart needed |
 
 ```json
@@ -306,6 +306,25 @@ as live because gate-waiting runs park there (the flow loop moves tickets to
 must not page. A live ticket keeps its series; a running journal is never
 touched.
 
+**A gap in the ticket listing never tombstones a live run.** Liveness is read
+from `aven list`, and `aven list` is workspace-routed, so its answer can be
+valid yet incomplete (a configured `avenWorkspace` other than the two
+workspaces pi-flow pins). Because "missing from that listing" would then be
+wrong evidence, every candidate the listing does not know gets a BOUNDED
+direct question first — `aven show <ref> --json`, asked of the same workspaces
+the listing covered plus aven's own cwd-inferred workspace, stopping at the
+first one that knows the ref — so the direct lookups a pass can make stay
+proportional to its candidate count. Three answers: aven says the ticket is
+`active`/`todo` → the run is LIVE and is skipped as
+`ticket live on direct lookup` (nothing is read from or written to the
+gateway for it); aven says none of those universes has such a ticket →
+genuinely gone, so it is tombstoned; aven cannot be asked at all (unreachable,
+timeout, malformed output, or a ref that only matches by prefix) → the ref is
+skipped as `aven lookup inconclusive` with one warning. That last case fails
+closed PER REF: one bad shell-out costs one tombstone, not the whole pass, and
+the question can only ever cancel a tombstone — it is asked solely for refs
+the listing already lacked.
+
 **What a tombstone does.** The run's Pushgateway group is re-pushed with two
 changes and nothing else:
 
@@ -352,14 +371,33 @@ same pass above, run against a real gateway, reported
 `skipped=1 … → skipped: already clean` for a ref whose stored body held no
 liveness series to retire, a fact only the gateway can tell you. A
 `ticket missing` status is the ordinary case for a deleted or never-filed
-ticket — a missing ticket is stale. Refs that stayed live are not listed; the
-`candidates=N` count covers them.
+ticket — a missing ticket is stale, once the direct question above agrees.
+Refs that stayed live are not listed; the `candidates=N` count covers them.
+
+**Known limitation: only journals name the candidates.** Because candidacy
+comes from the run journals, Reconcile can never retire a Pushgateway group
+that no journal names any more. A work group exporting
+`ref="DP-253",mode="work"` at `status="paused"` whose run re-tracked to a
+different journal ref (say `AA-SG9T`) stays exported, and a `paused` alert
+rule can still fire on it; likewise a resumed run keeps its `paused` series
+until the next terminal transition re-pushes it. Sweeping the gateway dump
+instead (retire every halted/paused group whose ticket is closed) is
+deliberately out of scope: a stored group carries no identity beyond its
+`ref` label, so a sweep means guessing which journal that ref belongs to, and
+a sweep that ignores `ref` entirely would reach adhoc runs and other jobs'
+groups. If this bites, `/flow-reconcile-push` cannot help either — retire the
+series by hand (re-push the group without the liveness line) or let the
+`piflow-human-wait-4h` rule page and close the loop.
 
 **Fail-closed on aven errors.** If `aven list` fails, times out, or returns
 something unexpected, the pass tombstones **nothing** and logs exactly one
-warning. Worst case the alerts keep firing on stale runs until aven recovers —
-status quo, visible, honest. A malformed config likewise falls back to the
-defaults with a warning instead of silently switching retires off.
+warning. An empty universe counts as such a failure: every workspace
+answering zero tickets on a host that holds hundreds is aven breaking in a way
+that still parses, and reading it as a real "no tickets" answer would retire
+every halted run at once, so it fails closed too. Worst case the alerts keep
+firing on stale runs until aven recovers — status quo, visible, honest. A
+malformed config likewise falls back to the defaults with a warning instead of
+silently switching retires off.
 
 **Only the global file counts for the timer.** The daemon has no session
 directory, so the interval comes from `~/.pi/agent/pi-flow/config.json` only —

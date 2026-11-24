@@ -129,6 +129,26 @@ function trimBase(url: string): string {
  * and replace the group in place. Never throws: a non-2xx response or a
  * network error returns {ok:false}. A group with no lines returns
  * {ok:true, body:""} — the caller treats an empty body as "group gone".
+ *
+ * AIDEV-NOTE (PMR-MSDJ fix round, P2-5): an unparseable line that could be
+ * one of OURS also returns {ok:false}, and that direction is the whole point.
+ * A POST REPLACES the entire group (pushgateway's Replace path deletes every
+ * stored family the body omits), so silently SKIPPING a line this parser
+ * cannot read is silent, permanent DATA LOSS — a lost `pi_flow_run_cost_usd`
+ * row is gone from the runs board for good. Failing the read loses the
+ * TOMBSTONE instead: {ok:false} costs one skip entry plus one warning, and
+ * the group keeps every byte it had until the next pass.
+ *
+ * The failure is scoped to lines that could belong to THIS group
+ * ({@link couldBelongToGroup}), and that scoping is measured, not defensive
+ * polish: the live gateway dump carries 38 label-less NON-comment lines
+ * (pushgateway's own runtime metrics, `go_goroutines 11`,
+ * `go_memstats_alloc_bytes …`), so failing on every unreadable line would
+ * have made every read fail and quietly disabled tombstoning everywhere — a
+ * worse bug than the one it fixes. A line with no label section at all can
+ * never be a group member: the gateway re-forces the grouping labels (`job`,
+ * `ref`, `instance`, `mode`) onto every stored series, so all of this group's
+ * lines are labelled, and dropping an unlabelled one erases nothing.
  */
 export async function fetchGroupBody(
   url: string,
@@ -153,7 +173,7 @@ export async function fetchGroupBody(
       }
     }
     const dump = await response.text()
-    return { ok: true, body: filterGroupLines(dump, ref, mode) }
+    return filterGroupLines(dump, ref, mode)
   } catch (err) {
     const message = err instanceof Error ? err.message : `${err}`
     return { ok: false, error: message }
@@ -171,8 +191,10 @@ interface LabelToken {
 
 /**
  * Split a `{...}` label section into tokens. Returns null on anything
- * malformed — a line we cannot parse is never a match, which keeps the
- * filter fail-closed (a partial line must not be re-POSTed).
+ * malformed. AIDEV-NOTE: null is NOT "not this group" — it is "unreadable",
+ * and {@link filterGroupLines} turns it into a failed READ, because a POST
+ * replaces the whole group and an unreadable line may be one this group owns
+ * (P2-5 in {@link fetchGroupBody}).
  */
 function splitLabels(inner: string): LabelToken[] | null {
   const tokens: LabelToken[] = []
@@ -252,13 +274,16 @@ function labelMatches(
   return lineMode === undefined
 }
 
-/** Drop `#` comment lines and non-group lines, keep this group's lines with
- *  the injected `instance=""` pair stripped. */
+/** Drop `#` comment lines and foreign lines, keep this group's lines with the
+ *  injected `instance=""` pair stripped. A non-comment line that could belong
+ *  to this group but cannot be PARSED fails the WHOLE read
+ *  ({@link unparseableLine}) rather than being dropped — see P2-5 in
+ *  {@link fetchGroupBody}. */
 function filterGroupLines(
   dump: string,
   ref: string,
   mode: 'work' | 'personal',
-): string {
+): GroupBodyResult {
   const kept: string[] = []
   for (const line of dump.split('\n')) {
     const trimmed = line.trim()
@@ -266,9 +291,17 @@ function filterGroupLines(
     if (trimmed.startsWith('#')) continue
     const open = line.indexOf('{')
     const close = line.lastIndexOf('}')
-    if (open < 0 || close <= open) continue
-    const tokens = splitLabels(line.slice(open + 1, close))
-    if (tokens === null) continue
+    const tokens =
+      open >= 0 && close > open
+        ? splitLabels(line.slice(open + 1, close))
+        : null
+    if (tokens === null) {
+      // Unreadable: either it is provably not ours (drop it — the gateway
+      // always labels a group's lines), or it might be ours and re-posting
+      // without it would erase it. Never guess: fail the read.
+      if (couldBelongToGroup(line, ref)) return unparseableLine(line)
+      continue
+    }
     if (!labelMatches(tokens, ref, mode)) continue
     const survivors = tokens.filter(
       (token) => !(token.key === 'instance' && token.value === ''),
@@ -276,6 +309,26 @@ function filterGroupLines(
     const labels = survivors.map((token) => token.raw).join(',')
     kept.push(`${line.slice(0, open + 1)}${labels}${line.slice(close)}`)
   }
-  if (kept.length === 0) return ''
-  return `${kept.join('\n')}\n`
+  if (kept.length === 0) return { ok: true, body: '' }
+  return { ok: true, body: `${kept.join('\n')}\n` }
+}
+
+/** True when a line an exposition parser rejected could still be one of the
+ *  lines this group owns, judged on RAW text (parsing is what failed):
+ *  a `pi_flow*` metric name, or the gateway's re-forced `job="pi-flow"` /
+ *  `ref="<ref>"` label pairs. Foreign runtime metrics (`go_goroutines 11`) and
+ *  other jobs' broken lines are therefore NOT fatal to this read — measured on
+ *  the live gateway, the dump holds dozens of lines this parser cannot read
+ *  and that provably do not belong to any pi-flow group. */
+function couldBelongToGroup(line: string, ref: string): boolean {
+  if (line.trim().startsWith('pi_flow')) return true
+  return line.includes('job="pi-flow"') || line.includes(`ref="${ref}"`)
+}
+
+/** The one P2-5 failure shape. The line is quoted (truncated: a dump line can
+ *  carry a long escaped reason value) because the engine surfaces this string
+ *  in a warning and an operator has to be able to see WHAT the gateway sent. */
+function unparseableLine(line: string): GroupBodyResult {
+  const snippet = line.length > 120 ? `${line.slice(0, 120)}…` : line
+  return { ok: false, error: `unparseable dump line: ${snippet}` }
 }

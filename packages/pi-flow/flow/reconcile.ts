@@ -22,7 +22,10 @@
 // would permanently destroy done-run cost history. Never rebuild: transform.
 //
 // Dependency contract (server/daemon.ts header, daemon.ts:1-11): this module
-// imports ONLY `../run-state.ts` and types from `./push.ts`. No
+// imports ONLY `../run-state.ts` and types from `./push.ts` and
+// `../aven/status.ts`. The `TicketProbe` import is TYPE-ONLY (erased at
+// runtime), so no new runtime edge is added.
+// No
 // `@earendil-works/pi-coding-agent`, no `@gtheys/pi-interactive-subagents`,
 // no `aven/client.ts` (it imports config.ts → pi-coding-agent at runtime), no
 // `flow/cost.ts` (runtime dep on pi-interactive-subagents), no `config.ts`.
@@ -31,6 +34,7 @@
 // header contract was corrected for this in 2.2: what is enforceable is that
 // the reconcile modules add NO NEW runtime dependency beyond run-state.ts +
 // flow/push.ts + aven/status.ts (which is what this file does).
+import type { TicketProbe } from '../aven/status.ts'
 import {
   type FlowRunEvent,
   type LoopRunStatus,
@@ -56,6 +60,23 @@ export const LIVE_TICKET_STATUSES = ['active', 'todo']
  *  one user-visible warning). */
 export const AVEN_FAILED_WARNING =
   'reconcile: aven ticket statuses unavailable — tombstoned nothing this pass (fail-closed)'
+
+// AIDEV-NOTE (PMR-MSDJ fix round, P2-1 — bounded confirmation of a MISSING
+// ref): "missing from the merged listing ⇒ stale" is EVIDENCE of a closed
+// ticket, not PROOF of an absent one — `listTicketStatuses` merges only the
+// two host-pinned workspaces, so a valid-but-incomplete universe (an
+// `avenWorkspace` override to a third) reads as "gone" and would tombstone a
+// LIVE run. So `runReconcilePass` asks aven about each unknown candidate
+// DIRECTLY (`ticketStatusOf` in aven/status.ts), which bounds aven cost by the
+// CANDIDATE count, not the run population: one shell-out when the first
+// universe knows the ref, at most `workspaces + 1` when it is really gone. A
+// null probe fails CLOSED PER REF — one bad shell-out costs one tombstone,
+// not the pass. The probe can only ever VETO (it runs solely for refs the map
+// already lacks), so it never widens the stale set. `scanWithoutGateway`
+// (flow/reconcile-command.ts) does NOT probe: it reports unprobed dry-run
+// candidates and never pushes, so its worst case is an over-reported line.
+const INCONCLUSIVE_PROBE_REASON = 'aven lookup inconclusive'
+const LIVE_ON_PROBE_REASON = 'ticket live on direct lookup'
 
 /** The tombstone status value (label-VALUE-only addition; frozen labels). */
 const STALE_STATUS = 'stale'
@@ -280,6 +301,10 @@ export interface ReconcileDeps {
   /** ref → aven ticket status, or null when aven is unreachable (fail-closed:
    *  the engine then tombstones nothing and warns once). */
   listTicketStatuses(): Promise<Map<string, string> | null>
+  /** Direct answer about ONE ref the merged listing does not know (P2-1).
+   *  Null (aven unreachable/anomalous) fails CLOSED for that ref: skip with
+   *  'aven lookup inconclusive' rather than tombstone a ticket we cannot see. */
+  ticketStatusOf(ref: string): Promise<TicketProbe | null>
   /** Read one stored Pushgateway group back (full-dump GET + filter). */
   fetchGroupBody(
     trackRef: string,
@@ -326,8 +351,8 @@ export interface ReconcileReport {
 /**
  * One reconcile pass. IO-free decisions are the exported pure functions
  * above; this orchestrates them and keeps warnings bounded (at most
- * `stale.length + 1` lines, and aven failure short-circuits before any
- * gateway call).
+ * `stale.length + 1` lines plus one per ref whose direct lookup came back
+ * inconclusive, and aven failure short-circuits before any gateway call).
  */
 export async function runReconcilePass(
   deps: ReconcileDeps,
@@ -370,6 +395,16 @@ export async function runReconcilePass(
     //    deliberately. `mode` plays no part in the decision; `runTracking`
     //    below uses it only to pick the group URL suffix (work adds
     //    /mode/work), so the tombstone replaces the RIGHT group.
+    // AIDEV-NOTE (PMR-MSDJ review P2-4, KNOWN LIMITATION — documented, not
+    // fixed): journal-keyed candidacy can NEVER retire a Pushgateway group the
+    // journal no longer names — e.g. a work group exporting
+    // `ref="DP-253",mode="work"` at status="paused" whose journal now projects
+    // `running` under another ref (AA-SG9T), or a resumed run that keeps its
+    // `paused` series until the NEXT terminal transition. A gateway-side sweep
+    // (decide from the dump's halted/paused groups instead) is out of scope: a
+    // stored group carries no journal identity beyond its `ref` label, so
+    // sweeping means guessing the journal, and a ref-less sweep reaches adhoc
+    // runs and other jobs' groups. README's Reconcile section says the same.
     journalStates.set(ref, status)
     eventsByRef.set(ref, events)
   }
@@ -387,11 +422,27 @@ export async function runReconcilePass(
     const journalStatus = journalStates.get(ref)
     const events = eventsByRef.get(ref)
     if (journalStatus === undefined || events === undefined) continue
-    report.stale.push({
-      ref,
-      journalStatus,
-      ticketStatus: ticketStatus.get(ref),
-    })
+    let ticketStatusOfRef = ticketStatus.get(ref)
+    if (ticketStatusOfRef === undefined) {
+      // P2-1: one direct question to aven before a listing gap costs a live
+      // run its metrics.
+      const probe = await deps.ticketStatusOf(ref)
+      if (probe === null) {
+        report.skipped.push({ ref, reason: INCONCLUSIVE_PROBE_REASON })
+        deps.warn(
+          `reconcile ${ref}: ${INCONCLUSIVE_PROBE_REASON} — skipped fail-closed`,
+        )
+        continue
+      }
+      if (probe.kind === 'ticket') {
+        if (LIVE_TICKET_STATUSES.includes(probe.status)) {
+          report.skipped.push({ ref, reason: LIVE_ON_PROBE_REASON })
+          continue
+        }
+        ticketStatusOfRef = probe.status
+      }
+    }
+    report.stale.push({ ref, journalStatus, ticketStatus: ticketStatusOfRef })
     // The group identity comes from the journal (same derivation as cost
     // pushes), so the tombstone REPLACES the right group instead of creating
     // a duplicate personal one.

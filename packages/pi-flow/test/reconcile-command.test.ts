@@ -117,6 +117,13 @@ function fakeEngine(options: EngineOptions = {}): EngineRecording {
       }
       return options.ticketStatus
     },
+    // PMR-MSDJ fix round (P2-1) FIXTURE ADAPTATION, not a behavior change:
+    // `ReconcileDeps` gained the bounded single-ref confirmation. Every
+    // fixture here answers the listing with the candidate refs PRESENT, so
+    // the engine must never probe — throwing keeps an unexpected probe loud.
+    async ticketStatusOf(ref: string) {
+      throw new Error(`unexpected ticketStatusOf(${ref})`)
+    },
     async fetchGroupBody(
       trackRef: string,
       _mode: 'work' | 'personal',

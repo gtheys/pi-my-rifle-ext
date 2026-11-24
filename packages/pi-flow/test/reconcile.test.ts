@@ -7,6 +7,7 @@
 // sync when the exposition changes.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import type { TicketProbe } from '../aven/status.ts'
 import type { GroupBodyResult } from '../flow/push.ts'
 import {
   computeStaleRefs,
@@ -416,6 +417,10 @@ interface DepsOptions {
   ticketStatus?: Map<string, string> | null
   bodies?: Map<string, GroupBodyResult>
   pushOk?: boolean
+  /** P2-1 bounded confirmation answers, keyed by ref (missing key => the
+   *  probe is not stubbed and the fake throws, so an unexpected call is loud
+   *  rather than silently answered). */
+  probes?: Map<string, TicketProbe | null>
 }
 
 interface Recording {
@@ -423,7 +428,7 @@ interface Recording {
   warns: string[]
   fetches: Array<{ trackRef: string; mode: string }>
   pushes: Array<{ trackRef: string; mode: string; body: string }>
-  stats: { ticketCalls: number }
+  stats: { ticketCalls: number; probeRefs: string[] }
 }
 
 function fakeDeps(options: DepsOptions): Recording {
@@ -437,7 +442,7 @@ function fakeDeps(options: DepsOptions): Recording {
   const warns: string[] = []
   const fetches: Array<{ trackRef: string; mode: string }> = []
   const pushes: Array<{ trackRef: string; mode: string; body: string }> = []
-  const stats = { ticketCalls: 0 }
+  const stats = { ticketCalls: 0, probeRefs: [] as string[] }
   return {
     warns,
     fetches,
@@ -455,6 +460,13 @@ function fakeDeps(options: DepsOptions): Recording {
         return options.ticketStatus === undefined
           ? new Map([[REF_WORK, 'done']])
           : options.ticketStatus
+      },
+      async ticketStatusOf(ref: string) {
+        stats.probeRefs.push(ref)
+        if (!options.probes) {
+          throw new Error(`unexpected ticketStatusOf(${ref})`)
+        }
+        return options.probes.get(ref) ?? null
       },
       async fetchGroupBody(trackRef: string, mode: 'work' | 'personal') {
         fetches.push({ trackRef, mode })
@@ -764,4 +776,144 @@ test('computeStaleRefs: halted run whose ticket is inbox is stale', () => {
     ),
     [REF_WORK],
   )
+})
+
+// ---------------------------------------------------------------------------
+// P2-1 (PMR-MSDJ fix round): the bounded confirmation of a MISSING ref.
+// "missing from the merged listing" is evidence of a closed ticket, not proof
+// of an absent one: an `avenWorkspace` override to a third workspace yields a
+// valid-but-incomplete Map, and tombstoning on that evidence alone is the one
+// failure mode decision 2 forbids. So a candidate ref the listing does not
+// know is asked DIRECTLY (`aven show <ref> --json`, ONE shell-out, bounded by
+// the candidate count) before it is called stale:
+//   • probe says active/todo            => live, skip 'ticket live on direct lookup'
+//   • probe says missing (unknown-ref)  => genuinely gone, stale
+//   • probe null (lookup anomaly)       => skip 'aven lookup inconclusive' + warn
+// ---------------------------------------------------------------------------
+
+test('runReconcilePass: a missing ref the probe says is ACTIVE stays live (no tombstone)', async () => {
+  const rec = fakeDeps({
+    ticketStatus: new Map([['PMR-OTHER', 'done']]),
+    probes: new Map<string, TicketProbe | null>([
+      [REF_WORK, { kind: 'ticket', status: 'active' }],
+    ]),
+  })
+  const report = await runReconcilePass(rec.deps)
+  assert.equal(report.candidates, 1)
+  assert.deepEqual(report.stale, [])
+  assert.deepEqual(report.tombstoned, [])
+  assert.deepEqual(report.skipped, [
+    { ref: REF_WORK, reason: 'ticket live on direct lookup' },
+  ])
+  assert.deepEqual(rec.stats.probeRefs, [REF_WORK])
+  assert.deepEqual(rec.fetches, [])
+  assert.deepEqual(rec.pushes, [])
+  assert.deepEqual(rec.warns, [])
+})
+
+test('runReconcilePass: a missing ref the probe says is TODO stays live too', async () => {
+  const rec = fakeDeps({
+    ticketStatus: new Map(),
+    probes: new Map<string, TicketProbe | null>([
+      [REF_WORK, { kind: 'ticket', status: 'todo' }],
+    ]),
+  })
+  const report = await runReconcilePass(rec.deps)
+  assert.deepEqual(report.stale, [])
+  assert.deepEqual(report.skipped, [
+    { ref: REF_WORK, reason: 'ticket live on direct lookup' },
+  ])
+})
+
+test('runReconcilePass: aven unknown-ref on the probe confirms the tombstone', async () => {
+  const rec = fakeDeps({
+    ticketStatus: new Map([['PMR-OTHER', 'done']]),
+    probes: new Map<string, TicketProbe | null>([
+      [REF_WORK, { kind: 'missing' }],
+    ]),
+  })
+  const report = await runReconcilePass(rec.deps)
+  assert.deepEqual(report.stale, [
+    { ref: REF_WORK, journalStatus: 'halted', ticketStatus: undefined },
+  ])
+  assert.deepEqual(report.tombstoned, [REF_WORK])
+  assert.deepEqual(report.skipped, [])
+  assert.deepEqual(rec.stats.probeRefs, [REF_WORK])
+})
+
+test('runReconcilePass: a probe that reads a stale status tombstones with that status', async () => {
+  const rec = fakeDeps({
+    ticketStatus: new Map(),
+    probes: new Map<string, TicketProbe | null>([
+      [REF_WORK, { kind: 'ticket', status: 'done' }],
+    ]),
+  })
+  const report = await runReconcilePass(rec.deps)
+  assert.deepEqual(report.stale, [
+    { ref: REF_WORK, journalStatus: 'halted', ticketStatus: 'done' },
+  ])
+  assert.deepEqual(report.tombstoned, [REF_WORK])
+})
+
+test('runReconcilePass: an inconclusive probe skips the ref fail-closed + warns', async () => {
+  const rec = fakeDeps({
+    ticketStatus: new Map(),
+    probes: new Map<string, TicketProbe | null>([[REF_WORK, null]]),
+  })
+  const report = await runReconcilePass(rec.deps)
+  assert.equal(report.avenFailed, false)
+  assert.deepEqual(report.stale, [])
+  assert.deepEqual(report.tombstoned, [])
+  assert.deepEqual(report.skipped, [
+    { ref: REF_WORK, reason: 'aven lookup inconclusive' },
+  ])
+  assert.equal(rec.warns.length, 1)
+  assert.match(rec.warns[0], /PMR-MSDJ.*aven lookup inconclusive/)
+  assert.deepEqual(rec.fetches, [])
+})
+
+test('runReconcilePass: the probe is bounded to the refs the listing does not know', async () => {
+  const rec = fakeDeps({
+    refs: ['PMR-A', 'PMR-B', 'PMR-C'],
+    events: new Map([
+      [
+        'PMR-A',
+        [
+          runStartNamed('PMR-A', 'work', 'DP-A'),
+          loopStateNamed('PMR-A', 'halted'),
+        ],
+      ],
+      [
+        'PMR-B',
+        [
+          runStartNamed('PMR-B', 'work', 'DP-B'),
+          loopStateNamed('PMR-B', 'paused'),
+        ],
+      ],
+      [
+        'PMR-C',
+        [
+          runStartNamed('PMR-C', 'work', 'DP-C'),
+          loopStateNamed('PMR-C', 'halted'),
+        ],
+      ],
+    ]),
+    ticketStatus: new Map([['PMR-A', 'done']]),
+    probes: new Map<string, TicketProbe | null>([
+      ['PMR-B', { kind: 'missing' }],
+      ['PMR-C', null],
+    ]),
+    bodies: new Map<string, GroupBodyResult>([
+      ['DP-A', { ok: true, body: `${HALTED_BODY}\n` }],
+      ['DP-B', { ok: true, body: `${HALTED_BODY}\n` }],
+    ]),
+  })
+  const report = await runReconcilePass(rec.deps)
+  // PMR-A is known stale by the listing alone => never probed. The two unknown
+  // refs get exactly one shell-out each.
+  assert.deepEqual(rec.stats.probeRefs.sort(), ['PMR-B', 'PMR-C'])
+  assert.deepEqual(report.tombstoned, ['PMR-A', 'PMR-B'])
+  assert.deepEqual(report.skipped, [
+    { ref: 'PMR-C', reason: 'aven lookup inconclusive' },
+  ])
 })

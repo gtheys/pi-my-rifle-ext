@@ -248,3 +248,101 @@ test('fetchGroupBody fails soft on non-2xx and on network errors', async () => {
     /connection refused/,
   )
 })
+
+// ---------------------------------------------------------------------------
+// PMR-MSDJ fix round, P2-5: a line this parser cannot read must cost a MISSED
+// tombstone, never a LOST cost row. `fetchGroupBody` re-POSTs what it read,
+// and a POST REPLACES THE WHOLE GROUP (pushgateway's Replace path deletes
+// every stored family absent from the body), so silently skipping an
+// unparseable non-comment line used to be silent data loss — the opposite of
+// the fail-closed direction this file claims. Now ANY such line fails the
+// read: {ok:false} => the engine records one skip + one warning.
+// ---------------------------------------------------------------------------
+
+test('fetchGroupBody fails the read on an unparseable non-comment line', async () => {
+  const broken = `${DUMP}pi_flow_run_status{instance="" job="pi-flow",ref="PMR-C0WG",status="halted" 1\n`
+  const { fetchImpl } = responding(broken)
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'PMR-C0WG',
+    'personal',
+    undefined,
+    fetchImpl,
+  )
+  assert.equal(result.ok, false)
+  assert.match(
+    (result as { ok: false; error: string }).error,
+    /^unparseable dump line: /,
+  )
+  assert.match(
+    (result as { ok: false; error: string }).error,
+    /pi_flow_run_status/,
+  )
+})
+
+test('fetchGroupBody fails the read on a group line with no label section', async () => {
+  const broken = `${DUMP}pi_flow_run_status 1\n`
+  const { fetchImpl } = responding(broken)
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'PMR-C0WG',
+    'personal',
+    undefined,
+    fetchImpl,
+  )
+  assert.equal(result.ok, false)
+  assert.match(
+    (result as { ok: false; error: string }).error,
+    /^unparseable dump line: pi_flow_run_status 1$/,
+  )
+})
+
+/** The pushgateway's OWN runtime metrics ride in the same /metrics dump
+ *  (`go_goroutines 11` and ~37 more label-less lines, measured live on
+ *  2026-11-24), and a parser this hand-rolled cannot read them. P2-5 must not
+ *  turn THAT into a permanent failure of every read — otherwise the "fix"
+ *  silently disables tombstoning everywhere, a worse bug than the data loss it
+ *  guards. A line with no label section can never be a group member, because
+ *  the gateway re-forces job/ref/instance onto every stored series. */
+test('fetchGroupBody ignores foreign label-less lines instead of failing (P2-5 blast radius)', async () => {
+  const withForeign = `${DUMP}go_goroutines 11\nprocess_start_time_seconds 1.79e+09\n`
+  const { fetchImpl } = responding(withForeign)
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'PMR-C0WG',
+    'personal',
+    undefined,
+    fetchImpl,
+  )
+  assert.equal(result.ok, true)
+})
+
+test('fetchGroupBody ignores an unparseable line of ANOTHER group', async () => {
+  const { fetchImpl } = responding(
+    `${DUMP}other_metric{job="other",instance="",ref="X" 1\n`,
+  )
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'PMR-C0WG',
+    'personal',
+    undefined,
+    fetchImpl,
+  )
+  assert.equal(result.ok, true)
+})
+
+test('fetchGroupBody keeps a parseable dump byte-faithful (P2-5 no regression)', async () => {
+  const { fetchImpl } = responding(DUMP)
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'PMR-C0WG',
+    'personal',
+    undefined,
+    fetchImpl,
+  )
+  assert.equal(result.ok, true)
+  assert.match(
+    result.ok === true ? result.body : '',
+    /pi_flow_run_cost_usd\{agent="main",job="pi-flow"/,
+  )
+})

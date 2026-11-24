@@ -452,3 +452,61 @@ test('reconcileSummaryLine: aven failure and dry-run stay visible', () => {
     'reconcile pass: scanned=2 candidates=1 stale=0 tombstoned=0 skipped=0 dry-run aven=failed',
   )
 })
+
+// ---------------------------------------------------------------------------
+// P2-1 (PMR-MSDJ fix round): the bounded single-ref confirmation is wired at
+// this boundary, exactly like `listTicketStatuses` — engine-side it is a
+// `ReconcileDeps.ticketStatusOf`, host-side it is ONE `aven show <ref> --json`
+// (aven/status.ts). Tests inject the seam, so nothing here shells out.
+// ---------------------------------------------------------------------------
+
+test('createReconcileDeps: the ticketStatusOf seam reaches the engine deps', async () => {
+  const probed: string[] = []
+  const deps = createReconcileDeps({
+    agentDir: agentDir(),
+    warn: () => {},
+    env: { PI_FLOW_PUSHGATEWAY_URL: 'https://g:4479' },
+    listTicketStatuses: settledTicketMap,
+    ticketStatusOf: (ref: string) => {
+      probed.push(ref)
+      return Promise.resolve({ kind: 'ticket', status: 'todo' } as const)
+    },
+  })
+  if (deps === null) throw new Error('expected wired deps')
+  const probe = await deps.ticketStatusOf('PMR-LIVE')
+  assert.deepEqual(probe, { kind: 'ticket', status: 'todo' })
+  assert.deepEqual(probed, ['PMR-LIVE'])
+})
+
+test('runReconcilePassOnce: a wired pass can veto a false stale end to end', async () => {
+  const dir = agentDir()
+  await haltedWorkJournal(dir)
+  const { calls, fetchImpl } = fakeFetch(DUMP)
+  const warns: string[] = []
+  const report = await runReconcilePassOnce({
+    agentDir: dir,
+    warn: (message) => {
+      warns.push(message)
+    },
+    env: { PI_FLOW_PUSHGATEWAY_URL: 'https://g:4479' },
+    fetchImpl,
+    // The listing does not know the ref at all (a valid-but-incomplete
+    // universe), and aven answers DIRECTLY that the ticket is todo => live.
+    listTicketStatuses: () => Promise.resolve(new Map([['PMR-OTHER', 'done']])),
+    ticketStatusOf: () =>
+      Promise.resolve({ kind: 'ticket', status: 'todo' } as const),
+  })
+  if (report === null) throw new Error('expected a report')
+  assert.equal(report.candidates, 1)
+  assert.deepEqual(report.stale, [])
+  assert.deepEqual(report.tombstoned, [])
+  assert.deepEqual(report.skipped, [
+    { ref: REF, reason: 'ticket live on direct lookup' },
+  ])
+  // Nothing was read from or written to the gateway for a live run.
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'POST'),
+    [],
+  )
+  assert.deepEqual(warns, [])
+})
