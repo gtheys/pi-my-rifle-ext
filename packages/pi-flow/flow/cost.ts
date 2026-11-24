@@ -691,63 +691,13 @@ export function buildPushBody(
   return `${lines.join('\n')}\n`
 }
 
-export interface PushResult {
-  ok: boolean
-  /** Present only when ok=false — the caller shows a warning, never fails. */
-  error?: string
-}
-
-export type PushFetch = (
-  url: string,
-  init: { method: string; headers: Record<string, string>; body: string },
-) => Promise<{ status: number; statusText: string }>
-
-/**
- * Push the exposition body to a Pushgateway. Grouping keys put ref in the
- * URL path so separate runs keep separate metric groups; the bearer token
- * (when configured) rides the Authorization header. Failures return
- * {ok:false} — /flow-cost treats them as warnings, never fatal.
- */
-/**
- * Extra Pushgateway grouping segment. AIDEV-NOTE: only WORK mode adds a
- * `mode` grouping label — personal pushes keep their historical group
- * (`…/ref/<ref>`, no mode label) so existing series are replaced in place, not
- * duplicated. Dashboards treat a missing mode label as personal.
- */
-function groupSuffix(mode: 'work' | 'personal' | undefined): string {
-  if (mode === 'work') return '/mode/work'
-  return ''
-}
-
-export async function pushToGateway(
-  url: string,
-  ref: string,
-  body: string,
-  fetchImpl: PushFetch,
-  token?: string,
-  mode?: 'work' | 'personal',
-): Promise<PushResult> {
-  const base = url.replace(/\/+$/, '')
-  const headers: Record<string, string> = {
-    'content-type': 'text/plain',
-  }
-  if (token !== undefined && token.length > 0) {
-    headers.authorization = `Bearer ${token}`
-  }
-  try {
-    const response = await fetchImpl(
-      `${base}/metrics/job/pi-flow/ref/${encodeURIComponent(ref)}${groupSuffix(mode)}`,
-      { method: 'POST', headers, body },
-    )
-    if (response.status < 200 || response.status >= 300) {
-      return {
-        ok: false,
-        error: `pushgateway responded ${response.status} ${response.statusText}`,
-      }
-    }
-    return { ok: true }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : `${err}`
-    return { ok: false, error: message }
-  }
-}
+// AIDEV-NOTE (PMR-XR43 1.1): the Pushgateway transport lives in flow/push.ts
+// (node-only, daemon-reachable — see its header for the import contract). It is
+// re-exported here so existing importers (index.ts, flow/cost-command.ts,
+// test/cost.test.ts, test/work-mode-tracking.test.ts) keep working unchanged.
+export {
+  groupSuffix,
+  type PushFetch,
+  type PushResult,
+  pushToGateway,
+} from './push.ts'

@@ -44,6 +44,7 @@
     "flow/aven-resolve.ts",
     "flow/binding-heal.ts",
     "flow/cost.ts",
+    "flow/push.ts",
     "flow/cost-autopush.ts",
     "flow/cost-command.ts",
     "flow/durable-refs.ts",
