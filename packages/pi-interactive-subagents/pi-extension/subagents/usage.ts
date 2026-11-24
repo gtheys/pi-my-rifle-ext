@@ -6,6 +6,14 @@
 // the authority. COVERAGE DISCIPLINE: when a session's usage is unavailable
 // (unreadable file, no usage blocks) we surface a coverage flag, never a
 // guessed number.
+//
+// AIDEV-NOTE (PMR-8MQH): NODE-ONLY DAEMON SURFACE. This file is exported as
+// the `@gtheys/pi-interactive-subagents/usage` subpath (see package.json
+// `exports`) and is module-imported by the pi-flow daemon
+// (packages/pi-flow/server/daemon.ts), which runs in its own process with no
+// pi extension runtime. Keep it that way: node built-ins only, and never
+// import the root extension index (`./index.ts`) from here. The import graph is
+// locked by test/subpath-exports.test.ts.
 import { closeSync, openSync, readSync, statSync } from 'node:fs'
 
 /** Session-accumulated token + cost totals (cost in USD). */

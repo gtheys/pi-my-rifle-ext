@@ -21,6 +21,14 @@
     "./subagents": {
       "types": "./pi-extension/subagents/index.ts",
       "default": "./pi-extension/subagents/index.ts"
+    },
+    "./usage": {
+      "types": "./pi-extension/subagents/usage.ts",
+      "default": "./pi-extension/subagents/usage.ts"
+    },
+    "./assignments": {
+      "types": "./pi-extension/subagents/assignments.ts",
+      "default": "./pi-extension/subagents/assignments.ts"
     }
   },
   "files": [
@@ -32,7 +40,7 @@
     "config.schema.json"
   ],
   "scripts": {
-    "test": "node --test test/test.ts test/task-composition.test.ts test/herdr-stderr.test.ts test/tmpdir-helper.test.ts test/system-prompt-mode.test.ts test/state-events.test.ts",
+    "test": "node --test test/test.ts test/task-composition.test.ts test/herdr-stderr.test.ts test/tmpdir-helper.test.ts test/system-prompt-mode.test.ts test/state-events.test.ts test/subpath-exports.test.ts",
     "test:integration": "node --test --test-concurrency=1 --test-force-exit test/integration/*.itest.ts"
   },
   "peerDependencies": {

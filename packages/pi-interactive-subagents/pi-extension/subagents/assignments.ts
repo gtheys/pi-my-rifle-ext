@@ -10,6 +10,16 @@
 // verified completion signal (`.exit`/sentinel sidecar observed by the
 // watcher) or explicit remove. Crash-inferred endings mark the record
 // 'lost' and keep it — fail closed, never invent state.
+//
+// AIDEV-NOTE (PMR-8MQH): NODE-ONLY DAEMON SURFACE. This file is exported as
+// the `@gtheys/pi-interactive-subagents/assignments` subpath (see package.json
+// `exports`) and is module-imported by the pi-flow daemon
+// (packages/pi-flow/server/daemon.ts), which runs in its own process with no pi
+// extension runtime. The only non-builtin in the graph is `./dataroot.ts` →
+// `@mariozechner/pi-coding-agent` (`getAgentDir`, default-param only — the same
+// pre-existing acceptance as pi-flow's run-state.ts). Never import the root
+// extension index (`./index.ts`) from here; the graph is locked by
+// test/subpath-exports.test.ts.
 import {
   closeSync,
   existsSync,
