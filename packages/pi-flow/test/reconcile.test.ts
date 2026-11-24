@@ -137,7 +137,10 @@ test('computeStaleRefs: output keeps the journal map iteration order', () => {
       ['PMR-B', 'halted'],
     ]),
     new Map([
-      ['PMR-Z', 'todo'],
+      // PMR-MSDJ amendment (2.3 smoke): 'todo' is LIVE now (gate-waiting runs
+      // park there), so this ordering fixture uses 'backlog' for the stale
+      // ref — intent unchanged: stale refs keep journal iteration order.
+      ['PMR-Z', 'backlog'],
       ['PMR-A', 'active'],
       ['PMR-B', 'canceled'],
     ]),
@@ -732,3 +735,33 @@ function loopStateNamed(ref: string, status: LoopRunStatus): FlowRunEvent {
     },
   }
 }
+
+test('computeStaleRefs: halted run whose ticket is todo stays live (gate-waiting amendment)', () => {
+  assert.deepEqual(
+    computeStaleRefs(
+      new Map([[REF_WORK, 'halted']]),
+      new Map([[REF_WORK, 'todo']]),
+    ),
+    [],
+  )
+})
+
+test('computeStaleRefs: paused run whose ticket is todo stays live', () => {
+  assert.deepEqual(
+    computeStaleRefs(
+      new Map([[REF_WORK, 'paused']]),
+      new Map([[REF_WORK, 'todo']]),
+    ),
+    [],
+  )
+})
+
+test('computeStaleRefs: halted run whose ticket is inbox is stale', () => {
+  assert.deepEqual(
+    computeStaleRefs(
+      new Map([[REF_WORK, 'halted']]),
+      new Map([[REF_WORK, 'inbox']]),
+    ),
+    [REF_WORK],
+  )
+})

@@ -50,7 +50,7 @@ Failure behavior:
 | `/pr-quality [pr]` | Unresolved GitHub review threads + SonarCloud issues in one triage pass (absorbed from pi-review). |
 | `/pr-watch` | Background-polls PR checks; auto-triggers `/pr-quality` when they complete (absorbed from pi-review). |
 | `/flow-cost <ref> [--push]` | Per-ticket cost rollup: replays the run journal, attributes each spawned session's token usage and tool calls to agent/subtask, prints the table. `--push` additionally exports the rollup as Prometheus metrics to a Pushgateway (env-gated, see below); failures warn and never fail the command. Reruns any time — it replays the journal, so it doubles as the backfill path. The rollup also prints a per-phase step outputs section (advisory, never blocking) summarizing the `flow_submit` step-output submissions per phase.
-| `/flow-reconcile-push [--dry-run]` | Runs the stale-liveness reconcile NOW instead of waiting for the daemon timer: tombstones the `pi_flow_run_status` liveness series of runs whose aven ticket is no longer active, so halted/paused alerts stop firing on tickets that closed weeks ago. Takes **no ref** — one pass covers every run journal. `--dry-run` decides without pushing. Output is one summary line plus one line per stale ref (`PMR-X (ticket done) journal=halted → tombstoned`); gateway and aven failures come out as warnings. Details under [Reconcile](#reconcile-stale-run-tombstoning). |
+| `/flow-reconcile-push [--dry-run]` | Runs the stale-liveness reconcile NOW instead of waiting for the daemon timer: tombstones the `pi_flow_run_status` liveness series of runs whose aven ticket is neither active nor todo, so halted/paused alerts stop firing on tickets that closed weeks ago. Takes **no ref** — one pass covers every run journal. `--dry-run` decides without pushing. Output is one summary line plus one line per stale ref (`PMR-X (ticket done) journal=halted → tombstoned`); gateway and aven failures come out as warnings. Details under [Reconcile](#reconcile-stale-run-tombstoning). |
 | `/herdr-sync` | Links this repo as a Herdr plugin (idempotent, explicit-only). |
 | `/flow-view <ref> [placement]` | Opens/focuses a Herdr pane rendering the run-state journal for a ref. |
 | `/flow-diagram <ref> [run]` | Renders the per-ticket flow timeline as a self-contained HTML sequence diagram (one lane per subagent + orchestrator, phase markers, tool arrows with dashed returns, per-lane token totals). Writes to `pi-flow/diagrams/<ref>.run<k>.<stamp>.html` and best-effort opens it; the file path is always the deliverable. |
@@ -134,7 +134,7 @@ checkout) instead of machine-wide.
 | `telemetry.jiraBaseUrl` | `string` | unset | Base URL for Jira issue links, e.g. `https://example.atlassian.net/browse/`. Work-mode spans then carry `flow.url` = base + Jira key, so dashboards can link tickets to Jira. Unset = no links |
 | `telemetry.maxContentChars` | `integer` (100–100000) | `2000` | Max characters per captured content attribute; longer values end with `…[truncated N chars]`. Tempo drops anything past its `max_attribute_bytes` (default 2048) silently, so raise both together |
 | `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
-| `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is no longer active, so the alerts only ever fire on runs that still need you. See [Reconcile](#reconcile-stale-run-tombstoning) |
+| `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is neither active nor todo, so the alerts only ever fire on runs that still need you. See [Reconcile](#reconcile-stale-run-tombstoning) |
 | `reconcile.intervalMinutes` | `integer` (≥ 1) | `360` | Daemon reconcile interval in minutes (6 h by default). An interval change applies on the next cycle — no daemon restart needed |
 
 ```json
@@ -299,9 +299,12 @@ started as exactly that — four alerts on four dead runs). Reconcile retires
 those series by **tombstoning** them.
 
 **What counts as stale.** A journal run whose projected loop status is
-`halted` or `paused` AND whose aven ticket status is not `active` (backlog,
-inbox, todo, done, canceled, or the ticket is gone). A live ticket keeps its
-series; a running journal is never touched.
+`halted` or `paused` AND whose aven ticket status is neither `active` nor
+`todo` (backlog, inbox, done, canceled, or the ticket is gone). `todo` counts
+as live because gate-waiting runs park there (the flow loop moves tickets to
+`active` later); backlog stays stale — an abandoned run parked in backlog
+must not page. A live ticket keeps its series; a running journal is never
+touched.
 
 **What a tombstone does.** The run's Pushgateway group is re-pushed with two
 changes and nothing else:

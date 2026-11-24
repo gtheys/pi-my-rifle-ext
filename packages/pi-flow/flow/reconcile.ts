@@ -47,6 +47,10 @@ import type { GroupBodyResult, PushResult } from './push.ts'
  *  pass. `livenessStatusOf` below is the shared projection rule. */
 export const LIVENESS_STATUSES = ['halted', 'paused']
 
+/** Ticket statuses that keep a halted/paused run LIVE (see computeStaleRefs
+ *  docstring for the amendment evidence). */
+export const LIVE_TICKET_STATUSES = ['active', 'todo']
+
 /** The ONE aven fail-closed warning, exported for the same reason: both entry
  *  points must say the identical thing (the manual test counts it as exactly
  *  one user-visible warning). */
@@ -78,11 +82,22 @@ export function livenessStatusOf(
 }
 
 /**
- * Pure liveness rule (interview decision 2): a halted/paused journal run is
- * LIVE only while its aven ticket status is `active`. Anything else —
- * backlog/inbox/todo/done/canceled, or the ticket missing from the listing —
- * makes the ref stale. `ticketStatus === null` means aven could not be
- * consulted, which fails CLOSED: nothing is tombstoned on a guess.
+ * Pure liveness rule (interview decision 2, AMENDED in 2.3 smoke): a
+ * halted/paused journal run is LIVE while its aven ticket status is
+ * `active` OR `todo`. Anything else — backlog/inbox/done/canceled, or the
+ * ticket missing from the listing — makes the ref stale. `ticketStatus ===
+ * null` means aven could not be consulted, which fails CLOSED: nothing is
+ * tombstoned on a guess.
+ *
+ * AIDEV-NOTE (amendment evidence, 2026-11-24): the first live dry-run listed
+ * PMR-MSDJ's OWN in-flight run as a stale candidate — its journal's last
+ * loop state is `paused` (waiting at the plan-approval gate) while its
+ * ticket sits in `todo`, because the flow loop never moves the ticket to
+ * `active` before implement. Under active-only the daemon would tombstone
+ * runs that are merely gate-waiting. The user's original criterion was
+ * "done or canceled must not fire" — `todo` is neither, so todo stays live.
+ * backlog/inbox stay stale: an abandoned run parked in backlog (the
+ * PMR-C0WG incident) must not page.
  *
  * @param journalStates ref → projected `loop.status` (only `halted`/`paused`
  * entries are candidates; any other value is ignored defensively).
@@ -96,7 +111,7 @@ export function computeStaleRefs(
   const stale: string[] = []
   for (const [ref, status] of journalStates) {
     if (!LIVENESS_STATUSES.includes(status)) continue
-    if (ticketStatus.get(ref) === 'active') continue
+    if (LIVE_TICKET_STATUSES.includes(ticketStatus.get(ref) ?? '')) continue
     stale.push(ref)
   }
   return stale
