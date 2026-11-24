@@ -757,7 +757,11 @@ async function readLivenessSettings(
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code !== 'ENOENT') {
-      warning = `could not read ${file}: ${err instanceof Error ? err.message : `${err}`}`
+      let reason = `${err}`
+      if (err instanceof Error) {
+        reason = err.message
+      }
+      warning = `could not read ${file}: ${reason}`
     }
     raw = null
   }
