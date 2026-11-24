@@ -12,7 +12,16 @@
 // node built-ins" was never literally true. The ENFORCEABLE contract is: every
 // module the daemon imports adds NO NEW runtime dependency beyond
 // run-state.ts + flow/reconcile.ts + flow/reconcile-deps.ts + flow/push.ts +
-// aven/status.ts (all node built-ins apart from that pre-existing one). Never
+// flow/liveness.ts + flow/cost-rows.ts + aven/status.ts (all node built-ins
+// apart from that pre-existing one). flow/liveness.ts and flow/cost-rows.ts
+// (PMR-8MQH 3.2) are sanctioned because they import ONLY the node-only
+// `@gtheys/pi-interactive-subagents` SUBPATH exports (`/usage`, `/assignments`)
+// — never the package root — and, like run-state.ts, `assignments` transitively
+// module-loads pi-coding-agent through `subagents/dataroot.ts`. That is the
+// SAME documented pre-existing acceptance class as run-state.ts (a module-load,
+// not a new dependency edge, and both only ever call `getAgentDir()` at their
+// own call sites the daemon never reaches), so they add no NEW runtime
+// dependency either. Never
 // add `config.ts` (its readConfigFile THROWS on a malformed file — the daemon
 // is best-effort io), `flow/cost.ts` (runtime dep on
 // @gtheys/pi-interactive-subagents) or `aven/client.ts` (imports config.ts).
@@ -43,8 +52,17 @@
 import { promises as fsp, watch } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  createLivenessDeps,
+  type LivenessReport,
+  type LivenessSettings,
+  livenessSummaryLine,
+  parseLivenessSettings,
+  runLivenessPassOnce,
+} from '../flow/liveness.ts'
 import type { ReconcileReport } from '../flow/reconcile.ts'
 import {
+  globalConfigPath,
   journalRefsFromEntries,
   pushgatewayEnv,
   type ReconcileSettings,
@@ -706,6 +724,105 @@ export function startReconcileTimer(
   })
 }
 
+// --- liveness timer (PMR-8MQH 3.2) ---
+
+/** Delay before the FIRST liveness pass and the unit `intervalMinutes` is
+ *  expressed in — both reuse the factory's shared `PERIODIC_*` values (3.1),
+ *  which are byte-identical here. Named per the plan's liveness contract and
+ *  exported so the timer test asserts the re-read policy without a live
+ *  daemon. */
+export const LIVENESS_FIRST_PASS_DELAY_MS = PERIODIC_FIRST_PASS_DELAY_MS
+export const LIVENESS_MINUTE_MS = PERIODIC_MINUTE_MS
+
+/**
+ * AIDEV-NOTE: PMR-8MQH 3.2 — the liveness half of the two-reader split over
+ * `<agentDir>/pi-flow/config.json` (see flow/liveness.ts's `parseLivenessSettings`
+ * note). Mirrors `readReconcileSettings` (flow/reconcile-deps.ts) exactly:
+ * read the raw global-config text, hand it to the liveness parser, and degrade
+ * a non-ENOENT read failure to defaults + a warning — NEVER throw out of the
+ * tick (the daemon is best-effort io; `config.ts`'s throwing reader is
+ * deliberately off the allowlist). ENOENT is the normal "no config yet" answer
+ * (defaults, no warning).
+ */
+async function readLivenessSettings(
+  agentDir: string,
+  readFile: (file: string) => Promise<string> = (file) =>
+    fsp.readFile(file, 'utf8'),
+): Promise<LivenessSettings> {
+  const file = globalConfigPath(agentDir)
+  let raw: string | null = null
+  let warning: string | undefined
+  try {
+    raw = await readFile(file)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') {
+      warning = `could not read ${file}: ${err instanceof Error ? err.message : `${err}`}`
+    }
+    raw = null
+  }
+  const settings = parseLivenessSettings(raw)
+  if (warning !== undefined) return { ...settings, warning }
+  return settings
+}
+
+export interface LivenessTimerOptions {
+  agentDir: string
+  /** the daemon's log channel (`<agentDir>/pi-flow/server.log`) — also where
+   *  engine warnings land, via `createLivenessDeps`'s `warn` */
+  log: (message: string) => void
+  env?: NodeJS.ProcessEnv
+  /** seam: defaults to reading `<agentDir>/pi-flow/config.json` as raw text */
+  readSettings?: (agentDir: string) => Promise<LivenessSettings>
+  /** seam: defaults to the wired engine pass (a null from
+   *  `createLivenessDeps` — the gate closed late — means "no pass") */
+  runPass?: () => Promise<LivenessReport | null>
+  /** seam: defaults to `setTimeout` — a REF'D handle (keepalive) */
+  schedule?: (fn: () => void, ms: number) => ReconcileTimerHandle
+  firstPassDelayMs?: number
+}
+
+/**
+ * The daemon's liveness pass — the liveness wiring of
+ * `startPeriodicPassTimer`. Gates, in order, evaluated at startup:
+ *  1. `PI_FLOW_PUSHGATEWAY_URL` unset → log once, NO timer at all (the same
+ *     endpoint gate the reconcile timer uses — with no gateway there is
+ *     nothing to keep alive on the dashboard, and the daemon's env is fixed at
+ *     spawn so a later check could never succeed);
+ *  2. `liveness.enabled === false` → log once, NO timer at all.
+ * Then on every tick the liveness settings are re-read (see the factory for
+ * the rest of the loop contract). `runPass` builds deps via
+ * `createLivenessDeps`; a null return (gate closed late) is reported as "no
+ * pass" so the factory logs no summary line (2.2 handoff).
+ */
+export function startLivenessTimer(
+  options: LivenessTimerOptions,
+): ReconcileTimer {
+  const runPass =
+    options.runPass ??
+    (async () => {
+      const deps = createLivenessDeps({
+        agentDir: options.agentDir,
+        warn: options.log,
+        env: options.env,
+      })
+      if (deps === null) return null
+      return runLivenessPassOnce(deps)
+    })
+  return startPeriodicPassTimer<LivenessReport>({
+    label: 'liveness',
+    agentDir: options.agentDir,
+    log: options.log,
+    readSettings: options.readSettings ?? readLivenessSettings,
+    runPass,
+    formatSummary: livenessSummaryLine,
+    gateOpen: () => pushgatewayEnv(options.env) !== null,
+    gateClosedMessage: 'PI_FLOW_PUSHGATEWAY_URL is not set — timer not started',
+    schedule: options.schedule,
+    firstPassDelayMs: options.firstPassDelayMs,
+  })
+}
+
 function main(): void {
   const agentDir = process.env.PI_FLOW_AGENT_DIR ?? ''
   if (!path.isAbsolute(agentDir)) {
@@ -792,6 +909,19 @@ function main(): void {
       log(agentDir, message)
     },
   })
+  // AIDEV-NOTE: PMR-8MQH 3.2 — liveness timer, the same gated periodic-pass
+  // loop as reconcile but pushing the FULL running body for still-running
+  // runs (so they never fade from the dashboard between phase pushes). Own
+  // async chain, ref'd handle (keepalive), `cancel()` on shutdown; the
+  // settings (`liveness` block) are re-read per tick. Gates identically: no
+  // endpoint / disabled at startup ⇒ no timer.
+  const liveness = startLivenessTimer({
+    agentDir,
+    log: (message) => {
+      log(agentDir, message)
+    },
+    env: process.env,
+  })
   try {
     const watcher = watch(runsDir(agentDir), (_event, filename) => {
       if (isJournalWatchEvent(filename)) schedule()
@@ -807,6 +937,7 @@ function main(): void {
   const shutdown = (): void => {
     clearInterval(pollTimer)
     reconcile.cancel()
+    liveness.cancel()
     log(agentDir, 'daemon stopping')
     // AIDEV-NOTE: best-effort pidfile unlink on clean shutdown (SIGTERM/SIGINT)
     // so a drained daemon doesn't leave a stale server.pid behind. A SIGKILL
