@@ -44,6 +44,15 @@
 // halt_reason from the body does not remove the stored series here — no
 // alert keys on halt_reason, so alerting is unaffected; dashboards may show
 // a stale halt reason until the series is overwritten.
+// AIDEV-NOTE (PMR-ZV9Y 7.2): `pi_flow_run_halt_reason` is RETIRED — it is no
+// longer rendered by flow/run-health.ts, so the tombstone engine no longer
+// drops it (the only drop it ever made; see flow/reconcile.ts). The
+// merge-on-write behaviour this note documents is unchanged and still governs
+// every v2 line: a re-POSTed body that OMITS a stored `pi_flow*` series leaves
+// that stale series served. The TYPE-line failure mode described above (a
+// typed first push plus an untyped tombstone re-POST 400s the whole group) is
+// documented here for any future typed family, even though the v1 metric that
+// first exposed it is gone.
 
 export interface PushResult {
   ok: boolean

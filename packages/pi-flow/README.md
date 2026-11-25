@@ -50,7 +50,7 @@ Failure behavior:
 | `/pr-quality [pr]` | Unresolved GitHub review threads + SonarCloud issues in one triage pass (absorbed from pi-review). |
 | `/pr-watch` | Background-polls PR checks; auto-triggers `/pr-quality` when they complete (absorbed from pi-review). |
 | `/flow-cost <ref> [--push]` | Per-ticket cost rollup: replays the run journal, attributes each spawned session's token usage and tool calls to agent/subtask, prints the table. `--push` additionally exports the rollup as Prometheus metrics to a Pushgateway (env-gated, see below); failures warn and never fail the command. Reruns any time — it replays the journal, so it doubles as the backfill path. The rollup also prints a per-phase step outputs section (advisory, never blocking) summarizing the `flow_submit` step-output submissions per phase.
-| `/flow-reconcile-push [--dry-run]` | Runs the stale-liveness reconcile NOW instead of waiting for the daemon timer: tombstones the `pi_flow_run_status` liveness series of runs whose aven ticket is neither active nor todo, so halted/paused alerts stop firing on tickets that closed weeks ago. Takes **no ref** — one pass covers every run journal. `--dry-run` decides without pushing. Output is one summary line plus one line per stale ref (`PMR-X (ticket done) journal=halted → tombstoned`); gateway and aven failures come out as warnings. Details under [Reconcile](#reconcile-stale-run-tombstoning). |
+| `/flow-reconcile-push [--dry-run]` | Runs the stale-liveness reconcile NOW instead of waiting for the daemon timer: tombstones the `pi_flow_state` liveness series of runs whose aven ticket is neither active nor todo (the stored `state="halted"`/`"waiting_human"`/`"waiting_machine"` become `state="stale"`), so halted/waiting alerts stop firing on tickets that closed weeks ago. Takes **no ref** — one pass covers every run journal. `--dry-run` decides without pushing. Output is one summary line plus one line per stale ref (`PMR-X (ticket done) journal=halted → tombstoned`); gateway and aven failures come out as warnings. Details under [Reconcile](#reconcile-stale-run-tombstoning). |
 | `/herdr-sync` | Links this repo as a Herdr plugin (idempotent, explicit-only). |
 | `/flow-view <ref> [placement]` | Opens/focuses a Herdr pane rendering the run-state journal for a ref. |
 | `/flow-diagram <ref> [run]` | Renders the per-ticket flow timeline as a self-contained HTML sequence diagram (one lane per subagent + orchestrator, phase markers, tool arrows with dashed returns, per-lane token totals). Writes to `pi-flow/diagrams/<ref>.run<k>.<stamp>.html` and best-effort opens it; the file path is always the deliverable. |
@@ -138,9 +138,9 @@ checkout) instead of machine-wide.
 | `telemetry.loki.headers` | `record<string, string>` | `{}` | Static extra headers for the Loki push (e.g. a Bearer token in front of a reverse proxy). Secrets belong in env, not config |
 | `notify.desktop.enabled` | `boolean` | `true` | Send a desktop notification on `waiting_human` / `halted` flow transitions through [`pi-desktop-notify`](../pi-desktop-notify/README.md) (PMR-ZV9Y 5.2). `false` turns the **flow-side page** off — the user's own channel toggles (desktop / herdr / ntfy) still live in pi-desktop-notify's config, and Grafana alerting is unaffected (independent channel). See [Notifications](#notifications) |
 | `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
-| `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is neither active nor todo, so the alerts only ever fire on runs that still need you. Setting it to `false` on a RUNNING daemon takes effect on the next tick; setting it to `true` again only takes effect at daemon start — a daemon that started with `enabled: false` armed no timer, so restart the daemon (or run `/flow-reconcile-push` once). See [Reconcile](#reconcile-stale-run-tombstoning) |
+| `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone the v2 `pi_flow_state` series whose aven ticket is neither active nor todo (`state="halted"`/`"waiting_human"`/`"waiting_machine"` → `state="stale"`), so the alerts only ever fire on runs that still need you. Setting it to `false` on a RUNNING daemon takes effect on the next tick; setting it to `true` again only takes effect at daemon start — a daemon that started with `enabled: false` armed no timer, so restart the daemon (or run `/flow-reconcile-push` once). See [Reconcile](#reconcile-stale-run-tombstoning) |
 | `reconcile.intervalMinutes` | `integer` (≥ 1) | `360` | Daemon reconcile interval in minutes (6 h by default). An interval change applies on the next cycle — no daemon restart needed |
-| `liveness.enabled` | `boolean` | `true` | Push full run bodies — `pi_flow_run_status{status="running"}` refresh — to the Pushgateway while runs are in flight, so the board shows running flows. See [Liveness](#liveness-running-flow-visibility) |
+| `liveness.enabled` | `boolean` | `true` | Push full run bodies — the v2 `pi_flow_state{state="running"}` gauge refresh — to the Pushgateway while runs are in flight, so the board shows running flows. See [Liveness](#liveness-running-flow-visibility) |
 | `liveness.intervalMinutes` | `integer` (≥ 1) | `5` | Daemon liveness push interval in minutes (5 min by default). An interval change applies on the next cycle — no daemon restart needed |
 
 ```json
@@ -155,6 +155,9 @@ checkout) instead of machine-wide.
   "telemetry": {
     "enabled": false,
     "otlpEndpoint": "https://tempo.example.com:4478",
+    "headers": {},
+    "captureContent": "off",
+    "maxContentChars": 2000,
     "loki": {
       "enabled": false,
       "endpoint": "http://100.108.226.64:3100",
@@ -426,10 +429,14 @@ Push failures print a warning and never fail the command; rerun `/flow-cost <ref
 ### Reconcile (stale run tombstoning)
 
 Pushgateway groups never expire on their own: a `/flow` run that halted or
-paused keeps exporting `pi_flow_run_status{status="halted"}` forever, so
-halted/paused alerts go on firing for tickets that closed weeks ago (PMR-V36Y
-started as exactly that — four alerts on four dead runs). Reconcile retires
-those series by **tombstoning** them.
+parked on a gate keeps exporting `pi_flow_state{state="halted"}` (or
+`state="waiting_human"`/`state="waiting_machine"`) forever, so the halted and
+waiting-on-human alerts go on firing for tickets that closed weeks ago
+(PMR-V36Y started as exactly that — four alerts on four dead runs). Reconcile
+retires those series by **tombstoning** them. (Before PMR-ZV9Y this flipped the
+v1 `pi_flow_run_status` value and dropped `pi_flow_run_halt_reason`; those
+v1 state-vocabulary lines are retired — the surgery is now on the v2 state
+lines.)
 
 **What counts as stale.** A journal run whose projected loop status is
 `halted` or `paused` AND whose aven ticket status is neither `active` nor
@@ -458,25 +465,36 @@ closed PER REF: one bad shell-out costs one tombstone, not the whole pass, and
 the question can only ever cancel a tombstone — it is asked solely for refs
 the listing already lacked.
 
-**What a tombstone does.** The run's Pushgateway group is re-pushed with two
-changes and nothing else:
+**What a tombstone does.** The run's Pushgateway group is re-pushed with one
+change and nothing else:
 
-- `pi_flow_run_status{…status="halted"|"paused"}` becomes `status="stale"` — a
-  new status **value**; metric names and label keys stay frozen, so the alerts
-  and the board's value mappings simply stop matching a closed run.
-- `pi_flow_run_halt_reason{…}` is dropped — that series only exists for
-  halted runs, which is what clears the run out of the needs-attention table.
-  Note (PMR-WBC2, verified live 2026-11-24): the homelab gateway MERGES on
-  write rather than applying official Pushgateway replace semantics, so a
-  series omitted from the body keeps being served — the stored halt_reason
-  survives the tombstone until it is overwritten. The table and the alerts
-  are unaffected: both gate on `status`, and the status flip to `stale` does
-  land (merge overwrites same-identity series in place).
+- `pi_flow_state{…}` and `pi_flow_state_start_seconds{…}` whose
+  `state="halted"|"waiting_human"|"waiting_machine"` become `state="stale"` —
+  a new state **value**; metric names and label keys stay frozen, so the alerts
+  and the Waiting-on-me board's value mappings simply stop matching a closed
+  run. The label-value flip lands even though the homelab gateway MERGES on
+  write rather than applying official Pushgateway replace semantics
+  (PMR-WBC2, verified live 2026-11-24): same-identity series are overwritten in
+  place, so `state="stale"` replaces the old value. No line is **dropped** any
+  more — the only drop the engine ever made was the now-retired
+  `pi_flow_run_halt_reason`, and a drop is exactly what a merge-on-write
+  gateway could not honour (a stored halt_reason kept being served until
+  overwritten), so removing it loses nothing.
 
-Every other line (cost, tokens, tool calls, durations, gate decisions, human
-wait, run start, gate waits) is re-emitted byte-identical, so done-run cost
-history on the runs board is untouched. **Nothing is ever deleted** — deleting
-the group would erase those cost rows too.
+Every other line (cost, tokens, tool calls, durations, gate decisions, retry
+and blocker counters, worktree sweep, run start, and the non-state v2 families
+`pi_flow_phase`/`pi_flow_wait_seconds`/`pi_flow_step`/`pi_flow_step_seconds`) is
+re-emitted byte-identical, so done-run cost history on the runs board is
+untouched. **Nothing is ever deleted** — deleting the group would erase those
+cost rows too.
+
+One consequence of cutting over to v2 (matches the 6.5 cutover): a group
+**stored before the v2 render landed** carries only v1 lines and no
+`pi_flow_state*` to flip, so `tombstoneBody` reads it as `already clean` and
+never re-posts it. That is harmless — every alert rule and board was cut to the
+v2 vocabulary, so a stale v1-only body drives nothing anymore; re-push the
+run's group (a terminal `/flow-cost <aven-ref> --push`, or let the next run
+re-render) to give it v2 series.
 
 **Where it runs.** Two places, same engine:
 
@@ -516,17 +534,17 @@ Refs that stayed live are not listed; the `candidates=N` count covers them.
 **Known limitation: only journals name the candidates.** Because candidacy
 comes from the run journals, Reconcile can never retire a Pushgateway group
 that no journal names any more. A work group exporting
-`ref="DP-253",mode="work"` at `status="paused"` whose run re-tracked to a
-different journal ref (say `AA-SG9T`) stays exported, and a `paused` alert
-rule can still fire on it; likewise a resumed run keeps its `paused` series
-until the next terminal transition re-pushes it. Sweeping the gateway dump
-instead (retire every halted/paused group whose ticket is closed) is
+`ref="DP-253",mode="work"` at `state="waiting_human"` whose run re-tracked to a
+different journal ref (say `AA-SG9T`) stays exported, and a waiting-on-human
+alert rule can still fire on it; likewise a resumed run keeps its stored wait
+state until the next terminal transition re-pushes it. Sweeping the gateway dump
+instead (retire every halted/waiting group whose ticket is closed) is
 deliberately out of scope: a stored group carries no identity beyond its
 `ref` label, so a sweep means guessing which journal that ref belongs to, and
 a sweep that ignores `ref` entirely would reach adhoc runs and other jobs'
 groups. If this bites, `/flow-reconcile-push` cannot help either — retire the
-series by hand (re-push the group without the liveness line) or let the
-`piflow-human-wait-4h` rule page and close the loop.
+series by hand (re-push the group without the v2 state line) or let the
+`piflow-waiting-on-human` rule page and close the loop.
 
 **Fail-closed on aven errors.** If `aven list` fails, times out, or returns
 something unexpected, the pass tombstones **nothing** and logs exactly one
@@ -544,7 +562,9 @@ per-checkout config does not affect it. `/flow-reconcile-push` is the escape
 hatch when you need a pass now, or for one checkout.
 
 **Mode is not part of the decision.** The candidate filter asks only whether a
-JOURNAL projects a halted/paused loop state; liveness then comes from the aven
+JOURNAL projects a halted/paused loop state (the v1 loop status — candidacy
+stayed journal-keyed through the v2 cutover, so retiring the `pi_flow_run_status`
+series did not change which refs are stale); liveness then comes from the aven
 ticket map, where a missing entry is stale. In practice `TP-*` personal runs
 carry no loop-state journal, so they never become candidates — but a
 personal-mode ref that DOES have a halted/paused journal and no aven ticket
@@ -552,11 +572,10 @@ tombstones under the same rule. `mode` only picks the group URL suffix
 (`/mode/work`), so the tombstone replaces the RIGHT group instead of creating
 a duplicate personal one.
 
-On the Grafana side, the `piflow-runs` board maps the new value to a gray
-**stale (ticket closed)** and the needs-attention table is gated to
-`status=~"running|paused|halted"`, so tombstoned runs drop out of it while
-their cost history stays browsable (homelab:
-`quadlets/grafana/provisioning/dashboards-piflow/piflow-runs.json`).
+On the Grafana side, the `piflow-runs` board maps the `state="stale"` value to a
+gray **stale (ticket closed)** and the needs-attention rows gate on the v2 state
+value (`state="waiting_human"`, `state="halted"`, `state="running"`, …), so
+tombstoned runs drop out of them while their cost history stays browsable.
 
 ### Liveness (running-flow visibility)
 
@@ -566,9 +585,8 @@ transition (`onRunEnd` → done/halt/pause, plus the manual
 `/flow-cost <ref> --push`), so a flow that was still running exported
 **nothing** — DP-253 ran 14:21–14:37 and the board stayed empty until the
 pause autopush landed at 14:37:05. The daemon now periodically re-pushes each
-run that is in flight, so `pi_flow_run_status{status="running"}` has a
-producer and the board's existing running/needs-attention mappings actually
-light up.
+run that is in flight, so the v2 `pi_flow_state{state="running"}` gauge has a
+producer and the board's running/needs-attention mappings actually light up.
 
 **What it pushes.** Not a status-only patch — the FULL group body: cost,
 token, tool-call and duration lines plus the run-health lines, rendered
@@ -579,7 +597,9 @@ entire group, so a partial body would drop the cost series the terminal push
 owns. (The homelab gateway was verified to MERGE on write instead — PMR-WBC2,
 2026-11-24 — but the full-body rule stays: it is correct under either
 semantics and does not depend on which build answers.) It also means the two
-pushes of one run differ only in the status line. Reading the stored group
+pushes of one run differ only in the state-vocabulary lines (the v2
+`pi_flow_state` / `pi_flow_state_start_seconds` / step and wait gauges that the
+journal fold re-renders). Reading the stored group
 back with
 `fetchGroupBody` is deliberately NOT used here — that round-trip stays
 reserved for the tombstone reconcile above.
@@ -589,7 +609,7 @@ journal immediately before the POST, so a run that went terminal while the
 rollup was being computed is skipped rather than stamped over the terminal
 body. (A millisecond-scale window remains — the re-gate passes, the session
 dies, and the terminal push lands before the POST does. When it hits, the
-group sticks at `status="running"`: liveness never revisits the ref (the
+group sticks at `state="running"`: liveness never revisits the ref (the
 journal no longer projects running) and the tombstone reconcile only
 covers halted/paused journals, so nothing self-heals until the group is
 replaced — a restart under the same ref, or manual cleanup. Rare, accepted,

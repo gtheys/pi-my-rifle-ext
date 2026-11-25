@@ -101,8 +101,11 @@ command reference live in the superseded-but-still-accurate
 - `docs/piv-flow.md` — canonical flow doc (gates, retry budget, resume
   semantics, config, script-path resolution); `docs/piv-flow-work.md` and
   `docs/piv-flow-personal.md` carry the per-mode detail.
-- `docs/pi-flow-observability.md` — the OTLP/Pushgateway/Grafana stack,
-  cost attribution model, and the traps already hit.
+- `docs/pi-flow-observability.md` — the v2 state-machine vocabulary (PMR-ZV9Y)
+  and its three renderers (Prometheus v2 gauges, Loki transition events, Tempo
+  step spans), the OTLP/Pushgateway/Grafana stack, cost attribution model, the
+  rebuilt boards + alerts, the cutover troubleshooting entry, and the traps
+  already hit.
 - `openwiki/workflows/code-review.md` — the review commands; review now
   gates validate.
 - [Extension reference](../architecture/extensions.md#plan-tools-absorbed-from-pi-planning)

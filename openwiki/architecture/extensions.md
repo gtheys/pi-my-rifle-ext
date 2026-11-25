@@ -242,6 +242,10 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   `flow/` (loop, args, attribution, label-gate, land-gate, effect-gate, ensure-labels, aven-resolve,
   ref-kind, jira-ref, phase-command, phase-prompts, orchestrate, cost + cost-command + cost-autopush —
   the `/flow-cost` per-ticket rollup and its automatic Pushgateway push when a run ends —
+  vocabulary + steps (the v2 state-machine enums + step registry, pure),
+  state-metrics + run-health + reconcile + liveness (the node-only v2 Prometheus
+  fold, the frozen push body, stale-run tombstoning, running-flow re-push —
+  PMR-ZV9Y),
   answer, resume, status, frame, widget + phase-emoji — the flow-status widget,
   picker, agent-role, step-output, worktree-context, aven-resolve-exec),
   `flow-diagram/` (`/flow-diagram` command + pure run segmentation/translation +
@@ -255,8 +259,11 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   `brainstorm|plan|implement|validate|feedback/` (one subdir per command: args +
   prompt), `plan-tools/` (absorbed from pi-planning), `review/` +
   `sonarqube/` + `pr-quality/` + `shared/` (absorbed from pi-review),
-  `worktree/` (absorbed from pi-worktree), `run-state.ts`, `telemetry/`
-  (optional OTLP span export: attributes, exporter, event wiring — PMR-R8AG),
+  `worktree/` (absorbed from pi-worktree), `run-state.ts` (journal kinds + the
+  v2 `state-change` projection into `currentState`, PMR-ZV9Y), `telemetry/`
+  (optional OTLP span export — attributes, exporter, event wiring, step spans
+  PMR-R8AG/PMR-ZV9Y — plus the session-side `dispatch.ts` writer fan-out, the
+  `loki.ts` transition-event pusher and the desktop-notify sink),
   `herdr/` (viewer,
   sync).
 - **Commands:** `/brainstorm` (standalone), `/plan`, `/implement`, `/validate`, `/feedback`,
@@ -393,21 +400,44 @@ pi-flow subsections [review/](#review--absorbed-from-pi-review),
   for work flows); dirty, in-flight, or unproven worktrees are deferred with
   an aven note and retried by a later sweep. A manual `NO_PR` veto is
   respected.
-- **Observability** (`telemetry/`, `flow/cost-autopush.ts`,
-  `adhoc/tracker.ts`): two independent signal paths — live OTLP/HTTP spans
-  per pi process (opt-in, metadata-only by default) and after-the-fact
-  `pi_flow_*` Prometheus metrics pushed to a Pushgateway automatically when a
-  run ends (env-gated by `PI_FLOW_PUSHGATEWAY_URL`, idempotent; `/flow-cost
-  --push` is the manual retry/backfill). Full stack (Caddy/Tempo/Pushgateway/
-  Grafana wiring, dashboards, traps) is documented in
+- **Observability** (`telemetry/`, `flow/vocabulary.ts`, `flow/state-metrics.ts`,
+  `flow/cost-autopush.ts`, `flow/reconcile.ts`, `flow/liveness.ts`,
+  `adhoc/tracker.ts`): the run journal is the single source of truth rendered
+  three ways (PMR-ZV9Y v2 state-machine vocabulary — one closed enum per
+  `state`/`phase`/`step`/`reason`/`wait_kind`, all derived from
+  `flow/vocabulary.ts`): (1) **Prometheus** — a pure, node-only journal fold
+  (`flow/state-metrics.ts` via `flow/run-health.ts` → `buildPushBody`) pushes
+  the v2 gauges (`pi_flow_state`, `pi_flow_state_start_seconds`,
+  `pi_flow_phase`, `pi_flow_wait_seconds`, `pi_flow_step`,
+  `pi_flow_step_seconds`) plus the kept counters/cost family to a Pushgateway
+  automatically when a run ends and on the daemon's liveness re-push (env-gated
+  by `PI_FLOW_PUSHGATEWAY_URL`, idempotent; `/flow-cost --push` is the manual
+  retry/backfill); a stale closed run's `pi_flow_state` is tombstoned to
+  `state="stale"` by reconcile. The four v1 state-vocabulary lines
+  (`pi_flow_run_status`, `pi_flow_run_halt_reason`, `pi_flow_human_wait_seconds`,
+  `pi_flow_gate_wait_seconds`) are retired. (2) **Loki** — the live-session
+  writer fan-out (`telemetry/dispatch.ts` → `telemetry/loki.ts`, session-side
+  only, config-gated by `telemetry.loki`, disabled by default, fail-silent)
+  pushes each journaled `state-change`/`step-start`/`step-stop` as a closed-label
+  transition stream. (3) **Tempo** — live OTLP/HTTP spans per pi process
+  (opt-in, metadata-only by default) now carry **step spans** under the phase
+  spans (`telemetry/index.ts`, deterministic ids, export-once). The fan-out also
+  fires a desktop notification (`@gtheys/pi-desktop-notify`, optional dep,
+  `notify.desktop.enabled`) on `waiting_human`/`halted`; Grafana alerting is the
+  independent second channel. Full stack (Caddy/Tempo/Loki/Pushgateway/Grafana
+  wiring, boards, traps, cutover) is documented in
   [`docs/pi-flow-observability.md`](../../docs/pi-flow-observability.md) +
-  `pi-flow-observability-troubleshooting.md`, with four checked-in Grafana
-  dashboard JSONs (`docs/pi-flow-*.dashboard.json`).
+  `pi-flow-observability-troubleshooting.md`, with five checked-in Grafana
+  dashboard JSONs (`docs/pi-flow-{runs,health,orchestrator,subagents,adhoc}.dashboard.json`)
+  and the `pi-flow-runs` alert-rule backups (`docs/pi-flow-alerts/`).
 - **Config:** `~/.pi/agent/pi-flow/config.json` — `workRoots` (work-vs-personal
   mode by path prefix), `avenWorkspace` (pin a workspace, skip inference),
   `runServer.enabled` (kill switch for the durable run server daemon, default
   `true`), `viewerPlacement` (default herdr placement for `/flow-view*`),
-  `telemetry.*` (OTLP endpoint, content capture policy).
+  `telemetry.*` (OTLP endpoint, content capture policy, `telemetry.loki.*`
+  for the session-side transition stream), `notify.desktop.enabled` (default
+  `true`, the flow-side desktop-page gate), `reconcile.*` /
+  `liveness.*` (daemon timer blocks).
 
 ### plan-tools/ (absorbed from pi-planning)
 

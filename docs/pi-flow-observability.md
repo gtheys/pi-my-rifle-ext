@@ -1,32 +1,48 @@
 # pi-flow observability — how it works (LLM handoff / context doc)
 
-Feed this file to an LLM before working on pi-flow telemetry or the Grafana dashboard. It states what exists,
-where it lives, how data flows, and the traps already hit. Last verified against the code on 2026-11-07
-(commit `81f31e8`+). For the chronological incident log see
+Feed this file to an LLM before working on pi-flow telemetry or the Grafana board. It states what exists,
+where it lives, how data flows, and the traps already hit. Last verified against the code on 2026-11-25
+(PMR-ZV9Y, the v2 state-machine rework). For the chronological incident log see
 [`pi-flow-observability-troubleshooting.md`](pi-flow-observability-troubleshooting.md).
+
+> **v2 cutover (PMR-ZV9Y, 2026-11-25).** A run's state is now described by **one** vocabulary — `state`, `phase`,
+> registered `step`, closed `reason`, `wait_kind` — emitted from the run journal and rendered to Prometheus, Loki
+> and Tempo. The old v1 state-vocabulary metric lines (`pi_flow_run_status`, `pi_flow_run_halt_reason`,
+> `pi_flow_human_wait_seconds`, `pi_flow_gate_wait_seconds`) are **retired**: every board and alert rule now reads
+> the v2 series. If you are picking up a pre-cutover bug report that quotes one of those names, it describes a
+> series that no longer renders — see §10. Cost, tool-call, duration, gate-decision, retry, worktree-sweep and the
+> whole `pi_flow_adhoc_*` family are **unchanged** and still described here as before.
 
 ## 1. What this is
 
-pi-flow (`packages/pi-flow`) drives the PIV flow (plan → implement → validate) for an aven ticket. Two independent
-signal paths describe a run:
+pi-flow (`packages/pi-flow`) drives the PIV flow (plan → implement → validate → feedback) for an aven ticket. The
+**run journal** (`~/.pi/agent/pi-flow/runs/<ref>.journal.jsonl`, projected by `run-state.ts`) is the single source of
+truth, and it has **three renderers** (the one design problem PMR-ZV9Y solved — see §3):
 
-| Path | Signal | Produced by | Goes to | Used by |
+| Renderer | Signal | Produced by | Goes to | Answers |
 | --- | --- | --- | --- | --- |
-| **Traces** | OTLP/HTTP JSON spans | `telemetry/` (live, every pi process) | Caddy `:4478` → Tempo | trace table + trace view |
-| **Metrics** | Prometheus text, `pi_flow_*` | cost rollup from run journal + session files: pushed **automatically when a run ends** (`flow/cost-autopush.ts`), or by hand with `/flow-cost <ref> --push` | Caddy `:4479` → Pushgateway → Prometheus | 3 timeseries panels |
+| **Prometheus** | `pi_flow_*` gauges + counters (Pushgateway text) | the daemon-reachable pure fold `flow/state-metrics.ts` called from `flow/run-health.ts` → `buildPushBody` → `flow/push.ts` | Caddy `:4479` → Pushgateway → Prometheus | current state, phase, step, waits, retries, cost |
+| **Loki** | transition-event log lines | the live-session writer fan-out `telemetry/dispatch.ts` → `telemetry/loki.ts` (config-gated) | `<telemetry.loki.endpoint>/loki/api/v1/push` → Loki | per-run state timeline (what happened, when, why) |
+| **Tempo** | OTLP/HTTP JSON spans (phases + **step spans** since PMR-ZV9Y 4.1) | `telemetry/` (live, every pi process) | Caddy `:4478` → Tempo | trace tree: phase → step → tool/gen |
 
-Traces are live and per-call. Metrics are an after-the-fact rollup: the loop pushes it when a run ends (done, halt, pause;
-`onRunEnd` → `createCostAutoPush`, env-gated by `PI_FLOW_PUSHGATEWAY_URL`, idempotent, ~1.5 s settle so the journal's
-async appends land first). `/flow-cost <ref> --push` remains the manual retry/backfill. Failure = a warning with that command.
+A **desktop notification** (via `@gtheys/pi-desktop-notify`) hangs off the same Loki fan-out and fires on
+`waiting_human` / `halted` only (§7). Grafana alerting is the independent second channel (§6).
 
-**Cost sources in the rollup** (`flow/cost.ts`): (a) spawned WORKER sessions (review, deviation check, implementers…),
-attributed via the spawn notes in the run journal; (b) the MAIN pi session, attributed to plan/implement/validate by
-splitting its entries across the journal's phase windows (`phaseWindows`, `buildMainRows`). (b) needs the journal's
-`main-session` event (written by the loop at every phase start, `getSessionFile` dep wired in `index.ts`) — so
-**runs started before 2026-11-07 evening have no main-session cost** (only workers, i.e. validate) and cannot be
-backfilled; new runs are pushed automatically; `/flow-cost <ref> --push` re-exports. Main rows are pushed as `agent="main"`. Unreadable
-session file = one coverage-gap row, never a zero. Windows: a phase runs from its phase-start to the next phase-start;
-the last one ends at its phase-complete; entries outside every window (chat before/after the flow) are ignored.
+**Prometheus is the after-the-fact rollup, re-rendered live.** Metrics are derived from the journal, not measured in
+the moment: the terminal autopush (`onRunEnd` → `createCostAutoPush`, env-gated by `PI_FLOW_PUSHGATEWAY_URL`,
+idempotent, ~1.5 s settle so the journal's async appends land first) and the daemon's liveness pass (§5) both render
+the **same** body through `buildPushBody`, so both push paths carry the identical v2 gauges. `/flow-cost <ref> --push`
+remains the manual retry/backfill. Failure = a warning with that command.
+
+**Cost sources in the rollup** (`flow/cost.ts`, unchanged): (a) spawned WORKER sessions (review, deviation check,
+implementers…), attributed via the spawn notes in the run journal; (b) the MAIN pi session, attributed to
+plan/implement/validate by splitting its entries across the journal's phase windows (`phaseWindows`, `buildMainRows`).
+(b) needs the journal's `main-session` event (written by the loop at every phase start, `getSessionFile` dep wired in
+`index.ts`) — so **runs started before 2026-11-07 evening have no main-session cost** (only workers, i.e. validate)
+and cannot be backfilled; new runs are pushed automatically; `/flow-cost <ref> --push` re-exports. Main rows are
+pushed as `agent="main"`. Unreadable session file = one coverage-gap row, never a zero. Windows: a phase runs from its
+phase-start to the next phase-start; the last one ends at its phase-complete; entries outside every window (chat
+before/after the flow) are ignored.
 
 **Owner identity — `owner-session` (PMR-T9ZQ, 2026-11-22).** Same shape as `main-session` (main pi session file + ref +
 timestamp) plus the writing process's `pid`, but it is a **projected** event, not journal-only: `applyEvent` folds it
@@ -50,63 +66,294 @@ Source of truth: `~/Code/personal/homelab/quadlets/*` (git repo). Deployed copy:
 | `:4478` | Caddy → `tempo:4318` | OTLP/HTTP ingest, bearer auth (`PI_FLOW_OTLP_TOKEN`). No authelia. |
 | `:4479` | Caddy → `pushgateway:9091` | metrics push, bearer auth (`PI_FLOW_PUSHGATEWAY_TOKEN`). |
 | `:4443` | Caddy → Grafana (`/grafana/`), Prometheus (`/prometheus/`), authelia… | humans, authelia SSO. |
-| Tempo | `quadlets/tempo/tempo.yaml`, image `grafana/tempo:2.10.10` | OTLP grpc 4317 + http 4318, local storage, 14d retention (`block_retention: 336h`), `MemoryMax=1G`. No published port (Grafana reads `http://tempo:3200` on `homelab.network`). **`ingester.trace_idle_period: 3m`** (see §7). |
+| Tempo | `quadlets/tempo/tempo.yaml`, image `grafana/tempo:2.10.10` | OTLP grpc 4317 + http 4318, local storage, 14d retention (`block_retention: 336h`), `MemoryMax=1G`. No published port (Grafana reads `http://tempo:3200` on `homelab.network`). **`ingester.trace_idle_period: 3m`** (see §8). |
 | Pushgateway → Prometheus | `quadlets/pushgateway`, `quadlets/prometheus/prometheus.yml` | scrape job `pushgateway`, `honor_labels: true` so pushed `ref/phase/agent` labels survive; series carry `job="pi-flow"`. |
-| Grafana | `quadlets/grafana`, datasources provisioned in `provisioning/datasources/` | Prometheus uid **`PBFA97CFB590B2093`** (must not change), Tempo uid **`tempo`**. |
+| Loki | user-exposed on chicken, base URL `http://100.108.226.64:3100` | push receiver only (`/loki/api/v1/push`); Grafana reads it over `homelab.network` via the `loki` datasource. **Exposure is user-owned (PMR-ZV9Y D2) — pi-flow ships the pusher config-gated, disabled by default, fail-silent.** Verified answering `204` to pushes and queryable as `{job="pi-flow"}` on 2026-11-25 even while `/ready` returned `503`. |
+| Grafana | `quadlets/grafana`, datasources provisioned in `provisioning/datasources/` | Prometheus uid **`PBFA97CFB590B2093`** (must not change), Tempo uid **`tempo`**, Loki uid **`loki`**. |
 | grafana-image-renderer | `quadlets/grafana-image-renderer` | enables `gcx dashboards snapshot` PNGs. Needs Grafana `GF_RENDERING_CALLBACK_URL=http://grafana:3000/grafana/` (else renders return the login page). |
 
 The k8s `tempo` in the `salaryhero-local` minikube namespace is an unrelated SalaryHero app Tempo (gRPC only). Ignore it.
 
-## 3. Client configuration (the machine running pi)
+## 3. The v2 vocabulary (the contract every consumer reads)
 
-`~/.pi/agent/pi-flow/config.json` (global; `<repo>/.pi/pi-flow/config.json` overrides per key). Schema:
-`packages/pi-flow/config.schema.json`, TypeBox in `packages/pi-flow/config.ts`.
+One identity, **one closed enum per dimension**. Nothing below is free text in a label — free text (halt-note prose,
+deviation reasons, the step name beyond the registry) rides the **journal line**, the **Loki JSON line**, and the
+**Tempo span attribute**, never a Prometheus/Loki label value. This is the ISC-A-1 cardinality rule, enforced at the
+single source `flow/vocabulary.ts` (zero-import, pure) and mirrored in the Grafana value mappings.
 
-```json
-{ "telemetry": { "enabled": true,
-                 "otlpEndpoint": "https://chicken.tail4250d0.ts.net:4478",
-                 "captureContent": "off", "maxContentChars": 2000 } }
+| Dimension | Values | Source |
+| --- | --- | --- |
+| `state` | `running \| waiting_human \| waiting_machine \| halted \| done \| stale` | `flow/vocabulary.ts FlowState` |
+| `phase` | `plan \| implement \| validate \| feedback` | unchanged `FlowPhase` (loop / `PHASE_LABEL` world) |
+| `step` | registered names only (§4): `plan.spec-approval`, `validate.code-review`, `validate.deviation`, `validate.spec-diff`, `validate.aven-notes` | `flow/steps.ts STEP_REGISTRY` |
+| `reason` (closed enum, 10) | `spec_approval_pending \| code_review_pending \| escalation \| retry_budget_exhausted \| blocker_budget_exhausted \| label_miss \| deviation_gate_rerun \| subagent_in_flight \| prompt_send_failed \| aven_read_failed` | `flow/vocabulary.ts FlowReason` |
+| `wait_kind` | `human \| machine` — derived from the reason | `reasonWaitKind()` (`spec_approval_pending`, `code_review_pending`, `escalation` → human; all others → machine) |
+| `gate` | `spec-review \| code-review \| deviation \| answer` | existing gate-answer labels, unchanged |
+
+`LoopRunStatus` (`running | paused | halted | done`) is **NOT** renamed or overwritten — v2 state is **derived** from
+the journal's `state-change` events with a legacy fallback (§4), because resume (`flow/resume.ts`), the phase-3 pending
+protocol and old journals depend on `LoopRunStatus` (ISC-A-2).
+
+**Expected action map** — one source, `expectedAction()` in `flow/vocabulary.ts`, used by the desktop-notify body and
+mirrored as value mappings on the Waiting-on-me board. `{ref}` is a literal placeholder substituted at call time (and,
+in the board, NOT — see §6 gotcha):
+
+| reason | expected action |
+| --- | --- |
+| `spec_approval_pending` | `/flow answer {ref} approve` |
+| `code_review_pending` | `/flow answer {ref} pass\|fail` |
+| `escalation` | `intervene: /flow {ref} (or fix forward)` |
+| everything else | `—` |
+
+**Journal v2 event kinds (in `run-state.ts`):**
+
+- `state-change` — `{kind, at, ref, state, reason?}` — **projected** last-wins into `FlowRunState.currentState`.
+  `recordRunEvent` appends it to the journal **even when the projection ignores it** (an out-of-vocabulary `state`/
+  `reason` is dropped from the fold but never from the journal) — the PMR-C998 drop-bug fix that makes a drifted enum
+  harmless evidence rather than a lost line.
+- `step-start` / `step-stop` — `{kind, at, ref, phase, step}` — **journal-only** (`isJournalOnlyEvent` true), like
+  `main-session`/`spawn-record`/`step-output`: boundary evidence, never modelled in the projection.
+
+## 4. The three-renderer architecture + data flow
+
+The "one projector" must reconcile three consumers with incompatible shapes: Prometheus needs a **pure journal fold**
+that renders inside the daemon-reachable `buildPushBody` (liveness re-pushes it); Loki needs **live event pushes**
+from the session (the daemon never appends journal events and must not push history); Tempo step spans need the live
+session's trace context (`traceId`), which a journal fold cannot reconstruct. So the journal stays the single source of
+truth with three renderers reaching it through different seams.
+
+```mermaid
+flowchart LR
+    subgraph local["pi session (extension)"]
+        LOOP["flow loop + gate tools"] -->|journal events| WRITER["writer + v2 fan-out"]
+        WRITER --> JOURNAL["run journal jsonl"]
+        WRITER -->|state-change and step events| DISP["telemetry dispatcher"]
+        DISP -->|JSON lines| LOKI["telemetry/loki.ts pusher"]
+        DISP -->|waiting_human or halted| DN["pi-desktop-notify notify"]
+        DISP -->|stepStart and stepStop| TH["TelemetryHandle step spans"]
+    end
+    subgraph daemon["pi-flow daemon node-only"]
+        JOURNAL --> SM["state-metrics.ts pure fold"]
+        SM --> RH["renderRunHealthLines v1-free"]
+        RH --> PUSH["buildPushBody to pushToGateway"]
+    end
+    subgraph chicken["chicken homelab"]
+        PUSH -->|gauges| PG["Pushgateway 4479"]
+        PG --> PROM["Prometheus"]
+        TH -->|OTLP spans| OTLP["4478"]
+        OTLP --> TEMPO["Tempo"]
+        LOKI -->|push API| LOKISRV["Loki 3100 user-exposed"]
+        PROM --> GRAF["Grafana five boards plus alert group"]
+        TEMPO --> GRAF
+        LOKISRV --> GRAF
+    end
+    GRAF -->|enum-label alerts| ALERTS["Grafana alerting"]
 ```
 
-Env (never in config): `PI_FLOW_OTLP_TOKEN` (traces bearer), `PI_FLOW_PUSHGATEWAY_URL`
-(`https://chicken.tail4250d0.ts.net:4479`), `PI_FLOW_PUSHGATEWAY_TOKEN`. Config is read once per pi session —
-**restart pi after changing it or after pulling new telemetry code**.
+**Renderer 1 — Prometheus (pure fold).** `flow/state-metrics.ts` (node-only, daemon-reachable) derives the six v2
+gauges from the journal; `flow/run-health.ts::renderRunHealthLines` appends them after the kept frozen block. Both
+push paths — the terminal autopush and the daemon liveness pass — call the identical `buildPushBody` →
+`renderRunHealthLines` chain (the PMR-8MQH invariant), so a running flow and a finished flow carry the same series
+shapes.
 
-Content capture (`captureContent`, cumulative): `off` metadata only (default) → `text` adds `gen_ai.completion` →
-`tools` adds `gen_ai.tool_calls`, `tool.input`, `tool.output` → `all` adds `gen_ai.reasoning`. Each value truncated
-to `maxContentChars` (default 2000). **Tempo silently truncates any attribute at 2048 bytes** (`max_attribute_bytes`),
-so raising `maxContentChars` needs Tempo raised too. No redaction exists — content may hold secrets. User docs:
-`packages/pi-flow/README.md` ("Capturing content in spans").
+**Renderer 2 — Loki + desktop notify (session-side writer fan-out).** `telemetry/dispatch.ts::createEventFanoutWriter`
+wraps the session's `EventWriter` at its **single** construction site in `index.ts`. Each `record` writes the journal
+first (original best-effort semantics preserved), then routes by kind: `state-change` → Loki pusher **and** the
+desktop-notify sink; `step-start`/`step-stop` → Loki pusher **and** `TelemetryHandle.stepStart`/`stepStop`. Every emit
+site (loop, code-review, deviation, run-attempt) already journals through that writer seam, so one wrap covers all of
+them. **The daemon is never wrapped** — it has no live event stream and pushes no Loki.
 
-## 4. Code map (`packages/pi-flow`)
+**Renderer 3 — Tempo step spans (`TelemetryHandle.stepStart`/`stepStop`).** Uses the live trace context only the
+session has. See §8.
 
-| File | Role |
+### Emission seam map (where v2 events are journaled, and why ONE wrap covers them)
+
+| Site | Emits | Seam |
+| --- | --- | --- |
+| `flow/loop.ts` guarded `emitStateChange` (snapshot choke point, subagent-in-flight branch, every halt site, done, spec-approval pause) | `state-change`, plus `step-start`/`step-stop` for `plan.spec-approval` | `deps.journal`/`deps.journalV2` → `index.ts` `journalSerial` → `writer.record` (wrapped) |
+| `tools/code-review.ts` open/close review gate (`openReviewSteps` idempotent pairing) | ask → `state-change{waiting_human, code_review_pending}` + `step-start{validate.code-review}`; answer (pass OR fail) → `step-stop` + `state-change{running}` | tool's mode-aware `writer.record` (wrapped) |
+| `tools/run-attempt.ts` escalation outcome | `state-change{waiting_human, escalation}` (escalate only) | `deps.journalV2` → writer (wrapped) |
+| `tools/deviation.ts` `journalGateEvent` | pin → `step-start{validate.deviation}`, verdict → `step-stop`, rerun → `state-change{waiting_machine, deviation_gate_rerun}` | `journalGateEvent(event, writer)` → `writer.record` (wrapped) |
+
+Two **audited, deliberately unrouted** fallbacks: `run-attempt.ts`'s direct `recordRunEvent` attempt-ledger fallback
+writes `attempt-record` (not a v2 kind), and `flow-submit.ts`'s fallback writes `step-output` (not a v2 kind); both
+always receive the wrapped writer in production, so no v2 event is lost. Pinned by `test/telemetry-dispatch.test.ts`.
+
+**Subagent-in-flight wait** (loop.ts) is now visible as `state-change{waiting_machine, subagent_in_flight}` — the
+branch has no `snapshot()` call, so the loop emits it explicitly (it was invisible in v1). The next settle emits the
+return to `running`.
+
+### The v2 Prometheus gauges
+
+The six gauge families `flow/state-metrics.ts::renderStateMetricLines` appends (the plan's table, in this order). No
+`mode` label in any series — the Pushgateway group URL `/mode/work` already carries it (v1 convention). All label
+values come from the closed enums above.
+
+| Metric | Labels | Value | Answers |
+| --- | --- | --- | --- |
+| `pi_flow_state` | `ref, state, reason` | 1 | current state (`reason=""` when N/A) |
+| `pi_flow_state_start_seconds` | `ref, state, reason` | epoch seconds | when the current state began — alerts compute `time() - …` so a wait ages **without needing pushes** (liveness gates on `running`; a `waiting_human` ref gets no re-push, so a duration gauge would freeze) |
+| `pi_flow_phase` | `ref, phase` | 1 | current phase |
+| `pi_flow_wait_seconds` | `ref, wait_kind, reason` | cumulative seconds | total wait per kind/reason across the run |
+| `pi_flow_step` | `ref, phase, step` | 1 | in-flight registered step (last `step-start` without a stop) |
+| `pi_flow_step_seconds` | `ref, phase, step` | cumulative seconds | completed step durations |
+
+**Legacy fallback (ISC-6).** A journal with no `state-change` events derives v2 state from the projected loop status —
+`paused` → `waiting_human` (reason `""`), `halted` → `halted` (reason `""`), `running` → `running`, `done` → `done`;
+wait windows fall back to the (retired-v1) paused-window scan re-implemented in `state-metrics.ts` (wait_kind `human`,
+reason `""`). Old runs still render, just without reason granularity.
+
+**THE TYPE-LINE RULE (PMR-WBC2 class).** `renderStateMetricLines` emits **bare sample lines, never `# TYPE` /
+`# HELP`** — that looks wrong but is load-bearing. The gateway auto-detects and stores every pi-flow family as
+**untyped** (the `# TYPE … untyped` strings in `test/push.test.ts` / `test/reconcile.test.ts` fixtures are copied from
+a LIVE dump). A tombstone re-POST strips every `#` line (`filterGroupLines` in `flow/push.ts`), so a **typed** first
+push followed by an **untyped** re-POST is the whole-group `400` ("… is not a GAUGE") that once made every tombstone
+fail. Emitting `# TYPE pi_flow_state gauge` would flip that family to gauge and break reconcile for every ref carrying
+v2 lines. Bare lines are the repo convention, not an omission — see the module header of `flow/state-metrics.ts` and
+`flow/push.ts`.
+
+### Final frozen push-body order
+
+`buildPushBody` (cost family) → then `renderRunHealthLines` in this fixed order:
+
+1. **kept frozen block** — `pi_flow_gate_decisions_total`, `pi_flow_retry_attempts`, `pi_flow_blocker_retries`,
+   `pi_flow_worktree_sweep_total`, `pi_flow_run_start_seconds` (gate decisions, the attempt/blocker counters and the
+   worktree-sweep counts are evidence/counters, **not** state vocabulary — they stay; the retry/worktree alerts keep
+   their queries).
+2. **v2 state gauges** — `pi_flow_state`, `pi_flow_state_start_seconds`, `pi_flow_phase`, `pi_flow_wait_seconds`,
+   `pi_flow_step`, `pi_flow_step_seconds`.
+
+**Retired (PMR-ZV9Y 7.1), rendered nowhere:** `pi_flow_run_status`, `pi_flow_run_halt_reason`,
+`pi_flow_human_wait_seconds`, `pi_flow_gate_wait_seconds`.
+
+**Tombstone (reconcile).** `tombstoneBody` (`flow/reconcile.ts`) is the same label-VALUE-only surgery it always was,
+now on the **v2 state lines**: `pi_flow_state` / `pi_flow_state_start_seconds` with
+`state="halted"|"waiting_human"|"waiting_machine"` become `state="stale"`. No line is dropped any more (the only drop
+was `pi_flow_run_halt_reason`, gone with the v1 block). Candidacy stays journal-keyed (the projected loop status), so
+retiring the v1 status series did not change which refs are stale — only which lines in a fetched body are rewritten.
+A stored group that predates the v2 render carries only v1 lines, so the tombstone reads it as "already clean" and
+never re-posts it — harmless because every consumer was cut to v2 (§10). §5 keeps the liveness detail.
+
+## 5. Step registry, prompts, and the emission guard
+
+`flow/steps.ts::STEP_REGISTRY` is the closed map of named step boundaries (a const map, pure, daemon-reachable):
+
+| Phase | Registered steps |
 | --- | --- |
-| `flow/attribution.ts` | Stamps/clears `PI_FLOW_REF`, `PI_FLOW_PHASE`, `PI_FLOW_TRACEPARENT` in `process.env` (`stampFlowStart/Phase`, `clearFlowEnv`). Traceparent = fresh W3C root per `/flow` run; **its span id is the reserved flow-root span id**. |
-| `flow/loop.ts` | The flow state machine. Calls `onFlowEnvChange` after every stamp/re-stamp/clear (start, phase change, halt, pause, done, supersede). |
-| `telemetry/index.ts` | The telemetry extension (`registerTelemetry`): subscribes to `tool_execution_start/end`, `turn_end`, `session_shutdown`; builds spans; buffers; flushes. Returns `{ syncFlowEnv }`. |
-| `telemetry/attributes.ts` | Env → attributes (`flow.ref`, `phase`, `agent.name`, `subtask`, `parent.session`), traceparent parsing, id generation, GenAI attributes. |
-| `telemetry/content.ts` | Opt-in content extraction + truncation (levels above). |
-| `telemetry/exporter.ts` | Hand-rolled OTLP/HTTP JSON POST to `<endpoint>/v1/traces`, 2.5 s timeout, fire-and-forget. |
-| `flow/cost.ts`, `flow/cost-command.ts` | `/flow-cost` rollup + Prometheus text body + push to `<url>/metrics/job/pi-flow/ref/<ref>`. |
-| `index.ts` | Wiring: loop ↔ telemetry (`syncTelemetryFlowEnv` late-bound), config → `TelemetrySettings`. |
-| `packages/pi-interactive-subagents/.../flow-env.ts` | `applyFlowEnv`: copies the `PI_FLOW_*` stamp + `PI_SUBAGENT_NAME` into every spawned worker's env (scouts, reviewers, deviation checkers, implementers — all subagents). |
-| tests | `test/telemetry.test.ts`, `test/telemetry-content.test.ts`, `test/loop-attribution.test.ts`. Run `bun test packages/pi-flow`; also `bunx @biomejs/biome check packages/pi-flow`, `bunx tsc -p tsconfig.json --noEmit`. |
+| `plan` | `plan.spec-approval` |
+| `implement` | *(empty — free-form step names only, advisory)* |
+| `validate` | `validate.code-review`, `validate.deviation`, `validate.spec-diff`, `validate.aven-notes` |
+| `feedback` | *(empty — free-form)* |
 
-Repo rules: no ternaries in TS, explicit `.ts` import suffixes, explicit `files` allowlist in
-`packages/pi-flow/package.json` (a new module must be added there or the published package breaks), never edit
-existing tests without asking, implement in a git worktree (`worktree` tool), `AIDEV-NOTE` comments stay.
+`validate.spec-diff` and `validate.aven-notes` are **documented names without machine-emitted start/stop** — no tool
+boundary exists for them (they are prose steps in `validate/prompt.ts`), so `flow_submit` evidence is all they get.
 
-## 5. Trace shape (what spans exist)
+**Prompt letters are bound 1:1 to registry names via AIDEV anchors** (the D1–D3/H1 + approval-wait mapping; grep
+`PMR-ZV9Y 1.2 step registry` in `validate/prompt.ts` and `plan/prompt.ts`):
+
+| Anchor | Registry name | Where |
+| --- | --- | --- |
+| approval wait | `plan.spec-approval` | `plan/prompt.ts` `APPROVAL_SUFFIX` (loop pause → step-start, `/flow answer approve` → step-stop) |
+| D1 | `validate.spec-diff` | `validate/prompt.ts` deviation gate |
+| D2 | `validate.aven-notes` | `validate/prompt.ts` deviation gate |
+| D3 | `validate.deviation` | `validate/prompt.ts` deviation gate (the `deviation_review` tool boundary) |
+| H1 | `validate.code-review` | `validate/prompt.ts` `buildPersonalCodeReviewGate` (the `code_review` tool boundary) |
+
+`flow_submit` (in `flow/step-output.ts`) gives an **advisory hint** on an unregistered step name (it lists the
+registered names) and **never rejects** — advisory posture throughout, a warned submission never gates a phase.
+
+**Emission guard (loop).** A private `emitStateChange` keeps the last-emitted v2 state on the loop instance (seeded on
+`start()`/resume from the journal tail — last `state-change`, else the phase-1 fold), and skips when the new state
+equals it. So the repeated `snapshot('running')` at every phase prompt never spams `running→running`, and a restarted
+run does not re-emit the seeded state. Every journal emit and fan-out call is best-effort, inside try/catch — a
+journaling failure never halts a phase (loop never-throw, ISC-A-5).
+
+## 6. Loki transition events (push config + gotchas)
+
+`telemetry/loki.ts` is a minimal hand-rolled JSON POST mirroring `telemetry/exporter.ts` (no collector dependency, no
+growing buffers, no retry queue).
+
+```bash
+curl -s -X POST http://100.108.226.64:3100/loki/api/v1/push \
+  -H 'content-type: application/json' \
+  -d '{"streams":[{"stream":{"job":"pi-flow","flow_ref":"PROBE-X","state":"waiting_human"},"values":[["1732000000000000000","{\"kind\":\"state-change\"}"]]}]}'
+```
+
+Body shape: `{"streams":[{"stream":{...labels},"values":[[<ns>, line]]}]}`.
+
+- **Config:** `telemetry.loki = { enabled?: false, endpoint?: string, headers?: Record<string,string> }`. The pusher
+  appends `/loki/api/v1/push` to `endpoint` (which stores the **base** URL only). `enabled` defaults to **false** — a
+  fresh install makes zero Loki calls. User docs: `packages/pi-flow/README.md` ("Loki transition events").
+- **Closed label set only:** `job="pi-flow"` + identity (`flow_ref`, `mode`) + the v2 enums (`phase`, `state`,
+  `reason`, `wait_kind`, `kind`). `buildLokiStream`/`buildEventLokiLabels` is a fixed builder so a caller structurally
+  cannot inject an arbitrary label, and it drops empty/absent values (a reasonless state never emits `reason=""`).
+  The step name and all free text live in the **JSON line**, never a label (ISC-A-1).
+- **Session-side only.** The live-session fan-out pushes each event as it is recorded; the daemon never pushes Loki
+  (single strict config reader in `config.ts`, no tolerant daemon mirror — unlike `reconcile`/`liveness`).
+- **Fail-silent.** Fire-and-forget with `AbortSignal.timeout(2500)`; an unreachable/unconfigured endpoint writes **at
+  most ONE** journal note per process then stays silent; never a rejected promise into the host. Runs proceed
+  identically with no Loki backend at all.
+- **ns timestamps via string append, never float multiply.** Loki's push API wants nanosecond timestamps; building the
+  ns value by multiplying a float seconds value loses precision (and can land a non-integer in `values`); the pusher
+  appends to an integer-ms string instead.
+- **`/ready` 503 ≠ broken.** The endpoint answered `204` to four pushes and the streams were queryable as
+  `{job="pi-flow"}` on 2026-11-25 even while its `/ready` returned `503` — do not gate a live check on `/ready`.
+
+## 7. Desktop notifications (pi-desktop-notify)
+
+The notify sink shares the fan-out handler bag and is guarded **separately** from the Loki push, so neither failure
+costs the other.
+
+- **Gate:** `notify.desktop.enabled` (default **true** — an opt-OUT channel, the opposite posture of `telemetry.loki`).
+  Only two v2 states page: `waiting_human` and `halted`. `waiting_machine` (a retry budget, a subagent still in
+  flight, a deviation gate re-run) is a Grafana/Loki concern, never a notification; `running`/`done`/`stale` are
+  silent. Gate order is **state → config → import**, so a disabled or non-paging event never touches the module system.
+- **Plumbing:** dynamic `import('@gtheys/pi-desktop-notify/notify')` (the **optional** subpath export — absent/broken
+  package → one journal note, channel off for the session, never a load-time crash, never a throw into the loop).
+  pi-desktop-notify's OWN config then governs which channels (desktop / herdr / ntfy) actually fire; pi-flow only
+  decides whether a flow event pages at all (D3).
+- **Message** (`dispatchNotification(cfg, summary, body)`): summary `pi-flow <ref>: <state>`; body uses the same
+  `expectedAction` map the board renders — `<expectedAction> — reason: <reason>` for `waiting_human`,
+  `reason: <reason> — recover with /flow <ref>` for `halted`. Only the closed reason enum is quoted; free-text halt
+  prose never enters a notification.
+- **Independent from Grafana alerting** (the second channel) — pausing/muting the desktop channel does not touch the
+  alert rules and vice versa; the alert rules are paused/muted in Grafana, never from pi-flow.
+
+## 8. Tempo step spans (the rules that keep them correct)
+
+`telemetry/index.ts` gained `stepSpanId(traceId, phase, step)` and `stepStart`/`stepStop` handle methods, called from
+the fan-out (renderer 2). They copy the `phaseSpanId` deterministic-id pattern (rule 3 below).
+
+```
+<ref> - plan                 flow.span=phase
+└─ <ref> - plan.spec-approval   flow.span=step   (parent = the current phase span)
+```
+
+- **Deterministic id:** `stepSpanId = sha256(traceId:phase:step)[0:16]` — re-derivable, never assigned at random.
+- **Span shape:** name `"<ref> - <step>"`, attribute `flow.span="step"` (plus `flow.ref`, `phase`, `step`), parented
+  via `parentFor()` onto the **current phase span**; with no phase span open it parents like every other span
+  (session → phase → root marker), never dropped.
+- **Export-once, never re-sent.** An `exported` flag closes a span exactly once at `stepStop`, phase close (the trailing
+  step of a phase), `syncFlowEnv` transitions, and `session_shutdown` (`closeOpenSteps`). A span id with a later end is
+  **never** re-exported — Tempo keeps both copies until compaction (§8 table).
+- **Idempotent start:** a duplicate `stepStart` for the same `(phase, step)` is ignored (the exported entry stays in
+  `state.steps`); a retried step inside one trace collapses into the first span — accepted, because a second copy of the
+  id is worse than a missing one.
+- **Workers never export step spans** (the `isWorker` guard — same posture as phase spans): the id is per-trace and
+  deterministic, so a worker copy of a step the main process also journals would be a Tempo duplicate; a worker's own
+  spans already nest under its session span.
+
+## 9. Trace shape (root + phase + session spans)
 
 ```
 flow <ref>                       flow.span=root     main process; zero-length marker; spanId = traceparent span id
 ├─ <ref> - plan                  flow.span=phase    main process; REAL start/end; sent when the phase ends
+│  ├─ <ref> - plan.spec-approval flow.span=step     (PMR-ZV9Y 4.1, §8)
 │  ├─ tool … / gen …             spans of the main session in that phase
 │  └─ <ref> - <role>             flow.span=session  one per worker; zero-length marker; role = agent.name before ':' lowercased
 │     └─ tool … / gen …          that worker's spans
 ├─ <ref> - implement             (same shape)
-└─ <ref> - validate              (contains `review`, `deviation check` worker sessions)
+└─ <ref> - validate              (contains `review`, `deviation check` worker sessions + their step spans)
 ```
 
 Rules that make it work (each cost an incident — do not "simplify" them away):
@@ -129,192 +376,197 @@ Rules that make it work (each cost an incident — do not "simplify" them away):
 Known gap: a main process hard-killed mid-phase never sends that phase span (children hang off a missing parent;
 the flow root still names the trace).
 
-### 5b. Which agents are tracked (coverage)
+### 9b. Which agents are tracked (coverage)
 
 | Agent | Traces | Cost (`/flow-cost`, auto-pushed) |
 | --- | --- | --- |
-| Orchestrator (main pi session running `/flow`) | yes: `<ref> - <phase>` spans + its tool/gen spans | yes, role `orchestrator`: session split across phases by journal timestamps (needs the `main-session` journal event, runs from 2026-11-07 evening) |
+| Orchestrator (main pi session running `/flow`) | yes: `<ref> - <phase>` + `<ref> - <step>` spans + its tool/gen spans | yes, role `orchestrator`: session split across phases by journal timestamps (needs the `main-session` journal event, runs from 2026-11-07 evening) |
 | Oneshot work done in the orchestrator itself | yes (same spans) | yes (orchestrator cost) |
-| Subagents spawned WHILE a flow is active (plan agent, scouts, workers, reviewers, deviation checks) | yes: `<ref> - <role>` session span + their tool/gen spans (env copied by `applyFlowEnv`) | yes if journaled: the spawn note is written by the main loop |
+| Subagents spawned WHILE a flow is active (plan agent, scouts, workers, reviewers, deviation checks) | yes: `<ref> - <role>` session span + their tool/gen spans (env copied by `applyFlowEnv`); **no step spans** (workers never export them, §8) | yes if journaled: the spawn note is written by the main loop |
 | Nested spawns (a worker spawning scouts) | yes (env is forwarded again) | yes: the worker journals its spawns via inherited `PI_FLOW_REF` (`spawnJournalTarget`, `recordRunEventJournalOnly`: journal only, never the projection) |
 | Agents spawned OUTSIDE a flow (before `/flow` starts, ad hoc) | NO flow attrs: flat spans, random trace, not in the dashboard | NO (no spawn note) — open design question: when does a flow "begin"? |
-
-Evidence at the time of writing: every journaled spawn so far was a `Review` or `Deviation check` (9 each); plan
-agents / scouts / implementers had not yet been exercised under `/flow`, so those paths are unit-tested but not
-yet observed on a real run.
 
 **Role** (`flow/agent-role.ts`, `agentRole`): agent type (`PI_SUBAGENT_AGENT` / `AssignmentRecord.agent`) first, else
 the name before the first colon, else `worker`; lowercased, max 40 chars. Used for trace session-span names and for
 the metric `pi_flow_run_role_info{ref,session,role} 1` (one per session, emitted by `buildPushBody`; the existing
 cost/token/tool-call label sets are unchanged). Span attribute `agent.type` carries the type.
 
-## 6. The dashboard
+## 10. The Grafana boards (rebuilt on v2) + backups
 
-`https://chicken.tail4250d0.ts.net:4443/grafana/d/piflow-health/pi-flow-health` — uid `piflow-health`, a Grafana
-**v2 dashboard resource** (`dashboard.grafana.app/v2`), 7 d default range, 5 m refresh, variable `ref`
-(`label_values(pi_flow_run_cost_usd, ref)`, multi, include-All with `allValue=".*"`).
-**It is NOT provisioned from git** — it lives only in Grafana's DB. A backup export is committed at
-[`docs/pi-flow-health.dashboard.json`](pi-flow-health.dashboard.json) (restore with `gcx dashboards update piflow-health -f …`;
-the `metadata.resourceVersion` inside must be current — re-`get` and edit rather than pushing the stale file).
+Five boards live in Grafana folder `ag3jjknk85xc0b` on chicken (DB-only, **not** provisioned from git). Every one was
+rebuilt on the v2 vocabulary in PMR-ZV9Y phase 6. Each board's **committed backup is the rebuilt live state**; Grafana
+version history is the rollback path. Restore: `gcx dashboards get <uid> -o json` (for the current
+`metadata.resourceVersion`) → edit → `gcx dashboards update <uid> -f …`; pushing a stale resourceVersion is rejected
+silently, so always `get` immediately before `update`.
 
-| Panel | Type | Datasource | Query | Shows |
-| --- | --- | --- | --- | --- |
-| Tool error rate per tool per phase | timeseries | Prometheus | `sum by (tool, phase)(pi_flow_tool_calls_total{status="error",ref=~"$ref"}) / sum by (tool, phase)(pi_flow_tool_calls_total{ref=~"$ref"})` | empty when no tool call has `status="error"` (expected) |
-| Tool failures by tool | timeseries | Prometheus | `sum by (tool, status)(pi_flow_tool_calls_total{ref=~"$ref", status="error"})` | same |
-| Run duration by phase | timeseries | Prometheus | `max by (phase)(pi_flow_run_duration_seconds{ref=~"$ref"})` | needs `/flow-cost <ref> --push` |
-| Traces by flow.ref | **table** | Tempo | `{ .flow.ref =~ "$ref" && (.flow.span = "phase" \|\| .flow.span = "root") } \| select(name, .phase)`, `tableType: traces`, `spss: 20`, `limit: 50` | one row per trace; expanding shows root + one row per phase with duration; click the trace/span id to open the tree |
+| Board | uid | Backup | What it answers |
+| --- | --- | --- | --- |
+| **Waiting-on-me** (the landing board) | `piflow-runs` | [`docs/pi-flow-runs.dashboard.json`](pi-flow-runs.dashboard.json) | which flows are running, **which are waiting on ME** (with the unblock command), which are machine-blocked or halted |
+| **Health** | `piflow-health` | [`docs/pi-flow-health.dashboard.json`](pi-flow-health.dashboard.json) | per-run state timeline (Loki) + step detail (Tempo), plus the kept tool/duration panels |
+| **Orchestrator** | `piflow-orchestrator` | [`docs/pi-flow-orchestrator.dashboard.json`](pi-flow-orchestrator.dashboard.json) | orchestrator cost (`agent="main"`), vocabulary pass only |
+| **Subagents** | `piflow-subagents` | [`docs/pi-flow-subagents.dashboard.json`](pi-flow-subagents.dashboard.json) | subagent cost by role (`agent!="main"`), vocabulary pass only |
+| **Ad-hoc** | `piflow-adhoc` | [`docs/pi-flow-adhoc.dashboard.json`](pi-flow-adhoc.dashboard.json) | `/brainstorm` / `/pr-quality` / `/review` cost (job `pi-flow-adhoc`), vocabulary pass only |
 
-Metrics (`/flow-cost --push`, labels in `flow/cost.ts`): `pi_flow_run_cost_usd{ref,phase,agent,subtask,session}`,
-`pi_flow_tokens_total{…,kind=input|output|cacheRead|cacheWrite}`, `pi_flow_tool_calls_total{…,tool,status}`,
-`pi_flow_run_duration_seconds{ref,phase}`. Reruns are safe (replays the journal).
+All carry the `mode` custom variable (Personal `^$|personal`, Work `work`, All `.*`; use `${mode:raw}`) and the
+`ref` variable, the Jira link column ("Open in Jira ↗" via a `label_replace`-built `url` label, work rows only), and
+`spec.links` dashboard links to the others (`includeVars` + `keepTime`). When you add a board, add it to every other
+board's links too.
 
-Dashboard gotchas learned:
-- The trace panel must be a **table**. The `traces` visualization renders ONE trace by id and shows "No data found
-  in response" for a search result.
-- `=~` not `=` for `$ref` (All expands to `.*`).
-- Tempo returns max 3 spans per trace unless `spss` is set; without `select(name, …)` the rows are unlabeled.
-- Old traces (before 2026-11-07) have no `flow.span` attribute → they no longer match this panel's filter.
-- Variable `ref` only lists refs that have pushed metrics, so a ref with traces but no `/flow-cost --push` is only
-  reachable via "All".
-- `gcx dashboards snapshot` only renders collapsed rows (cannot expand a trace row); verify expanded rows in a browser.
+### `piflow-runs` — the Waiting-on-me landing board (PMR-ZV9Y 6.2)
 
-### 6a. Split cost dashboards (2026-11-07): `piflow-orchestrator` and `piflow-subagents`
+Four header **stat tiles** — `Waiting on me` (count of `pi_flow_state{state="waiting_human"}`), `Machine waits`,
+`Running now`, `Halted` — then the table/bar rows below, all top-level flow refs only — **never subtask/worker rows**
+(D5); subtask cost and traces stay on their own boards. Every selector carries `mode=~"${mode:raw}", ref=~"$ref"`.
 
-`piflow-cost` was split because "cost" mixed two different things: the **orchestrator** (the main pi session that runs
-`/flow`, own LLM calls only) and the **subagents** (every worker / reviewer / deviation check / scout, each a separate session).
-Old combined dashboard is kept but retitled "superseded" (backup `docs/pi-flow-cost.dashboard.json`); a ticket's combined
-total (orchestrator + subagents) is a column on BOTH new dashboards' ticket tables.
-Backups: [`pi-flow-orchestrator.dashboard.json`](pi-flow-orchestrator.dashboard.json),
-[`pi-flow-subagents.dashboard.json`](pi-flow-subagents.dashboard.json). Both are DB-only, built with the same principles as 6b
-(instant queries, `ref` variable, "in range" = `push_time_seconds` within `$__range_s`).
+1. **Waiting on me — act now** (table) — `pi_flow_state{state="waiting_human"}` joined with
+   `time() - max by (ref)(pi_flow_state_start_seconds{state="waiting_human"})` for live wait duration and
+   `max by (ref)(pi_flow_state_start_seconds{state="waiting_human"}) * 1000` for "waiting since". Columns: Ref,
+   State, Reason (→ expected action), Waiting, Waiting since, Jira.
+   - **GOTCHA — literal `{ref}` placeholder.** The Reason column is value-mapped to the `EXPECTED_ACTION` text
+     (§3), but Grafana value mappings **cannot interpolate a sibling field**, so the mapping renders the template
+     with a **literal `{ref}`** (e.g. `/flow answer {ref} approve`). The adjacent **Ref column** carries the concrete
+     ticket. This is documented in the panel description; a `label_replace`-substituted variant can be requested
+     post-landing. `—` means no registered action (a legacy run with no reason).
+2. **Retry-blocked / machine waits** (table) — `pi_flow_state{state="waiting_machine"}` + the kept counters
+   `pi_flow_retry_attempts` / `pi_flow_blocker_retries` and `pi_flow_wait_seconds{wait_kind="machine"}`.
+3. **Live state — all runs** (table) — `pi_flow_state` (state + reason), `pi_flow_phase`, `pi_flow_step`,
+   `pi_flow_state_start_seconds`, `pi_flow_run_start_seconds`, `push_time_seconds`. This row is the single view of
+   every run's current state, phase and in-flight step; the value mappings turn `stale` into a gray "stale (ticket
+   closed)" so tombstoned runs drop out of the attention rows while their cost history stays browsable.
+4. **Retries per ticket** (table) — the attempt-ledger + blocker counters (`pi_flow_retry_attempts`,
+   `pi_flow_blocker_retries`), joined by `ref`.
+5. **Gate decisions** + **Worktree sweep outcomes** (barcharts) — `pi_flow_gate_decisions_total` grouped by
+   (gate, choice) and `pi_flow_worktree_sweep_total` by outcome (the kept evidence metrics).
 
-* **Orchestrator selector:** `agent="main"` (rows pushed by `buildMainRows`; role `orchestrator`). Subagents: `agent!="main"`.
-* `piflow-orchestrator`: tiles (orchestrator spend, tickets, avg/median per ticket) · rolling 24h · per-ticket stacked by
-  phase (plan/implement/validate) · ticket table (Orchestrator gauge, Plan, Implement, Validate, Subagents, Ticket total
-  (orchestrator + subagents), Duration, Last pushed) · orchestrator cache hit ratio per ticket.
-* `piflow-subagents`: tiles (subagent spend, sessions, avg/median per session) · rolling 24h · per-ticket stacked by ROLE ·
-  per-role highest/avg/median · top-10 sessions · ticket table (Subagents gauge, Sessions, Most expensive session,
-  Orchestrator, Ticket total) · cache hit ratio per role. Role comes from `pi_flow_run_role_info` joined by (ref, session) with the legacy
-  name-prefix fallback and `Review`/`Deviation check` lower-casing (same as 6b).
-* First insight it surfaced: deviation checks run a 29% cache hit ratio vs 75% for reviews (cost lever).
-* Old tickets (before main-session tracking) show "–" for orchestrator columns but their subagent cost and combined total.
-* Table header "Ticket total (orchestrator + subagents)" has a 300 px column width override (it was truncated).
-* **Navigation:** `piflow-health`, `piflow-orchestrator`, `piflow-subagents` and `piflow-range` each carry dashboard links to the
-  other three (header buttons; `type: link`, url `/grafana/d/<uid>`, `includeVars` + `keepTime` so the `ref` and time range
-  follow you). The superseded `piflow-cost` is not linked. Links live in `spec.links` of the v2 dashboard; the Grafana
-  sub-path (`/grafana/`) must be part of the url. When adding a dashboard, add it to every other dashboard's links too.
+### `piflow-health` — run timelines + step detail (PMR-ZV9Y 6.3)
 
-### 6b. (superseded by 6a) Cost dashboard (`piflow-cost`) and range dashboard (`piflow-range`)
+Two new v2 rows plus the kept tool/duration panels:
 
-Three pi-flow dashboards exist in the same Grafana folder (`ag3jjknk85xc0b`): `piflow-health` (above), **`piflow-cost`**
-("pi-flow cost", backup: [`docs/pi-flow-cost.dashboard.json`](pi-flow-cost.dashboard.json)) and `piflow-range`
-("pi-flow range: cost vs score", from the M6 ticket; not documented here — `gcx dashboards get piflow-range`).
-All are DB-only, not provisioned from git.
+- **Run state history (Loki)** — `{job="pi-flow", flow_ref=~"$ref", mode=~"${mode:raw}"} | json | line_format …` as a
+  table (ticket / event / state / reason / phase / step / wait_kind). The panel is **labelled "populates once
+  `telemetry.loki.enabled`"** — it is empty until Loki is configured and the daemon's own panels still work without it.
+- **Step timeline (Tempo step spans)** — `{ .flow.ref =~ "$ref" && .flow.span = "step" } | select(.flow.ref, .flow.url,
+  .phase, .step)`, `tableType: spans`, `spss: 20`, `limit: 50` — one row per journaled step boundary; **the Span ID is
+  the link** that opens the trace at that step.
+- Current phase / current step tiles read `pi_flow_phase` / `pi_flow_step` (`max by (ref, phase)` /
+  `max by (ref, step)`), and the tool-error, tool-failure and run-duration panels are unchanged (their metrics are
+  kept). `Traces by flow.ref` keeps its root+phase table.
 
-`piflow-cost` layout (all Prometheus, variable `ref`, redesigned 2026-11-07 — the original panels were time series of
-values that never change after the push, so every ticket was a dot at the right edge and the legends listed one row per
-agent name per ticket). Principle: **cost is a per-run total, not a time series → instant queries, tables, bars**.
-Instant queries also make deleted/stale test refs disappear. "In range" = tickets whose `push_time_seconds{job="pi-flow"}`
-falls inside the selected time range (`and on (ref) (push_time_seconds >= time() - $__range_s)`).
+### `piflow-orchestrator`, `piflow-subagents`, `piflow-adhoc` — vocabulary pass only (PMR-ZV9Y 6.4)
 
-| Row | Panel | What it answers |
+These three got a **terminology/vocabulary pass** (titles, legends, columns, navigation links now use the
+state/phase/step/reason words and link to the rebuilt `piflow-runs`); their **cost metric queries are untouched in
+meaning** (names/label sets of the cost family unchanged, ISC-A-6). The orchestrator/subagents `agent="main"` vs
+`agent!="main"` split stays (subtask statistics stay, D5).
+
+### The alert group `pi-flow-runs` (PMR-ZV9Y 6.5) — the cutover
+
+Four rules live in the "Homelab" alert file. Backups: `docs/pi-flow-alerts/` (the four `piflow-*.json` only; the pull
+dir also carried unrelated Homelab rules, and `gcx resources push` is apply-no-prune, so those stay Grafana-only). All
+four were rewritten against the v2/kept enums in **one** `gcx resources push` (never rule-by-rule — two rules were
+firing during the rebuild).
+
+| Rule uid | Expression | Severity |
 | --- | --- | --- |
-| 1 | stat tiles `panel-6..9`: Total spend, Tickets, Average per ticket, Median per ticket | how much, how many, typical ticket (median resists one expensive outlier) |
-| 2 | `panel-10` Spend in the last 24h (rolling) | trend: at each hourly step, cost of tickets pushed in the preceding 24h. Rolling because daily buckets can't show "today" (a bar is evaluated at its window end and the series don't exist before their push) |
-| 2 | `panel-2` cost per flow stacked by phase | where each ticket's money went |
-| 3 | `panel-1` Tickets table | per ticket: Total (gauge), Plan / Implement / Validate, Orchestrator, Sessions, Duration, Last pushed; joined by `ref`, sorted newest first. Plan/Implement/Orchestrator columns only exist once a ticket has main-session cost (new runs) — absent otherwise |
-| 4 | `panel-3` Most expensive sessions (top 10) | outlier sessions: Ticket, Role, Subtask, Cost, Tokens (`label_join` key to join cost+tokens; role via `label_replace`) |
-| 4 | `panel-5` cost per agent role (below) | which role is expensive in general |
-| 5 | `panel-4` Cache hit ratio per ticket | `cacheRead / (input + cacheRead + cacheWrite)`; thresholds red < 50%, orange < 80%, green ≥ 80% — low ratio on a costly ticket is the first place to look |
+| `piflow-waiting-on-human` | `time() - pi_flow_state_start_seconds{state="waiting_human"} > 14400` | warning — summary keeps the expected-action hint (`/flow answer <ref> approve\|pass\|fail`) |
+| `piflow-run-halted` | `pi_flow_state{state="halted",reason!=""} == 1` | critical — the reason rides the alert labels (`{{ $labels.reason }}`) |
+| `piflow-retry-budget` | `(pi_flow_blocker_retries >= 2) or (pi_flow_retry_attempts >= 2)` | warning — **query unchanged** (kept metrics); annotations point at the rebuilt board |
+| `piflow-worktree-leak` | `increase(pi_flow_worktree_sweep_total{outcome=~"deferred\|kept-all"}[1h]) > 0` | warning — **query unchanged** (kept metric) |
 
-`piflow-health` `panel-3` "Run duration per ticket, stacked by phase": instant `sum by (ref, phase)(pi_flow_run_duration_seconds)`
-+ `groupingToMatrix` stacked barchart (durations are wall-clock phase-start→complete and INCLUDE waiting for the human, so a
-long validate bar is usually review/approval wait).
+**One-push cutover done 2026-11-25.** Because production v2 series could not exist before the code landed, the two v2
+rules armed **NoData-inactive** at the push (the previously-firing `piflow-run-halted` on a pre-v2 ref predates v2, and
+the kept-metrics `piflow-retry-budget` rule proved it was still firing through the push — the push broke nothing).
+**The first real `/flow` run after this code lands arms both v2 rules; re-verify them then.**
 
-`piflow-health` `panel-5` "Tool failures": Tempo table (`tableType: spans`) of
-`{ .tool.error = "true" && .flow.ref =~ "$ref" } | select(.flow.ref, .phase, .agent.name, .gen_ai.tool.name, .tool.output)`,
-one row per failed tool span; the **Span ID is the link** (opens the trace with that span). Columns: Start time, Ticket,
-Phase, Tool, Agent, Duration, Span ID, and Tool output (only when `captureContent` is `tools`/`all`). Failures from plain
-interactive sessions (no `flow.ref`) are deliberately not listed — drop the `.flow.ref` clause to include them (4 existed
-when this was built). Spans mark failures twice: attribute `tool.error="true"` and OTLP status = ERROR; the same
-limits as any Tempo search apply (a trace split by `trace_idle_period` can hide matching spans for ~3 min).
-The old error-rate / failures-by-tool panels (`panel-1`, `panel-2`) read the pushed `pi_flow_tool_calls_total{status="error"}`
-metric, so they are empty until `/flow-cost` has pushed a ticket that had a failure.
-
-Dashboard-editing gotcha: `gcx dashboards update` needs the CURRENT `metadata.resourceVersion`; a stale file is rejected
-(no output). Always `gcx dashboards get` immediately before editing and check for `"action":"updated"`.
-
-Stacked-by-phase panel (`panel-2`, replaced the old "Cost by phase" time-bar which plotted `sum by (phase)` over time and
-therefore showed one bar per 15 minutes): query `sum by (ref, phase) (pi_flow_run_cost_usd{ref=~"$ref"})` as an
-**instant table**, transformation `groupingToMatrix` (rows = `ref`, columns = `phase`, value = `Value`, empty = zero),
-`barchart` with `stacking: normal`, tooltip `multi` (hover a bar → every phase's cost), unit `currencyUSD`, fixed colours per
-phase via `byName` overrides (plan blue, implement green, validate orange, feedback purple). One bar = one flow ref
-(metrics are keyed by ref, so two runs of one ref add up; the trace root is per run). Verified with synthetic refs
-pushed via the Pushgateway then deleted (`DELETE <url>/metrics/job/pi-flow/ref/<ref>`).
-
-Cost-per-agent-role panel (`panel-5`, replaced the old bargauge "Total cost by agent", which had one row per agent NAME and
-therefore one row per ticket because worker names embed the ref, e.g. `Deviation check: TP-5K94`): three instant table
-queries over `label_replace(sum by (ref, agent, session)(pi_flow_run_cost_usd{ref=~"$ref"}), "role", "$1", "agent", "^([^:]*).*")`
-— `max by (role)`, `avg by (role)`, `quantile by (role)(0.5, …)` — joined on `role` (`joinByField`), renamed
-Highest/Average/Median (`organize`), filtered, sorted by Highest; horizontal grouped `barchart` (orange/blue/green), tooltip `multi`.
-Role = the `role` from `pi_flow_run_role_info` (agent type, else name prefix; orchestrator rows carry `orchestrator`), joined with
-`* on (ref, session) group_left (role)`; runs pushed BEFORE role tracking fall back to the old name-prefix `label_replace`
-(via `unless on (ref, session) pi_flow_run_role_info`) and old `main` rows are relabelled **`orchestrator`** — the main pi session that runs the flow, one session per
-flow run (verified with synthetic refs: highest/avg/median matched). Its bars dwarf the workers' on a shared axis (it does
-plan + implement + validate itself); a session = one worker or one
-main-session run (the per-phase main rows of one session are summed by `sum by (… session)` first). Grafana cannot draw
-per-row markers on one bar, so avg/median are sibling bars, not ticks. Checked against raw series: 9 sessions per role,
-values identical to the chart.
-
-## 7. Tempo behaviours that bite (measured on the homelab Tempo 2.10)
+### Tempo behaviours that bite (measured on the homelab Tempo 2.10)
 
 | Behaviour | Evidence | Mitigation |
 | --- | --- | --- |
 | Attribute values truncated at **2048 bytes** silently | 10 000-char value read back as 2048 | `maxContentChars` default 2000; raise Tempo `max_attribute_bytes` together; metric `tempo_distributor_attributes_truncated_total` |
-| TraceQL **search** returns only ONE segment of a trace whose spans arrived > `trace_idle_period` apart; open-by-id is always complete | synthetic: 4 spans 4 s apart → search 4/4; 30 s apart → 1/4 | `ingester.trace_idle_period: 3m` (deployed). Consequence: a finished trace is fully searchable ~3 min after its last span; silences > 3 min inside a trace can still split it |
-| Duplicate span ids both returned until compaction | re-sent probe span returned twice | never update a span in place |
+| TraceQL **search** returns only ONE segment of a trace whose spans arrived > `trace_idle_period` apart; open-by-id is always complete | synthetic: 4 spans 4 s apart → search 4/4; 30 s apart → 1/4 | `ingester.trace_idle_period: 3m` (deployed). A finished trace is fully searchable ~3 min after its last span; silences > 3 min inside a trace can still split it |
+| Duplicate span ids both returned until compaction | re-sent probe span returned twice | never update a span in place — hence export-once-at-close for phase and step spans (§8) |
 | Ingest needs the bearer; 401 without, 200 with | curl | `PI_FLOW_OTLP_TOKEN` in the shell that starts pi |
 
-## 8. Operating it (copy-paste)
+## 11. Code map (`packages/pi-flow`)
+
+| File | Role |
+| --- | --- |
+| `flow/vocabulary.ts` | **v2 vocabulary (pure, zero imports):** `FlowState`/`FlowReason`/`WaitKind` unions, `FLOW_STATES`/`FLOW_REASONS` guard sets, `WAIT_KIND` map + `reasonWaitKind()`, `EXPECTED_ACTION` map + `expectedAction()`. The single source every consumer reads. |
+| `flow/steps.ts` | **step registry (pure):** `STEP_REGISTRY` + `isRegisteredStep(phase, step)`. The closed set of named step boundaries (§5). |
+| `flow/state-metrics.ts` | **v2 Prometheus derivation (node-only, daemon-reachable, pure):** `deriveV2State` (projection + ISC-6 legacy fallback), `scanStateWindows` (cumulative waits), `scanStepWindows` (step boundaries), `renderStateMetricLines` (the six gauges, bare lines — TYPE-line rule §4). |
+| `flow/run-health.ts` | Appends `renderStateMetricLines` output after the kept frozen block; header AIDEV notes the frozen set + the 7.1 retirement history. |
+| `flow/reconcile.ts` | `tombstoneBody` — v2 state-line `state="stale"` label-value surgery (§4); candidacy journal-keyed. |
+| `run-state.ts` | The v2 journal kinds (`state-change` projected → `FlowRunState.currentState`; `step-start`/`step-stop` journal-only) + the PMR-C998 `isJournalOnlyEvent` note. |
+| `flow/loop.ts` | Guarded `emitStateChange` + `emitStep` v2 seams, seeded from the journal tail on resume, wired into `snapshot()`, the subagent-in-flight branch, every halt site, done, spec-approval pause. |
+| `tools/{code-review,run-attempt,deviation}.ts` | v2 emissions at the gate boundaries through the writer seam (§4). |
+| `flow/step-output.ts` | `flow_submit` advisory registry hint (`isRegisteredStep`), never rejects. |
+| `telemetry/dispatch.ts` | **`createEventFanoutWriter`** (the one session-side fan-out) + `createTelemetryHandlers` + the **notify sink** (`shouldNotifyState`/`notifySummary`/`notifyBody`/`createNotifySink`, dynamic import of `@gtheys/pi-desktop-notify/notify`). |
+| `telemetry/loki.ts` | **fail-silent Loki pusher** (§6) — `buildLokiStream`/`buildEventLokiLabels`/`pushLokiEvent`. |
+| `telemetry/index.ts` | **Tempo step spans** (§8) — `stepSpanId`, `stepStart`/`stepStop`, `closePhaseSteps`/`closeOpenSteps`. Plus the unchanged OTLP root/phase/session/adhoc spans. |
+| `telemetry/attributes.ts` / `content.ts` / `exporter.ts` | Env → attributes, opt-in content capture, OTLP/HTTP JSON POST (unchanged). |
+| `flow/cost.ts`, `flow/cost-rows.ts`, `flow/cost-command.ts`, `flow/cost-autopush.ts` | `/flow-cost` rollup, the `buildPushBody` cost family, push to `<url>/metrics/job/pi-flow/ref/<ref>` (unchanged). |
+| `flow/push.ts` | Node-only Pushgateway plumbing: `pushToGateway`, `fetchGroupBody`, `filterGroupLines` (the `#`-line drop behind the TYPE-line rule). |
+| `config.ts` / `config.schema.json` | The config boundary: `telemetry.loki` + `notify.desktop` blocks (TypeBox + checked-in schema mirror). |
+| `packages/pi-desktop-notify/notify.ts` | **`./notify` subpath** — node-only `dispatchNotification(config, summary, body)` + re-exported `loadConfig`, consumed dynamically by the fan-out. |
+| `index.ts` | Wiring: the one `createEventFanoutWriter` wrap at the session `EventWriter`, late-bound `lokiSettings` / `notifyDesktop` / `telemetryHandle`. |
+| `packages/pi-interactive-subagents/.../flow-env.ts` | `applyFlowEnv`: copies the `PI_FLOW_*` stamp + `PI_SUBAGENT_NAME` into every spawned worker's env. |
+| tests | `test/vocabulary.test.ts`, `run-state-v2.test.ts`, `state-metrics.test.ts`, `run-health-v2.test.ts`, `reconcile-tombstone-v2.test.ts`, `run-liveness-pattern-v2.test.ts`, `telemetry-step-spans.test.ts`, `loki-pusher.test.ts`, `telemetry-dispatch.test.ts`, `notify-hook.test.ts`, `config-*.test.ts`. Run `bun test packages/pi-flow`; also `bunx @biomejs/biome check packages/pi-flow`, `bunx tsc -p tsconfig.json --noEmit`. |
+
+Repo rules: no ternaries in TS, explicit `.ts` import suffixes, explicit `files` allowlist in
+`packages/pi-flow/package.json` (a new module must be added there or the published package breaks), never edit
+existing tests without asking, implement in a git worktree (`worktree` tool), `AIDEV-NOTE` comments stay.
+
+## 12. Operating it (copy-paste)
 
 ```bash
-# Is the ingest path alive? 200 = ok, 401 = token, 000 = wrong port/unreachable (use 4478, NOT 8478)
+# Is OTLP ingest alive? 200 = ok, 401 = token, 000 = wrong port/unreachable (use 4478, NOT 8478)
 curl -sk -m6 -o /dev/null -w '%{http_code}\n' -X POST -H "authorization: Bearer $PI_FLOW_OTLP_TOKEN" \
   -H 'content-type: application/json' -d '{"resourceSpans":[]}' https://chicken.tail4250d0.ts.net:4478/v1/traces
 
-gcx traces query '{ resource.service.name = "pi-flow" }' -d tempo --since 1d      # trace list (metadata only)
+# v2 gauges on the gateway (the ref's current state + step)
+gcx metrics query 'pi_flow_state'                -d PBFA97CFB590B2093 --since 2h -o json
+gcx metrics query 'pi_flow_state{state="waiting_human"}' -d PBFA97CFB590B2093 --since 2h -o json
+
+# step spans in Tempo (mind the ~3 min idle-period search delay)
+gcx traces query '{ .flow.ref = "<REF>" && .flow.span = "step" }' -d tempo --since 2h
+# transition timeline in Loki (only once telemetry.loki is configured)
+gcx logs query '{job="pi-flow"}' -d loki --since 1h
+
 gcx traces query '{ .flow.ref = "TP-XXXX" }' -d tempo --since 2h                  # find a ref (mind 0 vs O in refs)
 gcx traces get <traceId> -d tempo                                                  # full trace (large -> spills to /tmp/gcx-results-*.json)
-gcx metrics query 'pi_flow_run_cost_usd' -d PBFA97CFB590B2093 --since 7d -o json  # metrics side
-gcx dashboards get piflow-health -o json                                           # dashboard definition
-gcx dashboards update piflow-health -f edited.json                                 # edit: get -> modify -> update (resourceVersion!)
-gcx dashboards snapshot piflow-health --since 7d --output-dir /tmp/x               # render PNG
-# raw search incl. span sets (gcx traces query hides them):
-gcx api "/api/datasources/proxy/uid/tempo/api/search?q=<urlencoded traceql>&start=<s>&end=<s>&spss=20"
+gcx metrics query 'pi_flow_run_cost_usd' -d PBFA97CFB590B2093 --since 7d -o json  # cost side (unchanged)
+gcx dashboards get piflow-runs -o json                                             # board definition
+gcx dashboards update piflow-runs -f edited.json                                   # edit: get -> modify -> update (resourceVersion!)
+gcx dashboards snapshot piflow-runs --since 7d --output-dir /tmp/x                 # render PNG
+gcx alert groups list | jq '.[] | select(.name=="pi-flow-runs") | .rules[].query'  # the four rules' live expressions
 journalctl -u tempo -u caddy -u grafana-image-renderer --no-pager -n 50
 ```
 
-Verify end to end after any telemetry change: restart pi → run a flow (`/flow <ref>`) through validate → wait ~3 min →
-`gcx traces query '{ .flow.ref = "<REF>" && .flow.span = "phase" } | count() = 3' -d tempo --since 1h` returns the
-trace (3 phase spans visible to search) → open the dashboard, expand the row, click a phase id and confirm the
-review/deviation sessions nest under validate.
+**Verify v2 end-to-end after a code change:** restart pi → run `/flow <ref>` through at least one `waiting_human`
+transition (spec approval or code review) → `grep -c '"kind":"state-change"'
+~/.pi/agent/pi-flow/runs/<ref>.journal.jsonl` > 0 → the ref's `pi_flow_state` lines appear on the gateway →
+`gcx traces query '{ .flow.ref = "<REF>" && .flow.span = "step" }' -d tempo --since 2h` returns the step spans (after
+~3 min) → the desktop notification fired on the `waiting_human` transition → the Waiting-on-me row lists the ref with
+its expected action. If Loki is configured, `gcx logs query '{job="pi-flow"}'` shows the transition lines.
 
-Synthetic trace for experiments (root + 3 phase spans pushed N s apart, then read `matched`/`spanCount` from the
-search API) was the tool that proved the Tempo idle-period behaviour; recreate it rather than waiting for real flows.
-Synthetic rows (`SYN-*`, `PMR-DEMO`, `*-probe`) clutter the table until retention removes them.
+Synthetic probes (push a v2 body / a step trace under a `PROBE-*` ref via the Pushgateway + OTLP, read it back, then
+`DELETE <url>/metrics/job/pi-flow/ref/<ref>`) proved the TYPE-line rule and the Tempo idle-period behaviour; recreate
+them rather than waiting for real flows. Synthetic rows (`SYN-*`, `PMR-DEMO`, `*-probe`) clutter the boards until
+Tempo's 14 d retention removes the traces.
 
-## 9. Backlog / ideas not done
+## 13. Backlog / ideas not done
 
 - Per-run root span with real duration (currently a zero-length marker; can't be updated in place — would need a
   single end-of-run emission with a different span id design).
-- Span names for workers are `<ref> - <role>` derived from the agent name; scouts get whatever name was passed to the spawn.
-- Provision the dashboard from git (homelab `provisioning/dashboards/`) so it is reviewable; today it is DB-only.
+- A `label_replace`-substituted Expected-action column on the Waiting-on-me board (today it renders the literal `{ref}`
+  template; see §10).
+- Backfill v2 events into pre-cutover journals (the ISC-6 derivation fallback covers them; not worth backfilling).
+- Provision the boards from git (homelab `provisioning/dashboards/`) so they are reviewable; today they are DB-only.
 - Redaction for content capture (none today).
-- Backfill main-session cost for runs before the `main-session` journal event (would need the main session file per run;
-  not recorded then).
-- Aven tickets `PMR-HFK1` (M1 attribution), `PMR-EA8X` (M2 cost rollup), `PMR-R8AG` (M4 telemetry), `PMR-XPVE` (M5),
-  `PMR-DJ7B` (M6) are done; `aven list` for follow-ups.
-
+- Backfill main-session cost for runs before the `main-session` journal event (would need the main session file per
+  run; not recorded then).
+- Live re-verify the two v2 alert rules (`piflow-waiting-on-human`, `piflow-run-halted`) arm on the first real run
+  after this code lands (§10).
 
 ## Incident 2026-11-07 (evening): TP-1VFZ had no plan/implement/orchestrator cost
 
@@ -344,42 +596,44 @@ embedded in the main session (checked: 27 assistant messages = $0.4197 = the orc
 are extra; ticket total $0.439 = orchestrator + workers). Work done inline in the main session (a skill, a oneshot) cannot be
 separated from the orchestrator — it IS the main session.
 
-## Work mode vs personal mode (2026-11-07)
+## Work mode vs personal mode (2026-11-07, unchanged by PMR-ZV9Y)
 
 **Tracking ref.** A run is tracked by `trackRef`: personal = the aven ref; work = the Jira key (typed Jira id, else the epic's
 `jira-ref` metadata via `readJiraRef`, else the aven ref) — `trackingRef()` in `flow/ref-kind.ts`. `PI_FLOW_REF` stays the AVEN
 ref (journal filename, aven ops); `PI_FLOW_TRACK_REF` and `PI_FLOW_MODE` are stamped next to it (`flow/attribution.ts`,
 `StampExtras`), cleared with the rest, and forwarded to workers by `applyFlowEnv`. The `run-start` journal event carries
-`trackRef`; `/flow-cost` and the auto push read it from the LAST run-start (old journals: aven ref, personal).
+`trackRef`; `/flow-cost`, the auto push and the v2 gauges all read it from the LAST run-start (old journals: aven ref, personal).
+So the v2 `ref` label is the tracking ref, exactly like the cost family.
 
-**Telemetry.** `flow.ref` = tracking ref (so phase/session span names and every dashboard automatically show the Jira key),
+**Telemetry.** `flow.ref` = tracking ref (so phase/session/step span names and every dashboard automatically show the Jira key),
 `flow.aven_ref` when different, `flow.mode`, and `flow.url` = `telemetry.jiraBaseUrl` + Jira key (work mode only; the config
 option lives in `~/.pi/agent/pi-flow/config.json`, currently `https://salaryhero.atlassian.net/browse/`).
 
 **Metrics.** `ref` label = tracking ref. Pushgateway groups: personal `…/ref/<ref>` (unchanged, no `mode` label — adding one would
 have created a second group per existing ticket and double-counted), work `…/ref/<JIRA>/mode/work` (grouping label `mode="work"` on
-every series incl. `push_time_seconds`). To re-push by hand use the AVEN ref: `/flow-cost <aven-ref> --push` (the journal is keyed by it).
+every series incl. `push_time_seconds` and every v2 gauge). To re-push by hand use the AVEN ref: `/flow-cost <aven-ref> --push` (the
+journal is keyed by it).
 
-**Dashboards** (`piflow-orchestrator`, `piflow-subagents`, `piflow-health`):
+**Dashboards** (all five boards):
 * `mode` custom variable first (Personal=`^$|personal`, Work=`work`, All=`.*`); `ref` options depend on it.
-* EVERY `pi_flow_*` / `push_time_seconds` selector has `mode=~"${mode:raw}"`; traces `.flow.mode =~ "${mode:raw}"`.
-  **Use `${mode:raw}`, not `$mode`**: Grafana regex-escapes variable values inside `=~` matchers (the Personal value matches
-  "no mode label OR personal"; escaped it matched nothing and Personal showed empty). Old personal series have no mode label, which `^$`
-  matches; old personal SPANS have no `flow.mode` and therefore do not appear under Personal/All in trace tables.
+* EVERY `pi_flow_*` / `push_time_seconds` selector has `mode=~"${mode:raw}"`; traces `.flow.mode =~ "${mode:raw}"`; Loki
+  stream selectors `{…, mode=~"${mode:raw}"}`. **Use `${mode:raw}`, not `$mode`**: Grafana regex-escapes variable values inside
+  `=~` matchers (the Personal value matches "no mode label OR personal"; escaped it matched nothing and Personal showed empty).
+  Old personal series have no mode label, which `^$` matches; old personal SPANS have no `flow.mode` and therefore do not appear
+  under Personal/All in trace tables.
 * Jira links: an extra **Jira** column ("Open in Jira ↗", `links` url `${__value.raw}`, regex value mapping) fed by a `url` label built
   in PromQL: `label_replace(label_replace(<vector by (ref, …, mode)>, "url", "https://salaryhero.atlassian.net/browse/$1", "ref", "(.*)"), "url", "", "mode", "^$|personal")`
   — non-empty only for work series, so personal rows show "–" and never get a link. (A link on the Ticket column itself made EVERY row a link, empty
   url included.) Tool-failures table uses the span attribute `flow.url` instead. The Jira base URL is hard-coded in the dashboard queries
   (and configurable for traces). Bar charts and the trace-tree table have no per-row link.
-* Verified with a synthetic work ticket `DP-9999` (metrics + traces) in All / Work / Personal; deleted afterwards (traces age out with the
-  14 d retention; the ref dropdown may list it for up to 7 days).
 
-## Ad-hoc commands: /brainstorm, /pr-quality, /review (2026-11-09)
+## Ad-hoc commands: /brainstorm, /pr-quality, /review (unchanged by PMR-ZV9Y)
 
-These run OUTSIDE the /flow loop, so they have no run journal. `packages/pi-flow/adhoc/tracker.ts` keeps an in-memory window per run
-and pushes `pi_flow_adhoc_*` metrics to the Pushgateway group `job=pi-flow-adhoc, run=<id>` (id = `<kind>-<target-slug>-<yyyymmddThhmm>`)
-on every update (idempotent replace). Metric names are deliberately different from `pi_flow_run_*` so the flow dashboards never pick them up.
-Same env gate as the cost push (`PI_FLOW_PUSHGATEWAY_URL`/`_TOKEN`); unset = silent no-op.
+These run OUTSIDE the /flow loop, so they have no run journal and emit **no v2 state vocabulary** — the v2 gauges are
+flow-loop only. `packages/pi-flow/adhoc/tracker.ts` keeps an in-memory window per run and pushes `pi_flow_adhoc_*`
+metrics to the Pushgateway group `job=pi-flow-adhoc, run=<id>` (id = `<kind>-<target-slug>-<yyyymmddThhmm>`) on every
+update (idempotent replace). Metric names are deliberately different from `pi_flow_run_*`/`pi_flow_state*` so the flow
+dashboards never pick them up. Same env gate as the cost push (`PI_FLOW_PUSHGATEWAY_URL`/`_TOKEN`); unset = silent no-op.
 
 | metric | labels | meaning |
 |---|---|---|
@@ -410,5 +664,32 @@ Cost/time model and known limits:
   Telemetry must be enabled (`telemetry.enabled`) for traces; metrics only need the Pushgateway env.
 
 Dashboard `piflow-adhoc` ("pi-flow ad-hoc commands", backup `docs/pi-flow-adhoc.dashboard.json`): `command` variable, stats (spend, runs, avg cost, avg duration),
-bar charts per command (total cost, average duration), cache hit ratio per command, a Tempo traces table (`{ (.flow.span = "adhoc" || .flow.span = "adhoc-run") && .adhoc.kind =~ "${kind:raw}" }`: root marker + run span) and a runs table (Started, Command, Target, Cost, Duration, Input, Output, Cache read). Linked from the other three dashboards.
-Verified with synthetic runs (metrics + a root/child trace pair, found by Tempo search after ~10 min), metrics deleted afterwards; the synthetic trace `brainstorm syn topic` stays until the 14 d retention. Hover/click not verifiable by render.
+bar charts per command (total cost, average duration), cache hit ratio per command, a Tempo traces table (`{ (.flow.span = "adhoc" || .flow.span = "adhoc-run") && .adhoc.kind =~ "${kind:raw}" }`: root marker + run span) and a runs table (Started, Command, Target, Cost, Duration, Input, Output, Cache read). Linked from the other boards.
+
+## 14. Troubleshooting: the v1 → v2 cutover (PMR-ZV9Y 7.1)
+
+**Symptom:** a board panel or alert rule shows "no data" / never fires after the cutover, or a bug report quotes a
+metric name like `pi_flow_run_status` / `pi_flow_run_halt_reason` / `pi_flow_human_wait_seconds` / `pi_flow_gate_wait_seconds`.
+
+**Root cause:** those four v1 state-vocabulary series were **retired** in 7.1 — `renderRunHealthLines` no longer emits
+them, so any query still reading one is structurally empty. Cost / token / tool-call / duration / gate-decision /
+retry / blocker / worktree-sweep / run-start / `pi_flow_run_role_info` and the whole `pi_flow_adhoc_*` family are
+**unaffected**.
+
+**Fix:**
+
+1. Confirm the retired names render nowhere: `grep -rn 'pi_flow_run_status\|pi_flow_run_halt_reason\|pi_flow_human_wait_seconds\|pi_flow_gate_wait_seconds' packages/pi-flow/flow/`
+   → only historical AIDEV notes (the 7.1 retirement records), no live code path.
+2. Re-point any consumer to the v2 equivalent: state → `pi_flow_state{state="…"}`; halt reason → `pi_flow_state{state="halted",reason="…"}`;
+   human wait → `pi_flow_state_start_seconds{state="waiting_human"}` (age = `time() - …`) + `pi_flow_wait_seconds{wait_kind="human"}`;
+   gate wait → `pi_flow_wait_seconds{reason="<gate reason>"}`; per-step waits → Loki `step-start`/`step-stop` events + the
+   Tempo step spans.
+3. The five committed board backups (`docs/pi-flow-*.dashboard.json`) and the four alert backups (`docs/pi-flow-alerts/`)
+   are already on v2 (the 6.2–6.5 rebuild + 7.1 grep guard proved zero retired-name hits in them). If a live board has
+   drifted, re-`get` it and diff against the backup; the backup is the durable v2 state.
+4. A pre-cutover stored Pushgateway group carries only v1 lines and has **no** v2 series to alert on. Reconcile's
+   tombstone reads such a body as "already clean" and never re-posts it (§4) — re-push the run's group (a terminal
+   `/flow-cost <aven-ref> --push`, or let the next run re-render) so it carries `pi_flow_state*`.
+5. After any of this, remember the daemon reads config **once at start** and the session reads it **once per pi
+   session**: restart the daemon / restart pi after pulling new telemetry code or changing `telemetry.loki` /
+   `notify.desktop`, or the render is stale.

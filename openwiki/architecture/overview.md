@@ -59,7 +59,9 @@ packages/
 │                             flow_land, flow_run_attempt, spec_approve, flow_submit),
 │                             flow-status widget, effect gate, run journal + durable
 │                             run server, /flow-diagram HTML renderer, /flow-cost
-│                             rollup + OTLP/Pushgateway observability, Herdr plugin;
+│                             rollup + three-renderer observability (Prometheus v2
+│                             state gauges, Loki transition events, Tempo step spans —
+│                             PMR-ZV9Y), Herdr plugin;
 │                             also owns the absorbed plan-tools/, review/, sonarqube/,
 │                             pr-quality/, worktree/ modules (pi-planning, pi-review,
 │                             pi-worktree were retired into it)
@@ -107,9 +109,9 @@ for 3 exec calls).
 | `pi-interactive-subagents` | multiplexer CLI (cmux/tmux/zellij/wezterm/herdr) | sub-agents run in real terminal panes, results steer back into the session |
 | `pi-test-runner` | test scripts via the `pi-interactive-subagents` API | isolate test runs in a `test-runner` agent so they don't block the conversation |
 | `pi-pr-digest` | `gh` CLI | PR author/comment/review status across an org |
-| `pi-flow` | `aven`, `herdr`, `git`/`gh` (via gate tools), optional OTLP/HTTP + Pushgateway | PIV phases; aven labels as run state; herdr panes for flow-view/flow-view-replay/spec-review; telemetry + cost metrics are opt-in |
+| `pi-flow` | `aven`, `herdr`, `git`/`gh` (via gate tools), optional OTLP/HTTP + Pushgateway + Loki | PIV phases; aven labels as run state; herdr panes for flow-view/flow-view-replay/spec-review; the v2 state vocabulary (PMR-ZV9Y) renders to Prometheus/Loki/Tempo; telemetry + cost metrics are opt-in |
 | `pi-flow/worktree` | `herdr`, `git`, optional `acli`/`gh`/`git-town` + package manager | create/list/bind/remove/prune worktree workspaces |
-| `pi-desktop-notify` | `notify-send` | desktop notification on idle-after-work |
+| `pi-desktop-notify` | `notify-send`, herdr, ntfy | desktop notification on idle-after-work; also exports the node-only `./notify` subpath (`dispatchNotification`) consumed by pi-flow's flow-state pages |
 
 ## Next
 

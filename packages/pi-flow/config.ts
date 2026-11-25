@@ -225,7 +225,7 @@ const PiFlowConfigSchema = Type.Object({
         enabled: Type.Optional(
           Type.Boolean({
             description:
-              'Reconcile stale run-liveness metrics (tombstone halted/paused series whose aven ticket is no longer active). Default true',
+              'Reconcile stale run-liveness metrics (tombstone the v2 pi_flow_state series whose aven ticket is no longer active: state halted/waiting_human/waiting_machine becomes stale). Default true',
           }),
         ),
         intervalMinutes: Type.Optional(
