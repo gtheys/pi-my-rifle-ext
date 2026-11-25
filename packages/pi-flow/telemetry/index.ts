@@ -72,6 +72,30 @@ export function phaseSpanId(traceId: string, phase: string): string {
 }
 
 /**
+ * AIDEV-NOTE: PMR-ZV9Y 4.1 — deterministic step span id: first 16 hex chars
+ * of sha256(traceId:phase:step), the same construction and delimiter as
+ * phaseSpanId. A step span's id is therefore re-derivable from the trace plus
+ * the journal's (phase, step) pair, so nothing has to carry an id across the
+ * process boundary — at the price that a retried step inside the SAME trace
+ * cannot get a second span (see the step-span note in registerTelemetry).
+ */
+export function stepSpanId(
+  traceId: string,
+  phase: string,
+  step: string,
+): string {
+  return createHash('sha256')
+    .update(`${traceId}:${phase}:${step}`)
+    .digest('hex')
+    .slice(0, 16)
+}
+
+/** Idempotency key of a step span within a trace (traceId:phase:step). */
+function stepSpanKey(traceId: string, phase: string, step: string): string {
+  return `${traceId}:${phase}:${step}`
+}
+
+/**
  * Session span name: "<flow ref> - <role>". The role comes from the agent
  * type when known (scout, worker, reviewer...), else from the agent name up
  * to its first colon (see flow/agent-role.ts); full name, type and phase stay
@@ -82,6 +106,24 @@ export function sessionSpanName(flow: SpanAttributes): string {
   const ref = flow['flow.ref']
   if (ref === undefined) return role
   return `${ref} - ${role}`
+}
+
+/**
+ * An open (or already-exported) step span. Kept in the state map after export
+ * on purpose: it is the record that makes a duplicate start a no-op, so a
+ * deterministic id is never sent twice (Tempo keeps both copies).
+ */
+interface OpenStepSpan {
+  traceId: string
+  phase: string
+  step: string
+  name: string
+  spanId: string
+  startNano: string
+  attrs: SpanAttributes
+  parentId: string | undefined
+  /** already sent: never re-sent, only kept as a duplicate-start guard. */
+  exported: boolean
 }
 
 interface OpenToolSpan {
@@ -137,6 +179,11 @@ export interface TelemetryState {
     /** already sent: kept as parent for trailing spans, never re-sent. */
     exported: boolean
   } | null
+  /**
+   * PMR-ZV9Y 4.1 step spans, keyed by stepSpanKey. Entries are never removed —
+   * an exported entry is what makes a duplicate stepStart idempotent.
+   */
+  steps: Map<string, OpenStepSpan>
   /** open ad-hoc (/brainstorm, /pr-quality) run: its own trace + reserved root span id. */
   adhoc: {
     traceId: string
@@ -179,6 +226,20 @@ export interface TelemetryHandle {
    */
   adhocBegin: (run: AdhocTraceInfo, nest: boolean) => void
   adhocEnd: (run: AdhocTraceInfo, attributes: SpanAttributes) => void
+  /**
+   * PMR-ZV9Y 4.1 — Tempo step spans for the v2 step boundaries. The journal
+   * fan-out (telemetry/dispatch.ts, subtask 4.3) calls these from a
+   * 'step-start' / 'step-stop' event, which carries BOTH phase and step, so
+   * the signature takes them as a pair instead of reading the phase off
+   * process.env: the stamped phase can lag a step that closes across a phase
+   * transition, and the deterministic id must match the journal's own
+   * (phase, step) window. stepStart opens "<ref> - <step>" parented on the
+   * current phase span; stepStop closes it. Duplicate starts for the same
+   * (phase, step) are ignored, stops without a start are silent no-ops, and a
+   * closed span is never re-sent. Absent-safe no-ops while telemetry is off.
+   */
+  stepStart: (phase: string, step: string) => void
+  stepStop: (phase: string, step: string) => void
 }
 
 export interface AdhocTraceInfo {
@@ -202,6 +263,7 @@ export function registerTelemetry(
     rootsEmitted: new Set(),
     session: null,
     phase: null,
+    steps: new Map(),
     adhoc: null,
     adhocRoots: new Map(),
     flow: {},
@@ -306,9 +368,52 @@ export function registerTelemetry(
   // shutdown — never updated in place (Tempo keeps both copies of a re-sent span id). shortcut: a main
   // process killed mid-phase never exports that phase span, so its children
   // hang off a missing parent; the flow root still names the trace.
+  // AIDEV-NOTE: PMR-ZV9Y 4.1 — step spans copy the phase-span lifecycle: real
+  // start at stepStart, exported exactly ONCE at close, never updated in
+  // place. Close points: stepStop, the phase close (a step still open when its
+  // phase ends is that phase's trailing step), syncFlowEnv transitions, and
+  // session_shutdown — the last two reach here through ensureTrace/closePhase
+  // plus closeOpenSteps on shutdown. Workers NEVER export step spans, the same
+  // posture as phase spans: the id is per-trace and deterministic, so a worker
+  // copy of a step the main process also journals would be a Tempo duplicate;
+  // a worker's own spans already nest under its session span. A retried step
+  // inside one trace (e.g. the deviation gate rerun) collapses into the first
+  // span — accepted, because a second copy of the id is worse than a missing
+  // one. With no phase span open the step parents like every other span does
+  // through parentFor (session → phase → root marker), it is never dropped.
+  const closeStep = (open: OpenStepSpan): void => {
+    if (open.exported) return
+    open.exported = true
+    state.buffer.push({
+      traceId: open.traceId,
+      spanId: open.spanId,
+      parentSpanId: open.parentId,
+      name: open.name,
+      kind: 1,
+      startTimeUnixNano: open.startNano,
+      endTimeUnixNano: toUnixNano(deps.now()),
+      attributes: open.attrs,
+      statusCode: 0,
+    })
+  }
+
+  const closePhaseSteps = (traceId: string, phase: string): void => {
+    for (const stepSpan of state.steps.values()) {
+      if (stepSpan.exported) continue
+      if (stepSpan.traceId !== traceId) continue
+      if (stepSpan.phase !== phase) continue
+      closeStep(stepSpan)
+    }
+  }
+
+  const closeOpenSteps = (): void => {
+    for (const stepSpan of state.steps.values()) closeStep(stepSpan)
+  }
+
   const closePhase = (): void => {
     const open = state.phase
     if (open === null || open.exported) return
+    closePhaseSteps(open.traceId, open.attrs.phase)
     open.exported = true
     state.buffer.push({
       traceId: open.traceId,
@@ -510,6 +615,8 @@ export function registerTelemetry(
       pi.on('session_shutdown', () => {
         if (!state.enabled) return
         closePhase()
+        // steps opened while no phase span existed never get closed by it
+        closeOpenSteps()
         flush()
         for (const off of state.unsubscribers) off()
         state.unsubscribers.length = 0
@@ -615,6 +722,48 @@ export function registerTelemetry(
         attributes: { ...attributes, 'flow.span': 'adhoc-run' },
         statusCode: 0,
       })
+      flush()
+    },
+    stepStart: (phase, step) => {
+      if (!state.enabled) return
+      // ensureTrace opens the phase span for the currently stamped phase, so
+      // the step can be parented on it right away.
+      ensureTrace()
+      if (isWorker()) return
+      const traceId = state.traceId
+      if (traceId === null) return
+      const key = stepSpanKey(traceId, phase, step)
+      // idempotent: an open OR already-exported step is never opened again
+      if (state.steps.has(key)) return
+      let name = step
+      const ref = state.flow['flow.ref']
+      if (ref !== undefined) name = `${ref} - ${step}`
+      state.steps.set(key, {
+        traceId,
+        phase,
+        step,
+        name,
+        spanId: stepSpanId(traceId, phase, step),
+        startNano: toUnixNano(deps.now()),
+        attrs: { ...state.flow, 'flow.span': 'step', phase, step },
+        parentId: parentFor(),
+        exported: false,
+      })
+    },
+    stepStop: (phase, step) => {
+      if (!state.enabled) return
+      if (isWorker()) return
+      // deliberately no ensureTrace here: the stop must close the step under
+      // the trace it was opened in, even if the flow env changed in between
+      // (a late syncFlowEnv then closes it via closePhaseSteps instead).
+      const traceId = state.traceId
+      if (traceId === null) return
+      const open = state.steps.get(stepSpanKey(traceId, phase, step))
+      if (open === undefined) return
+      if (open.exported) return
+      closeStep(open)
+      // flush NOW: a step boundary is the last thing before the session may go
+      // idle, and the buffer only auto-flushes at FLUSH_THRESHOLD spans
       flush()
     },
     syncFlowEnv: () => {
