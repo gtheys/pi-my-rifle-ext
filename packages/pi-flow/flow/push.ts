@@ -181,12 +181,15 @@ function trimBase(url: string): string {
  *
  * AIDEV-NOTE (PMR-MSDJ fix round, P2-5): an unparseable line that could be
  * one of OURS also returns {ok:false}, and that direction is the whole point.
- * A POST REPLACES the entire group (pushgateway's Replace path deletes every
- * stored family the body omits), so silently SKIPPING a line this parser
- * cannot read is silent, permanent DATA LOSS — a lost `pi_flow_run_cost_usd`
- * row is gone from the runs board for good. Failing the read loses the
- * TOMBSTONE instead: {ok:false} costs one skip entry plus one warning, and
- * the group keeps every byte it had until the next pass.
+ * Under official Pushgateway semantics a POST REPLACES the entire group (the
+ * Replace path deletes every stored family the body omits), so silently
+ * SKIPPING one of our lines this parser cannot read would be silent,
+ * permanent DATA LOSS — a lost `pi_flow_run_cost_usd` row is gone from the
+ * runs board for good. Failing the read loses the TOMBSTONE instead:
+ * {ok:false} costs one skip entry plus one warning, and the group keeps
+ * every byte it had until the next pass. (The homelab build merges on write
+ * rather than replacing — see the PMR-WBC2 note at the top of this file —
+ * but the fail-closed rule stays correct under either semantics.)
  *
  * The failure is scoped to lines that could belong to THIS group
  * ({@link couldBelongToGroup}), and that scoping is measured, not defensive
@@ -198,6 +201,20 @@ function trimBase(url: string): string {
  * never be a group member: the gateway re-forces the grouping labels (`job`,
  * `ref`, `instance`, `mode`) onto every stored series, so all of this group's
  * lines are labelled, and dropping an unlabelled one erases nothing.
+ *
+ * AIDEV-NOTE (PMR-WBC2 fix round): since the keep-rule requires a `pi_flow*`
+ * metric NAME, "could be one of ours" is judged the same way — the raw text
+ * must start with `pi_flow` (carrying our group LABELS no longer qualifies).
+ * That rests on an emitter-side invariant: every metric `buildPushBody`
+ * emits is `pi_flow`-prefixed (pinned by the keep-rule invariant test in
+ * test/cost.test.ts — if a future emitter adds another prefix, that test
+ * fails LOUDLY instead of the series being silently omitted here). The
+ * lines this narrowing stops failing on are exactly the gateway's own
+ * bookkeeping lines (`push_time_seconds` etc., possibly malformed): they can
+ * never be kept anyway, so failing the read on them would block tombstoning
+ * on a line we must drop — and dropping them loses nothing even under
+ * replace semantics, because the gateway regenerates them on every accepted
+ * POST. They are not ours.
  */
 export async function fetchGroupBody(
   url: string,

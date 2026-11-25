@@ -1300,7 +1300,15 @@ export default function (
         body,
         async (u, init) => {
           const response = await fetch(u, init)
-          return { status: response.status, statusText: response.statusText }
+          // PMR-WBC2 fix round: pass text() through so pushToGateway can put
+          // a bounded snippet of the gateway's reason body into the error —
+          // this wrapper backs the most user-visible failure surface (the
+          // /flow-cost --push and terminal-autopush notifications).
+          return {
+            status: response.status,
+            statusText: response.statusText,
+            text: () => response.text(),
+          }
         },
         token,
         mode,

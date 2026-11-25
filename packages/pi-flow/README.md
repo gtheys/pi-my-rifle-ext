@@ -294,7 +294,7 @@ export PI_FLOW_PUSHGATEWAY_TOKEN=<token>
 
 Push failures print a warning and never fail the command; rerun `/flow-cost <ref> --push` any time to re-export or backfill.
 
-**Automatic push**: with `PI_FLOW_PUSHGATEWAY_URL` set, the same rollup is pushed for you whenever a `/flow` run ends — completed, halted, or paused for spec approval. A one-line notice confirms it (`flow-cost <ref>: cost metrics pushed to the pushgateway.`); a failure shows a warning with the retry command. With the URL unset nothing happens. Pushing is idempotent (the ref's metric group is replaced), so a resumed flow just refreshes the numbers. The rollup covers spawned workers and, for runs started after the `main-session` journal event existed, the main session split across plan / implement / validate. It also includes a per-phase **step outputs** section summarizing `flow_submit` submissions (advisory evidence, never blocking). While a run is still in flight the daemon refreshes the same body on its own timer — see [Liveness](#liveness-running-flow-visibility).
+**Automatic push**: with `PI_FLOW_PUSHGATEWAY_URL` set, the same rollup is pushed for you whenever a `/flow` run ends — completed, halted, or paused for spec approval. A one-line notice confirms it (`flow-cost <ref>: cost metrics pushed to the pushgateway.`); a failure shows a warning with the retry command. With the URL unset nothing happens. Pushing is idempotent (same-identity series are overwritten in place — official Pushgateway replaces the whole group, the homelab build was verified to merge on write, PMR-WBC2), so a resumed flow just refreshes the numbers. The rollup covers spawned workers and, for runs started after the `main-session` journal event existed, the main session split across plan / implement / validate. It also includes a per-phase **step outputs** section summarizing `flow_submit` submissions (advisory evidence, never blocking). While a run is still in flight the daemon refreshes the same body on its own timer — see [Liveness](#liveness-running-flow-visibility).
 
 ### Reconcile (stale run tombstoning)
 
@@ -452,8 +452,8 @@ entire group, so a partial body would drop the cost series the terminal push
 owns. (The homelab gateway was verified to MERGE on write instead — PMR-WBC2,
 2026-11-24 — but the full-body rule stays: it is correct under either
 semantics and does not depend on which build answers.) It also means the two
-pushes of
-one run differ only in the status line. Reading the stored group back with
+pushes of one run differ only in the status line. Reading the stored group
+back with
 `fetchGroupBody` is deliberately NOT used here — that round-trip stays
 reserved for the tombstone reconcile above.
 

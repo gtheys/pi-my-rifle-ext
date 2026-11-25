@@ -400,6 +400,64 @@ test('buildPushBody emits labeled metrics and skips usage-less rows', () => {
   assert.ok(!body.includes('agent="dark"'))
 })
 
+// PMR-WBC2 fix round: fetchGroupBody's keep-rule retains ONLY lines whose
+// metric name starts with `pi_flow` — a same-group series emitted under any
+// other prefix would be silently omitted from every tombstone re-POST (under
+// official Pushgateway replace semantics: permanent, errorless data loss).
+// Pin the emitter-side invariant here, at the seam where it can break.
+test('buildPushBody emits ONLY pi_flow-prefixed lines (PMR-WBC2 keep-rule invariant)', () => {
+  const rows = buildWorkerRows(
+    [
+      {
+        childId: 'c1',
+        name: 'main',
+        kind: 'spawn' as const,
+        subtask: null,
+        sessionFile: '/s1.jsonl',
+        at: '',
+        phase: 'plan' as const,
+      },
+    ],
+    [],
+    new Map<string, readonly unknown[]>([
+      ['/s1.jsonl', [assistantEntry(0.5, 100), toolEntry('bash', false)]],
+    ]),
+  )
+  // Include journal events so the run-health lines (status/halt_reason/
+  // blocker retries) are part of the checked body too.
+  const events: FlowRunEvent[] = [
+    {
+      kind: 'run-start',
+      at: '2026-11-25T01:00:00Z',
+      ref: 'PMR-TEST',
+      mode: 'personal',
+    },
+    {
+      kind: 'loop-state',
+      at: '2026-11-25T02:00:00Z',
+      ref: 'PMR-TEST',
+      loop: {
+        phase: 'plan',
+        awaitingOutcome: false,
+        blockerRetries: 0,
+        validateStartedAt: '2026-11-25T02:00:00Z',
+        status: 'halted',
+      },
+    },
+  ]
+  const body = buildPushBody(
+    'PMR-TEST',
+    rows,
+    [{ phase: 'plan', seconds: 42.5 }],
+    events,
+  )
+  const lines = body.split('\n').filter((line) => line.length > 0)
+  assert.ok(lines.length > 0, 'invariant test needs a non-empty body')
+  for (const line of lines) {
+    assert.ok(line.startsWith('pi_flow'), `non-pi_flow line emitted: ${line}`)
+  }
+})
+
 test('buildPushBody keeps label sets unique for identically-named workers', () => {
   // Two workers with the same display name, phase and no subtask — the
   // Pushgateway rejects a push containing duplicate metric label sets, so

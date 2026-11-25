@@ -3,8 +3,10 @@
 // runs nobody pushed had no cost (and no per-phase bars). The loop now calls
 // this on every terminal transition (done, halt, pause). Env-gated exactly
 // like the manual push: PI_FLOW_PUSHGATEWAY_URL unset = nothing happens, not
-// even a journal read. Idempotent — the Pushgateway group for the ref is
-// replaced, so a rerun/resume simply refreshes the numbers. Never throws:
+// even a journal read. Idempotent — same-identity series are overwritten in
+// place (official Pushgateway replaces the whole group; the homelab build
+// merges on write, PMR-WBC2), so a rerun/resume simply refreshes the
+// numbers. Never throws:
 // failures become one warning, and /flow-cost remains the ground truth.
 // AIDEV-NOTE (PMR-8MQH 4.2): this terminal push is no longer the ONLY push
 // of a run — while a run is in flight the daemon's liveness pass

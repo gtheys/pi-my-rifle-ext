@@ -1,7 +1,9 @@
 // AIDEV-NOTE (PMR-MSDJ 1.3, plan PMR-V36Y): node-only tombstone engine for
 // stale run-liveness metrics. Halted/paused `pi_flow_run_status` series are
-// NEVER deleted — a Pushgateway group is replaced atomically, so deleting the
-// group would also erase the cost/token rows the `piflow-runs` board needs.
+// NEVER deleted — deleting the group would also erase the cost/token rows the
+// `piflow-runs` board needs (true under official Pushgateway replace
+// semantics AND under the merge-on-write behavior verified live on the
+// homelab build, PMR-WBC2).
 // Instead a stale run's group is re-pushed with the liveness series
 // TOMBSTONED. Semantics of a tombstone:
 //   • `pi_flow_run_status{…status="halted"|"paused"}` becomes `status="stale"`
