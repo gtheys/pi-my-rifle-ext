@@ -31,6 +31,20 @@ import { fileURLToPath } from 'node:url'
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const modulePath = join(packageDir, 'flow', 'cost-rows.ts')
 
+// AIDEV-NOTE (PMR-ZV9Y 3.2): the closure roots, not just cost-rows.ts. The v2
+// metric math (flow/state-metrics.ts) renders INSIDE buildPushBody — the daemon
+// liveness pass re-pushes run-health bodies, so the derivation must be
+// daemon-reachable — and run-health.ts now imports it. Locking only
+// cost-rows.ts's own specifiers would miss a pi-runtime import added one hop
+// deeper, so each root below gets its own direct allowlist check, and the
+// multi-root walk at the bottom of this file keeps that coverage even if the
+// cost-rows → run-health edge is ever removed.
+const CLOSURE_ROOTS = [
+  'flow/cost-rows.ts',
+  'flow/run-health.ts',
+  'flow/state-metrics.ts',
+]
+
 /** Everything flow/cost-rows.ts is allowed to import. */
 const ALLOWED = [
   '../run-state.ts',
@@ -88,6 +102,70 @@ test('the guard itself rejects the package root and the pi runtime', () => {
   assert.ok(!isAllowed('./cost.ts'))
   assert.ok(isAllowed('@gtheys/pi-interactive-subagents/usage'))
   assert.ok(isAllowed('node:fs'))
+})
+
+// AIDEV-NOTE (PMR-ZV9Y 3.2): per-root node-only allowlists for the two modules
+// the v2 render added to the push chain. An edge to the pi runtime, the
+// package root, `flow/cost.ts`, `flow/steps.ts` or `flow/loop.ts` (all
+// session-side) fails here instead of crashing the daemon in production.
+const ROOT_ALLOWLISTS: Record<string, readonly string[]> = {
+  'flow/cost-rows.ts': ALLOWED,
+  'flow/run-health.ts': [
+    '../run-state.ts',
+    './cost-rows.ts',
+    './state-metrics.ts',
+  ],
+  // state-metrics.ts is deliberately NARROWER than its importers: types +
+  // projectRunState, the closed-enum vocabulary, and labelString. Not
+  // './steps.ts' (its registry membership check is enforced at the emit
+  // boundary instead — see the STEP_NAME_RE note in that module) and not
+  // './run-health.ts' (would deepen the cycle for no gain).
+  'flow/state-metrics.ts': [
+    '../run-state.ts',
+    './cost-rows.ts',
+    './vocabulary.ts',
+  ],
+}
+
+function isAllowedIn(specifier: string, root: string): boolean {
+  if (specifier.startsWith('node:')) return true
+  const allowed = ROOT_ALLOWLISTS[root]
+  if (allowed === undefined) {
+    throw new Error(`no allowlist for closure root ${root}`)
+  }
+  return allowed.includes(specifier)
+}
+
+for (const root of CLOSURE_ROOTS) {
+  test(`${root} imports stay inside its node-only allowlist`, () => {
+    const specifiers = importSpecifiers(
+      readFileSync(join(packageDir, root), 'utf8'),
+    )
+    assert.ok(specifiers.length > 0, 'expected the scanner to find imports')
+    for (const specifier of specifiers) {
+      assert.ok(
+        isAllowedIn(specifier, root),
+        `${root} must not import ${specifier}; allowed: node:*, ${ROOT_ALLOWLISTS[root].join(', ')}`,
+      )
+    }
+  })
+}
+
+test('the v2 closure guards reject the pi runtime and the session-side graph', () => {
+  // Locks the per-root predicates the same way the cost-rows predicate above
+  // is locked: if these ever became allowed, the guard is worthless.
+  for (const root of CLOSURE_ROOTS) {
+    assert.ok(!isAllowedIn('@gtheys/pi-interactive-subagents', root))
+    assert.ok(!isAllowedIn('@earendil-works/pi-coding-agent', root))
+    assert.ok(!isAllowedIn('../index.ts', root))
+    assert.ok(!isAllowedIn('../config.ts', root))
+    assert.ok(!isAllowedIn('./cost.ts', root))
+    assert.ok(!isAllowedIn('./cost-command.ts', root))
+    assert.ok(!isAllowedIn('./loop.ts', root))
+  }
+  assert.ok(isAllowedIn('./state-metrics.ts', 'flow/run-health.ts'))
+  assert.ok(isAllowedIn('./vocabulary.ts', 'flow/state-metrics.ts'))
+  assert.ok(isAllowedIn('node:fs', 'flow/cost-rows.ts'))
 })
 
 test('cost.ts keeps re-exporting the moved rollup so importers are unchanged', () => {
@@ -168,6 +246,59 @@ test('cost-rows.ts runtime closure never reaches the session-side cost modules o
   assert.ok(
     visited.size > 1,
     'expected the walk to traverse beyond cost-rows.ts itself',
+  )
+  assert.deepEqual(violations, [])
+})
+
+// AIDEV-NOTE (PMR-ZV9Y 3.2): the same transitive walk, seeded from EVERY
+// push-chain root instead of only cost-rows.ts. The single-root walk above is
+// the historical guard and stays as it was; this one closes the hole where the
+// cost-rows → run-health edge is removed (run-health is then still reachable
+// from here, so a session-side import added to run-health.ts or
+// state-metrics.ts keeps failing the guard).
+test('every push-chain root transits only daemon-safe modules', () => {
+  const visited = new Set<string>()
+  const queue = CLOSURE_ROOTS.map((root) => join(packageDir, root))
+  const violations: string[] = []
+  while (queue.length > 0) {
+    const file = queue.shift() as string
+    if (visited.has(file)) continue
+    visited.add(file)
+    let source: string
+    try {
+      source = readFileSync(file, 'utf8')
+    } catch {
+      continue // unresolvable edge: nothing to load at runtime either
+    }
+    const rel = file.slice(packageDir.length + 1)
+    for (const specifier of runtimeImportSpecifiers(source)) {
+      for (const forbidden of FORBIDDEN_CLOSURE_FILES) {
+        if (
+          specifier.startsWith('.') &&
+          resolve(dirname(file), specifier) === join(packageDir, forbidden)
+        ) {
+          violations.push(`${rel} imports ${forbidden}`)
+        }
+      }
+      if (FORBIDDEN_CLOSURE_PACKAGES.includes(specifier)) {
+        violations.push(
+          `${rel} imports the forbidden package root ${specifier}`,
+        )
+      }
+      if (specifier.startsWith('.')) {
+        queue.push(resolve(dirname(file), specifier))
+      }
+    }
+  }
+  // the walk really reached the v2 module through the render seam, so this
+  // guard is not vacuous if the graph is ever reshaped
+  assert.ok(
+    visited.has(join(packageDir, 'flow', 'state-metrics.ts')),
+    'expected the walk to reach flow/state-metrics.ts',
+  )
+  assert.ok(
+    visited.has(join(packageDir, 'flow', 'run-health.ts')),
+    'expected the walk to reach flow/run-health.ts',
   )
   assert.deepEqual(violations, [])
 })

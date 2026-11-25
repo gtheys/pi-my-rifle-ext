@@ -21,9 +21,20 @@
 // run-health) is deliberate and ESM-safe: both sides export only hoisted
 // function declarations consumed at call time, never at module init. The
 // closure guard in test/cost-rows-node-only.test.ts keeps cost.ts out of it.
+// AIDEV-NOTE (PMR-ZV9Y 3.2): the frozen block below is FROZEN-UNTIL-CUTOVER,
+// not frozen-forever. Subtask 3.2 appended the v2 state-machine gauges as
+// blocks 10+ (see renderStateMetricLines below), so this module now renders
+// BOTH vocabularies at once — deliberately, because the live alert rules and
+// the `piflow-*` boards still read the v1 series and the cutover is one
+// deliberate move in 6.5. The retirement of the v1 state-vocabulary lines
+// (run status, halt reason, human wait, gate waits) belongs to phase 7 ONLY,
+// and nothing before 6.5 may move, rename or drop an existing line. The
+// additive rule and the reason the v1 lines cannot be dropped early are both
+// recorded at the append site below and in flow/state-metrics.ts.
 import type { FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
 import { labelString } from './cost-rows.ts'
+import { renderStateMetricLines } from './state-metrics.ts'
 
 // `at` is a raw journal string (readRunEvents casts JSON.parse output), so an
 // unparseable timestamp is possible in practice: treat it as "absent" instead
@@ -70,7 +81,8 @@ function runStartSeconds(events: readonly FlowRunEvent[]): number | undefined {
  * Metric order is fixed; within a grouped metric lines follow first-seen
  * event order so pushes stay byte-stable for the Pushgateway group. The
  * FROZEN block (run status … worktree sweep) never moves; additive series are
- * appended after it in order of introduction (run start, then gate waits).
+ * appended after it in order of introduction (run start, then gate waits,
+ * then the v2 state-machine gauges — see the AIDEV-NOTE at the append site).
  */
 export function renderRunHealthLines(
   ref: string,
@@ -185,6 +197,24 @@ export function renderRunHealthLines(
       })}} ${windows.closedBy.get(index) ?? 0}`,
     )
   })
+  // 10+ — the v2 state-machine gauges (flow/state-metrics.ts).
+  // AIDEV-NOTE (PMR-ZV9Y 3.2): the v2 blocks are ADDITIVE, the same posture as
+  // the block 8 and block 9 notes above — every family is appended AFTER every
+  // pre-existing line, in the plan's table order (state, state start, phase,
+  // wait, step, step seconds), so nothing existing moves, renames or
+  // reorders. That is load-bearing twice over: the live alert rules and the
+  // `piflow-*` boards read the v1 series until the 6.5 cutover, and
+  // test/run-health.test.ts pins the v1 body byte-for-byte (ISC-A-4).
+  // The render is the single shared seam for BOTH push paths — the terminal
+  // autopush and the daemon liveness pass call the same buildPushBody →
+  // renderRunHealthLines chain (the PMR-8MQH invariant) — which is why the v2
+  // math lives in a pure module reached from here rather than session-side.
+  // `renderStateMetricLines` returns no lines when nothing derives (no
+  // projection, or a projection with neither a v1 loop record nor a v2
+  // 'state-change'), so for those journals the body is the v1 body exactly.
+  for (const line of renderStateMetricLines(ref, events)) {
+    lines.push(line)
+  }
   return lines
 }
 

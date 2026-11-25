@@ -12,16 +12,27 @@
 // node built-ins" was never literally true. The ENFORCEABLE contract is: every
 // module the daemon imports adds NO NEW runtime dependency beyond
 // run-state.ts + flow/reconcile.ts + flow/reconcile-deps.ts + flow/push.ts +
-// flow/liveness.ts + flow/cost-rows.ts + aven/status.ts (all node built-ins
-// apart from that pre-existing one). flow/liveness.ts and flow/cost-rows.ts
-// (PMR-8MQH 3.2) are sanctioned because they import ONLY the node-only
-// `@gtheys/pi-interactive-subagents` SUBPATH exports (`/usage`, `/assignments`)
-// — never the package root — and, like run-state.ts, `assignments` transitively
-// module-loads pi-coding-agent through `subagents/dataroot.ts`. That is the
-// SAME documented pre-existing acceptance class as run-state.ts (a module-load,
-// not a new dependency edge, and both only ever call `getAgentDir()` at their
-// own call sites the daemon never reaches), so they add no NEW runtime
-// dependency either. Never
+// flow/liveness.ts + flow/cost-rows.ts + flow/run-health.ts +
+// flow/state-metrics.ts + flow/vocabulary.ts + aven/status.ts (all node
+// built-ins apart from that pre-existing one). flow/liveness.ts and
+// flow/cost-rows.ts (PMR-8MQH 3.2) are sanctioned because they import ONLY the
+// node-only `@gtheys/pi-interactive-subagents` SUBPATH exports (`/usage`,
+// `/assignments`) — never the package root — and, like run-state.ts,
+// `assignments` transitively module-loads pi-coding-agent through
+// `subagents/dataroot.ts`. That is the SAME documented pre-existing acceptance
+// class as run-state.ts (a module-load, not a new dependency edge, and both
+// only ever call `getAgentDir()` at their own call sites the daemon never
+// reaches), so they add no NEW runtime dependency either.
+// AIDEV-NOTE (PMR-ZV9Y 3.2): flow/run-health.ts, flow/state-metrics.ts and
+// flow/vocabulary.ts join the sanctioned list because the v2 gauges MUST render
+// inside the daemon's liveness body — liveness re-pushes run-health bodies
+// through buildPushBody, so a session-side derivation would leave running flows
+// without v2 series. They add no edge beyond the ones already here:
+// state-metrics.ts imports only run-state.ts + ./vocabulary.ts + ./cost-rows.ts
+// (`labelString`), vocabulary.ts is zero-import, and run-health.ts gains only
+// the state-metrics edge. Locked textually, per root, by
+// test/cost-rows-node-only.test.ts.
+// Never
 // add `config.ts` (its readConfigFile THROWS on a malformed file — the daemon
 // is best-effort io), `flow/cost.ts` (runtime dep on
 // @gtheys/pi-interactive-subagents) or `aven/client.ts` (imports config.ts).

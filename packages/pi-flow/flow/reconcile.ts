@@ -92,6 +92,27 @@ const STALE_STATUS = 'stale'
 const RUN_STATUS_METRIC = 'pi_flow_run_status{'
 const HALT_REASON_METRIC = 'pi_flow_run_halt_reason{'
 
+// AIDEV-NOTE (PMR-ZV9Y 3.2): the v2 state families get the SAME label-VALUE-only
+// surgery as the v1 status line, for the same reason: renaming a metric or a
+// label KEY would break the rebuilt boards, while flipping a VALUE retires the
+// series because every v2 consumer (the Waiting-on-me queue, the halted rule)
+// gates on `state="…"`. ISC-8. The two prefixes are disjoint by construction —
+// `pi_flow_state_start_seconds{` never matches `pi_flow_state{` because the 12th
+// char is `_`, not `{` — so one family can never shadow the other.
+//
+// The v1 rewrite retires `halted|paused`. Its v2 counterparts are `halted` (same
+// word) plus the two wait states v1 collapsed into `paused`:
+// `waiting_human` and `waiting_machine`. `running` and `done` are deliberately
+// NOT targets, mirroring v1 exactly: v1 never tombstones
+// `status="running"|"done"`, and candidacy is JOURNAL-keyed
+// (`livenessStatusOf` reads the v1 loop status), so a group whose stored body
+// still shows a state the journal has moved past is reported "already clean"
+// rather than half-retired — the P2-4 known limitation, held identical across
+// both vocabularies on purpose. `stale` is the tombstone value itself, so
+// re-running the pass over an already-tombstoned body stays a no-op.
+const V2_STATE_METRICS = ['pi_flow_state{', 'pi_flow_state_start_seconds{']
+const V2_LIVENESS_STATES = ['halted', 'waiting_human', 'waiting_machine']
+
 /**
  * The liveness status a journal projects, or null when the run is NOT a
  * reconcile candidate: no projection, no loop state, or a status outside
@@ -154,6 +175,16 @@ export function computeStaleRefs(
  * already tombstoned, a done run, or the group is gone) — callers skip those
  * so a body is never re-posted unchanged.
  *
+ * AIDEV-NOTE (PMR-ZV9Y 3.2): since the v2 gauges render into the SAME push
+ * body (flow/run-health.ts blocks 10+), the same pass now also flips
+ * `state="halted"|"waiting_human"|"waiting_machine"` to `state="stale"` on
+ * `pi_flow_state` and `pi_flow_state_start_seconds` lines (ISC-8), so the
+ * Waiting-on-me queue and the halted rule retire with the v1 status line
+ * instead of keeping a dead run on the board. Every other v2 family
+ * (`pi_flow_phase`, `pi_flow_step`, `pi_flow_step_seconds`,
+ * `pi_flow_wait_seconds`) is re-emitted byte-identical, exactly like the
+ * counters and cost rows: only label VALUES on the state-bearing lines move.
+ *
  * The rewrite is minimal substring surgery inside the label section: label
  * ORDER (the gateway emits them alphabetically, e.g.
  * `{job="pi-flow",mode="work",ref="X",status="halted"}`), all sibling labels
@@ -165,7 +196,17 @@ export function tombstoneBody(body: string): string | null {
   for (const line of body.split('\n')) {
     if (line.startsWith(HALT_REASON_METRIC)) continue
     if (line.startsWith(RUN_STATUS_METRIC)) {
-      const rewritten = swapStatusLabel(line)
+      const rewritten = swapLabelValue(line, 'status', LIVENESS_STATUSES)
+      if (rewritten !== null) {
+        out.push(rewritten)
+        rewrites += 1
+        continue
+      }
+      out.push(line)
+      continue
+    }
+    if (startsWithAny(line, V2_STATE_METRICS)) {
+      const rewritten = swapLabelValue(line, 'state', V2_LIVENESS_STATES)
       if (rewritten !== null) {
         out.push(rewritten)
         rewrites += 1
@@ -178,31 +219,45 @@ export function tombstoneBody(body: string): string | null {
   return out.join('\n')
 }
 
-/** Rewrite one `status="halted"|"paused"` label to `status="stale"`. Returns
- *  null when the line carries no liveness status. Only label tokens are
- *  touched: a `status="…"`-shaped sequence inside another label's VALUE (the
- *  gateway escapes those as `\"`) is left alone. */
-function swapStatusLabel(line: string): string | null {
+function startsWithAny(line: string, prefixes: readonly string[]): boolean {
+  for (const prefix of prefixes) {
+    if (line.startsWith(prefix)) return true
+  }
+  return false
+}
+
+/** Rewrite one `<key>="<retired>"` label to `<key>="stale"`. Returns null when
+ *  the line carries no retired value for that key. Only label tokens are
+ *  touched: a `key="…"`-shaped sequence inside another label's VALUE (the
+ *  gateway escapes those as `\"`) or a longer label name ending in the same
+ *  characters is left alone. Shared by both vocabularies so the v1 status
+ *  behaviour cannot drift from the v2 state behaviour. */
+function swapLabelValue(
+  line: string,
+  key: string,
+  retired: readonly string[],
+): string | null {
   const open = line.indexOf('{')
   const close = line.lastIndexOf('}')
   if (open < 0 || close <= open) return null
   const inner = line.slice(open + 1, close)
+  const token = `${key}="`
   let labels = ''
   let i = 0
   let changed = 0
   while (i < inner.length) {
-    const at = inner.indexOf('status="', i)
+    const at = inner.indexOf(token, i)
     if (at < 0) {
       labels += inner.slice(i)
       break
     }
     // A label token starts at the beginning of the section or after a comma.
     if (at !== 0 && inner[at - 1] !== ',') {
-      labels += inner.slice(i, at + 'status="'.length)
-      i = at + 'status="'.length
+      labels += inner.slice(i, at + token.length)
+      i = at + token.length
       continue
     }
-    const valueStart = at + 'status="'.length
+    const valueStart = at + token.length
     const valueEnd = inner.indexOf('"', valueStart)
     if (valueEnd < 0) {
       labels += inner.slice(i)
@@ -210,8 +265,8 @@ function swapStatusLabel(line: string): string | null {
     }
     const value = inner.slice(valueStart, valueEnd)
     labels += inner.slice(i, at)
-    if (LIVENESS_STATUSES.includes(value)) {
-      labels += `status="${STALE_STATUS}"`
+    if (retired.includes(value)) {
+      labels += `${key}="${STALE_STATUS}"`
       changed += 1
     } else {
       labels += inner.slice(at, valueEnd + 1)

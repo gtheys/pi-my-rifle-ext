@@ -446,6 +446,24 @@ test('a journal without a run-start event emits nothing, including no start line
 // pi_flow_gate_wait_seconds line this fixture now produces (the gate-answer
 // at +3s closes no paused window, so its occurrence is a 0). New additive
 // metrics go AFTER pi_flow_run_start_seconds, in order of introduction.
+// AIDEV-NOTE (PMR-ZV9Y 3.2): grew this tail again for the v2 state-machine
+// block, exactly the posture recorded above. This fixture carries NO
+// 'state-change' event, so its four appended lines are the ISC-6 legacy
+// fallback: the projected `paused` loop status maps to
+// state="waiting_human" reason="", its `at` is the last loop-state's, and the
+// paused window the note at +2s closed is the aggregate wait. Every v1 line
+// above stays byte-identical and in place — the frozen guarantee this test
+// exists to protect is about the PRE-EXISTING lines, not about the tail never
+// growing (which is how pi_flow_run_start_seconds and pi_flow_gate_wait_seconds
+// each landed too). Retirement of the v1 state-vocabulary lines belongs to
+// phase 7, after the 6.5 cutover.
+const V2_METRICS = [
+  'pi_flow_state',
+  'pi_flow_phase',
+  'pi_flow_wait_seconds',
+  'pi_flow_step',
+]
+
 test('additive metrics are appended last and existing lines keep their order', () => {
   const lines = renderRunHealthLines(REF, [
     runStart(),
@@ -458,7 +476,8 @@ test('additive metrics are appended last and existing lines keep their order', (
   const withoutAdditive = lines.filter(
     (line) =>
       !line.startsWith('pi_flow_run_start_seconds') &&
-      !line.startsWith('pi_flow_gate_wait_seconds'),
+      !line.startsWith('pi_flow_gate_wait_seconds') &&
+      !V2_METRICS.some((metric) => line.startsWith(metric)),
   )
   assert.deepEqual(
     withoutAdditive.map((line) => line.split('{')[0]),
@@ -472,7 +491,8 @@ test('additive metrics are appended last and existing lines keep their order', (
     ],
   )
   // the whole body, byte-for-byte: six frozen lines in their original order,
-  // then the additive lines (start epoch first, then the per-gate waits).
+  // then the additive lines (start epoch first, then the per-gate waits, then
+  // the v2 state-machine block in its plan table order).
   assert.deepEqual(lines, [
     'pi_flow_run_status{ref="PMR-H",status="paused"} 1',
     'pi_flow_gate_decisions_total{ref="PMR-H",gate="spec-review",choice="approve"} 1',
@@ -482,6 +502,10 @@ test('additive metrics are appended last and existing lines keep their order', (
     'pi_flow_worktree_sweep_total{ref="PMR-H",outcome="removed"} 1',
     `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
     'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="approve",n="1"} 0',
+    `pi_flow_state{ref="PMR-H",state="waiting_human",reason=""} 1`,
+    `pi_flow_state_start_seconds{ref="PMR-H",state="waiting_human",reason=""} ${START_SECONDS + 1}`,
+    `pi_flow_phase{ref="PMR-H",phase="validate"} 1`,
+    `pi_flow_wait_seconds{ref="PMR-H",wait_kind="human",reason=""} 1`,
   ])
   assert.equal(withoutAdditive.length, 6)
 })
