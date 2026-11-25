@@ -1,0 +1,96 @@
+{
+  "apiVersion": "rules.alerting.grafana.app/v0alpha1",
+  "kind": "AlertRule",
+  "metadata": {
+    "annotations": {
+      "grafana.app/folder": "efw8d81b6yhoge",
+      "grafana.app/managedBy": "classic-file-provisioning",
+      "grafana.com/provenance": "file",
+      "grafana.com/updateTimestamp": "2026-11-24T17:10:59Z",
+      "grafana.com/updatedBy": "service"
+    },
+    "labels": {
+      "grafana.app/folder": "efw8d81b6yhoge",
+      "grafana.com/group": "pi-flow-runs",
+      "grafana.com/group-index": "0"
+    },
+    "name": "piflow-waiting-on-human",
+    "namespace": "default"
+  },
+  "spec": {
+    "annotations": {
+      "summary": "Flow run {{ $labels.ref }} has been waiting on a human gate for over 4h. Check the 'Waiting on me' row on the pi-flow runs board and answer the gate: /flow answer {{ $labels.ref }} approve|pass|fail.",
+      "dashboard": "/grafana/d/piflow-runs"
+    },
+    "execErrState": "Error",
+    "expressions": {
+      "A": {
+        "datasourceUID": "PBFA97CFB590B2093",
+        "model": {
+          "expr": "time() - pi_flow_state_start_seconds{state=\"waiting_human\"} > 14400",
+          "instant": true,
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "refId": "A"
+        },
+        "queryType": "instant",
+        "relativeTimeRange": {
+          "from": "10m0s",
+          "to": "0s"
+        }
+      },
+      "B": {
+        "model": {
+          "expression": "A",
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "reducer": "last",
+          "refId": "B",
+          "type": "reduce"
+        }
+      },
+      "C": {
+        "model": {
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [
+                  0
+                ],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": [
+                  "C"
+                ]
+              },
+              "reducer": {
+                "type": "last"
+              },
+              "type": "query"
+            }
+          ],
+          "expression": "B",
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "refId": "C",
+          "type": "threshold"
+        },
+        "source": true
+      }
+    },
+    "for": "5m0s",
+    "labels": {
+      "scope": "pi-flow",
+      "severity": "warning"
+    },
+    "noDataState": "Ok",
+    "title": "pi-flow run waiting on human > 4h",
+    "trigger": {
+      "interval": "1m"
+    }
+  }
+}

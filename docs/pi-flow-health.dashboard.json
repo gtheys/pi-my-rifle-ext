@@ -7,21 +7,21 @@
       "grafana.app/folder": "ag3jjknk85xc0b",
       "grafana.app/managedBy": "classic-file-provisioning",
       "grafana.app/managerId": "pi-flow",
-      "grafana.app/message": "PMR-ZV9Y 6.3: run timeline row added — Loki state history (line_format + Extract fields) and Tempo step-span Gantt with span-id links; pi_flow_phase/pi_flow_step tiles; kept tool-error + phase-duration panels on v2 vocabulary",
+      "grafana.app/message": "PMR-ZV9Y 6.3: run timeline row added \u2014 Loki state history (line_format + Extract fields) and Tempo step-span Gantt with span-id links; pi_flow_phase/pi_flow_step tiles; kept tool-error + phase-duration panels on v2 vocabulary",
       "grafana.app/sourceChecksum": "c87ac92bc66833dd3c6479013252d5f4",
       "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-health.json",
       "grafana.app/sourceTimestamp": "1795531426000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-25T12:55:13Z"
+      "grafana.app/updatedTimestamp": "2026-11-25T13:24:18Z"
     },
     "creationTimestamp": "2026-11-07T02:57:54Z",
-    "generation": 31,
+    "generation": 32,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208897950658560"
     },
     "name": "piflow-health",
     "namespace": "default",
-    "resourceVersion": "1795611313371004",
+    "resourceVersion": "1795613058553008",
     "uid": "33585720-5e94-4275-82d5-c2bd439f777d"
   },
   "spec": {
@@ -36,7 +36,7 @@
           "legacyOptions": {
             "type": "dashboard"
           },
-          "name": "Annotations \u0026 Alerts",
+          "name": "Annotations & Alerts",
           "query": {
             "datasource": {
               "name": "-- Grafana --"
@@ -157,7 +157,7 @@
               "transformations": []
             }
           },
-          "description": "The phase each selected ticket is IN right now, from the v2 pi_flow_phase gauge (pushed with the run, one series per open phase; a finished run has no line, so an empty tile means nothing is in a phase in the pushed set). Tile = phase + how many tickets are in it. v1 status wording is retired — the vocabulary is state/phase/step.",
+          "description": "The phase each selected ticket is IN right now, from the v2 pi_flow_phase gauge (pushed with the run, one series per open phase; a finished run has no line, so an empty tile means nothing is in a phase in the pushed set). Tile = phase + how many tickets are in it. v1 status wording is retired \u2014 the vocabulary is state/phase/step.",
           "id": 10,
           "links": [],
           "title": "Current phase per ticket ($ref)",
@@ -298,7 +298,7 @@
               "transformations": []
             }
           },
-          "description": "The registry step(s) each selected ticket is executing right now, from the v2 pi_flow_step gauge (one series per in-flight step; closes on step-stop). Step names follow the \u003cphase\u003e.\u003cstep\u003e registry (flow/steps.ts). Empty = no step in flight in the pushed set.",
+          "description": "The registry step(s) each selected ticket is executing right now, from the v2 pi_flow_step gauge (one series per in-flight step; closes on step-stop). Step names follow the <phase>.<step> registry (flow/steps.ts). Empty = no step in flight in the pushed set.",
           "id": 11,
           "links": [],
           "title": "Current step per ticket ($ref)",
@@ -437,10 +437,10 @@
               ]
             }
           },
-          "description": "Every v2 journal event for the selected tickets, oldest first: state-change (state + reason) and step-start/step-stop (phase + step). THIS IS THE RUN TIMELINE — the sequence of states a ticket passed through, which Prometheus cannot show (it only keeps the current gauge). Written by the session-side Loki pusher (telemetry/loki.ts, fan-out in telemetry/dispatch.ts), so it stays EMPTY until telemetry.loki.enabled points at a reachable Loki; the same events are always in the local journal (~/.pi/agent/pi-flow/runs/\u003cref\u003e.journal.jsonl). Columns come from line_format + Extract fields, not raw JSON. Time = the event's own `at`.",
+          "description": "Every v2 journal event for the selected tickets, oldest first: state-change (state + reason) and step-start/step-stop (phase + step). THIS IS THE RUN TIMELINE \u2014 the sequence of states a ticket passed through, which Prometheus cannot show (it only keeps the current gauge). Written by the session-side Loki pusher (telemetry/loki.ts, fan-out in telemetry/dispatch.ts), so it stays EMPTY until telemetry.loki.enabled points at a reachable Loki; the same events are always in the local journal (~/.pi/agent/pi-flow/runs/<ref>.journal.jsonl). Columns come from line_format + Extract fields, not raw JSON. Time = the event's own `at`.",
           "id": 12,
           "links": [],
-          "title": "Run state history (Loki) — populates once telemetry.loki.enabled ($ref)",
+          "title": "Run state history (Loki) \u2014 populates once telemetry.loki.enabled ($ref)",
           "vizConfig": {
             "group": "table",
             "kind": "VizConfig",
@@ -454,7 +454,7 @@
                     },
                     "inspect": false
                   },
-                  "noValue": "–"
+                  "noValue": "\u2013"
                 },
                 "overrides": [
                   {
@@ -607,7 +607,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "limit": 50,
-                        "query": "{ .flow.ref =~ \"$ref\" \u0026\u0026 .flow.span = \"step\" } | select(.flow.ref, .flow.url, .phase, .step)",
+                        "query": "{ .flow.ref =~ \"$ref\" && .flow.span = \"step\" } | select(.flow.ref, .flow.url, .phase, .step)",
                         "queryType": "traceql",
                         "spss": 20,
                         "tableType": "spans"
@@ -664,10 +664,10 @@
               ]
             }
           },
-          "description": "One row per STEP span (flow.span = \"step\"), oldest first: the Gantt of what each ticket actually executed, with start time and duration. Click a Span ID to open the trace tree (root -\u003e phase -\u003e step). Step spans come from the session-side OTLP exporter (telemetry/index.ts), so they exist only for runs made with telemetry enabled. Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Tempo returns at most `spss` spans per trace (20 here) and a finished trace is fully searchable ~3 min after its last span (trace_idle_period).",
+          "description": "One row per STEP span (flow.span = \"step\"), oldest first: the Gantt of what each ticket actually executed, with start time and duration. Click a Span ID to open the trace tree (root -> phase -> step). Step spans come from the session-side OTLP exporter (telemetry/index.ts), so they exist only for runs made with telemetry enabled. Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Tempo returns at most `spss` spans per trace (20 here) and a finished trace is fully searchable ~3 min after its last span (trace_idle_period).",
           "id": 13,
           "links": [],
-          "title": "Step timeline (Tempo step spans) — click the Span ID ($ref)",
+          "title": "Step timeline (Tempo step spans) \u2014 click the Span ID ($ref)",
           "vizConfig": {
             "group": "table",
             "kind": "VizConfig",
@@ -681,7 +681,7 @@
                     },
                     "inspect": false
                   },
-                  "noValue": "–"
+                  "noValue": "\u2013"
                 },
                 "overrides": [
                   {
@@ -966,7 +966,7 @@
               "transformations": []
             }
           },
-          "description": "Tickets with pushed phase durations (pi_flow_run_duration_seconds, a kept metric). A ticket with no push never appears here — that is the signal to run /flow-cost \u003cref\u003e --push.",
+          "description": "Tickets with pushed phase durations (pi_flow_run_duration_seconds, a kept metric). A ticket with no push never appears here \u2014 that is the signal to run /flow-cost <ref> --push.",
           "id": 4,
           "links": [],
           "title": "Tickets measured",
@@ -1097,7 +1097,7 @@
               ]
             }
           },
-          "description": "Pushgateway counters are per-run totals — a barchart reads them cleanly; the old timeseries showed push-time step artifacts.",
+          "description": "Pushgateway counters are per-run totals \u2014 a barchart reads them cleanly; the old timeseries showed push-time step artifacts.",
           "id": 5,
           "links": [],
           "title": "Tool calls by tool (ok vs error)",
@@ -1634,7 +1634,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "limit": 50,
-                        "query": "{ .flow.ref =~ \"$ref\" \u0026\u0026 (.flow.span = \"phase\" || .flow.span = \"root\") } | select(name, .phase)",
+                        "query": "{ .flow.ref =~ \"$ref\" && (.flow.span = \"phase\" || .flow.span = \"root\") } | select(name, .phase)",
                         "queryType": "traceql",
                         "spss": 20,
                         "tableType": "traces"
@@ -1651,7 +1651,7 @@
               "transformations": []
             }
           },
-          "description": "One row per phase span; expand a trace to see its phases, click a span id to open the full trace. Step-level spans are on the Step timeline panel above (flow.span = \"step\"). Traces become fully searchable ~3 min after their last span (Tempo trace_idle_period). Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Panel time range is pinned to 7d: Tempo trace search returns nothing for ranges \u003e= ~14d (measured: 7d=20 traces, 14d=0) and retention is 14d anyway.",
+          "description": "One row per phase span; expand a trace to see its phases, click a span id to open the full trace. Step-level spans are on the Step timeline panel above (flow.span = \"step\"). Traces become fully searchable ~3 min after their last span (Tempo trace_idle_period). Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Panel time range is pinned to 7d: Tempo trace search returns nothing for ranges >= ~14d (measured: 7d=20 traces, 14d=0) and retention is 14d anyway.",
           "id": 8,
           "links": [],
           "title": "Traces by flow.ref (Tempo)",
@@ -1707,7 +1707,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "limit": 50,
-                        "query": "{ .tool.error = \"true\" \u0026\u0026 .flow.ref =~ \"$ref\" } | select(.flow.ref, .flow.url, .phase, .agent.name, .gen_ai.tool.name, .tool.output)",
+                        "query": "{ .tool.error = \"true\" && .flow.ref =~ \"$ref\" } | select(.flow.ref, .flow.url, .phase, .agent.name, .gen_ai.tool.name, .tool.output)",
                         "queryType": "traceql",
                         "spss": 20,
                         "tableType": "spans"
@@ -1768,7 +1768,7 @@
               ]
             }
           },
-          "description": "Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Panel time range is pinned to 7d: Tempo trace search returns nothing for ranges \u003e= ~14d (measured: 7d=20 traces, 14d=0) and retention is 14d anyway.",
+          "description": "Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Panel time range is pinned to 7d: Tempo trace search returns nothing for ranges >= ~14d (measured: 7d=20 traces, 14d=0) and retention is 14d anyway.",
           "id": 9,
           "links": [],
           "title": "Tool failures (click the Span ID to open the trace)",
@@ -2031,6 +2031,18 @@
         "tooltip": "",
         "type": "link",
         "url": "/d/piflow-subagents/pi-flow-subagents"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Ad-hoc",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-adhoc/pi-flow-ad-hoc-commands-brainstorm-pr-quality-review"
       }
     ],
     "liveNow": false,

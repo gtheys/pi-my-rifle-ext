@@ -1,0 +1,95 @@
+{
+  "apiVersion": "rules.alerting.grafana.app/v0alpha1",
+  "kind": "AlertRule",
+  "metadata": {
+    "annotations": {
+      "grafana.app/folder": "efw8d81b6yhoge",
+      "grafana.app/managedBy": "classic-file-provisioning",
+      "grafana.com/provenance": "file",
+      "grafana.com/updateTimestamp": "2026-11-24T17:10:59Z",
+      "grafana.com/updatedBy": "service"
+    },
+    "labels": {
+      "grafana.app/folder": "efw8d81b6yhoge",
+      "grafana.com/group": "pi-flow-runs",
+      "grafana.com/group-index": "0"
+    },
+    "name": "piflow-run-halted",
+    "namespace": "default"
+  },
+  "spec": {
+    "annotations": {
+      "dashboard": "/grafana/d/piflow-runs",
+      "summary": "Flow run {{ $labels.ref }} is halted (reason: {{ $labels.reason }}). Check the 'Halted' row on the pi-flow runs board; resume or close the ticket (reconcile tombstones it once the ticket leaves active/todo)."
+    },
+    "execErrState": "Error",
+    "expressions": {
+      "A": {
+        "datasourceUID": "PBFA97CFB590B2093",
+        "model": {
+          "expr": "pi_flow_state{state=\"halted\",reason!=\"\"} == 1",
+          "instant": true,
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "refId": "A"
+        },
+        "queryType": "instant",
+        "relativeTimeRange": {
+          "from": "10m0s",
+          "to": "0s"
+        }
+      },
+      "B": {
+        "model": {
+          "expression": "A",
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "reducer": "last",
+          "refId": "B",
+          "type": "reduce"
+        }
+      },
+      "C": {
+        "model": {
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [
+                  0
+                ],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": [
+                  "C"
+                ]
+              },
+              "reducer": {
+                "type": "last"
+              },
+              "type": "query"
+            }
+          ],
+          "expression": "B",
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "refId": "C",
+          "type": "threshold"
+        },
+        "source": true
+      }
+    },
+    "labels": {
+      "scope": "pi-flow",
+      "severity": "critical"
+    },
+    "noDataState": "Ok",
+    "title": "pi-flow run halted",
+    "trigger": {
+      "interval": "1m"
+    }
+  }
+}

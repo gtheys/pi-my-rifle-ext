@@ -1,0 +1,104 @@
+{
+  "apiVersion": "rules.alerting.grafana.app/v0alpha1",
+  "kind": "AlertRule",
+  "metadata": {
+    "annotations": {
+      "grafana.app/folder": "efw8d81b6yhoge",
+      "grafana.com/provenance": "",
+      "grafana.com/updateTimestamp": "2026-11-24T03:01:04Z",
+      "grafana.com/updatedBy": "ffypn81rsldkwb"
+    },
+    "labels": {
+      "grafana.app/folder": "efw8d81b6yhoge",
+      "grafana.com/group": "pi-flow-runs",
+      "grafana.com/group-index": "3"
+    },
+    "name": "piflow-worktree-leak",
+    "namespace": "default"
+  },
+  "spec": {
+    "annotations": {
+      "dashboard": "/grafana/d/piflow-runs",
+      "summary": "Worktree sweep could not clean {{ $labels.ref }} ({{ $labels.outcome }}): check for dirty or in-use worktrees; see the 'Worktree sweep outcomes' row on the pi-flow runs board."
+    },
+    "execErrState": "Error",
+    "expressions": {
+      "A": {
+        "datasourceUID": "PBFA97CFB590B2093",
+        "model": {
+          "expr": "increase(pi_flow_worktree_sweep_total{outcome=~\"deferred|kept-all\"}[1h]) > 0",
+          "instant": true,
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "refId": "A"
+        },
+        "queryType": "instant",
+        "relativeTimeRange": {
+          "from": "10m0s",
+          "to": "0s"
+        }
+      },
+      "B": {
+        "model": {
+          "expression": "A",
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "reducer": "last",
+          "refId": "B",
+          "type": "reduce"
+        },
+        "relativeTimeRange": {
+          "from": "10m0s",
+          "to": "0s"
+        }
+      },
+      "C": {
+        "model": {
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [
+                  0
+                ],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": [
+                  "C"
+                ]
+              },
+              "reducer": {
+                "type": "last"
+              },
+              "type": "query"
+            }
+          ],
+          "expression": "B",
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "refId": "C",
+          "type": "threshold"
+        },
+        "relativeTimeRange": {
+          "from": "10m0s",
+          "to": "0s"
+        },
+        "source": true
+      }
+    },
+    "for": "10m0s",
+    "labels": {
+      "scope": "pi-flow",
+      "severity": "warning"
+    },
+    "missingSeriesEvalsToResolve": 1,
+    "noDataState": "Ok",
+    "title": "pi-flow worktree sweep deferred",
+    "trigger": {
+      "interval": "1m"
+    }
+  }
+}

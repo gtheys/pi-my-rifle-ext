@@ -1,0 +1,104 @@
+{
+  "apiVersion": "rules.alerting.grafana.app/v0alpha1",
+  "kind": "AlertRule",
+  "metadata": {
+    "annotations": {
+      "grafana.app/folder": "efw8d81b6yhoge",
+      "grafana.com/provenance": "",
+      "grafana.com/updateTimestamp": "2026-11-24T03:01:04Z",
+      "grafana.com/updatedBy": "ffypn81rsldkwb"
+    },
+    "labels": {
+      "grafana.app/folder": "efw8d81b6yhoge",
+      "grafana.com/group": "pi-flow-runs",
+      "grafana.com/group-index": "2"
+    },
+    "name": "piflow-retry-budget",
+    "namespace": "default"
+  },
+  "spec": {
+    "annotations": {
+      "dashboard": "/grafana/d/piflow-runs",
+      "summary": "Flow run {{ $labels.ref }} is at >=2 retries (budget is 3): the next failure halts the run. See the 'Retry-blocked / machine waits' row on the pi-flow runs board."
+    },
+    "execErrState": "Error",
+    "expressions": {
+      "A": {
+        "datasourceUID": "PBFA97CFB590B2093",
+        "model": {
+          "expr": "(pi_flow_blocker_retries >= 2) or (pi_flow_retry_attempts >= 2)",
+          "instant": true,
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "refId": "A"
+        },
+        "queryType": "instant",
+        "relativeTimeRange": {
+          "from": "10m0s",
+          "to": "0s"
+        }
+      },
+      "B": {
+        "model": {
+          "expression": "A",
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "reducer": "last",
+          "refId": "B",
+          "type": "reduce"
+        },
+        "relativeTimeRange": {
+          "from": "10m0s",
+          "to": "0s"
+        }
+      },
+      "C": {
+        "model": {
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [
+                  0
+                ],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": [
+                  "C"
+                ]
+              },
+              "reducer": {
+                "type": "last"
+              },
+              "type": "query"
+            }
+          ],
+          "expression": "B",
+          "intervalMs": 1000,
+          "maxDataPoints": 43200,
+          "refId": "C",
+          "type": "threshold"
+        },
+        "relativeTimeRange": {
+          "from": "10m0s",
+          "to": "0s"
+        },
+        "source": true
+      }
+    },
+    "for": "5m0s",
+    "labels": {
+      "scope": "pi-flow",
+      "severity": "warning"
+    },
+    "missingSeriesEvalsToResolve": 1,
+    "noDataState": "Ok",
+    "title": "pi-flow retry budget near exhaustion",
+    "trigger": {
+      "interval": "1m"
+    }
+  }
+}
