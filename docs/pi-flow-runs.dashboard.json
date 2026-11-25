@@ -1,0 +1,2637 @@
+{
+  "apiVersion": "dashboard.grafana.app/v2",
+  "kind": "Dashboard",
+  "metadata": {
+    "annotations": {
+      "grafana.app/createdBy": "service-account:cfw0ld9gfssu8e",
+      "grafana.app/folder": "ag3jjknk85xc0b",
+      "grafana.app/managedBy": "classic-file-provisioning",
+      "grafana.app/managerId": "pi-flow",
+      "grafana.app/sourceChecksum": "99ae9c92579d45e089a1965bd13beaca",
+      "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-runs.json",
+      "grafana.app/sourceTimestamp": "1795532624000",
+      "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
+      "grafana.app/updatedTimestamp": "2026-11-25T12:24:42Z"
+    },
+    "creationTimestamp": "2026-11-23T06:41:52Z",
+    "generation": 13,
+    "labels": {
+      "grafana.app/deprecatedInternalID": "3559868436422656"
+    },
+    "name": "piflow-runs",
+    "namespace": "default",
+    "resourceVersion": "1795609482094998",
+    "uid": "49c326b0-dd77-43ff-b3a2-8d47c1081b7f"
+  },
+  "spec": {
+    "annotations": [
+      {
+        "kind": "AnnotationQuery",
+        "spec": {
+          "builtIn": true,
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "legacyOptions": {
+            "type": "dashboard"
+          },
+          "name": "Annotations \u0026 Alerts",
+          "query": {
+            "datasource": {
+              "name": "-- Grafana --"
+            },
+            "group": "grafana",
+            "kind": "DataQuery",
+            "spec": {},
+            "version": "v0"
+          }
+        }
+      }
+    ],
+    "cursorSync": "Crosshair",
+    "description": "Waiting-on-me landing board (v2 state vocabulary). Row 1 lists every run blocked on a human action with the exact command; row 2 lists machine-blocked / retry waits; row 3 is the live state of all runs. Retry ledger, gate decisions and worktree sweep keep their v1-compatible metrics.",
+    "editable": true,
+    "elements": {
+      "panel-1": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "count(pi_flow_state{state=\"waiting_human\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) or vector(0)",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "",
+          "id": 1,
+          "links": [],
+          "title": "Waiting on me",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "orange",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "textMode": "value",
+                "wideLayout": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-10": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (outcome) (pi_flow_worktree_sweep_total{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "End-of-run worktree sweeps by outcome (pi_flow_worktree_sweep_total).",
+          "id": 10,
+          "links": [],
+          "title": "Worktree sweep outcomes",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              },
+              "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.7,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "none",
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                },
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-2": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "count(pi_flow_state{state=\"waiting_machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) or vector(0)",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "",
+          "id": 2,
+          "links": [],
+          "title": "Machine waits",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "yellow",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "textMode": "value",
+                "wideLayout": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-3": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "count(pi_flow_state{state=\"running\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) or vector(0)",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "",
+          "id": 3,
+          "links": [],
+          "title": "Running now",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "textMode": "value",
+                "wideLayout": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-4": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "count(pi_flow_state{state=\"halted\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) or vector(0)",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "",
+          "id": 4,
+          "links": [],
+          "title": "Halted",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "red",
+                        "value": null
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "textMode": "value",
+                "wideLayout": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-5": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "pi_flow_state{state=\"waiting_human\", mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "time() - max by (ref) (pi_flow_state_start_seconds{state=\"waiting_human\", mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "max by (ref) (pi_flow_state_start_seconds{state=\"waiting_human\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) * 1000",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "label_replace(label_replace(max by (ref, mode) (pi_flow_state{state=\"waiting_human\", mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "ref",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "Time 1": true,
+                        "Time 2": true,
+                        "Time 3": true,
+                        "Value #A": true,
+                        "__name__": true,
+                        "job": true,
+                        "mode": true
+                      },
+                      "indexByName": {
+                        "Jira": 1,
+                        "Waiting": 4,
+                        "Waiting since": 5,
+                        "reason": 3,
+                        "ref": 0,
+                        "state": 2
+                      },
+                      "renameByName": {
+                        "Value #B": "Waiting",
+                        "Value #C": "Waiting since",
+                        "reason": "Reason",
+                        "ref": "Ref",
+                        "state": "State",
+                        "url": "Jira"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Ref",
+                          "Jira",
+                          "State",
+                          "Reason",
+                          "Waiting",
+                          "Waiting since"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Waiting"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Runs blocked on YOU. Reason is value-mapped to the command that unblocks it (mirrors flow/vocabulary.ts EXPECTED_ACTION); substitute the ref from the Ref column. Waiting = live seconds in the current wait (time() - state start), so it ages without a push. — = no registered action (e.g. a legacy run with no reason).",
+          "id": 5,
+          "links": [],
+          "title": "Waiting on me — act now",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ref"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Health: tools, durations, traces",
+                            "url": "/d/piflow-health/pi-flow-health?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Runs: live state",
+                            "url": "/d/piflow-runs/pi-flow-runs?var-ref=${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 130
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Jira"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "targetBlank": true,
+                            "title": "Open in Jira",
+                            "url": "${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "pattern": ".+",
+                              "result": {
+                                "index": 0,
+                                "text": "Open in Jira ↗"
+                              }
+                            },
+                            "type": "regex"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 150
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "State"
+                    },
+                    "properties": [
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "done": {
+                                "color": "blue",
+                                "index": 4,
+                                "text": "done"
+                              },
+                              "halted": {
+                                "color": "red",
+                                "index": 3,
+                                "text": "halted"
+                              },
+                              "running": {
+                                "color": "green",
+                                "index": 0,
+                                "text": "running"
+                              },
+                              "stale": {
+                                "color": "dark-gray",
+                                "index": 5,
+                                "text": "stale"
+                              },
+                              "waiting_human": {
+                                "color": "orange",
+                                "index": 1,
+                                "text": "waiting on you"
+                              },
+                              "waiting_machine": {
+                                "color": "yellow",
+                                "index": 2,
+                                "text": "machine wait"
+                              }
+                            },
+                            "type": "value"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 140
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Reason"
+                    },
+                    "properties": [
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "code_review_pending": {
+                                "color": "purple",
+                                "index": 1,
+                                "text": "/flow answer {ref} pass|fail"
+                              },
+                              "escalation": {
+                                "color": "red",
+                                "index": 2,
+                                "text": "intervene: /flow {ref} (or fix forward)"
+                              },
+                              "spec_approval_pending": {
+                                "color": "orange",
+                                "index": 0,
+                                "text": "/flow answer {ref} approve"
+                              }
+                            },
+                            "type": "value"
+                          },
+                          {
+                            "options": {
+                              "match": "__other__",
+                              "result": {
+                                "index": 3,
+                                "text": "—"
+                              }
+                            },
+                            "type": "special"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 300
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Waiting"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "s"
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 120
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Waiting since"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeFromNow"
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 150
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true,
+                "sortBy": []
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-6": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "pi_flow_state{state=\"waiting_machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "time() - max by (ref) (pi_flow_state_start_seconds{state=\"waiting_machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "pi_flow_retry_attempts{mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "pi_flow_blocker_retries{mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (ref) (pi_flow_wait_seconds{wait_kind=\"machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "E"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "label_replace(label_replace(max by (ref, mode) (pi_flow_state{state=\"waiting_machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "F"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "ref",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "Time 1": true,
+                        "Time 2": true,
+                        "Time 3": true,
+                        "Time 4": true,
+                        "Time 5": true,
+                        "Value #A": true,
+                        "__name__": true,
+                        "job": true,
+                        "mode": true
+                      },
+                      "indexByName": {
+                        "Attempts": 4,
+                        "Blocker retries": 5,
+                        "Jira": 1,
+                        "Machine wait": 6,
+                        "Stalled for": 3,
+                        "reason": 30,
+                        "ref": 0,
+                        "state": 2
+                      },
+                      "renameByName": {
+                        "Value #B": "Stalled for",
+                        "Value #C": "Attempts",
+                        "Value #D": "Blocker retries",
+                        "Value #E": "Machine wait",
+                        "reason": "Reason",
+                        "ref": "Ref",
+                        "state": "State",
+                        "url": "Jira"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Ref",
+                          "Jira",
+                          "State",
+                          "Reason",
+                          "Stalled for",
+                          "Attempts",
+                          "Blocker retries",
+                          "Machine wait"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterByValue",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "filters": [
+                        {
+                          "config": {
+                            "id": "equal",
+                            "options": {
+                              "value": "waiting_machine"
+                            }
+                          },
+                          "fieldName": "State"
+                        }
+                      ],
+                      "type": "include"
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Stalled for"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Runs waiting on the MACHINE, not you — retry/blocker budget waits, subagents in flight, label misses. No action column (these self-clear or need a code/label fix). Stalled for = live seconds in waiting_machine; Attempts/Blocker retries are the kept pi_flow_retry_attempts / pi_flow_blocker_retries ledgers; Machine wait = cumulative pi_flow_wait_seconds{wait_kind=\"machine\"}.",
+          "id": 6,
+          "links": [],
+          "title": "Retry-blocked / machine waits",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ref"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Health: tools, durations, traces",
+                            "url": "/d/piflow-health/pi-flow-health?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Runs: live state",
+                            "url": "/d/piflow-runs/pi-flow-runs?var-ref=${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 130
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Jira"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "targetBlank": true,
+                            "title": "Open in Jira",
+                            "url": "${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "pattern": ".+",
+                              "result": {
+                                "index": 0,
+                                "text": "Open in Jira ↗"
+                              }
+                            },
+                            "type": "regex"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 150
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "State"
+                    },
+                    "properties": [
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "done": {
+                                "color": "blue",
+                                "index": 4,
+                                "text": "done"
+                              },
+                              "halted": {
+                                "color": "red",
+                                "index": 3,
+                                "text": "halted"
+                              },
+                              "running": {
+                                "color": "green",
+                                "index": 0,
+                                "text": "running"
+                              },
+                              "stale": {
+                                "color": "dark-gray",
+                                "index": 5,
+                                "text": "stale"
+                              },
+                              "waiting_human": {
+                                "color": "orange",
+                                "index": 1,
+                                "text": "waiting on you"
+                              },
+                              "waiting_machine": {
+                                "color": "yellow",
+                                "index": 2,
+                                "text": "machine wait"
+                              }
+                            },
+                            "type": "value"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 140
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Reason"
+                    },
+                    "properties": [
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "aven_read_failed": {
+                                "color": "red",
+                                "index": 6,
+                                "text": "aven read failed"
+                              },
+                              "blocker_budget_exhausted": {
+                                "color": "red",
+                                "index": 1,
+                                "text": "blocker budget exhausted"
+                              },
+                              "deviation_gate_rerun": {
+                                "color": "yellow",
+                                "index": 3,
+                                "text": "deviation gate rerun"
+                              },
+                              "label_miss": {
+                                "color": "orange",
+                                "index": 2,
+                                "text": "aven label miss"
+                              },
+                              "prompt_send_failed": {
+                                "color": "red",
+                                "index": 5,
+                                "text": "prompt send failed"
+                              },
+                              "retry_budget_exhausted": {
+                                "color": "red",
+                                "index": 0,
+                                "text": "retry budget exhausted"
+                              },
+                              "subagent_in_flight": {
+                                "color": "blue",
+                                "index": 4,
+                                "text": "subagent in flight"
+                              }
+                            },
+                            "type": "value"
+                          },
+                          {
+                            "options": {
+                              "match": "__other__",
+                              "result": {
+                                "index": 7,
+                                "text": "—"
+                              }
+                            },
+                            "type": "special"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 200
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Stalled for"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "s"
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 120
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Machine wait"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "s"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Attempts"
+                    },
+                    "properties": [
+                      {
+                        "id": "decimals",
+                        "value": 0
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 100
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Blocker retries"
+                    },
+                    "properties": [
+                      {
+                        "id": "decimals",
+                        "value": 0
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 130
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true,
+                "sortBy": []
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-7": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "pi_flow_state{mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "max by (ref, phase) (pi_flow_phase{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "max by (ref, step) (pi_flow_step{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "time() - max by (ref) (pi_flow_state_start_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "pi_flow_run_start_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\"} * 1000",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "E"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\", ref=~\"$ref\"} * 1000",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "F"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "label_replace(label_replace(max by (ref, mode) (pi_flow_state{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "G"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "ref",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "Time 1": true,
+                        "Time 2": true,
+                        "Time 3": true,
+                        "Time 4": true,
+                        "Time 5": true,
+                        "Time 6": true,
+                        "Value #A": true,
+                        "Value #B": true,
+                        "Value #C": true,
+                        "job": true,
+                        "mode": true
+                      },
+                      "indexByName": {
+                        "In state": 6,
+                        "Jira": 1,
+                        "Last pushed": 8,
+                        "Phase": 4,
+                        "Reason": 3,
+                        "Ref": 0,
+                        "Started": 7,
+                        "State": 2,
+                        "Step": 5
+                      },
+                      "renameByName": {
+                        "Value #D": "In state",
+                        "Value #E": "Started",
+                        "Value #F": "Last pushed",
+                        "phase": "Phase",
+                        "reason": "Reason",
+                        "ref": "Ref",
+                        "state": "State",
+                        "step": "Step",
+                        "url": "Jira"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Ref",
+                          "Jira",
+                          "State",
+                          "Reason",
+                          "Phase",
+                          "Step",
+                          "In state",
+                          "Started",
+                          "Last pushed"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Last pushed"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "All runs on the v2 vocabulary: current state + reason (enum), the in-flight phase/step, and how long the run has sat in its current state (In state). Started / Last pushed are the kept pi_flow_run_start_seconds / push_time_seconds freshness signals — a ref whose Last pushed is old has stopped emitting. Click a ticket to drill into Health. Top-level runs only.",
+          "id": 7,
+          "links": [],
+          "title": "Live state — all runs",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ref"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Health: tools, durations, traces",
+                            "url": "/d/piflow-health/pi-flow-health?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Runs: live state",
+                            "url": "/d/piflow-runs/pi-flow-runs?var-ref=${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 130
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Jira"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "targetBlank": true,
+                            "title": "Open in Jira",
+                            "url": "${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "pattern": ".+",
+                              "result": {
+                                "index": 0,
+                                "text": "Open in Jira ↗"
+                              }
+                            },
+                            "type": "regex"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 150
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "State"
+                    },
+                    "properties": [
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "done": {
+                                "color": "blue",
+                                "index": 4,
+                                "text": "done"
+                              },
+                              "halted": {
+                                "color": "red",
+                                "index": 3,
+                                "text": "halted"
+                              },
+                              "running": {
+                                "color": "green",
+                                "index": 0,
+                                "text": "running"
+                              },
+                              "stale": {
+                                "color": "dark-gray",
+                                "index": 5,
+                                "text": "stale"
+                              },
+                              "waiting_human": {
+                                "color": "orange",
+                                "index": 1,
+                                "text": "waiting on you"
+                              },
+                              "waiting_machine": {
+                                "color": "yellow",
+                                "index": 2,
+                                "text": "machine wait"
+                              }
+                            },
+                            "type": "value"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 140
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Reason"
+                    },
+                    "properties": [
+                      {
+                        "id": "mappings",
+                        "value": [
+                          {
+                            "options": {
+                              "aven_read_failed": {
+                                "color": "red",
+                                "index": 9,
+                                "text": "aven read failed"
+                              },
+                              "blocker_budget_exhausted": {
+                                "color": "red",
+                                "index": 4,
+                                "text": "blocker budget"
+                              },
+                              "code_review_pending": {
+                                "color": "purple",
+                                "index": 1,
+                                "text": "code review"
+                              },
+                              "deviation_gate_rerun": {
+                                "color": "yellow",
+                                "index": 6,
+                                "text": "gate rerun"
+                              },
+                              "escalation": {
+                                "color": "red",
+                                "index": 2,
+                                "text": "escalation"
+                              },
+                              "label_miss": {
+                                "color": "orange",
+                                "index": 5,
+                                "text": "label miss"
+                              },
+                              "prompt_send_failed": {
+                                "color": "red",
+                                "index": 8,
+                                "text": "prompt send failed"
+                              },
+                              "retry_budget_exhausted": {
+                                "color": "red",
+                                "index": 3,
+                                "text": "retry budget"
+                              },
+                              "spec_approval_pending": {
+                                "color": "orange",
+                                "index": 0,
+                                "text": "spec approval"
+                              },
+                              "subagent_in_flight": {
+                                "color": "blue",
+                                "index": 7,
+                                "text": "subagent in flight"
+                              }
+                            },
+                            "type": "value"
+                          },
+                          {
+                            "options": {
+                              "match": "__other__",
+                              "result": {
+                                "index": 10,
+                                "text": "—"
+                              }
+                            },
+                            "type": "special"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 160
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "In state"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "s"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Started"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeAsIso"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Last pushed"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTimeFromNow"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true,
+                "sortBy": []
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-8": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "pi_flow_retry_attempts{mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "pi_flow_blocker_retries{mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "ref",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "calculateField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "alias": "Total",
+                      "binary": {
+                        "left": "Value #A",
+                        "operator": "+",
+                        "right": "Value #B"
+                      },
+                      "mode": "binary",
+                      "reduce": {
+                        "reducer": "sum"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "__name__ 1": true,
+                        "__name__ 2": true,
+                        "job": true,
+                        "mode": true
+                      },
+                      "indexByName": {
+                        "Total": 3,
+                        "Value #A": 1,
+                        "Value #B": 2,
+                        "ref": 0
+                      },
+                      "renameByName": {
+                        "Value #A": "Attempts",
+                        "Value #B": "Blocker retries",
+                        "ref": "Ref"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Total"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "group": "filterByValue",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "filters": [
+                        {
+                          "config": {
+                            "id": "greater",
+                            "options": {
+                              "value": 0
+                            }
+                          },
+                          "fieldName": "Total"
+                        }
+                      ],
+                      "type": "include"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Attempt ledger: flow_run_attempt budget usage (pi_flow_retry_attempts) plus loop blocker retries (pi_flow_blocker_retries). 3 attempts = escalation to the human (see the Waiting-on-me queue).",
+          "id": 8,
+          "links": [],
+          "title": "Retries per ticket (attempt ledger + blockers)",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ref"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Health: tools, durations, traces",
+                            "url": "/d/piflow-health/pi-flow-health?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Orchestrator cost",
+                            "url": "/d/piflow-orchestrator/pi-flow-orchestrator?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Subagent cost",
+                            "url": "/d/piflow-subagents/pi-flow-subagents?var-ref=${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 120
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Total"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "gradient",
+                          "type": "gauge",
+                          "valueDisplayMode": "color"
+                        }
+                      },
+                      {
+                        "id": "max",
+                        "value": 6
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 140
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true,
+                "sortBy": []
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-9": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (gate) (pi_flow_gate_decisions_total{mode=~\"${mode:raw}\", ref=~\"$ref\", choice=\"approve\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (gate) (pi_flow_gate_decisions_total{mode=~\"${mode:raw}\", ref=~\"$ref\", choice=\"reject\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (gate) (pi_flow_gate_decisions_total{mode=~\"${mode:raw}\", ref=~\"$ref\", choice=\"pass\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (gate) (pi_flow_gate_decisions_total{mode=~\"${mode:raw}\", ref=~\"$ref\", choice=\"fail\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "gate",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "Time 1": true,
+                        "Time 2": true,
+                        "Time 3": true,
+                        "job": true,
+                        "job 1": true,
+                        "job 2": true,
+                        "job 3": true,
+                        "mode": true,
+                        "mode 1": true,
+                        "mode 2": true,
+                        "mode 3": true
+                      },
+                      "indexByName": {},
+                      "renameByName": {
+                        "Value #A": "approve",
+                        "Value #B": "reject",
+                        "Value #C": "pass",
+                        "Value #D": "fail"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Raw gate-answer events (pi_flow_gate_decisions_total) — reject→approve churn is visible as multiple choices on one gate.",
+          "id": 9,
+          "links": [],
+          "title": "Gate decisions by gate and choice",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    }
+                  },
+                  "decimals": 0
+                },
+                "overrides": []
+              },
+              "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.7,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "normal",
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                },
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 0
+              }
+            },
+            "version": ""
+          }
+        }
+      }
+    },
+    "layout": {
+      "kind": "GridLayout",
+      "spec": {
+        "items": [
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-1"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 0,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-2"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 6,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-3"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 12,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-4"
+              },
+              "height": 4,
+              "width": 6,
+              "x": 18,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-5"
+              },
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 4
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-6"
+              },
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 14
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-7"
+              },
+              "height": 12,
+              "width": 24,
+              "x": 0,
+              "y": 24
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-9"
+              },
+              "height": 9,
+              "width": 12,
+              "x": 0,
+              "y": 36
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-10"
+              },
+              "height": 9,
+              "width": 12,
+              "x": 12,
+              "y": 36
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-8"
+              },
+              "height": 8,
+              "width": 24,
+              "x": 0,
+              "y": 45
+            }
+          }
+        ]
+      }
+    },
+    "links": [
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Health",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-health/pi-flow-health"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Orchestrator",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-orchestrator/pi-flow-orchestrator"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Subagents",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-subagents/pi-flow-subagents"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Ad-hoc",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-adhoc/pi-flow-ad-hoc-commands-brainstorm-pr-quality-review"
+      }
+    ],
+    "liveNow": false,
+    "preload": false,
+    "tags": [
+      "pi-flow",
+      "observability",
+      "runs"
+    ],
+    "timeSettings": {
+      "autoRefresh": "5m",
+      "autoRefreshIntervals": [
+        "5s",
+        "10s",
+        "30s",
+        "1m",
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+        "2h",
+        "1d"
+      ],
+      "fiscalYearStartMonth": 0,
+      "from": "now-30d",
+      "hideTimepicker": false,
+      "timezone": "browser",
+      "to": "now"
+    },
+    "title": "pi-flow runs",
+    "variables": [
+      {
+        "kind": "CustomVariable",
+        "spec": {
+          "allowCustomValue": false,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "hide": "dontHide",
+          "includeAll": true,
+          "label": "mode",
+          "multi": false,
+          "name": "mode",
+          "options": [
+            {
+              "selected": true,
+              "text": "All",
+              "value": "$__all"
+            },
+            {
+              "selected": false,
+              "text": "Personal",
+              "value": "^$|personal"
+            },
+            {
+              "selected": false,
+              "text": "Work",
+              "value": "work"
+            }
+          ],
+          "query": "Personal : ^$|personal, Work : work",
+          "skipUrlSync": false
+        }
+      },
+      {
+        "kind": "QueryVariable",
+        "spec": {
+          "allValue": ".*",
+          "allowCustomValue": true,
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          },
+          "definition": "label_values(pi_flow_state{mode=~\"${mode:raw}\"}, ref)",
+          "hide": "dontHide",
+          "includeAll": true,
+          "label": "ref",
+          "multi": true,
+          "name": "ref",
+          "options": [],
+          "query": {
+            "datasource": {
+              "name": "PBFA97CFB590B2093"
+            },
+            "group": "prometheus",
+            "kind": "DataQuery",
+            "spec": {
+              "qryType": 1,
+              "query": "label_values(pi_flow_state{mode=~\"${mode:raw}\"}, ref)",
+              "refId": "PromVariable"
+            },
+            "version": "v0"
+          },
+          "refresh": "onTimeRangeChanged",
+          "regex": "",
+          "skipUrlSync": false,
+          "sort": "alphabeticalAsc"
+        }
+      }
+    ]
+  },
+  "status": {
+    "conversion": {
+      "failed": false,
+      "storedVersion": "v1"
+    }
+  }
+}
