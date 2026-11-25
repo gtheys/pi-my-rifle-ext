@@ -134,7 +134,7 @@ checkout) instead of machine-wide.
 | `telemetry.jiraBaseUrl` | `string` | unset | Base URL for Jira issue links, e.g. `https://example.atlassian.net/browse/`. Work-mode spans then carry `flow.url` = base + Jira key, so dashboards can link tickets to Jira. Unset = no links |
 | `telemetry.maxContentChars` | `integer` (100–100000) | `2000` | Max characters per captured content attribute; longer values end with `…[truncated N chars]`. Tempo drops anything past its `max_attribute_bytes` (default 2048) silently, so raise both together |
 | `telemetry.loki.enabled` | `boolean` | `false` | Push flow **transition-event** streams (`state-change` / `step-start` / `step-stop`) to Loki from the live session (PMR-ZV9Y 4.2). `false` or a missing `loki` block = zero Loki network calls. Session-side only — the daemon never pushes Loki. See [Loki transition events](#loki-transition-events) |
-| `telemetry.loki.endpoint` | `string` | unset (required with `telemetry.loki.enabled`) | Loki **base** URL you provide yourself (e.g. `http://100.108.226.64:3100`); events POST to `<endpoint>/loki/api/v1/push` (the push path is appended for you) |
+| `telemetry.loki.endpoint` | `string` | unset (required with `telemetry.loki.enabled`) | Loki **base** URL you provide yourself (e.g. `http://loki.example.com:3100`); events POST to `<endpoint>/loki/api/v1/push` (the push path is appended for you) |
 | `telemetry.loki.headers` | `record<string, string>` | `{}` | Static extra headers for the Loki push (e.g. a Bearer token in front of a reverse proxy). Secrets belong in env, not config |
 | `notify.desktop.enabled` | `boolean` | `true` | Send a desktop notification on `waiting_human` / `halted` flow transitions through [`pi-desktop-notify`](../pi-desktop-notify/README.md) (PMR-ZV9Y 5.2). `false` turns the **flow-side page** off — the user's own channel toggles (desktop / herdr / ntfy) still live in pi-desktop-notify's config, and Grafana alerting is unaffected (independent channel). See [Notifications](#notifications) |
 | `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
@@ -160,7 +160,7 @@ checkout) instead of machine-wide.
     "maxContentChars": 2000,
     "loki": {
       "enabled": false,
-      "endpoint": "http://100.108.226.64:3100",
+      "endpoint": "",
       "headers": {}
     }
   },
@@ -321,7 +321,7 @@ off is independent of whether OTLP traces export.
     "otlpEndpoint": "https://tempo.example.com:4478",
     "loki": {
       "enabled": true,
-      "endpoint": "http://100.108.226.64:3100",
+      "endpoint": "http://loki.example.com:3100",
       "headers": {}
     }
   }
@@ -331,7 +331,7 @@ off is independent of whether OTLP traces export.
 You expose the Loki endpoint yourself (PMR-ZV9Y D2 — no bundled collector);
 `telemetry.loki.endpoint` stores the **base** URL only and the pusher appends
 `/loki/api/v1/push`, so the example above POSTs to
-`http://100.108.226.64:3100/loki/api/v1/push`. A Bearer token in front of a
+`http://loki.example.com:3100/loki/api/v1/push`. A Bearer token in front of a
 reverse proxy belongs in `telemetry.loki.headers` (or better, env), not baked
 into a committed config.
 
