@@ -174,6 +174,25 @@ export interface FlowLoop {
   isActive(): boolean
   /** The active flow's ref, or null when no flow run is in flight (PMR-06RH). */
   activeRef(): string | null
+  /**
+   * AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — invalidate the loop's guarded
+   * v2 emission (`lastEmittedV2`) when a v2 `state-change` for the ACTIVE ref is
+   * journaled by a SEAM the loop does not run through itself (the tools).
+   * `run_attempt` escalate (`waiting_human{escalation}`) and
+   * `deviation_review` rerun (`waiting_machine{deviation_gate_rerun}`) journal a
+   * wait through the shared fan-out writer but never journal the running return;
+   * the loop's instance field would stay pinned at `running`, so the next
+   * `snapshot('running')` (sendPhasePrompt / retryAfterBlockers) is
+   * guard-suppressed and `pi_flow_state` stays stuck at the wait while the flow
+   * is actively working (false waiting-on-human page, phantom Waiting-on-me row,
+   * wait-seconds mis-attribution). index.ts calls this from the fan-out writer's
+   * `onStateChange` sink — THE single choke point that sees every journaled v2
+   * event (see the telemetry/dispatch.ts seam map), so no journal re-read.
+   * Setting `lastEmittedV2` to the value the loop just emitted is a harmless
+   * no-op (the loop's own emissions pass the same sink): the update is guarded
+   * by ref (a foreign run never touches this run's guard) and is idempotent.
+   */
+  noteExternalV2State(ref: string, state: FlowState): void
 }
 
 class FlowLoopImpl implements FlowLoop {
@@ -208,6 +227,22 @@ class FlowLoopImpl implements FlowLoop {
   activeRef(): string | null {
     if (this.state === null) return null
     return this.state.ref
+  }
+
+  // AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — see the FlowLoop method doc.
+  // Invalidates the guarded v2 emission when a state-change for the ACTIVE run
+  // is journaled through the shared fan-out sink by a tool seam (not the loop's
+  // own emitStateChange path). The `state` is re-written into lastEmittedV2 so
+  // the loop's next DIFFERING emission is not suppressed. Ref-guarded (a foreign
+  // run never moves this run's guard) and vocabulary-guarded. The loop's own
+  // emissions also pass the sink: writing the just-emitted state back is a
+  // harmless idempotent no-op, so re-seeding never fabricates or drops a
+  // transition and running->running stays suppressed within the loop.
+  noteExternalV2State(ref: string, state: FlowState): void {
+    if (this.state === null) return
+    if (this.state.ref !== ref) return
+    if (!FLOW_STATES.includes(state)) return
+    this.lastEmittedV2 = state
   }
 
   async start(input: FlowStartInput): Promise<void> {

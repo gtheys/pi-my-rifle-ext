@@ -12,7 +12,13 @@ import {
   type FlowLoopDeps,
   resumeV2StateFromEvents,
 } from '../flow/loop.ts'
-import type { FlowRunEvent } from '../run-state.ts'
+import { deriveV2State, renderStateMetricLines } from '../flow/state-metrics.ts'
+import { type FlowRunEvent, projectRunState } from '../run-state.ts'
+import type { EventWriter } from '../server/writer.ts'
+import {
+  createEventFanoutWriter,
+  type FanoutHandlers,
+} from '../telemetry/dispatch.ts'
 
 interface Harness {
   deps: FlowLoopDeps
@@ -357,4 +363,175 @@ test('resumeV2StateFromEvents: no v2 events -> derived from projected loop statu
 test('resumeV2StateFromEvents: null/empty journal seeds nothing', () => {
   assert.equal(resumeV2StateFromEvents(null), undefined)
   assert.equal(resumeV2StateFromEvents([]), undefined)
+})
+
+// ===========================================================================
+// PMR-ZV9Y fix round (P1 blocker): the guarded v2 emission must be invalidated
+// by a TOOL-journaled state-change, not only by the loop's own emissions.
+//
+// Mechanism under test: `noteExternalV2State(ref, state)` is the seam index.ts
+// calls from the fan-out writer's `onStateChange` sink — the single choke point
+// that sees EVERY journaled v2 state-change (loop AND tools, per the
+// telemetry/dispatch.ts seam map). run-attempt escalate (waiting_human) and
+// deviation rerun (waiting_machine) journal a wait but never journal the
+// running return, so the loop's `lastEmittedV2` stays pinned at `running` and
+// the next snapshot('running') is guard-suppressed (pi_flow_state stuck at the
+// wait while the run is actively working).
+//
+// The fix: the sink re-seeds `lastEmittedV2` to the journaled wait, so the
+// loop's next differing-state emission is NOT suppressed.
+// ===========================================================================
+
+// A fixed ISO timestamp for the hand-built journal events (the fold/render
+// assertions only care about ordering + vocabulary, not wall-clock).
+const AT = '2026-11-25T09:00:00.000Z'
+
+test('P1: a tool-journaled wait un-pins the loop — the next running snapshot emits', async () => {
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput()) // running emitted once; lastEmittedV2 = 'running'
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+  ])
+  // The sink mirrors a tool-side wait (run-attempt escalate / deviation rerun)
+  // WITHOUT the tool journaling the running return.
+  loop.noteExternalV2State('TP-1', 'waiting_human')
+  // The loop re-arms and advances (plan lands -> implement prompt) — its
+  // snapshot('running') MUST now emit, because lastEmittedV2 is waiting_human.
+  h.labels = ['planned']
+  await loop.onSettled()
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+    { kind: 'state-change', state: 'running', reason: undefined },
+  ])
+})
+
+test('P1 guard: an external wait for a DIFFERENT ref never touches the active guard', async () => {
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput()) // active ref TP-1, lastEmittedV2 = 'running'
+  // A foreign run's wait must not un-pin THIS run's guard.
+  loop.noteExternalV2State('OTHER-1', 'waiting_human')
+  h.labels = ['planned']
+  await loop.onSettled() // advance -> snapshot('running') still suppressed (own running)
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+  ])
+})
+
+test('P1 no-duplicate: a plain running->running re-snapshot stays suppressed (no external wait)', async () => {
+  // Proves the fix is NOT "always emit": with no external wait in between, the
+  // loop's own running->running duplicate is still suppressed (the guard intact).
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  h.labels = ['planned']
+  await loop.onSettled() // advance -> sendPhasePrompt -> snapshot('running') suppressed
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+  ])
+})
+
+test('P1 sink (real fan-out): a tool state-change recorded through the wrapped writer un-pins the loop', async () => {
+  // Locks the wiring mechanism (option a): index.ts's single choke point is the
+  // fan-out dispatcher wrapping the mode-aware writer; its onStateChange sink
+  // calls loop.noteExternalV2State. Here we drive that sink for real.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput()) // running emitted
+  const written: FlowRunEvent[] = []
+  const baseWriter: EventWriter = {
+    record: async (event) => {
+      written.push(event)
+      return true
+    },
+    recordJournalOnly: async (event) => {
+      written.push(event)
+    },
+  }
+  const handlers: FanoutHandlers = {
+    onStateChange: (event) => {
+      loop.noteExternalV2State(event.ref, event.state)
+    },
+  }
+  const fanout = createEventFanoutWriter(baseWriter, handlers)
+  // The tool journals ONLY the wait through the shared sink.
+  await fanout.record({
+    kind: 'state-change',
+    at: AT,
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'escalation',
+  })
+  assert.equal(written.length, 1, 'the wait reached the writer')
+  // The loop re-arms and advances -> running snapshot now emits.
+  h.labels = ['planned']
+  await loop.onSettled()
+  const runnings = h.v2.filter(
+    (e) => e.kind === 'state-change' && e.state === 'running',
+  )
+  assert.equal(
+    runnings.length,
+    2,
+    `expected the running return after the wait: ${String(
+      h.v2
+        .filter((e) => e.kind === 'state-change')
+        .map((e) => {
+          if (e.kind !== 'state-change') return e.kind
+          return `${e.kind}:${e.state}`
+        }),
+    )}`,
+  )
+})
+
+test('P1 fold: escalate-wait then a running snapshot renders pi_flow_state{running} through the real projection', async () => {
+  // The reviewer's reproduced journal sequence, driven through the REAL
+  // projectRunState + renderStateMetricLines fold (not just emission mocks).
+  const h = makeHarness([])
+  const journal: FlowRunEvent[] = [
+    { kind: 'run-start', at: AT, ref: 'TP-1', mode: 'personal' },
+  ]
+  h.deps.journalV2 = (event) => {
+    h.v2.push(event)
+    journal.push(event)
+  }
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput()) // running journaled into the journal
+  // The tool journals the wait into the SAME journal, then the sink re-seeds.
+  journal.push({
+    kind: 'state-change',
+    at: new Date(Date.parse(AT) + 1000).toISOString(),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'escalation',
+  })
+  loop.noteExternalV2State('TP-1', 'waiting_human')
+  // The loop advances -> running snapshot (the fix makes it emit).
+  h.labels = ['planned']
+  await loop.onSettled()
+
+  assert.equal(deriveV2State(journal)?.state, 'running', String(journal))
+  const lines = renderStateMetricLines('TP-1', journal)
+  const stateLine = lines.find((line) => line.startsWith('pi_flow_state{'))
+  assert.ok(
+    stateLine !== undefined,
+    `no pi_flow_state line rendered: ${lines.join('\n')}`,
+  )
+  assert.ok(
+    stateLine?.includes('state="running"'),
+    `pi_flow_state pinned at the wait: ${String(stateLine)}\n${lines.join('\n')}`,
+  )
+  // The wait still contributes its window (it was a real wait) — the running
+  // line is the CURRENT state, exactly one, never waiting_human.
+  assert.equal(
+    lines.filter((line) => line.startsWith('pi_flow_state{')).length,
+    1,
+    lines.join('\n'),
+  )
+  assert.ok(!stateLine?.includes('state="waiting_human"'), lines.join('\n'))
+  // projectRunState agrees with deriveV2State (last-wins). This is the guard
+  // that would fail if the running return were suppressed (journal stuck at
+  // waiting_human).
+  const projected = projectRunState(journal)
+  assert.equal(projected?.currentState?.state, 'running')
 })

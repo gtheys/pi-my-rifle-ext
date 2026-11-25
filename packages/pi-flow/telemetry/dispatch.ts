@@ -91,6 +91,22 @@ export interface FanoutHandlers {
   onEvent?: (event: FlowRunEvent) => void
   onStateChange?: (event: StateChangeEvent) => void
   onStepEvent?: (event: StepBoundaryEvent) => void
+  /**
+   * AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — a SEPARATELY guarded observer
+   * that fires for EVERY journaled `state-change` event, regardless of which
+   * seam emitted it. index.ts wires it to the flow loop's
+   * `noteExternalV2State(ref, state)` so the loop's guarded v2 emission is
+   * invalidated by TOOL-journaled waits (run-attempt escalate, deviation rerun)
+   * that the loop does not emit through its own seam. `onStateChange` is NOT
+   * reused for that: it is the telemetry/Loki+notify sink and a throwing notify
+   * would then also cost the loop bookkeeping (ISC-A-5). This observer runs in
+   * its OWN try/catch BEFORE onStateChange, so neither can cost the other and
+   * the loop learns the wait even when Loki/notify are off. The dispatcher is
+   * the single choke point (see the seam map above); hooking here needs zero
+   * journal re-reads and never re-validates the label (ISC-A-1 — the loop
+   * re-validates against FLOW_STATES itself).
+   */
+  onV2StateChangeObserved?: (event: StateChangeEvent) => void
 }
 
 /** The Pushgateway identity pair a Loki stream is keyed by. */
@@ -121,6 +137,15 @@ export function createEventFanoutWriter(
       }
     }
     if (event.kind === 'state-change') {
+      // The loop-bookkeeping observer runs FIRST and in its OWN try/catch so a
+      // throwing telemetry sink never costs it (PMR-ZV9Y fix round, P1).
+      if (handlers.onV2StateChangeObserved !== undefined) {
+        try {
+          handlers.onV2StateChangeObserved(event)
+        } catch {
+          // never-throw (ISC-A-5)
+        }
+      }
       if (handlers.onStateChange === undefined) return
       try {
         handlers.onStateChange(event)

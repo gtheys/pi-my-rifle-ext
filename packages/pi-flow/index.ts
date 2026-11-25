@@ -89,6 +89,7 @@ import {
 import { landingIntercept } from './flow/land-gate.ts'
 import {
   createFlowLoop,
+  type FlowLoop,
   resumePlanApprovalOpenFromEvents,
   resumeV2StateFromEvents,
 } from './flow/loop.ts'
@@ -188,6 +189,7 @@ import { registerOpenInPane } from './spec-review/open-in-pane.ts'
 import {
   createEventFanoutWriter,
   createTelemetryHandlers,
+  type FanoutHandlers,
   lokiPushSettings,
 } from './telemetry/dispatch.ts'
 import { registerTelemetry } from './telemetry/index.ts'
@@ -461,47 +463,69 @@ export default function (
   // below; it is declared HERE because the v2 fan-out reads it per event (the
   // ad-hoc tracker uses the same holder).
   let telemetryHandle: ReturnType<typeof registerTelemetry> | null = null
-  const writer: EventWriter = createEventFanoutWriter(
-    createEventWriter(
-      getAgentDir(),
-      createDaemonAliveProbe(getAgentDir(), () => runServerEnabled),
-    ),
-    createTelemetryHandlers({
-      loki: () => lokiSettings,
-      handle: () => telemetryHandle,
-      fetchImpl: async (url, init) => {
-        const response = await fetch(url, init)
-        return { status: response.status }
-      },
-      now: () => Date.now(),
-      // At most ONE note per session (the shared once-guard inside the
-      // handler bag), mirroring the OTLP exporter-failure posture below.
+  // AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — late-bound flow loop so the
+  // fan-out dispatcher's single-choke-point `route` can invalidate the loop's
+  // guarded v2 emission on a TOOL-journaled wait (run-attempt escalate,
+  // deviation rerun). Assigned right after `createFlowLoop` below; null until
+  // then (a pre-loop event simply skips the observer, same posture as
+  // telemetryHandle). See the onV2StateChangeObserved doc in dispatch.ts.
+  let flowLoopForV2: FlowLoop | null = null
+  const telemetryHandlers: FanoutHandlers = createTelemetryHandlers({
+    loki: () => lokiSettings,
+    handle: () => telemetryHandle,
+    fetchImpl: async (url, init) => {
+      const response = await fetch(url, init)
+      return { status: response.status }
+    },
+    now: () => Date.now(),
+    // At most ONE note per session (the shared once-guard inside the
+    // handler bag), mirroring the OTLP exporter-failure posture below.
+    onNote: (ref, error) => {
+      void journal({
+        kind: 'note',
+        at: new Date().toISOString(),
+        ref,
+        text: `loki push failed: ${error} (further failures silent)`,
+      })
+    },
+    env: process.env,
+    // PMR-ZV9Y 5.2 — fire-and-forget desktop page on waiting_human/halted.
+    // The sink never blocks the fan-out (it never awaits into `record`) and
+    // NEVER throws: an absent/broken @gtheys/pi-desktop-notify (it is an
+    // OPTIONAL dependency) journals ONE note, then the channel stays off.
+    notify: {
+      desktop: () => notifyDesktop,
+      cwd: () => sessionCwd,
       onNote: (ref, error) => {
         void journal({
           kind: 'note',
           at: new Date().toISOString(),
           ref,
-          text: `loki push failed: ${error} (further failures silent)`,
+          text: `desktop notify unavailable: ${error} (channel off, further failures silent)`,
         })
       },
-      env: process.env,
-      // PMR-ZV9Y 5.2 — fire-and-forget desktop page on waiting_human/halted.
-      // The sink never blocks the fan-out (it never awaits into `record`) and
-      // NEVER throws: an absent/broken @gtheys/pi-desktop-notify (it is an
-      // OPTIONAL dependency) journals ONE note, then the channel stays off.
-      notify: {
-        desktop: () => notifyDesktop,
-        cwd: () => sessionCwd,
-        onNote: (ref, error) => {
-          void journal({
-            kind: 'note',
-            at: new Date().toISOString(),
-            ref,
-            text: `desktop notify unavailable: ${error} (channel off, further failures silent)`,
-          })
-        },
-      },
-    }),
+    },
+  })
+  // AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — compose the loop-guard
+  // invalidator onto the single choke point (the fan-out dispatcher's `route`).
+  // Every journaled v2 state-change reaches it, loop- OR tool-emitted, so a
+  // run-attempt escalate / deviation rerun wait re-seeds the loop's
+  // `lastEmittedV2` and the loop's next differing-state emission is NOT
+  // suppressed. Late-bound on `flowLoopForV2` (a pre-loop event skips it).
+  // Idempotent for the loop's OWN emissions (it re-writes the value it just
+  // emitted), so running->running stays suppressed and no transition is
+  // fabricated. The dispatcher guards this observer separately from the Loki +
+  // notify sinks (ISC-A-5), so telemetry-off sessions still get the fix.
+  telemetryHandlers.onV2StateChangeObserved = (event) => {
+    if (flowLoopForV2 === null) return
+    flowLoopForV2.noteExternalV2State(event.ref, event.state)
+  }
+  const writer: EventWriter = createEventFanoutWriter(
+    createEventWriter(
+      getAgentDir(),
+      createDaemonAliveProbe(getAgentDir(), () => runServerEnabled),
+    ),
+    telemetryHandlers,
   )
 
   /** Resolve `notify.desktop.enabled` + the session cwd into the fan-out's
@@ -884,6 +908,11 @@ export default function (
       pi.sendUserMessage(prompt)
     },
   })
+  // AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — late-bind the loop into the
+  // fan-out's single-choke-point state-change observer so tool-journaled waits
+  // (run-attempt escalate, deviation rerun) invalidate the loop's guarded v2
+  // emission. See the onV2StateChangeObserved wiring above.
+  flowLoopForV2 = loop
 
   // AIDEV-NOTE: PMR-HFK1 — spawn attribution journaling (PMR-C998). The
   // subagents extension emits spawn/resume/reattach events; while a flow run
