@@ -1,0 +1,76 @@
+{
+  "type": "object",
+  "properties": {
+    "desktop": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Send notify-send desktop notifications. Default true (master /notify toggle still applies on top)"
+        }
+      }
+    },
+    "herdr": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Mirror notifications into herdr when running inside a herdr session (HERDR_ENV=1). Default true"
+        },
+        "sound": {
+          "type": "string",
+          "description": "herdr notification sound name (default \"done\")"
+        }
+      }
+    },
+    "ntfy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Send ntfy push notifications to your homelab server. Default true when this section is present"
+        },
+        "serverUrl": {
+          "type": "string",
+          "description": "Base URL of the ntfy server, e.g. https://ntfy.homelab.local (no trailing slash needed)"
+        },
+        "topic": {
+          "type": "string",
+          "description": "ntfy topic to publish to, e.g. \"pi-notifications\" (secret topics are fine)"
+        },
+        "token": {
+          "type": "string",
+          "description": "Bearer token for ntfy access control. Prefer the PI_NTFY_TOKEN env var for secrets — the env var wins when both are set"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "description": "ntfy message priority 1-5 (default 3 = high; 5 = max priority with persistent notification)"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Emoji tags for the message, e.g. [\"robot\", \"white_check_mark\"] (names or raw emoji)"
+        },
+        "clickUrl": {
+          "type": "string",
+          "description": "URL opened when the notification is tapped (optional)"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 250,
+          "maximum": 30000,
+          "description": "HTTP timeout for the ntfy publish request (default 5000 ms)"
+        }
+      },
+      "required": ["serverUrl", "topic"]
+    },
+    "notifyOnPrompt": {
+      "type": "boolean",
+      "description": "Also notify (all enabled channels, ignoring the idle threshold) when Pi shows a blocking user prompt — select/confirm/input/editor/custom via ui_prompt_start. Default true"
+    }
+  }
+}
