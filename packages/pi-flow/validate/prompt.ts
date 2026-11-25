@@ -178,6 +178,12 @@ ${buildDeltaReviewStep(ref)}
 // land before the human has seen the final state and the loop cannot reach
 // feedback before the merge. PMR-HYZA: never a push — the landing is a
 // LOCAL merge into main in the main (non-worktree) checkout.
+// AIDEV-NOTE: PMR-ZV9Y 1.2 step registry — this is the H1 human code-review
+// gate (the code_review tool boundary); it binds 1:1 to the registry name
+//   H1 = validate.code-review   (flow/steps.ts STEP_REGISTRY.validate)
+// so a machine step-start/step-stop{validate.code-review} event and this
+// prompt step refer to the same step. Rename in flow/steps.ts must be
+// reflected here.
 function buildPersonalCodeReviewGate(ref: string): string {
   return `
 Human code-review gate — run ONLY after the deviation gate returned
@@ -267,6 +273,16 @@ in review-gate step 9`
     acceptTarget = `On "accept": proceed to the human code-review gate
      (review-gate step 9).`
   }
+  // AIDEV-NOTE: PMR-ZV9Y 1.2 step registry — the lettered deviation steps in
+  // the template below bind 1:1 to flow/steps.ts STEP_REGISTRY names, so a
+  // future rename there must be reflected here (and vice versa). This section
+  // is appended to BOTH the work and personal (non-yolo) validate prompts, so
+  // these three bindings cover both modes:
+  //   D1 = validate.spec-diff   (resolve the spec source the diff compares to)
+  //   D2 = validate.aven-notes  (mine the why-input aven notes)
+  //   D3 = validate.deviation   (the deviation_review tool boundary)
+  //   H1 = validate.code-review is NOT here — it is the human code_review
+  //        gate in buildPersonalCodeReviewGate (flow/steps.ts).
   return `
 Deviation gate — run ONLY after the review gate returned blockers_count: 0,
 ${gateBefore}. Steps, in order:
@@ -322,6 +338,13 @@ export interface ValidatePromptInput {
 // review gate returns 0 blockers AND the deviation review passes. The
 // reviewed-at marker contract (PMR-69V8) is kept on every fail path so the
 // loop can re-inject implement.
+// AIDEV-NOTE: PMR-ZV9Y 1.2 step registry — the inline deviation steps in the
+// template below (D1/D2/D3, the yolo copy) bind 1:1 to flow/steps.ts exactly
+// as in buildDeviationGateSection:
+//   D1 = validate.spec-diff   D2 = validate.aven-notes   D3 = validate.deviation
+// There is NO H1/validate.code-review anchor here: the yolo route skips the
+// human code_review gate ENTIRELY, so no step-stop{validate.code-review} is
+// ever emitted for it. Rename in flow/steps.ts must be reflected here.
 function yoloPersonalValidatePrompt(ref: string, oneshot: boolean): string {
   const specSource = oneshot
     ? `This is a personal-mode oneshot with no plan: the spec is the

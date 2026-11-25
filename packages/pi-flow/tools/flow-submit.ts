@@ -285,6 +285,14 @@ export function registerFlowSubmitTool(
       if (details.headShaVerified !== undefined) {
         lines.push(`headShaVerified: ${details.headShaVerified}`)
       }
+      // AIDEV-NOTE: PMR-ZV9Y 1.2 — advisory step-registry hint, carried out of
+      // buildStepOutputEvent. It is NOT a verification warning and NOT a
+      // rejection: the event is already journalled above and the result stays
+      // ok. The hint only nudges the caller toward a registered name for this
+      // phase; phases with no registry entries never get one (see step-output.ts).
+      if (built.hint !== undefined) {
+        lines.push(built.hint)
+      }
       for (const warning of warnings) {
         lines.push(`warning: ${warning}`)
       }

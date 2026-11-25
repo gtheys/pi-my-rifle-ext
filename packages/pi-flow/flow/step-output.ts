@@ -10,6 +10,7 @@ import { FLOW_VALUE_RE } from '@gtheys/pi-interactive-subagents'
 import { type Static, Type } from 'typebox'
 import type { FlowPhase } from '../run-state.ts'
 import { isFullSha } from '../validate/gate-target.ts'
+import { isRegisteredStep, STEP_REGISTRY } from './steps.ts'
 
 /**
  * Per-phase fact schemas, discriminated on `phase`. Every fact is optional so
@@ -161,8 +162,14 @@ export type StepOutputInput = StepOutputFactFields & {
   detail?: string
 }
 
+// AIDEV-NOTE: PMR-ZV9Y 1.2 — `hint` is the advisory step-registry note. It is
+// NEVER a rejection: a submission with an unregistered step name is still ok
+// and still journals; the hint only asks the caller to prefer a registered
+// name (see flow/steps.ts STEP_REGISTRY). It is absent for phases whose
+// registry is empty (implement/feedback — free-form step labels are the
+// documented contract there) so the advisory never nags those runs.
 export type StepOutputResult =
-  | { ok: true; event: StepOutputEventPayload }
+  | { ok: true; event: StepOutputEventPayload; hint?: string }
   | { ok: false; reason: string }
 
 function buildTypeMismatchReason(
@@ -284,8 +291,26 @@ export function buildStepOutputEvent(input: StepOutputInput): StepOutputResult {
     return { ok: false, reason: factsTypeCheck }
   }
 
+  // AIDEV-NOTE: PMR-ZV9Y 1.2 — advisory step-registry hint (after charset
+  // validation, advisory posture ONLY: never rejects, the submission is still
+  // ok and still journals below). Only surfaces when the phase HAS registered
+  // names and the submitted step is not one of them, so implement/feedback
+  // (empty registries, free-form labels by design) stay hint-free. The hint
+  // text deliberately says "not in the <phase> step registry" +
+  // "registered names" rather than "warning" so it reads as advisory
+  // vocabulary and is distinguishable from the tool's verification warnings.
+  let hint: string | undefined
+  const registeredNames = STEP_REGISTRY[input.phase]
+  if (
+    registeredNames.length > 0 &&
+    !isRegisteredStep(input.phase, input.step)
+  ) {
+    hint = `advisory: step "${input.step}" is not in the ${input.phase} step registry; registered names: ${registeredNames.join(', ')} (flow/steps.ts). The submission is still journaled — prefer a registered name.`
+  }
+
   return {
     ok: true,
+    hint,
     event: {
       kind: 'step-output',
       at: new Date().toISOString(),
