@@ -1278,6 +1278,21 @@ const SUMMARY_FORMAT_GUIDANCE =
   '**Date** as the reference point; omit the due-date parenthetical entirely if none was stated, ' +
   'never invent one.'
 
+// AIDEV-NOTE: user-requested writing style for ALL agent-written meeting
+// output (summary sections + weekly synthesis) — appended once to each prompt
+// that hands summarization to the agent (pendingSummaries formatGuidance,
+// /teams-transcript-summarize, /teams-transcript-weekly). Deliberately NOT
+// part of SUMMARY_FORMAT_GUIDANCE: WEEKLY_FORMAT_GUIDANCE embeds that string,
+// so putting it there would duplicate it inside the weekly prompt.
+// Keep the README's summarization section in sync when this changes.
+const WRITING_STYLE_GUIDANCE =
+  'Writing style for every section you write: always use ASD-STE100 Simplified Technical ' +
+  'English, and write for a reader with ADHD. Short sentences — one idea per sentence, at ' +
+  'most about 20 words. Active voice. Plain words where a plain word exists: no idioms, no ' +
+  'filler, no metaphors. Use one word for one concept, every time. Keep it scannable: short ' +
+  'bullets, bold key terms where they help, put the most important thing first, no dense ' +
+  'walls of text.'
+
 // AIDEV-NOTE: summarize used to leave the filled-in note in the staging
 // outDir with /teams-transcript-push as a separate manual step — meanwhile
 // project cross-linking added wikilinks to *vault* project notes pointing
@@ -1532,8 +1547,8 @@ export default function (pi: ExtensionAPI) {
           ? `\n\n${buildVaultFilingGuidance(vaultDir, params.dir)}`
           : ''
         const formatGuidance = projectsDir
-          ? `${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}\n\n${buildProjectCrosslinkGuidance(projectsDir)}`
-          : `${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}`
+          ? `${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}\n\n${buildProjectCrosslinkGuidance(projectsDir)}\n\n${WRITING_STYLE_GUIDANCE}`
+          : `${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}\n\n${WRITING_STYLE_GUIDANCE}`
         return {
           content: [
             {
@@ -1813,7 +1828,7 @@ export default function (pi: ExtensionAPI) {
       // Vault-filing guidance comes before project cross-linking so the note
       // lands in the vault before any back-links to it exist.
       pi.sendUserMessage(
-        `Summarize these Teams transcripts. ${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}${projectGuidance}\n\nFiles:\n${result.pending.map((p) => `- ${p}`).join('\n')}`,
+        `Summarize these Teams transcripts. ${SUMMARY_FORMAT_GUIDANCE}${vaultGuidance}${projectGuidance}\n\n${WRITING_STYLE_GUIDANCE}\n\nFiles:\n${result.pending.map((p) => `- ${p}`).join('\n')}`,
       )
     },
   })
@@ -1875,7 +1890,7 @@ export default function (pi: ExtensionAPI) {
       // in command handlers, so the running agent does the actual synthesis
       // with its own read/write tools.
       pi.sendUserMessage(
-        `Write the weekly synthesis for ${weekLabel} (${monday} to ${friday}) to ${reportPath}.${lightWeekNote}\n\n${WEEKLY_FORMAT_GUIDANCE}${projectGuidance}\n\n` +
+        `Write the weekly synthesis for ${weekLabel} (${monday} to ${friday}) to ${reportPath}.${lightWeekNote}\n\n${WEEKLY_FORMAT_GUIDANCE}${projectGuidance}\n\n${WRITING_STYLE_GUIDANCE}\n\n` +
           `This week's meeting notes:\n${meetings.map((m) => `- ${m.path}${m.hasSummary ? '' : ' (missing summary — fill in first)'}`).join('\n')}\n\n` +
           `For decision-arc history, also check other .md notes in ${outDir} from the last 30 days.`,
       )
