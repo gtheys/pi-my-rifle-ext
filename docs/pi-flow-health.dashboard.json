@@ -5,18 +5,23 @@
     "annotations": {
       "grafana.app/createdBy": "service-account:cfw0ld9gfssu8e",
       "grafana.app/folder": "ag3jjknk85xc0b",
-      "grafana.app/message": "pi-flow health dashboard (PMR-XPVE M5): tool error rate, failures, phase durations, Tempo trace search by flow.ref",
+      "grafana.app/managedBy": "classic-file-provisioning",
+      "grafana.app/managerId": "pi-flow",
+      "grafana.app/message": "PMR-ZV9Y 6.3: run timeline row added — Loki state history (line_format + Extract fields) and Tempo step-span Gantt with span-id links; pi_flow_phase/pi_flow_step tiles; kept tool-error + phase-duration panels on v2 vocabulary",
+      "grafana.app/sourceChecksum": "c87ac92bc66833dd3c6479013252d5f4",
+      "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-health.json",
+      "grafana.app/sourceTimestamp": "1795531426000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-09T06:33:47Z"
+      "grafana.app/updatedTimestamp": "2026-11-25T12:55:13Z"
     },
     "creationTimestamp": "2026-11-07T02:57:54Z",
-    "generation": 15,
+    "generation": 31,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208897950658560"
     },
     "name": "piflow-health",
     "namespace": "default",
-    "resourceVersion": "1794206027394998",
+    "resourceVersion": "1795611313371004",
     "uid": "33585720-5e94-4275-82d5-c2bd439f777d"
   },
   "spec": {
@@ -65,132 +70,8 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (tool, phase) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", status=\"error\", ref=~\"$ref\"})\n/ sum by (tool, phase) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
-                        "legendFormat": "{{tool}} [{{phase}}]"
-                      },
-                      "version": "v0"
-                    },
-                    "refId": "A"
-                  }
-                }
-              ],
-              "queryOptions": {},
-              "transformations": []
-            }
-          },
-          "id": 1,
-          "links": [],
-          "title": "Tool error rate per tool per phase ($ref)",
-          "vizConfig": {
-            "group": "timeseries",
-            "kind": "VizConfig",
-            "spec": {
-              "fieldConfig": {
-                "defaults": {
-                  "unit": "percentunit"
-                },
-                "overrides": []
-              },
-              "options": {
-                "legend": {
-                  "displayMode": "table",
-                  "placement": "right",
-                  "showLegend": true,
-                  "values": [
-                    "last"
-                  ]
-                },
-                "tooltip": {
-                  "mode": "multi"
-                }
-              }
-            },
-            "version": ""
-          }
-        }
-      },
-      "panel-2": {
-        "kind": "Panel",
-        "spec": {
-          "data": {
-            "kind": "QueryGroup",
-            "spec": {
-              "queries": [
-                {
-                  "kind": "PanelQuery",
-                  "spec": {
-                    "hidden": false,
-                    "query": {
-                      "datasource": {
-                        "name": "PBFA97CFB590B2093"
-                      },
-                      "group": "prometheus",
-                      "kind": "DataQuery",
-                      "spec": {
-                        "expr": "sum by (tool, status) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\", status=\"error\"})",
-                        "legendFormat": "{{tool}}"
-                      },
-                      "version": "v0"
-                    },
-                    "refId": "A"
-                  }
-                }
-              ],
-              "queryOptions": {},
-              "transformations": []
-            }
-          },
-          "id": 2,
-          "links": [],
-          "title": "Tool failures by tool ($ref)",
-          "vizConfig": {
-            "group": "timeseries",
-            "kind": "VizConfig",
-            "spec": {
-              "fieldConfig": {
-                "defaults": {
-                  "unit": "short"
-                },
-                "overrides": []
-              },
-              "options": {
-                "legend": {
-                  "displayMode": "table",
-                  "placement": "right",
-                  "showLegend": true,
-                  "values": [
-                    "last",
-                    "max"
-                  ]
-                },
-                "tooltip": {
-                  "mode": "multi"
-                }
-              }
-            },
-            "version": ""
-          }
-        }
-      },
-      "panel-3": {
-        "kind": "Panel",
-        "spec": {
-          "data": {
-            "kind": "QueryGroup",
-            "spec": {
-              "queries": [
-                {
-                  "kind": "PanelQuery",
-                  "spec": {
-                    "hidden": false,
-                    "query": {
-                      "datasource": {
-                        "name": "PBFA97CFB590B2093"
-                      },
-                      "group": "prometheus",
-                      "kind": "DataQuery",
-                      "spec": {
-                        "expr": "sum by (ref, phase) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "editorMode": "code",
+                        "expr": "sum(pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -203,47 +84,102 @@
                 }
               ],
               "queryOptions": {},
-              "transformations": [
-                {
-                  "group": "groupingToMatrix",
-                  "kind": "Transformation",
-                  "spec": {
-                    "options": {
-                      "columnField": "phase",
-                      "emptyValue": "zero",
-                      "rowField": "ref",
-                      "valueField": "Value"
-                    }
-                  }
-                }
-              ]
+              "transformations": []
             }
           },
-          "description": "Wall-clock time per phase (phase start to phase complete) for each ticket, stacked. Includes time spent waiting for you (approvals, code review), so long validate bars are usually human wait, not compute.",
-          "id": 3,
+          "description": "All tool calls across the selected refs.",
+          "id": 1,
           "links": [],
-          "title": "Run duration per ticket, stacked by phase ($ref)",
+          "title": "Tool calls",
           "vizConfig": {
-            "group": "barchart",
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "short"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "textMode": "value",
+                "wideLayout": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-10": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "count by (phase) (pi_flow_phase{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "instant": true,
+                        "legendFormat": "{{phase}}",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "The phase each selected ticket is IN right now, from the v2 pi_flow_phase gauge (pushed with the run, one series per open phase; a finished run has no line, so an empty tile means nothing is in a phase in the pushed set). Tile = phase + how many tickets are in it. v1 status wording is retired — the vocabulary is state/phase/step.",
+          "id": 10,
+          "links": [],
+          "title": "Current phase per ticket ($ref)",
+          "vizConfig": {
+            "group": "stat",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
                 "defaults": {
                   "color": {
-                    "mode": "palette-classic"
+                    "mode": "thresholds"
                   },
-                  "custom": {
-                    "axisSoftMin": 0,
-                    "fillOpacity": 85,
-                    "gradientMode": "none",
-                    "lineWidth": 1,
-                    "stacking": {
-                      "group": "A",
-                      "mode": "normal"
-                    }
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      }
+                    ]
                   },
-                  "decimals": 1,
-                  "unit": "s"
+                  "unit": "short"
                 },
                 "overrides": [
                   {
@@ -309,21 +245,686 @@
                 ]
               },
               "options": {
-                "barWidth": 0.7,
-                "groupWidth": 0.7,
-                "legend": {
-                  "displayMode": "list",
-                  "placement": "bottom",
-                  "showLegend": true
-                },
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
                 "orientation": "auto",
-                "showValue": "never",
-                "stacking": "normal",
-                "tooltip": {
-                  "mode": "multi",
-                  "sort": "none"
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
                 },
-                "xTickLabelRotation": 0
+                "textMode": "value and name",
+                "wideLayout": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-11": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "count by (step) (pi_flow_step{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "instant": true,
+                        "legendFormat": "{{step}}",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "The registry step(s) each selected ticket is executing right now, from the v2 pi_flow_step gauge (one series per in-flight step; closes on step-stop). Step names follow the \u003cphase\u003e.\u003cstep\u003e registry (flow/steps.ts). Empty = no step in flight in the pushed set.",
+          "id": 11,
+          "links": [],
+          "title": "Current step per ticket ($ref)",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "short"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value and name",
+                "wideLayout": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-12": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "loki"
+                      },
+                      "group": "loki",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "{job=\"pi-flow\", flow_ref=~\"$ref\", mode=~\"${mode:raw}\"} | json | line_format `{\"ticket\":\"{{.flow_ref}}\",\"event\":\"{{.kind}}\",\"state\":\"{{.state}}\",\"reason\":\"{{.reason}}\",\"phase\":\"{{.phase}}\",\"step\":\"{{.step}}\",\"wait_kind\":\"{{.wait_kind}}\"}`",
+                        "queryType": "range"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "extractFields",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "replace": false,
+                      "source": "Line"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Line": true,
+                        "detected_level": true,
+                        "id": true,
+                        "labelTypes": true,
+                        "labels": true,
+                        "tsNs": true
+                      },
+                      "indexByName": {
+                        "Time": 6,
+                        "event": 1,
+                        "phase": 4,
+                        "reason": 3,
+                        "state": 2,
+                        "step": 5,
+                        "ticket": 0,
+                        "wait_kind": 7
+                      },
+                      "renameByName": {
+                        "Time": "At",
+                        "event": "Event",
+                        "phase": "Phase",
+                        "reason": "Reason",
+                        "state": "State",
+                        "step": "Step",
+                        "ticket": "Ticket",
+                        "wait_kind": "Wait kind"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": false,
+                          "field": "At"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Every v2 journal event for the selected tickets, oldest first: state-change (state + reason) and step-start/step-stop (phase + step). THIS IS THE RUN TIMELINE — the sequence of states a ticket passed through, which Prometheus cannot show (it only keeps the current gauge). Written by the session-side Loki pusher (telemetry/loki.ts, fan-out in telemetry/dispatch.ts), so it stays EMPTY until telemetry.loki.enabled points at a reachable Loki; the same events are always in the local journal (~/.pi/agent/pi-flow/runs/\u003cref\u003e.journal.jsonl). Columns come from line_format + Extract fields, not raw JSON. Time = the event's own `at`.",
+          "id": 12,
+          "links": [],
+          "title": "Run state history (Loki) — populates once telemetry.loki.enabled ($ref)",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "color-text"
+                    },
+                    "inspect": false
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Runs board: live state for this ticket",
+                            "url": "/d/piflow-runs/pi-flow-runs?var-ref=${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 130
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Event"
+                    },
+                    "properties": [
+                      {
+                        "id": ""
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 130
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "State"
+                    },
+                    "properties": [
+                      {
+                        "id": ""
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 150
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Reason"
+                    },
+                    "properties": [
+                      {
+                        "id": ""
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 170
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Phase"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 110
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Step"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 220
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "At"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "dateTime"
+                      },
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "type": "auto"
+                        }
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 180
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-13": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "tempo"
+                      },
+                      "group": "tempo",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "limit": 50,
+                        "query": "{ .flow.ref =~ \"$ref\" \u0026\u0026 .flow.span = \"step\" } | select(.flow.ref, .flow.url, .phase, .step)",
+                        "queryType": "traceql",
+                        "spss": 20,
+                        "tableType": "spans"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Trace ID": true,
+                        "Trace Name": true,
+                        "Trace Service": true,
+                        "flow.mode": true,
+                        "flow.span": true,
+                        "resource": true
+                      },
+                      "indexByName": {
+                        "Jira": 1,
+                        "Ticket": 0
+                      },
+                      "renameByName": {
+                        "flow.ref": "Ticket",
+                        "flow.url": "Jira",
+                        "phase": "Phase",
+                        "step": "Step"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": false,
+                          "field": "Start time"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "One row per STEP span (flow.span = \"step\"), oldest first: the Gantt of what each ticket actually executed, with start time and duration. Click a Span ID to open the trace tree (root -\u003e phase -\u003e step). Step spans come from the session-side OTLP exporter (telemetry/index.ts), so they exist only for runs made with telemetry enabled. Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Tempo returns at most `spss` spans per trace (20 here) and a finished trace is fully searchable ~3 min after its last span (trace_idle_period).",
+          "id": 13,
+          "links": [],
+          "title": "Step timeline (Tempo step spans) — click the Span ID ($ref)",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  },
+                  "noValue": "–"
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Jira"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "targetBlank": true,
+                            "title": "Open in Jira",
+                            "url": "${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": ""
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 150
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Runs board: live state for this ticket",
+                            "url": "/d/piflow-runs/pi-flow-runs?var-ref=${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 130
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Step"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 240
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Phase"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 110
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-2": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum(pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\", status=\"error\"}) or vector(0)",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Failing tool calls. Any error is orange, 10+ red.",
+          "id": 2,
+          "links": [],
+          "title": "Tool errors",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      },
+                      {
+                        "color": "orange",
+                        "value": 1
+                      },
+                      {
+                        "color": "red",
+                        "value": 10
+                      }
+                    ]
+                  },
+                  "unit": "short"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "textMode": "value",
+                "wideLayout": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-3": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum(pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\", status=\"error\"}) / sum(pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "Share of tool calls that failed.",
+          "id": 3,
+          "links": [],
+          "title": "Error rate",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      },
+                      {
+                        "color": "orange",
+                        "value": 0.05
+                      },
+                      {
+                        "color": "red",
+                        "value": 0.2
+                      }
+                    ]
+                  },
+                  "unit": "percentunit"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "textMode": "value",
+                "wideLayout": true
               }
             },
             "version": ""
@@ -343,16 +944,17 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
-                        "name": "tempo"
+                        "name": "PBFA97CFB590B2093"
                       },
-                      "group": "tempo",
+                      "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "limit": 50,
-                        "query": "{ .flow.ref =~ \"$ref\" \u0026\u0026 .flow.mode =~ \"${mode:raw}\" \u0026\u0026 (.flow.span = \"phase\" || .flow.span = \"root\") } | select(name, .phase)",
-                        "queryType": "traceql",
-                        "spss": 20,
-                        "tableType": "traces"
+                        "editorMode": "code",
+                        "expr": "count(count by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\"}))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
                       },
                       "version": "v0"
                     },
@@ -364,19 +966,36 @@
               "transformations": []
             }
           },
+          "description": "Tickets with pushed phase durations (pi_flow_run_duration_seconds, a kept metric). A ticket with no push never appears here — that is the signal to run /flow-cost \u003cref\u003e --push.",
           "id": 4,
           "links": [],
-          "title": "Traces by flow.ref (Tempo)",
+          "title": "Tickets measured",
           "vizConfig": {
-            "group": "table",
+            "group": "stat",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
-                "defaults": {},
+                "defaults": {
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "short"
+                },
                 "overrides": []
               },
               "options": {
-                "showHeader": true
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "auto",
+                "textMode": "value",
+                "wideLayout": true
               }
             },
             "version": ""
@@ -396,13 +1015,699 @@
                     "hidden": false,
                     "query": {
                       "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (tool) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\", status=\"ok\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "ok",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (tool) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\", status=\"error\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "error",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "tool",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "Time 1": true,
+                        "Time 2": true,
+                        "Time 3": true,
+                        "job": true,
+                        "job 1": true,
+                        "job 2": true,
+                        "job 3": true,
+                        "mode": true,
+                        "mode 1": true,
+                        "mode 2": true,
+                        "mode 3": true
+                      },
+                      "renameByName": {
+                        "Value #A": "ok",
+                        "Value #B": "error"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Pushgateway counters are per-run totals — a barchart reads them cleanly; the old timeseries showed push-time step artifacts.",
+          "id": 5,
+          "links": [],
+          "title": "Tool calls by tool (ok vs error)",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    }
+                  },
+                  "decimals": 0
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "error"
+                    },
+                    "properties": [
+                      {
+                        "id": "color",
+                        "value": {
+                          "fixedColor": "red",
+                          "mode": "fixed"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.7,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "normal",
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                },
+                "xTickLabelRotation": -45,
+                "xTickLabelSpacing": 0
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-6": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "label_join(sum by (tool, phase) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\", status=\"error\"}), \"tp\", \" / \", \"tool\", \"phase\")",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "label_join(sum by (tool, phase) (pi_flow_tool_calls_total{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"tp\", \" / \", \"tool\", \"phase\")",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "tp",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "calculateField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "alias": "Error rate",
+                      "binary": {
+                        "left": "Value #A",
+                        "operator": "/",
+                        "right": "Value #B"
+                      },
+                      "mode": "binary",
+                      "reduce": {
+                        "reducer": "sum"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "Time 1": true,
+                        "Time 2": true,
+                        "job": true,
+                        "job 1": true,
+                        "job 2": true,
+                        "mode": true,
+                        "mode 1": true,
+                        "mode 2": true,
+                        "phase 2": true,
+                        "tool 2": true,
+                        "tp": true
+                      },
+                      "indexByName": {
+                        "Error rate": 4,
+                        "Value #A": 3,
+                        "Value #B": 2,
+                        "phase 1": 1,
+                        "tool 1": 0
+                      },
+                      "renameByName": {
+                        "Value #A": "Errors",
+                        "Value #B": "Calls",
+                        "phase 1": "Phase",
+                        "tool 1": "Tool"
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "filterFieldsByName",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "include": {
+                        "names": [
+                          "Tool",
+                          "Phase",
+                          "Calls",
+                          "Errors",
+                          "Error rate"
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Error rate"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Sorted worst-first. Points at the tool/phase combo to fix or guard.",
+          "id": 6,
+          "links": [],
+          "title": "Error rate by tool and phase",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Error rate"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "percentunit"
+                      },
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "gradient",
+                          "type": "gauge",
+                          "valueDisplayMode": "color"
+                        }
+                      },
+                      {
+                        "id": "max",
+                        "value": 1
+                      },
+                      {
+                        "id": "thresholds",
+                        "value": {
+                          "mode": "absolute",
+                          "steps": [
+                            {
+                              "color": "green"
+                            },
+                            {
+                              "color": "orange",
+                              "value": 0.05
+                            },
+                            {
+                              "color": "red",
+                              "value": 0.2
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Errors"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 80
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Calls"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 80
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-7": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"plan\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "plan",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"implement\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "implement",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"validate\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "validate",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"feedback\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "feedback",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "D"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "joinByField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "byField": "ref",
+                      "mode": "outer"
+                    }
+                  }
+                },
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "Time 1": true,
+                        "Time 2": true,
+                        "Time 3": true,
+                        "job": true,
+                        "job 1": true,
+                        "job 2": true,
+                        "job 3": true,
+                        "mode": true,
+                        "mode 1": true,
+                        "mode 2": true,
+                        "mode 3": true
+                      },
+                      "renameByName": {
+                        "Value #A": "plan",
+                        "Value #B": "implement",
+                        "Value #C": "validate",
+                        "Value #D": "feedback"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Where the wall-clock time went, per phase (plan / implement / validate / feedback). Durations are phase-start to phase-complete and INCLUDE waiting_human time (spec approval, code review), so a long validate bar is usually the human, not the machine. Kept metric (pi_flow_run_duration_seconds); the per-state wait breakdown lives on the runs board.",
+          "id": 7,
+          "links": [],
+          "title": "Run duration per ticket, stacked by phase",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "normal"
+                    }
+                  },
+                  "unit": "s"
+                },
+                "overrides": []
+              },
+              "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.7,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": true
+                },
+                "orientation": "auto",
+                "showValue": "auto",
+                "stacking": "normal",
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                },
+                "xTickLabelRotation": -45,
+                "xTickLabelSpacing": 100
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-8": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
                         "name": "tempo"
                       },
                       "group": "tempo",
                       "kind": "DataQuery",
                       "spec": {
                         "limit": 50,
-                        "query": "{ .tool.error = \"true\" \u0026\u0026 .flow.ref =~ \"$ref\" \u0026\u0026 .flow.mode =~ \"${mode:raw}\" } | select(.flow.ref, .flow.url, .phase, .agent.name, .gen_ai.tool.name, .tool.output)",
+                        "query": "{ .flow.ref =~ \"$ref\" \u0026\u0026 (.flow.span = \"phase\" || .flow.span = \"root\") } | select(name, .phase)",
+                        "queryType": "traceql",
+                        "spss": 20,
+                        "tableType": "traces"
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {
+                "timeFrom": "7d"
+              },
+              "transformations": []
+            }
+          },
+          "description": "One row per phase span; expand a trace to see its phases, click a span id to open the full trace. Step-level spans are on the Step timeline panel above (flow.span = \"step\"). Traces become fully searchable ~3 min after their last span (Tempo trace_idle_period). Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Panel time range is pinned to 7d: Tempo trace search returns nothing for ranges \u003e= ~14d (measured: 7d=20 traces, 14d=0) and retention is 14d anyway.",
+          "id": 8,
+          "links": [],
+          "title": "Traces by flow.ref (Tempo)",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-9": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "tempo"
+                      },
+                      "group": "tempo",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "limit": 50,
+                        "query": "{ .tool.error = \"true\" \u0026\u0026 .flow.ref =~ \"$ref\" } | select(.flow.ref, .flow.url, .phase, .agent.name, .gen_ai.tool.name, .tool.output)",
                         "queryType": "traceql",
                         "spss": 20,
                         "tableType": "spans"
@@ -413,7 +1718,9 @@
                   }
                 }
               ],
-              "queryOptions": {},
+              "queryOptions": {
+                "timeFrom": "7d"
+              },
               "transformations": [
                 {
                   "group": "organize",
@@ -461,8 +1768,8 @@
               ]
             }
           },
-          "description": "Every failed tool call in a flow (span tool.error = true), newest first, with the ticket, phase and tool. Click the Span ID to open the trace tree with the failing span highlighted. \"Tool output\" shows the error text only when telemetry.captureContent is \"tools\" or \"all\". Failures from plain interactive sessions (no flow) are not listed. Empty = no tool call failed in the selected range. Work-mode tickets (Jira keys) link to Jira.",
-          "id": 5,
+          "description": "Not filtered by $mode: personal traces carry no flow.mode attribute and a =~ match on a missing attribute never hits. Panel time range is pinned to 7d: Tempo trace search returns nothing for ranges \u003e= ~14d (measured: 7d=20 traces, 14d=0) and retention is 14d anyway.",
+          "id": 9,
           "links": [],
           "title": "Tool failures (click the Span ID to open the trace)",
           "vizConfig": {
@@ -475,61 +1782,20 @@
                     "align": "auto",
                     "cellOptions": {
                       "type": "auto"
-                    }
-                  },
-                  "noValue": "–"
+                    },
+                    "inspect": false
+                  }
                 },
                 "overrides": [
                   {
                     "matcher": {
                       "id": "byName",
-                      "options": "Jira"
+                      "options": "Tool output"
                     },
                     "properties": [
-                      {
-                        "id": "links",
-                        "value": [
-                          {
-                            "targetBlank": true,
-                            "title": "Open in Jira",
-                            "url": "${__value.raw}"
-                          }
-                        ]
-                      },
-                      {
-                        "id": "mappings",
-                        "value": [
-                          {
-                            "options": {
-                              "pattern": ".+",
-                              "result": {
-                                "index": 0,
-                                "text": "Open in Jira ↗"
-                              }
-                            },
-                            "type": "regex"
-                          }
-                        ]
-                      },
                       {
                         "id": "custom.width",
-                        "value": 150
-                      }
-                    ]
-                  },
-                  {
-                    "matcher": {
-                      "id": "byRegexp",
-                      "options": "^mode( \\d+)?$"
-                    },
-                    "properties": [
-                      {
-                        "id": "custom.hideFrom",
-                        "value": {
-                          "legend": false,
-                          "tooltip": false,
-                          "viz": true
-                        }
+                        "value": 500
                       }
                     ]
                   }
@@ -537,6 +1803,14 @@
               },
               "options": {
                 "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
                 "showHeader": true
               }
             },
@@ -556,8 +1830,8 @@
                 "kind": "ElementReference",
                 "name": "panel-1"
               },
-              "height": 9,
-              "width": 12,
+              "height": 4,
+              "width": 6,
               "x": 0,
               "y": 0
             }
@@ -569,9 +1843,9 @@
                 "kind": "ElementReference",
                 "name": "panel-2"
               },
-              "height": 9,
-              "width": 12,
-              "x": 12,
+              "height": 4,
+              "width": 6,
+              "x": 6,
               "y": 0
             }
           },
@@ -582,10 +1856,10 @@
                 "kind": "ElementReference",
                 "name": "panel-3"
               },
-              "height": 9,
-              "width": 12,
-              "x": 0,
-              "y": 9
+              "height": 4,
+              "width": 6,
+              "x": 12,
+              "y": 0
             }
           },
           {
@@ -595,10 +1869,62 @@
                 "kind": "ElementReference",
                 "name": "panel-4"
               },
-              "height": 9,
+              "height": 4,
+              "width": 6,
+              "x": 18,
+              "y": 0
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-10"
+              },
+              "height": 5,
+              "width": 12,
+              "x": 0,
+              "y": 4
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-11"
+              },
+              "height": 5,
               "width": 12,
               "x": 12,
+              "y": 4
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-12"
+              },
+              "height": 10,
+              "width": 24,
+              "x": 0,
               "y": 9
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-13"
+              },
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 19
             }
           },
           {
@@ -608,10 +1934,62 @@
                 "kind": "ElementReference",
                 "name": "panel-5"
               },
-              "height": 8,
+              "height": 10,
+              "width": 12,
+              "x": 0,
+              "y": 29
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-6"
+              },
+              "height": 10,
+              "width": 12,
+              "x": 12,
+              "y": 29
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-7"
+              },
+              "height": 9,
               "width": 24,
               "x": 0,
-              "y": 18
+              "y": 39
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-8"
+              },
+              "height": 9,
+              "width": 24,
+              "x": 0,
+              "y": 48
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-9"
+              },
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 57
             }
           }
         ]
@@ -621,57 +1999,46 @@
       {
         "asDropdown": false,
         "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
+        "includeVars": false,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
-        "title": "Orchestrator cost",
-        "tooltip": "Main session cost per ticket and phase",
+        "title": "Runs",
+        "tooltip": "Waiting-on-me landing board",
         "type": "link",
-        "url": "/grafana/d/piflow-orchestrator"
-      },
-      {
-        "asDropdown": false,
-        "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
-        "tags": [],
-        "targetBlank": false,
-        "title": "Subagent cost",
-        "tooltip": "Workers, reviewers, scouts: cost per role and session",
-        "type": "link",
-        "url": "/grafana/d/piflow-subagents"
-      },
-      {
-        "asDropdown": false,
-        "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
-        "tags": [],
-        "targetBlank": false,
-        "title": "Range: cost vs score",
-        "tooltip": "Cost versus score across a range of tickets",
-        "type": "link",
-        "url": "/grafana/d/piflow-range"
+        "url": "/d/piflow-runs/pi-flow-runs"
       },
       {
         "asDropdown": false,
         "icon": "dashboard",
         "includeVars": false,
-        "keepTime": true,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
-        "title": "Ad-hoc commands",
-        "tooltip": "/brainstorm, /pr-quality, /review time and cost",
+        "title": "Orchestrator",
+        "tooltip": "",
         "type": "link",
-        "url": "/grafana/d/piflow-adhoc"
+        "url": "/d/piflow-orchestrator/pi-flow-orchestrator"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Subagents",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-subagents/pi-flow-subagents"
       }
     ],
     "liveNow": false,
     "preload": false,
     "tags": [
       "pi-flow",
-      "observability"
+      "observability",
+      "health"
     ],
     "timeSettings": {
       "autoRefresh": "5m",
@@ -688,9 +2055,9 @@
         "1d"
       ],
       "fiscalYearStartMonth": 0,
-      "from": "now-7d",
+      "from": "now-30d",
       "hideTimepicker": false,
-      "timezone": "Asia/Bangkok",
+      "timezone": "browser",
       "to": "now"
     },
     "title": "pi-flow health",
@@ -704,7 +2071,6 @@
             "text": "All",
             "value": "$__all"
           },
-          "description": "personal = aven refs; work = Jira keys (links to Jira)",
           "hide": "dontHide",
           "includeAll": true,
           "label": "mode",
