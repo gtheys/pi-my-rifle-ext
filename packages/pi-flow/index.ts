@@ -1086,6 +1086,16 @@ export default function (
         await writer.record(event)
       },
     }),
+    // AIDEV-NOTE: PMR-ZV9Y 2.2 — the escalation wait's v2 state-change rides
+    // the SAME mode-aware writer as the attempt-record snapshots above (one
+    // writer, so the durable journal and the phase-4 telemetry fan-out see
+    // both). The tool wraps the call, so a throwing seam can never change the
+    // escalation outcome (ISC-A-5).
+    {
+      journalV2: async (event) => {
+        await writer.record(event)
+      },
+    },
   )
   // AIDEV-NOTE: PMR-CD46 — mode-aware writer so spec_approve receipt
   // writes route journal-only while the daemon owns the projection

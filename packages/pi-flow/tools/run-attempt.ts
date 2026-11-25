@@ -124,6 +124,21 @@ export function registerRunAttemptTool(
   deps: {
     isYoloRunFn?: (ref: string) => Promise<boolean>
     applyErrorLabel?: (ref: string) => Promise<boolean>
+    /**
+     * AIDEV-NOTE: PMR-ZV9Y 2.2 — v2 state-machine emission seam for the
+     * escalation wait: index.ts wires this to the SAME mode-aware writer it
+     * threads into createAttemptLedger(...).record, so the durable
+     * attempt-record snapshot and the state-change land in one journal and
+     * reach the PMR-ZV9Y phase-4 fan-out together. It is a SEPARATE optional
+     * dep on purpose: the ledger's `record` builds an `attempt-record`
+     * event and cannot carry a v2 kind, and the pre-existing
+     * test/run-attempt-tool.test.ts fakes (hand-built `{seed, record}`
+     * ledgers and deps bags without this field) must stay byte-identical
+     * (ISC-A-2) — unset seam = no v2 events, never a crash. The tool wraps
+     * the call, so a throwing seam can NEVER change the escalation outcome
+     * (ISC-A-5).
+     */
+    journalV2?(event: FlowRunEvent): Promise<void> | void
   } = {},
 ): void {
   const isYoloRunFn = deps.isYoloRunFn ?? isYoloRun
@@ -248,6 +263,27 @@ export function registerRunAttemptTool(
         }
       }
       await journalOutcome('escalate', MAX_ATTEMPTS)
+      // AIDEV-NOTE: PMR-ZV9Y 2.2 — the escalation IS a human wait, so journal
+      // state-change{waiting_human, escalation} beside the attempt-record
+      // snapshot (plan mapping row "run-attempt escalate"). Escalate ONLY:
+      // passed/retry keep the run `running` and the loop owns that transition
+      // (no running→running-style duplicates from this site). The
+      // already-exhausted refusal above never reaches this line, so one
+      // escalation journals exactly one wait. Best-effort and optional:
+      // `journalV2?.()` + try/catch, a journal failure cannot change the
+      // escalation result (ISC-A-5). If this seam's route ever bypasses the
+      // phase-4 fan-out, PMR-ZV9Y 4.3 owns that audit.
+      try {
+        await deps.journalV2?.({
+          kind: 'state-change',
+          at: new Date().toISOString(),
+          ref: params.ref,
+          state: 'waiting_human',
+          reason: 'escalation',
+        })
+      } catch {
+        // best-effort — the budget decision is already made
+      }
       // Keep the exhausted state so further reports keep escalating instead
       // of silently restarting the budget.
       retryStates.set(params.ref, { attempts: MAX_ATTEMPTS })

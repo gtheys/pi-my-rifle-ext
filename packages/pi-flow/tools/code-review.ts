@@ -24,7 +24,11 @@ import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { writeAvenNote } from '../aven/client.ts'
 import { healFlowBinding } from '../flow/binding-heal.ts'
-import { createReceiptJournal, type ReceiptJournal } from '../run-state.ts'
+import {
+  createReceiptJournal,
+  type FlowRunEvent,
+  type ReceiptJournal,
+} from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
 import {
   openTuicrReview,
@@ -89,6 +93,72 @@ export function registerCodeReviewTool(
       command: 'code_review',
       target: ref,
       headSha: head,
+    })
+  }
+  // AIDEV-NOTE: PMR-ZV9Y 2.2 — v2 state-machine emissions for the human
+  // code-review gate (plan phase-2 mapping row "code-review ask/answer"). The
+  // blocking ask is the wait, so the pair BEFORE it is
+  // state-change{waiting_human, code_review_pending} +
+  // step-start{validate.code-review}, and the pair when the human answers
+  // (PASS or FAIL — both end the wait) is step-stop{validate.code-review} +
+  // state-change{running}. They ride the tool's EXISTING mode-aware writer
+  // seam — the very same `writer.record` the durable code_review receipt uses
+  // (recordPassReceipt above) — never a second writer, and never loop
+  // internals. Optional by construction: no writer (the pre-2.2 harnesses and
+  // callers) = no v2 events, so the existing
+  // test/code-review.test.ts receipt-sequence assertions stay byte-identical
+  // (ISC-A-2), and every write is wrapped so a journal failure can NEVER fail
+  // the gate (ISC-A-5).
+  // `openReviewSteps` is the idempotent pairing guard — the tool-local twin of
+  // 2.1's specApprovalStepOpen: an unclear answer makes the agent re-ask and
+  // RE-CALL code_review for the same ref while the wait is still live, and the
+  // second call must not journal a second pending pair (nor a later answer
+  // pair without an open step). Per-ref Set because one session can gate
+  // several refs; in-process state only, so a restarted process re-opens the
+  // step on its next ask (a duplicated start is honest evidence, an orphan
+  // stop would not be).
+  const openReviewSteps = new Set<string>()
+  const journalV2 = async (event: FlowRunEvent): Promise<void> => {
+    if (writer === undefined) return
+    try {
+      await writer.record(event)
+    } catch {
+      // best-effort — a v2 journal failure never fails the gate
+    }
+  }
+  const openReviewGate = async (ref: string): Promise<void> => {
+    if (openReviewSteps.has(ref)) return
+    openReviewSteps.add(ref)
+    await journalV2({
+      kind: 'state-change',
+      at: new Date().toISOString(),
+      ref,
+      state: 'waiting_human',
+      reason: 'code_review_pending',
+    })
+    await journalV2({
+      kind: 'step-start',
+      at: new Date().toISOString(),
+      ref,
+      phase: 'validate',
+      step: 'validate.code-review',
+    })
+  }
+  const closeReviewGate = async (ref: string): Promise<void> => {
+    if (!openReviewSteps.has(ref)) return
+    openReviewSteps.delete(ref)
+    await journalV2({
+      kind: 'step-stop',
+      at: new Date().toISOString(),
+      ref,
+      phase: 'validate',
+      step: 'validate.code-review',
+    })
+    await journalV2({
+      kind: 'state-change',
+      at: new Date().toISOString(),
+      ref,
+      state: 'running',
     })
   }
   pi.registerTool({
@@ -160,6 +230,11 @@ export function registerCodeReviewTool(
         )
       }
 
+      // AIDEV-NOTE: PMR-ZV9Y 2.2 — journal the wait BEFORE it blocks: the
+      // daemon-side projection and (PMR-ZV9Y 4.3) the telemetry fan-out must
+      // see waiting_human{code_review_pending} while the ask is open, or a run
+      // parked on this gate is invisible to the Waiting-on-me queue.
+      await openReviewGate(params.ref)
       const askResult = await ctx.executeTool('ask_user_question', {
         question: `Human code review of ${params.ref}: pass or fail?`,
         details: `tuicr is open in a herdr tab (${worktree.path}). Review the diff (branch scope), then answer.`,
@@ -187,6 +262,11 @@ export function registerCodeReviewTool(
         const routing = routeReviewPass(params.ref, new Date().toISOString())
         landingState.humanReviewPassed = routing.marker
         await recordPassReceipt(params.ref, worktree.path)
+        // AIDEV-NOTE: PMR-ZV9Y 2.2 — the answer-side pair rides beside the
+        // durable pass receipt: the receipt is what makes this pass survive a
+        // session restart, and the step-stop/state-change{running} is what
+        // closes the wait the openReviewGate pair opened.
+        await closeReviewGate(params.ref)
         const noted = await writeAvenNote(params.ref, routing.avenNote)
         return toolResult(
           `${routing.message}${noted ? '' : '\n(warning: the aven note write failed — record it manually)'}`,
@@ -195,6 +275,10 @@ export function registerCodeReviewTool(
       }
 
       // Fail: read the findings from the persisted tuicr session.
+      // AIDEV-NOTE: PMR-ZV9Y 2.2 — a FAIL is still an answer: the wait ends
+      // here too (the run routes back to /implement), so close the step before
+      // the findings plumbing runs and a note-write failure cannot strand it.
+      await closeReviewGate(params.ref)
       let comments = ''
       let listResult = { code: 0, stdout: '', stderr: '' }
       try {

@@ -317,11 +317,78 @@ export function registerDeviationReviewTool(
   pi: ExtensionAPI,
   // AIDEV-NOTE: PMR-XTQQ — mode-aware writer seam; default probes per write
   // (daemon enabled). index.ts passes the shared runServer-configured writer.
+  // PMR-ZV9Y 2.2 doubles as the v2 emission seam (step-start/step-stop/
+  // state-change ride `journalGateEvent` → `writer.record`), so no second
+  // writer is introduced and every gate event lands in the one journal.
   writer: EventWriter = createEventWriter(
     getAgentDir(),
     createDaemonAliveProbe(getAgentDir()),
   ),
+  // AIDEV-NOTE: PMR-ZV9Y 2.2 — injectable seams, production defaults (the
+  // registerRunAttemptTool deps pattern). `review` wraps the reviewer spawn:
+  // the v2 verdict/rerun emissions sit AFTER the reviewer returns, and a test
+  // process has no subagent mux, so without this seam the step-stop /
+  // deviation_gate_rerun rows of the phase-2 mapping table would be
+  // unreachable from execute. Default = the real startDeviationReview.
+  deps: {
+    review?: typeof startDeviationReview
+  } = {},
 ): void {
+  const review = deps.review ?? startDeviationReview
+  // AIDEV-NOTE: PMR-ZV9Y 2.2 — the deviation gate's v2 emissions (plan
+  // phase-2 mapping row "deviation"). Pairing per ref, journal-only kinds:
+  //   pin      → step-start{validate, validate.deviation}
+  //   verdict  → step-stop{validate, validate.deviation}
+  //   re-run   → state-change{waiting_machine, deviation_gate_rerun}
+  // The step stays OPEN across a re-run (the rerun state-change records
+  // the wait), so the whole attempt sequence journals exactly one
+  // step-start/step-stop window — the deviation idiom of 2.1's
+  // specApprovalStepOpen guard. Every write goes through journalGateEvent
+  // (the tool's existing mode-aware writer) inside try/catch: a v2 journal
+  // failure can NEVER replace the gate verdict (ISC-A-5). Writers are
+  // optional-shaped here (the param has a production default), so the
+  // pre-2.2 harnesses that pass no writer keep the journal writes they
+  // already had and never reach these sites in tests (ISC-A-2).
+  const openDeviationSteps = new Set<string>()
+  const journalV2 = async (event: FlowRunEvent): Promise<void> => {
+    try {
+      await journalGateEvent(event, writer)
+    } catch {
+      // best-effort — the gate verdict stands on its own
+    }
+  }
+  const openDeviationStep = async (ref: string): Promise<void> => {
+    if (openDeviationSteps.has(ref)) return
+    openDeviationSteps.add(ref)
+    await journalV2({
+      kind: 'step-start',
+      at: new Date().toISOString(),
+      ref,
+      phase: 'validate',
+      step: 'validate.deviation',
+    })
+  }
+  const closeDeviationStep = async (ref: string): Promise<void> => {
+    if (!openDeviationSteps.has(ref)) return
+    openDeviationSteps.delete(ref)
+    await journalV2({
+      kind: 'step-stop',
+      at: new Date().toISOString(),
+      ref,
+      phase: 'validate',
+      step: 'validate.deviation',
+    })
+  }
+  const journalGateRerun = async (ref: string): Promise<void> => {
+    if (!openDeviationSteps.has(ref)) return
+    await journalV2({
+      kind: 'state-change',
+      at: new Date().toISOString(),
+      ref,
+      state: 'waiting_machine',
+      reason: 'deviation_gate_rerun',
+    })
+  }
   pi.registerTool({
     name: 'deviation_review',
     label: 'deviation review',
@@ -425,6 +492,10 @@ export function registerDeviationReviewTool(
           },
           writer,
         )
+        // AIDEV-NOTE: PMR-ZV9Y 2.2 — the pinned target is the moment the gate
+        // starts judging bytes, so the validate.deviation step opens here
+        // (idempotent per ref: a re-run re-pins but does NOT re-open).
+        await openDeviationStep(params.ref)
         // AIDEV-NOTE: PMR-6EEW per-subtask ranges — journal the subtask →
         // commits attribution of the pinned range (Subtask: trailers).
         // Best-effort by design; unattributed commits are surfaced in the
@@ -491,13 +562,13 @@ export function registerDeviationReviewTool(
         const rangeLine = describeRange(resolved.value.flowRange)
         let result: SubagentResult
         try {
-          result = await startDeviationReview(
-            { ...ctx, cwd },
-            prompt,
-            params.ref,
-          )
+          result = await review({ ...ctx, cwd }, prompt, params.ref)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
+          // AIDEV-NOTE: PMR-ZV9Y 2.2 — spawn failure mandates the same gate
+          // re-run as a rejected verdict ("Re-run the deviation_review tool"),
+          // so it journals the machine wait too.
+          await journalGateRerun(params.ref)
           return toolResult(
             `deviation_review: reviewer spawn failed — ${message}. Re-run the deviation_review tool when the subagent mux is available. NEVER treat this as 0 deviations.`,
             { ok: false as const, reason: message },
@@ -505,6 +576,9 @@ export function registerDeviationReviewTool(
           )
         }
         if (result.exitCode !== 0 || result.errorMessage !== undefined) {
+          // AIDEV-NOTE: PMR-ZV9Y 2.2 — failedResult's text mandates a gate
+          // re-run → the machine wait (see the spawn-failure branch above).
+          await journalGateRerun(params.ref)
           return toolResult(
             failedResult(result),
             {
@@ -536,6 +610,11 @@ export function registerDeviationReviewTool(
               },
               writer,
             )
+            // AIDEV-NOTE: PMR-ZV9Y 2.2 — target-mismatch / stale / fail: the
+            // verdict was judged against the wrong bytes and is rejected, so
+            // journal the machine wait (mapping row "rerun →
+            // state-change{waiting_machine, deviation_gate_rerun}").
+            await journalGateRerun(params.ref)
             return toolResult(
               `deviation_review: gate integrity check FAILED (${verification.status}) — ${verification.reason}. The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
               { ok: false as const, reason: verification.reason },
@@ -557,6 +636,10 @@ export function registerDeviationReviewTool(
         if (diffPath !== undefined) {
           const check = checkDiffLinesRead(resolved.value.diff, result.summary)
           if (!check.ok) {
+            // AIDEV-NOTE: PMR-ZV9Y 2.2 — same class as the integrity
+            // rejection above: the verdict was NOT accepted, a re-run is
+            // mandated → machine wait.
+            await journalGateRerun(params.ref)
             return toolResult(
               `deviation_review: reviewer did not prove it read the whole diff file (diff_lines_read: expected ${check.expected}, got ${check.got ?? 'none'}). The verdict was NOT accepted. Re-run the deviation_review tool; NEVER treat this as 0 deviations.`,
               { ok: false as const, reason: 'diff_lines_read mismatch' },
@@ -565,6 +648,16 @@ export function registerDeviationReviewTool(
           }
         }
         const mapped = deviationResultToToolResult(result.summary)
+        // AIDEV-NOTE: PMR-ZV9Y 2.2 — the gate's terminal fork: a parsed
+        // verdict CLOSES the validate.deviation step (step-stop), a parse
+        // failure is an isError result mandating a re-run (machine wait, step
+        // stays open for the next attempt). deviationResultToToolResult sets
+        // isError on parse failure only, so this one check splits the two.
+        if (mapped.isError === true) {
+          await journalGateRerun(params.ref)
+        } else {
+          await closeDeviationStep(params.ref)
+        }
         const first = mapped.content[0]
         if (first !== undefined && first.type === 'text') {
           // AIDEV-NOTE: PMR-K74M — surface a params.mode correction instead
