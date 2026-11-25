@@ -9,6 +9,8 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import type { AnswerChoice } from './aven/client.ts'
+import type { FlowReason, FlowState } from './flow/vocabulary.ts'
+import { FLOW_REASONS, FLOW_STATES } from './flow/vocabulary.ts'
 import { isFullSha, sha256Hex } from './validate/gate-target.ts'
 
 // AIDEV-NOTE: PMR-Z2K7 — 'research' left the flow lifecycle (PIV); old
@@ -243,6 +245,48 @@ export type FlowRunEvent =
       prMerged?: boolean
     }
   | {
+      /**
+       * AIDEV-NOTE: PMR-ZV9Y 1.1 — v2 state-machine transition (PROJECTED).
+       * `state`/`reason` are closed-enum values from flow/vocabulary.ts; an
+       * out-of-vocabulary value is IGNORED by applyEvent but the journal line
+       * is still kept (recordRunEvent never drops a v2 evidence line — see
+       * the lenient-parse note above applyEvent). `reason` is absent or ''
+       * when the state carries none (running/done/stale); the projection
+       * always materialises '' so label math never sees undefined.
+       * This does NOT replace LoopRunStatus: 'loop-state' stays the v1
+       * resume/pending-protocol record, v2 state is derived alongside it
+       * (ISC-A-2 — v2 state is DERIVED, never a rename).
+       */
+      kind: 'state-change'
+      at: string
+      ref: string
+      state: FlowState
+      /** Closed-enum reason; absent or '' when the state carries none. */
+      reason?: FlowReason | ''
+    }
+  | {
+      /**
+       * AIDEV-NOTE: PMR-ZV9Y 1.1 — v2 step boundary evidence (JOURNAL-ONLY,
+       * like 'step-output'). `step` is a registered name from flow/steps.ts and
+       * `phase` the phase it belongs to. Journal-only on purpose: the projection
+       * models the run, not in-flight steps — phase 3 derives `pi_flow_step`
+       * and `pi_flow_step_seconds` by scanning the journal windows.
+       */
+      kind: 'step-start'
+      at: string
+      ref: string
+      phase: FlowPhase
+      step: string
+    }
+  | {
+      /** AIDEV-NOTE: PMR-ZV9Y 1.1 — closes a 'step-start' (journal-only). */
+      kind: 'step-stop'
+      at: string
+      ref: string
+      phase: FlowPhase
+      step: string
+    }
+  | {
       kind: 'note'
       at: string
       ref: string
@@ -341,14 +385,26 @@ export type FlowRunEvent =
  * (see the shipped 'main-session' drop bug noted there). Extend this union
  * only; isJournalOnlyEvent is the single membership check. 'step-output'
  * joined via PMR-C998 phase 2 (step submissions are append-only evidence).
+ * PMR-ZV9Y 1.1: 'step-start'/'step-stop' join for the same reason — they are
+ * append-only boundary evidence (phase 3 derives the step gauges by scanning
+ * the journal windows, the projection never models in-flight steps). The
+ * sibling v2 kind 'state-change' is deliberately NOT here: it is projected
+ * last-wins into FlowRunState.currentState.
  */
-type JournalOnlyKind = 'main-session' | 'spawn-record' | 'step-output'
+type JournalOnlyKind =
+  | 'main-session'
+  | 'spawn-record'
+  | 'step-output'
+  | 'step-start'
+  | 'step-stop'
 
 export function isJournalOnlyEvent(event: FlowRunEvent): boolean {
   const kinds: JournalOnlyKind[] = [
     'main-session',
     'spawn-record',
     'step-output',
+    'step-start',
+    'step-stop',
   ]
   return kinds.some((k) => k === event.kind)
 }
@@ -415,6 +471,19 @@ export interface LoopStateRecord {
   status: LoopRunStatus
 }
 
+/**
+ * AIDEV-NOTE: PMR-ZV9Y 1.1 — the projected v2 state (see the 'state-change'
+ * event). Last-wins: the journal is the fold, this is its tail. `reason` is
+ * '' when the state carries none. Phase 3's Prometheus derivation prefers
+ * this projection but re-scans the raw events for the wait windows, so a
+ * dropped projection write never loses window math.
+ */
+export interface CurrentStateRecord {
+  state: FlowState
+  reason: FlowReason | ''
+  at: string
+}
+
 export interface GateTargetRecord {
   targetId: string
   gate: GateJournalKind
@@ -463,6 +532,10 @@ export type FlowRunState = {
   // old journals rebuilt without attempt-record events) stay valid.
   attempts?: number
   gateAnswers?: GateAnswerRecord[]
+  // AIDEV-NOTE: PMR-ZV9Y 1.1 — optional so pre-v2 projections (and old
+  // journals rebuilt without state-change events) stay valid; validated only
+  // when present, and only against the closed v2 enums (see isFlowRunState).
+  currentState?: CurrentStateRecord
 }
 
 export interface GateAnswerRecord {
@@ -749,6 +822,38 @@ export function applyEvent(
         updatedAt: event.at,
       }
     }
+    case 'state-change': {
+      if (state === null || state.ref !== event.ref)
+        return state as FlowRunState
+      // AIDEV-NOTE: PMR-ZV9Y 1.1 — the v2 enums land in the projection, so
+      // the guard's vocabulary is enforced HERE (see the applyEvent note
+      // above): out-of-vocabulary state/reason, or a non-string `at`, means
+      // the event is ignored by the fold. recordRunEvent still journals the
+      // line (the evidence record stays complete) — projection leniency and
+      // journal durability are separate contracts.
+      if (!FLOW_STATES.includes(event.state)) return state
+      // Absent reason normalizes to '' (the plan's `reason?` shape and the
+      // "empty when none" contract are the same thing on the projection). An
+      // explicit non-string (null from a corrupt line) is NOT normalized — it
+      // is out of vocabulary and the event is ignored.
+      const reason = event.reason === undefined ? '' : event.reason
+      if (typeof reason !== 'string') return state
+      if (reason !== '' && !FLOW_REASONS.includes(reason as FlowReason))
+        return state
+      if (typeof event.at !== 'string') return state
+      // AIDEV-NOTE: PMR-ZV9Y 1.1 — last-wins (duplicate transitions from a
+      // re-ask or a re-snapshot simply overwrite; the wait-window scan reads
+      // the raw journal, so a re-opened wait still opens a new window).
+      return {
+        ...state,
+        currentState: {
+          state: event.state,
+          reason: reason as FlowReason | '',
+          at: event.at,
+        },
+        updatedAt: event.at,
+      }
+    }
     case 'note': {
       if (state === null || state.ref !== event.ref)
         return state as FlowRunState
@@ -1011,6 +1116,22 @@ export function isFlowRunState(value: unknown): value is FlowRunState {
       typeof owner.at === 'string'
     if (!ownerOk) return false
   }
+  // AIDEV-NOTE: PMR-ZV9Y 1.1 — the v2 projected state is validated only when
+  // present (old journals) and ONLY against the closed enums, mirroring the
+  // checks in the applyEvent 'state-change' case. A hand-edited or future-
+  // writer currentState the guard would reject must never reach the fold in
+  // the first place — the hot-loop invariant (see the applyEvent note).
+  if (v.currentState !== undefined) {
+    const current = v.currentState as Record<string, unknown>
+    const currentOk =
+      typeof current === 'object' &&
+      current !== null &&
+      FLOW_STATES.includes(current.state as FlowState) &&
+      (current.reason === '' ||
+        FLOW_REASONS.includes(current.reason as FlowReason)) &&
+      typeof current.at === 'string'
+    if (!currentOk) return false
+  }
   return true
 }
 
@@ -1090,7 +1211,17 @@ export async function recordRunEvent(
     return
   }
   const next = applyEvent(state, event)
-  if (next === state) return
+  if (next === state) {
+    // AIDEV-NOTE: PMR-ZV9Y 1.1 — a state-change whose enums are out of
+    // vocabulary folds to the SAME state, and this shortcut would silently
+    // drop it (exactly the shipped 'main-session' bug above). The v2 evidence
+    // line must survive: phase 3's wait/step windows scan the journal, so an
+    // ignored projection write may never mean an ignored journal append.
+    if (event.kind === 'state-change') {
+      await io.appendFile(journalPath, `${JSON.stringify(event)}\n`)
+    }
+    return
+  }
   await io.appendFile(journalPath, `${JSON.stringify(event)}\n`)
   await io.writeFile(statePath, `${JSON.stringify(next, null, 2)}\n`)
 }

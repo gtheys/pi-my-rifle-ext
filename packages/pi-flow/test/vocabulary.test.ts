@@ -1,0 +1,164 @@
+// AIDEV-NOTE: PMR-ZV9Y 1.1 — pins the v2 state-machine vocabulary: the closed
+// enum sets, the reason -> wait_kind derivation, the expected-action map, and
+// the registered step names. These tables are the contract every later phase
+// (emissions, Prometheus gauges, Loki labels, desktop notify, Grafana value
+// mappings) reads. Changing a value here changes the dashboards — the
+// deepEqual pins below are the drift alarm, not an oversight.
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { isRegisteredStep, STEP_REGISTRY } from '../flow/steps.ts'
+import {
+  EXPECTED_ACTION,
+  expectedAction,
+  FLOW_REASONS,
+  FLOW_STATES,
+  type FlowReason,
+  NO_EXPECTED_ACTION,
+  reasonWaitKind,
+  WAIT_KIND,
+} from '../flow/vocabulary.ts'
+
+// --- the closed enums ---
+
+test('FLOW_STATES is the v2 state enum (6 values)', () => {
+  assert.deepEqual(
+    [...FLOW_STATES],
+    ['running', 'waiting_human', 'waiting_machine', 'halted', 'done', 'stale'],
+  )
+})
+
+test('FLOW_REASONS is the v2 reason enum (10 values)', () => {
+  assert.deepEqual(
+    [...FLOW_REASONS],
+    [
+      'spec_approval_pending',
+      'code_review_pending',
+      'escalation',
+      'retry_budget_exhausted',
+      'blocker_budget_exhausted',
+      'label_miss',
+      'deviation_gate_rerun',
+      'subagent_in_flight',
+      'prompt_send_failed',
+      'aven_read_failed',
+    ],
+  )
+})
+
+test('vocabulary sets are duplicate-free', () => {
+  assert.equal(new Set(FLOW_STATES).size, FLOW_STATES.length)
+  assert.equal(new Set(FLOW_REASONS).size, FLOW_REASONS.length)
+})
+
+// --- wait_kind derivation ---
+
+test('WAIT_KIND covers every reason exactly once', () => {
+  const keys = Object.keys(WAIT_KIND).sort()
+  assert.deepEqual(keys, [...FLOW_REASONS].sort())
+})
+
+test('reasonWaitKind: the three human reasons are human, the rest machine', () => {
+  const human: FlowReason[] = [
+    'spec_approval_pending',
+    'code_review_pending',
+    'escalation',
+  ]
+  for (const reason of human) {
+    assert.equal(reasonWaitKind(reason), 'human', reason)
+    assert.equal(WAIT_KIND[reason], 'human', reason)
+  }
+  for (const reason of FLOW_REASONS) {
+    if (human.includes(reason)) continue
+    assert.equal(reasonWaitKind(reason), 'machine', reason)
+    assert.equal(WAIT_KIND[reason], 'machine', reason)
+  }
+})
+
+test('reasonWaitKind: a drifted (out-of-vocabulary) reason is machine, never a phantom human wait', () => {
+  // Journals are parsed leniently, so the derivation can be handed a value
+  // outside the enum; it must degrade to machine, not throw.
+  const drift = 'from_the_future' as string as FlowReason
+  assert.equal(reasonWaitKind(drift), 'machine')
+})
+
+// --- expected action ---
+
+test('expectedAction: waiting_human + spec_approval_pending is the approve command', () => {
+  assert.equal(
+    expectedAction('waiting_human', 'spec_approval_pending', 'PMR-X'),
+    '/flow answer PMR-X approve',
+  )
+})
+
+test('expectedAction: waiting_human + code_review_pending is pass|fail', () => {
+  assert.equal(
+    expectedAction('waiting_human', 'code_review_pending', 'PMR-X'),
+    '/flow answer PMR-X pass|fail',
+  )
+})
+
+test('expectedAction: waiting_human + escalation points a human at the run', () => {
+  const action = expectedAction('waiting_human', 'escalation', 'PMR-X')
+  assert.notEqual(action, NO_EXPECTED_ACTION)
+  assert.ok(action.includes('/flow PMR-X'), action)
+})
+
+test('expectedAction: machine reasons, no reason, and non-human states all have no action', () => {
+  assert.equal(
+    expectedAction('waiting_human', 'subagent_in_flight', 'PMR-X'),
+    NO_EXPECTED_ACTION,
+  )
+  assert.equal(
+    expectedAction('waiting_machine', 'label_miss', 'PMR-X'),
+    NO_EXPECTED_ACTION,
+  )
+  assert.equal(expectedAction('waiting_human', '', 'PMR-X'), NO_EXPECTED_ACTION)
+  assert.equal(expectedAction('running', '', 'PMR-X'), NO_EXPECTED_ACTION)
+  assert.equal(
+    expectedAction('halted', 'prompt_send_failed', 'PMR-X'),
+    NO_EXPECTED_ACTION,
+  )
+  assert.equal(expectedAction('done', '', 'PMR-X'), NO_EXPECTED_ACTION)
+})
+
+test('EXPECTED_ACTION only maps reasons the wait-kind derivation calls human', () => {
+  for (const reason of Object.keys(EXPECTED_ACTION) as FlowReason[]) {
+    assert.ok(FLOW_REASONS.includes(reason), `unknown reason ${reason}`)
+    assert.equal(reasonWaitKind(reason), 'human', reason)
+  }
+  assert.equal(Object.keys(EXPECTED_ACTION).length, 3)
+})
+
+// --- step registry ---
+
+test('STEP_REGISTRY covers all four phases with the registered names only', () => {
+  assert.deepEqual(Object.keys(STEP_REGISTRY).sort(), [
+    'feedback',
+    'implement',
+    'plan',
+    'validate',
+  ])
+  assert.deepEqual([...STEP_REGISTRY.plan], ['plan.spec-approval'])
+  assert.deepEqual([...STEP_REGISTRY.validate].sort(), [
+    'validate.aven-notes',
+    'validate.code-review',
+    'validate.deviation',
+    'validate.spec-diff',
+  ])
+  assert.deepEqual([...STEP_REGISTRY.implement], [])
+  assert.deepEqual([...STEP_REGISTRY.feedback], [])
+})
+
+test('isRegisteredStep accepts registered names and rejects everything else', () => {
+  assert.equal(isRegisteredStep('plan', 'plan.spec-approval'), true)
+  assert.equal(isRegisteredStep('validate', 'validate.code-review'), true)
+  assert.equal(isRegisteredStep('validate', 'validate.deviation'), true)
+  assert.equal(isRegisteredStep('implement', 'implement.commit'), false)
+  assert.equal(isRegisteredStep('plan', 'validate.code-review'), false)
+  assert.equal(isRegisteredStep('plan', ''), false)
+})
+
+test('isRegisteredStep: a drifted phase name never throws', () => {
+  const drift = 'research' as string as 'plan'
+  assert.equal(isRegisteredStep(drift, 'plan.spec-approval'), false)
+})

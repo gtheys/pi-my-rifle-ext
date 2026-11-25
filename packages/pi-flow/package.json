@@ -76,6 +76,8 @@
     "flow/resume.ts",
     "flow/run-health.ts",
     "flow/status.ts",
+    "flow/steps.ts",
+    "flow/vocabulary.ts",
     "flow/widget.ts",
     "flow/worktree-context.ts",
     "gates.ts",
