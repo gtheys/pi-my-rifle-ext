@@ -3,21 +3,25 @@
   "kind": "Dashboard",
   "metadata": {
     "annotations": {
-      "grafana.app/createdBy": "service-account:cfw0ld9gfssu8e",
+      "grafana.app/createdBy": "access-policy:service",
       "grafana.app/folder": "ag3jjknk85xc0b",
-      "grafana.app/message": "pi-flow subagent cost (separate sessions only)",
+      "grafana.app/managedBy": "classic-file-provisioning",
+      "grafana.app/managerId": "pi-flow",
+      "grafana.app/sourceChecksum": "59719b50d2f47b4ed34fa5d6ce8a2ef3",
+      "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-subagents.json",
+      "grafana.app/sourceTimestamp": "1795424851000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-09T06:33:47Z"
+      "grafana.app/updatedTimestamp": "2026-11-25T13:10:10Z"
     },
-    "creationTimestamp": "2026-11-07T09:17:27Z",
-    "generation": 8,
+    "creationTimestamp": "2026-11-15T05:26:02Z",
+    "generation": 13,
     "labels": {
-      "grafana.app/deprecatedInternalID": "2304417441361920"
+      "grafana.app/deprecatedInternalID": "641681257533440"
     },
     "name": "piflow-subagents",
     "namespace": "default",
-    "resourceVersion": "1794206027186992",
-    "uid": "22a436ec-f81d-4027-9351-ea1553a5977f"
+    "resourceVersion": "1795612210778005",
+    "uid": "2c3cf51d-de7e-41ff-869e-64f985a1e674"
   },
   "spec": {
     "annotations": [
@@ -147,6 +151,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
+                        "editorMode": "code",
                         "expr": "sum by (role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\", kind=\"cacheRead\"}) * on (ref, session) group_left (role) pi_flow_run_role_info{mode=~\"${mode:raw}\"}) or label_replace(sum by (ref, agent, session) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\", kind=\"cacheRead\"}) unless on (ref, session) pi_flow_run_role_info{mode=~\"${mode:raw}\"}, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\")) / sum by (role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) * on (ref, session) group_left (role) pi_flow_run_role_info{mode=~\"${mode:raw}\"}) or label_replace(sum by (ref, agent, session) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) unless on (ref, session) pi_flow_run_role_info{mode=~\"${mode:raw}\"}, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"))",
                         "format": "table",
                         "instant": true,
@@ -166,23 +171,19 @@
                   "kind": "Transformation",
                   "spec": {
                     "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "instance": true,
+                        "job": true,
+                        "mode": true
+                      },
+                      "indexByName": {
+                        "Value": 1,
+                        "role": 0
+                      },
                       "renameByName": {
                         "Value": "Cache hit ratio",
-                        "role": "Name"
-                      }
-                    }
-                  }
-                },
-                {
-                  "group": "filterFieldsByName",
-                  "kind": "Transformation",
-                  "spec": {
-                    "options": {
-                      "include": {
-                        "names": [
-                          "Name",
-                          "Cache hit ratio"
-                        ]
+                        "role": "Role"
                       }
                     }
                   }
@@ -205,64 +206,81 @@
               ]
             }
           },
-          "description": "cacheRead / (input + cacheRead + cacheWrite) of subagent sessions, per role. Reviewers re-read a lot of the same diff, so a low ratio here means avoidable input cost.",
+          "description": "Token kinds: input | output | cache read | cache write. Ratio = cacheRead / (input + cacheRead + cacheWrite) per subagent role. Low = prompts not cached. Was a horizontal barchart with overlapping role labels.",
           "id": 10,
           "links": [],
           "title": "Cache hit ratio per subagent role (higher = cheaper)",
           "vizConfig": {
-            "group": "barchart",
+            "group": "table",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
                 "defaults": {
-                  "color": {
-                    "mode": "thresholds"
-                  },
                   "custom": {
-                    "fillOpacity": 85,
-                    "gradientMode": "none",
-                    "lineWidth": 1
-                  },
-                  "decimals": 0,
-                  "max": 1,
-                  "min": 0,
-                  "thresholds": {
-                    "mode": "absolute",
-                    "steps": [
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Cache hit ratio"
+                    },
+                    "properties": [
                       {
-                        "color": "red",
-                        "value": null
+                        "id": "unit",
+                        "value": "percentunit"
                       },
                       {
-                        "color": "orange",
-                        "value": 0.5
+                        "id": "max",
+                        "value": 1
                       },
                       {
-                        "color": "green",
-                        "value": 0.8
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "gradient",
+                          "type": "gauge",
+                          "valueDisplayMode": "color"
+                        }
+                      },
+                      {
+                        "id": "thresholds",
+                        "value": {
+                          "mode": "absolute",
+                          "steps": [
+                            {
+                              "color": "red"
+                            },
+                            {
+                              "color": "orange",
+                              "value": 0.5
+                            },
+                            {
+                              "color": "green",
+                              "value": 0.8
+                            }
+                          ]
+                        }
                       }
                     ]
-                  },
-                  "unit": "percentunit"
-                },
-                "overrides": []
+                  }
+                ]
               },
               "options": {
-                "barWidth": 0.7,
-                "groupWidth": 0.8,
-                "legend": {
-                  "displayMode": "list",
-                  "placement": "bottom",
-                  "showLegend": false
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
                 },
-                "orientation": "horizontal",
-                "showValue": "always",
-                "stacking": "none",
-                "tooltip": {
-                  "mode": "single",
-                  "sort": "none"
-                },
-                "xField": "Name"
+                "showHeader": true
               }
             },
             "version": ""
@@ -624,6 +642,18 @@
               "queryOptions": {},
               "transformations": [
                 {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "indexByName": {
+                        "ref": 0,
+                        "role": 1
+                      }
+                    }
+                  }
+                },
+                {
                   "group": "groupingToMatrix",
                   "kind": "Transformation",
                   "spec": {
@@ -638,7 +668,7 @@
               ]
             }
           },
-          "description": "Where a ticket's subagent money went: review, deviation check, scouts, workers... Hover a segment for that role's cost.",
+          "description": "Where a ticket's subagent money went, stacked by subagent role (scout | worker | reviewer | deviation check ...). Hover a segment for that role's cost.",
           "id": 6,
           "links": [],
           "title": "Subagent cost per ticket, stacked by role",
@@ -681,7 +711,8 @@
                   "mode": "multi",
                   "sort": "none"
                 },
-                "xTickLabelRotation": 0
+                "xTickLabelRotation": -45,
+                "xTickLabelSpacing": 100
               }
             },
             "version": ""
@@ -816,7 +847,7 @@
               ]
             }
           },
-          "description": "Per ROLE: the agent type (scout, worker, reviewer, ...) when known, else the name before the colon. A session is one subagent session. Highest = most expensive single session; average and median are over the same sessions. The orchestrator is on its own dashboard.",
+          "description": "Per ROLE: the subagent role (scout | worker | reviewer | deviation check ...) when known, else the agent name before the colon. A session is one subagent session. Highest = most expensive single session; average and median are over the same sessions. The orchestrator (agent=\"main\") is on its own dashboard; this board covers agent!=\"main\".",
           "id": 7,
           "links": [],
           "title": "Cost per subagent role: highest, average and median session",
@@ -1051,7 +1082,7 @@
               ]
             }
           },
-          "description": "The ten single subagent sessions with the highest cost. Role = agent name before the colon (or agent type). Subtask = plan task for 1:1 workers. Tokens = all kinds for that session.",
+          "description": "The ten single subagent sessions with the highest cost. Role = the subagent role (agent name before the colon). Subtask = the plan subtask for 1:1 workers. Tokens = all token kinds (input, output, cache read, cache write) summed for that session.",
           "id": 8,
           "links": [],
           "title": "Most expensive subagent sessions (top 10)",
@@ -1090,6 +1121,14 @@
                           "mode": "basic",
                           "type": "gauge"
                         }
+                      },
+                      {
+                        "id": "min",
+                        "value": 0
+                      },
+                      {
+                        "id": "max",
+                        "value": 2
                       },
                       {
                         "id": "color",
@@ -1394,7 +1433,7 @@
               ]
             }
           },
-          "description": "Subagents = all subagent sessions of the ticket (separate sessions). Orchestrator = the main session's own cost. Ticket total = orchestrator + subagents. \"–\" = not recorded.",
+          "description": "Subagents = all subagent sessions of the ticket (agent!=\"main\", separate sessions). Orchestrator = the main session's own cost (agent=\"main\"). Ticket total = orchestrator + subagents. \"–\" = not recorded.",
           "id": 9,
           "links": [],
           "title": "Tickets: subagent cost",
@@ -1433,6 +1472,14 @@
                           "mode": "basic",
                           "type": "gauge"
                         }
+                      },
+                      {
+                        "id": "min",
+                        "value": 0
+                      },
+                      {
+                        "id": "max",
+                        "value": 5
                       },
                       {
                         "id": "color",
@@ -1575,6 +1622,35 @@
                         }
                       }
                     ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Runs: live state for this ticket",
+                            "url": "/d/piflow-runs/pi-flow-runs?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Health: tools, durations, traces",
+                            "url": "/d/piflow-health/pi-flow-health?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Orchestrator cost",
+                            "url": "/d/piflow-orchestrator/pi-flow-orchestrator?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Subagent cost",
+                            "url": "/d/piflow-subagents/pi-flow-subagents?var-ref=${__value.raw}"
+                          }
+                        ]
+                      }
+                    ]
                   }
                 ]
               },
@@ -1651,8 +1727,8 @@
                 "kind": "ElementReference",
                 "name": "panel-5"
               },
-              "height": 9,
-              "width": 12,
+              "height": 8,
+              "width": 24,
               "x": 0,
               "y": 4
             }
@@ -1664,10 +1740,10 @@
                 "kind": "ElementReference",
                 "name": "panel-6"
               },
-              "height": 9,
-              "width": 12,
-              "x": 12,
-              "y": 4
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 12
             }
           },
           {
@@ -1680,7 +1756,7 @@
               "height": 10,
               "width": 12,
               "x": 0,
-              "y": 13
+              "y": 22
             }
           },
           {
@@ -1693,7 +1769,7 @@
               "height": 10,
               "width": 12,
               "x": 12,
-              "y": 13
+              "y": 22
             }
           },
           {
@@ -1703,10 +1779,10 @@
                 "kind": "ElementReference",
                 "name": "panel-9"
               },
-              "height": 10,
+              "height": 12,
               "width": 24,
               "x": 0,
-              "y": 23
+              "y": 32
             }
           },
           {
@@ -1719,7 +1795,7 @@
               "height": 9,
               "width": 24,
               "x": 0,
-              "y": 33
+              "y": 44
             }
           }
         ]
@@ -1729,50 +1805,50 @@
       {
         "asDropdown": false,
         "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
+        "includeVars": false,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
-        "title": "Health",
-        "tooltip": "Tool failures, traces, phase durations",
+        "title": "Runs",
+        "tooltip": "",
         "type": "link",
-        "url": "/grafana/d/piflow-health"
-      },
-      {
-        "asDropdown": false,
-        "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
-        "tags": [],
-        "targetBlank": false,
-        "title": "Orchestrator cost",
-        "tooltip": "Main session cost per ticket and phase",
-        "type": "link",
-        "url": "/grafana/d/piflow-orchestrator"
-      },
-      {
-        "asDropdown": false,
-        "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
-        "tags": [],
-        "targetBlank": false,
-        "title": "Range: cost vs score",
-        "tooltip": "Cost versus score across a range of tickets",
-        "type": "link",
-        "url": "/grafana/d/piflow-range"
+        "url": "/d/piflow-runs/pi-flow-runs"
       },
       {
         "asDropdown": false,
         "icon": "dashboard",
         "includeVars": false,
-        "keepTime": true,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
-        "title": "Ad-hoc commands",
-        "tooltip": "/brainstorm, /pr-quality, /review time and cost",
+        "title": "Health",
+        "tooltip": "",
         "type": "link",
-        "url": "/grafana/d/piflow-adhoc"
+        "url": "/d/piflow-health/pi-flow-health"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Orchestrator",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-orchestrator/pi-flow-orchestrator"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Ad-hoc",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-adhoc/pi-flow-ad-hoc-commands-brainstorm-pr-quality-review"
       }
     ],
     "liveNow": false,
@@ -1877,5 +1953,10 @@
       }
     ]
   },
-  "status": {}
+  "status": {
+    "conversion": {
+      "failed": false,
+      "storedVersion": "v0alpha1"
+    }
+  }
 }

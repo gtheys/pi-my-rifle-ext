@@ -5,18 +5,22 @@
     "annotations": {
       "grafana.app/createdBy": "service-account:cfw0ld9gfssu8e",
       "grafana.app/folder": "ag3jjknk85xc0b",
-      "grafana.app/message": "pi-flow ad-hoc commands",
+      "grafana.app/managedBy": "classic-file-provisioning",
+      "grafana.app/managerId": "pi-flow",
+      "grafana.app/sourceChecksum": "07c88344871d41d0f64bd715b1e3d398",
+      "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-adhoc.json",
+      "grafana.app/sourceTimestamp": "1795531426000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-09T07:48:26Z"
+      "grafana.app/updatedTimestamp": "2026-11-25T13:10:10Z"
     },
     "creationTimestamp": "2026-11-09T06:32:45Z",
-    "generation": 3,
+    "generation": 16,
     "labels": {
       "grafana.app/deprecatedInternalID": "2987744603254784"
     },
     "name": "piflow-adhoc",
     "namespace": "default",
-    "resourceVersion": "1794210506947003",
+    "resourceVersion": "1795612210899992",
     "uid": "6aa04b6d-9b86-4313-b518-ad4917ca70e7"
   },
   "spec": {
@@ -82,7 +86,7 @@
               "transformations": []
             }
           },
-          "description": "Cost of /brainstorm, /pr-quality and /review runs pushed within the selected range. Run outside a /flow loop.",
+          "description": "Cost of /brainstorm, /pr-quality and /review command runs pushed within the selected range. These run outside a /flow run — no ref, separate Pushgateway job (pi-flow-adhoc).",
           "id": 1,
           "links": [],
           "title": "Ad-hoc spend",
@@ -166,7 +170,7 @@
           "description": "Number of ad-hoc runs in the selected range.",
           "id": 2,
           "links": [],
-          "title": "Runs",
+          "title": "Ad-hoc runs",
           "vizConfig": {
             "group": "stat",
             "kind": "VizConfig",
@@ -421,7 +425,7 @@
               ]
             }
           },
-          "description": "Sum of cost per command type in the selected range.",
+          "description": "Sum of cost per command (brainstorm | pr-quality | review) in the selected range.",
           "id": 5,
           "links": [],
           "title": "Total cost per command",
@@ -583,7 +587,7 @@
               ]
             }
           },
-          "description": "Average wall-clock duration per command type.",
+          "description": "Average wall-clock duration per command (brainstorm | pr-quality | review).",
           "id": 6,
           "links": [],
           "title": "Average duration per command",
@@ -914,10 +918,10 @@
               ]
             }
           },
-          "description": "Every ad-hoc run: start, command, target (PR number, brainstorm topic, review hint), cost, duration and token counts (summed over the run).",
+          "description": "Every ad-hoc run: start, command (brainstorm | pr-quality | review), target (PR number, brainstorm topic, review hint), cost, duration and token counts by token kind (input | output | cache read — summed over the run).",
           "id": 7,
           "links": [],
-          "title": "Runs",
+          "title": "Ad-hoc runs",
           "vizConfig": {
             "group": "table",
             "kind": "VizConfig",
@@ -1073,7 +1077,7 @@
               ]
             }
           },
-          "description": "cacheRead / (input + cacheRead + cacheWrite) tokens per command type. Higher = cheaper.",
+          "description": "Token kinds: input | output | cache read | cache write. Ratio = cacheRead / (input + cacheRead + cacheWrite) per command. Higher = cheaper.",
           "id": 8,
           "links": [],
           "title": "Cache hit ratio per command",
@@ -1218,11 +1222,13 @@
                   }
                 }
               ],
-              "queryOptions": {},
+              "queryOptions": {
+                "timeFrom": "7d"
+              },
               "transformations": []
             }
           },
-          "description": "One trace per ad-hoc run. The root span is a zero-length marker written when the run starts; the \"\u003ccommand\u003e run\" child (written at close) carries duration, cost and tokens. brainstorm / pr-quality traces also contain the tool and generation spans of the run; review runs have no children (the reviewer ran in another process; see adhoc.session_file). A run whose pi session died has the marker and children but no \"run\" span. Tempo search lags ~10 min.",
+          "description": "One trace per ad-hoc run. The root span is a zero-length marker written when the run starts; the \"\u003ccommand\u003e run\" child (written at close) carries duration, cost and tokens. brainstorm / pr-quality traces also contain the tool and generation spans of the run; review runs have no children (the reviewer ran in another process; see adhoc.session_file). A run whose pi session died has the marker and children but no \"run\" span. Tempo search lags ~10 min. Panel time range is pinned to 7d: Tempo trace search returns nothing for ranges \u003e= ~14d (measured: 7d=20 traces, 14d=0) and retention is 14d anyway.",
           "id": 9,
           "links": [],
           "title": "Traces (Tempo): one trace per ad-hoc run",
@@ -1358,7 +1364,7 @@
                 "kind": "ElementReference",
                 "name": "panel-7"
               },
-              "height": 10,
+              "height": 12,
               "width": 24,
               "x": 0,
               "y": 22
@@ -1372,37 +1378,49 @@
         "asDropdown": false,
         "icon": "dashboard",
         "includeVars": false,
-        "keepTime": true,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Runs",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-runs/pi-flow-runs"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
         "title": "Health",
-        "tooltip": "Tool failures, traces, phase durations",
+        "tooltip": "",
         "type": "link",
-        "url": "/grafana/d/piflow-health"
+        "url": "/d/piflow-health/pi-flow-health"
       },
       {
         "asDropdown": false,
         "icon": "dashboard",
         "includeVars": false,
-        "keepTime": true,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
-        "title": "Orchestrator cost",
-        "tooltip": "Flow orchestrator cost",
+        "title": "Orchestrator",
+        "tooltip": "",
         "type": "link",
-        "url": "/grafana/d/piflow-orchestrator"
+        "url": "/d/piflow-orchestrator/pi-flow-orchestrator"
       },
       {
         "asDropdown": false,
         "icon": "dashboard",
         "includeVars": false,
-        "keepTime": true,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
-        "title": "Subagent cost",
-        "tooltip": "Flow subagent cost",
+        "title": "Subagents",
+        "tooltip": "",
         "type": "link",
-        "url": "/grafana/d/piflow-subagents"
+        "url": "/d/piflow-subagents/pi-flow-subagents"
       }
     ],
     "liveNow": false,
@@ -1472,5 +1490,10 @@
       }
     ]
   },
-  "status": {}
+  "status": {
+    "conversion": {
+      "failed": false,
+      "storedVersion": "v2"
+    }
+  }
 }

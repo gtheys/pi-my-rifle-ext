@@ -3,21 +3,25 @@
   "kind": "Dashboard",
   "metadata": {
     "annotations": {
-      "grafana.app/createdBy": "service-account:cfw0ld9gfssu8e",
+      "grafana.app/createdBy": "access-policy:service",
       "grafana.app/folder": "ag3jjknk85xc0b",
-      "grafana.app/message": "pi-flow orchestrator cost (main session only)",
+      "grafana.app/managedBy": "classic-file-provisioning",
+      "grafana.app/managerId": "pi-flow",
+      "grafana.app/sourceChecksum": "7ea5bd9302e58ff190fd401f2cd9873c",
+      "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-orchestrator.json",
+      "grafana.app/sourceTimestamp": "1795424851000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-09T06:33:46Z"
+      "grafana.app/updatedTimestamp": "2026-11-25T13:10:04Z"
     },
-    "creationTimestamp": "2026-11-07T09:17:27Z",
-    "generation": 8,
+    "creationTimestamp": "2026-11-15T05:26:02Z",
+    "generation": 11,
     "labels": {
-      "grafana.app/deprecatedInternalID": "2304416950628352"
+      "grafana.app/deprecatedInternalID": "641681098149888"
     },
     "name": "piflow-orchestrator",
     "namespace": "default",
-    "resourceVersion": "1794206026970015",
-    "uid": "50c196cb-9e10-41d9-a6a8-80455017720d"
+    "resourceVersion": "1795612204485985",
+    "uid": "5b95dc2d-d3c4-45ce-901e-cab841cdd4f7"
   },
   "spec": {
     "annotations": [
@@ -86,6 +90,218 @@
           "id": 1,
           "links": [],
           "title": "Orchestrator spend",
+          "vizConfig": {
+            "group": "stat",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "thresholds"
+                  },
+                  "decimals": 2,
+                  "noValue": "–",
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "blue",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "orientation": "auto",
+                "reduceOptions": {
+                  "calcs": [
+                    "lastNotNull"
+                  ],
+                  "fields": "",
+                  "values": false
+                },
+                "textMode": "value"
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-10": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}) - sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"} offset 1d)",
+                        "format": "time_series",
+                        "instant": false,
+                        "interval": "1d",
+                        "legendFormat": "spend per day",
+                        "range": true
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {
+                "timeFrom": "1M"
+              },
+              "transformations": []
+            }
+          },
+          "description": "One bar per day = exact change in recorded cost levels during that day (all agents). Day-by-day is the honest granularity here: weekly bars from PromQL anchor to epoch-aligned Thursdays and go dark around the pushgateway restart; read weeks as 7 bars, or use the 7d total below. Days missing around the restart (~Nov 12) show as gaps and self-heal over time.",
+          "id": 10,
+          "links": [],
+          "title": "Spend per day (last month)",
+          "vizConfig": {
+            "group": "barchart",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "fixedColor": "blue",
+                    "mode": "fixed"
+                  },
+                  "custom": {
+                    "axisSoftMin": 0,
+                    "fillOpacity": 85,
+                    "gradientMode": "none",
+                    "lineWidth": 1,
+                    "stacking": {
+                      "group": "A",
+                      "mode": "none"
+                    }
+                  },
+                  "decimals": 2,
+                  "unit": "currencyUSD"
+                },
+                "overrides": []
+              },
+              "options": {
+                "barWidth": 0.7,
+                "groupWidth": 0.8,
+                "legend": {
+                  "displayMode": "list",
+                  "placement": "bottom",
+                  "showLegend": false
+                },
+                "orientation": "auto",
+                "showValue": "always",
+                "tooltip": {
+                  "mode": "single",
+                  "sort": "none"
+                },
+                "xField": ""
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-11": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "all-time",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}) - (sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"} offset 7d) or vector(0))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "last 7 days",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "B"
+                  }
+                },
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}) - (sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"} offset 30d) or vector(0))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "last 30 days",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "C"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": []
+            }
+          },
+          "description": "All-time = every session still recorded by pushgateway (the de-facto year total until pi-flow crosses a year boundary). 7d/30d = exact spend accrued in the trailing window. All agents, mode/ref filters apply.",
+          "id": 11,
+          "links": [],
+          "title": "Spend totals — all-time, last 7d, last 30d (all agents)",
           "vizConfig": {
             "group": "stat",
             "kind": "VizConfig",
@@ -484,6 +700,18 @@
               "queryOptions": {},
               "transformations": [
                 {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "indexByName": {
+                        "phase": 1,
+                        "ref": 0
+                      }
+                    }
+                  }
+                },
+                {
                   "group": "groupingToMatrix",
                   "kind": "Transformation",
                   "spec": {
@@ -498,7 +726,7 @@
               ]
             }
           },
-          "description": "Where the orchestrator's own money went: plan, implement, validate. Hover a segment for that phase's cost.",
+          "description": "Where the orchestrator's own money went, stacked by phase (plan | implement | validate). Hover a segment for that phase's cost.",
           "id": 6,
           "links": [],
           "title": "Orchestrator cost per ticket, stacked by phase",
@@ -602,7 +830,8 @@
                   "mode": "multi",
                   "sort": "none"
                 },
-                "xTickLabelRotation": 0
+                "xTickLabelRotation": -45,
+                "xTickLabelSpacing": 100
               }
             },
             "version": ""
@@ -877,7 +1106,7 @@
               ]
             }
           },
-          "description": "Orchestrator = the main session's own cost only (Plan + Implement + Validate columns split it). Subagents = every worker / reviewer / scout session of the ticket. Ticket total = orchestrator + subagents. \"–\" = not recorded (orchestrator cost exists only for runs after main-session tracking). Duration = summed phase wall-clock, includes waiting for you.",
+          "description": "Orchestrator = the main session's own cost only (agent=\"main\"); the Plan / Implement / Validate columns split it by phase. Subagents = every worker / reviewer / scout session of the ticket (agent!=\"main\"). Ticket total = orchestrator + subagents. \"–\" = not recorded (orchestrator cost exists only for runs after main-session tracking). Duration = summed phase wall-clock, including time spent waiting on a human.",
           "id": 7,
           "links": [],
           "title": "Tickets: orchestrator cost and where it went",
@@ -916,6 +1145,14 @@
                           "mode": "basic",
                           "type": "gauge"
                         }
+                      },
+                      {
+                        "id": "min",
+                        "value": 0
+                      },
+                      {
+                        "id": "max",
+                        "value": 5
                       },
                       {
                         "id": "color",
@@ -1086,6 +1323,35 @@
                         }
                       }
                     ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Runs: live state for this ticket",
+                            "url": "/d/piflow-runs/pi-flow-runs?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Health: tools, durations, traces",
+                            "url": "/d/piflow-health/pi-flow-health?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Orchestrator cost",
+                            "url": "/d/piflow-orchestrator/pi-flow-orchestrator?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Subagent cost",
+                            "url": "/d/piflow-subagents/pi-flow-subagents?var-ref=${__value.raw}"
+                          }
+                        ]
+                      }
+                    ]
                   }
                 ]
               },
@@ -1116,6 +1382,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
+                        "editorMode": "code",
                         "expr": "sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=\"cacheRead\"}) / sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))",
                         "format": "table",
                         "instant": true,
@@ -1135,23 +1402,19 @@
                   "kind": "Transformation",
                   "spec": {
                     "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "instance": true,
+                        "job": true,
+                        "mode": true
+                      },
+                      "indexByName": {
+                        "Value": 1,
+                        "ref": 0
+                      },
                       "renameByName": {
                         "Value": "Cache hit ratio",
-                        "ref": "Name"
-                      }
-                    }
-                  }
-                },
-                {
-                  "group": "filterFieldsByName",
-                  "kind": "Transformation",
-                  "spec": {
-                    "options": {
-                      "include": {
-                        "names": [
-                          "Name",
-                          "Cache hit ratio"
-                        ]
+                        "ref": "Ticket"
                       }
                     }
                   }
@@ -1174,64 +1437,366 @@
               ]
             }
           },
-          "description": "cacheRead / (input + cacheRead + cacheWrite) of the orchestrator's own calls. Cache reads cost a fraction of fresh input; a low ratio on an expensive ticket is where to look first.",
+          "description": "Token kinds: input | output | cache read | cache write. Ratio = cacheRead / (input + cacheRead + cacheWrite) for the main agent (agent=\"main\") per ticket. Low = prompts not cached = expensive. Was a barchart; 60 refs made it an unreadable wall.",
           "id": 8,
           "links": [],
           "title": "Orchestrator cache hit ratio per ticket (higher = cheaper)",
           "vizConfig": {
-            "group": "barchart",
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Cache hit ratio"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "percentunit"
+                      },
+                      {
+                        "id": "max",
+                        "value": 1
+                      },
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "gradient",
+                          "type": "gauge",
+                          "valueDisplayMode": "color"
+                        }
+                      },
+                      {
+                        "id": "thresholds",
+                        "value": {
+                          "mode": "absolute",
+                          "steps": [
+                            {
+                              "color": "red"
+                            },
+                            {
+                              "color": "orange",
+                              "value": 0.5
+                            },
+                            {
+                              "color": "green",
+                              "value": 0.8
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 120
+                      },
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Health",
+                            "url": "/d/piflow-health/pi-flow-health?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Subagents",
+                            "url": "/d/piflow-subagents/pi-flow-subagents?var-ref=${__value.raw}"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-9": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "expr": "sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}) - sum(pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"} offset $__interval)",
+                        "format": "time_series",
+                        "instant": false,
+                        "legendFormat": "cumulative spend",
+                        "range": true
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {
+                "timeFrom": "1w"
+              },
+              "transformations": [
+                {
+                  "group": "calculateField",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "mode": "cumulativeFunctions",
+                      "reducer": "total"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Rising line = spend accrued so far in the rolling 7-day window (all agents), updated live. Each point is the exact cost-level change since the previous point (increase() undercounts these push-style gauges). Note: the Nov 12 pushgateway restart re-pushed old tickets and the line double-counts that bump (~$4) until it rolls out of the window ~Nov 21.",
+          "id": 9,
+          "links": [],
+          "title": "Cumulative spend, day by day (last 7 days)",
+          "vizConfig": {
+            "group": "timeseries",
             "kind": "VizConfig",
             "spec": {
               "fieldConfig": {
                 "defaults": {
                   "color": {
-                    "mode": "thresholds"
+                    "fixedColor": "blue",
+                    "mode": "fixed"
                   },
                   "custom": {
-                    "fillOpacity": 85,
-                    "gradientMode": "none",
-                    "lineWidth": 1
+                    "axisSoftMin": 0,
+                    "drawStyle": "line",
+                    "fillOpacity": 30,
+                    "lineWidth": 2,
+                    "showPoints": "never"
                   },
-                  "decimals": 0,
-                  "max": 1,
+                  "decimals": 2,
                   "min": 0,
-                  "thresholds": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "color": "red",
-                        "value": null
-                      },
-                      {
-                        "color": "orange",
-                        "value": 0.5
-                      },
-                      {
-                        "color": "green",
-                        "value": 0.8
-                      }
-                    ]
-                  },
-                  "unit": "percentunit"
+                  "unit": "currencyUSD"
                 },
                 "overrides": []
               },
               "options": {
-                "barWidth": 0.7,
-                "groupWidth": 0.8,
                 "legend": {
                   "displayMode": "list",
                   "placement": "bottom",
                   "showLegend": false
                 },
-                "orientation": "horizontal",
-                "showValue": "always",
-                "stacking": "none",
                 "tooltip": {
                   "mode": "single",
                   "sort": "none"
+                }
+              }
+            },
+            "version": ""
+          }
+        }
+      },
+      "panel-90": {
+        "kind": "Panel",
+        "spec": {
+          "data": {
+            "kind": "QueryGroup",
+            "spec": {
+              "queries": [
+                {
+                  "kind": "PanelQuery",
+                  "spec": {
+                    "hidden": false,
+                    "query": {
+                      "datasource": {
+                        "name": "PBFA97CFB590B2093"
+                      },
+                      "group": "prometheus",
+                      "kind": "DataQuery",
+                      "spec": {
+                        "editorMode": "code",
+                        "expr": "topk(15, sum by (ref, subtask) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", subtask!=\"\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
+                        "format": "table",
+                        "instant": true,
+                        "legendFormat": "__auto",
+                        "range": false
+                      },
+                      "version": "v0"
+                    },
+                    "refId": "A"
+                  }
+                }
+              ],
+              "queryOptions": {},
+              "transformations": [
+                {
+                  "group": "organize",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "excludeByName": {
+                        "Time": true,
+                        "instance": true,
+                        "job": true,
+                        "mode": true
+                      },
+                      "indexByName": {
+                        "Value": 2,
+                        "ref": 0,
+                        "subtask": 1
+                      },
+                      "renameByName": {
+                        "Value": "Cost",
+                        "ref": "Ticket",
+                        "subtask": "Subtask"
+                      }
+                    }
+                  }
                 },
-                "xField": "Name"
+                {
+                  "group": "sortBy",
+                  "kind": "Transformation",
+                  "spec": {
+                    "options": {
+                      "fields": {},
+                      "sort": [
+                        {
+                          "desc": true,
+                          "field": "Cost"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Which planned subtask burned the most (subtask statistics stay — D5). Empty subtask labels are filtered out; rows appear only for runs that attributed cost to subtasks (PI_FLOW_SUBTASK).",
+          "id": 90,
+          "links": [],
+          "title": "Cost per subtask (top 15)",
+          "vizConfig": {
+            "group": "table",
+            "kind": "VizConfig",
+            "spec": {
+              "fieldConfig": {
+                "defaults": {
+                  "custom": {
+                    "align": "auto",
+                    "cellOptions": {
+                      "type": "auto"
+                    },
+                    "inspect": false
+                  }
+                },
+                "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Cost"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "currencyUSD"
+                      },
+                      {
+                        "id": "decimals",
+                        "value": 3
+                      },
+                      {
+                        "id": "custom.cellOptions",
+                        "value": {
+                          "mode": "gradient",
+                          "type": "gauge",
+                          "valueDisplayMode": "color"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "links",
+                        "value": [
+                          {
+                            "title": "Runs: live state for this ticket",
+                            "url": "/d/piflow-runs/pi-flow-runs?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Health: tools, durations, traces",
+                            "url": "/d/piflow-health/pi-flow-health?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Orchestrator cost",
+                            "url": "/d/piflow-orchestrator/pi-flow-orchestrator?var-ref=${__value.raw}"
+                          },
+                          {
+                            "title": "Subagent cost",
+                            "url": "/d/piflow-subagents/pi-flow-subagents?var-ref=${__value.raw}"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 120
+                      }
+                    ]
+                  }
+                ]
+              },
+              "options": {
+                "cellHeight": "sm",
+                "footer": {
+                  "countRows": false,
+                  "fields": "",
+                  "reducer": [
+                    "sum"
+                  ],
+                  "show": false
+                },
+                "showHeader": true
               }
             },
             "version": ""
@@ -1302,8 +1867,8 @@
                 "kind": "ElementReference",
                 "name": "panel-5"
               },
-              "height": 9,
-              "width": 12,
+              "height": 8,
+              "width": 24,
               "x": 0,
               "y": 4
             }
@@ -1315,10 +1880,10 @@
                 "kind": "ElementReference",
                 "name": "panel-6"
               },
-              "height": 9,
-              "width": 12,
-              "x": 12,
-              "y": 4
+              "height": 10,
+              "width": 24,
+              "x": 0,
+              "y": 12
             }
           },
           {
@@ -1328,10 +1893,23 @@
                 "kind": "ElementReference",
                 "name": "panel-7"
               },
-              "height": 10,
+              "height": 12,
               "width": 24,
               "x": 0,
-              "y": 13
+              "y": 22
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-90"
+              },
+              "height": 9,
+              "width": 24,
+              "x": 0,
+              "y": 34
             }
           },
           {
@@ -1344,7 +1922,46 @@
               "height": 9,
               "width": 24,
               "x": 0,
-              "y": 23
+              "y": 43
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-9"
+              },
+              "height": 9,
+              "width": 12,
+              "x": 0,
+              "y": 52
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-10"
+              },
+              "height": 9,
+              "width": 12,
+              "x": 12,
+              "y": 52
+            }
+          },
+          {
+            "kind": "GridLayoutItem",
+            "spec": {
+              "element": {
+                "kind": "ElementReference",
+                "name": "panel-11"
+              },
+              "height": 4,
+              "width": 24,
+              "x": 0,
+              "y": 61
             }
           }
         ]
@@ -1354,50 +1971,50 @@
       {
         "asDropdown": false,
         "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
+        "includeVars": false,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
-        "title": "Health",
-        "tooltip": "Tool failures, traces, phase durations",
+        "title": "Runs",
+        "tooltip": "",
         "type": "link",
-        "url": "/grafana/d/piflow-health"
-      },
-      {
-        "asDropdown": false,
-        "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
-        "tags": [],
-        "targetBlank": false,
-        "title": "Subagent cost",
-        "tooltip": "Workers, reviewers, scouts: cost per role and session",
-        "type": "link",
-        "url": "/grafana/d/piflow-subagents"
-      },
-      {
-        "asDropdown": false,
-        "icon": "dashboard",
-        "includeVars": true,
-        "keepTime": true,
-        "tags": [],
-        "targetBlank": false,
-        "title": "Range: cost vs score",
-        "tooltip": "Cost versus score across a range of tickets",
-        "type": "link",
-        "url": "/grafana/d/piflow-range"
+        "url": "/d/piflow-runs/pi-flow-runs"
       },
       {
         "asDropdown": false,
         "icon": "dashboard",
         "includeVars": false,
-        "keepTime": true,
+        "keepTime": false,
         "tags": [],
         "targetBlank": false,
-        "title": "Ad-hoc commands",
-        "tooltip": "/brainstorm, /pr-quality, /review time and cost",
+        "title": "Health",
+        "tooltip": "",
         "type": "link",
-        "url": "/grafana/d/piflow-adhoc"
+        "url": "/d/piflow-health/pi-flow-health"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Subagents",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-subagents/pi-flow-subagents"
+      },
+      {
+        "asDropdown": false,
+        "icon": "dashboard",
+        "includeVars": false,
+        "keepTime": false,
+        "tags": [],
+        "targetBlank": false,
+        "title": "Ad-hoc",
+        "tooltip": "",
+        "type": "link",
+        "url": "/d/piflow-adhoc/pi-flow-ad-hoc-commands-brainstorm-pr-quality-review"
       }
     ],
     "liveNow": false,
@@ -1502,5 +2119,10 @@
       }
     ]
   },
-  "status": {}
+  "status": {
+    "conversion": {
+      "failed": false,
+      "storedVersion": "v0alpha1"
+    }
+  }
 }
