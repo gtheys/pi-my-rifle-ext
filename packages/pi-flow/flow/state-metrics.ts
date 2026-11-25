@@ -68,12 +68,23 @@
 // closed-enum by construction (projection-validated; wait_kind through
 // reasonWaitKind). phase comes from the projection or the PHASE_VALUES guard
 // below. `step` is the only label read straight off a journal event, and it is
-// CHARSET-GUARDED (STEP_NAME_RE) rather than registry-checked — importing
-// flow/steps.ts would violate the node-only allowlist locked for 3.1. That is
-// safe because emission sites journal registry names (subtask 1.2 binds the
-// prompt letters to STEP_REGISTRY and warns on unregistered ones); the guard
-// exists to keep free text — a halt note pasted by a future writer — out of a
-// label value.
+// CHARSET-GUARDED (STEP_NAME_RE) rather than registry-checked. That is a
+// DELIBERATE allowlist choice, not a reachability limit: flow/steps.ts is in
+// fact daemon-safe (its only import is `import type { Phase }`, erased at
+// runtime, so the transitive closure walk in test/cost-rows-node-only.test.ts
+// would accept it), but a VALUE import of it would trip the per-root DIRECT
+// textual allowlist `ROOT_ALLOWLISTS['flow/state-metrics.ts']` in that same
+// guard, which locked for 3.1/3.2 lists only run-state / cost-rows /
+// vocabulary. We keep the closure narrower than strictly necessary because
+// registry membership is ALREADY enforced at the emit boundary (subtask 1.2
+// binds the prompt letters to STEP_REGISTRY and flow_submit warns on
+// unregistered names); the charset guard here exists only to keep free text —
+// a halt note pasted by a future writer — out of a label value (ISC-A-1).
+// AIDEV-NOTE (PMR-ZV9Y fix round, P3b): an earlier revision of this note
+// claimed importing steps.ts "would violate the node-only allowlist" as if it
+// were unreachable. That was imprecise — it is reachable; it is simply not on
+// the deliberately narrow direct allowlist, and adding it would force an edit
+// to the frozen closure guard for a check the emit boundary already performs.
 
 import type { FlowPhase, FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
@@ -132,12 +143,21 @@ const PHASE_VALUES: readonly FlowPhase[] = [
 /**
  * Structural guard for a journaled step name. Registry membership lives in
  * flow/steps.ts and is enforced at the EMIT boundary (subtask 1.2: the
- * registry plus the flow_submit advisory warning), which is why this module
- * cannot consult it — './steps.ts' is not on the node-only allowlist locked
- * for 3.1. The charset mirrors flow_submit's own validation
- * (FLOW_VALUE_RE: alphanumeric plus `. _ -`, ≤64 chars) and the registry's
- * `<phase>.<name>` naming, so a free-text value (a note pasted by a future
- * writer) can never become a label value — ISC-A-1.
+ * registry plus the flow_submit advisory warning), so this module does not
+ * need to consult it — and './steps.ts' is deliberately absent from the
+ * per-root direct allowlist `ROOT_ALLOWLISTS['flow/state-metrics.ts']` in
+ * test/cost-rows-node-only.test.ts (locked for 3.1/3.2; the only v2 imports
+ * kept here are run-state / cost-rows / vocabulary). steps.ts itself is
+ * daemon-reachable (its sole import is type-only), so a value import would
+ * pass the transitive closure WALK but fail that direct textual allowlist — a
+ * guard this fix round is not permitted to widen, and widening it would buy
+ * nothing the emit boundary does not already check. The charset mirrors
+ * flow_submit's own validation (FLOW_VALUE_RE: alphanumeric plus `. _ -`,
+ * ≤64 chars) and the registry's `<phase>.<name>` naming, so a free-text value
+ * (a note pasted by a future writer) can never become a label value — ISC-A-1.
+ * AIDEV-NOTE (PMR-ZV9Y fix round, P3b): corrected from the earlier "would
+ * violate the node-only allowlist" wording, which overstated a reachability
+ * limit that is really a narrow, deliberate allowlist choice.
  */
 const STEP_NAME_RE = /^[a-z]+\.[A-Za-z0-9._-]{1,63}$/
 
@@ -352,6 +372,24 @@ export function scanStepWindows(
   return { seconds, open }
 }
 
+/**
+ * AIDEV-NOTE: PMR-ZV9Y fix round (P3a) — the terminal derived states that carry
+ * NO live in-flight step: halted / done / stale. When `deriveV2State` yields
+ * one of these, `renderStateMetricLines` suppresses the open-step `pi_flow_step`
+ * lines (an unclosed step-start on a finished run is a phantom, see the render
+ * path). `running`, `waiting_human` and `waiting_machine` are NOT terminal: a
+ * genuinely open step there is real live state. A `null` derived state (no
+ * projection) is treated as non-terminal here because the whole render already
+ * returns no state lines in that case (contract 3), and the open-step loop
+ * simply has nothing else to gate against.
+ */
+function isTerminalState(current: V2State | null): boolean {
+  if (current === null) return false
+  if (current.state === 'halted') return true
+  if (current.state === 'done') return true
+  return current.state === 'stale'
+}
+
 /** The current phase: the loop snapshot wins, else the projected current phase. */
 function currentPhaseLabel(events: readonly FlowRunEvent[]): FlowPhase | null {
   const projected = projectRunState(events)
@@ -409,14 +447,29 @@ export function renderStateMetricLines(
     )
   }
   const steps = scanStepWindows(events)
-  for (const openStep of steps.open) {
-    lines.push(
-      `pi_flow_step{${labelString({
-        ref,
-        phase: openStep.phase,
-        step: openStep.step,
-      })}} 1`,
-    )
+  // AIDEV-NOTE: PMR-ZV9Y fix round (P3a) — an open step is LIVE in-flight
+  // evidence. Once the derived state is halted / done / stale the run has no
+  // work in flight, so an unmatched step-start (a code-review ask aborted by
+  // Escape, a deviation verdict that kept re-running until the halt, a
+  // spec-approval pause on a since-closed ticket) would otherwise render
+  // `pi_flow_step{…} 1` forever — the gateway merges on write (push.ts), so the
+  // line persists in the stored body and surfaces on the piflow-runs
+  // "Live state" row for a dead run. Suppress the open-step lines whenever the
+  // derived state is halted/done/stale; running and both waiting states keep
+  // them, because there a genuinely open step is real. The COMPLETED
+  // `pi_flow_step_seconds` buckets stay — they are cumulative durations, not
+  // in-flight evidence. This is the render-side half; the tombstone-side
+  // decision is recorded in flow/reconcile.ts `tombstoneBody`.
+  if (!isTerminalState(current)) {
+    for (const openStep of steps.open) {
+      lines.push(
+        `pi_flow_step{${labelString({
+          ref,
+          phase: openStep.phase,
+          step: openStep.step,
+        })}} 1`,
+      )
+    }
   }
   for (const [key, value] of steps.seconds) {
     const separator = key.indexOf('\u0000')

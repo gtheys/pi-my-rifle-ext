@@ -101,12 +101,14 @@ test('tombstoneBody: every sibling label and the trailing value stay byte-identi
 })
 
 test('tombstoneBody: the phase/step/wait v2 families are never tombstoned', () => {
-  // ISC-8 names the STATE lines only. pi_flow_phase / pi_flow_step /
-  // pi_flow_wait_seconds carry no state label, and a rewrite keyed on a
-  // lookalike label would be the free-text soup ISC-A-1 forbids.
+  // ISC-8 names the STATE lines only. pi_flow_phase / pi_flow_wait_seconds /
+  // pi_flow_step_seconds carry no state label, and a rewrite keyed on a
+  // lookalike label would be the free-text soup ISC-A-1 forbids. The OPEN-step
+  // gauge `pi_flow_step{…} 1` IS dropped by the P3a decision (below) — this
+  // fixture deliberately contains NO `pi_flow_step{` line so the "never
+  // rewritten" posture for the remaining families stays pinned byte-identical.
   const lines = [
     'pi_flow_phase{job="pi-flow",mode="work",phase="plan",ref="DP-1"} 1',
-    'pi_flow_step{job="pi-flow",mode="work",phase="plan",ref="DP-1",step="plan.spec-approval"} 1',
     'pi_flow_wait_seconds{job="pi-flow",mode="work",reason="spec_approval_pending",ref="DP-1",wait_kind="human"} 540',
     'pi_flow_step_seconds{job="pi-flow",mode="work",phase="plan",ref="DP-1",step="plan.spec-approval"} 60',
     'pi_flow_state{job="pi-flow",mode="work",reason="escalation",ref="DP-1",state="waiting_human"} 1',
@@ -120,9 +122,66 @@ test('tombstoneBody: the phase/step/wait v2 families are never tombstoned', () =
     lines[0],
     lines[1],
     lines[2],
-    lines[3],
     'pi_flow_state{job="pi-flow",mode="work",reason="escalation",ref="DP-1",state="stale"} 1',
   ])
+})
+
+// AIDEV-NOTE (PMR-ZV9Y fix round, P3a — tombstone-side decision):
+// A tombstone retires a run to `stale`. The OPEN-step gauge `pi_flow_step{…} 1`
+// is the ONLY v2 family with no `state` label whose whole meaning ("a step is
+// in flight right now") is FALSE for a retired run, so it cannot be
+// value-rewritten to stale the way the state pair can — dropping it is the
+// correct and the only lever the tombstone has. It is dropped ONLY inside a
+// tombstone pass that flips a state line (tombstoneBody returns null when
+// nothing was rewritten, so the drop never reaches a POST that does not also
+// carry the state→stale flip). This is correct under the official Pushgateway
+// Replace semantics the whole reconcile round-trip is built for (push.ts
+// P2-5). On the homelab gateway that MERGES on write (PMR-WBC2) the drop
+// degrades to a no-op — the stored series simply persists — exactly like the
+// retired halt_reason drop; it is never harmful, and the PRIMARY fix is the
+// render-side suppression in state-metrics.ts `isTerminalState`, which stops
+// NEW phantoms from ever being pushed. `pi_flow_step_seconds`, `pi_flow_phase`
+// and `pi_flow_wait_seconds` are cumulative / no-state-label history and stay
+// byte-identical — only the transient `pi_flow_step{` gauge is dropped.
+test('tombstoneBody: the open-step pi_flow_step gauge is dropped, step_seconds/phase/wait kept', () => {
+  const got = tombstoneBody(
+    body(
+      'pi_flow_phase{job="pi-flow",mode="work",phase="validate",ref="DP-1"} 1',
+      'pi_flow_step{job="pi-flow",mode="work",phase="validate",ref="DP-1",step="validate.code-review"} 1',
+      'pi_flow_step_seconds{job="pi-flow",mode="work",phase="validate",ref="DP-1",step="validate.deviation"} 90',
+      'pi_flow_state{job="pi-flow",mode="work",reason="label_miss",ref="DP-1",state="halted"} 1',
+    ),
+  )
+  assert.notEqual(got, null)
+  const kept = String(got)
+    .split('\n')
+    .filter((line) => line.length > 0)
+  assert.deepEqual(kept, [
+    'pi_flow_phase{job="pi-flow",mode="work",phase="validate",ref="DP-1"} 1',
+    // pi_flow_step{…} 1 dropped (no live step for a stale run)
+    'pi_flow_step_seconds{job="pi-flow",mode="work",phase="validate",ref="DP-1",step="validate.deviation"} 90',
+    'pi_flow_state{job="pi-flow",mode="work",reason="label_miss",ref="DP-1",state="stale"} 1',
+  ])
+  assert.ok(
+    !String(got).includes('pi_flow_step{'),
+    'open-step gauge must not survive a tombstone',
+  )
+  assert.ok(
+    String(got).includes('pi_flow_step_seconds{'),
+    'cumulative step_seconds must survive',
+  )
+})
+
+test('tombstoneBody: a drop only happens when a state line is actually flipped', () => {
+  // A running run with an open step is NOT a tombstone candidate (the rewrite
+  // returns null), so we never silently drop a pi_flow_step for a live run.
+  const running = tombstoneBody(
+    body(
+      'pi_flow_step{job="pi-flow",mode="work",phase="validate",ref="DP-1",step="validate.code-review"} 1',
+      'pi_flow_state{job="pi-flow",mode="work",reason="",ref="DP-1",state="running"} 1',
+    ),
+  )
+  assert.equal(running, null, 'running state is not a tombstone target → null')
 })
 
 test('tombstoneBody: running and done are NOT flipped (unchanged posture)', () => {

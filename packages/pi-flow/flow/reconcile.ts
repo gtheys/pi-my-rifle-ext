@@ -235,7 +235,27 @@ export function tombstoneBody(body: string): string | null {
     out.push(line)
   }
   if (rewrites === 0) return null
-  return out.join('\n')
+  // AIDEV-NOTE (PMR-ZV9Y fix round, P3a — tombstone-side decision): a tombstone
+  // retires the run to `stale`, so the OPEN-step gauge `pi_flow_step{…} 1` — the
+  // one v2 family with NO state label whose meaning ("a step is in flight
+  // right now") is definitively false for a retired run — is DROPPED from the
+  // re-POSTed body. It cannot be value-flipped to stale like the state pair
+  // because it carries no state label; dropping is the only lever, and it runs
+  // ONLY here (rewrites > 0 guarantees the same body already flips a state line
+  // to stale, so the drop never happens without a tombstone). Correct under the
+  // official Pushgateway Replace semantics the round-trip assumes; on the
+  // merge-on-write homelab gateway (PMR-WBC2) it degrades to a harmless no-op
+  // exactly like the retired halt_reason drop. The PRIMARY fix is the render-
+  // side suppression in flow/state-metrics.ts `isTerminalState`; this is the
+  // belt-and-braces half that also cleans an ALREADY-STORED phantom on a
+  // replace-semantic gateway. The `{` is load-bearing: it matches only
+  // `pi_flow_step{…}`, never `pi_flow_step_seconds{…}`, which stays.
+  const dropped: string[] = []
+  for (const line of out) {
+    if (line.startsWith('pi_flow_step{')) continue
+    dropped.push(line)
+  }
+  return dropped.join('\n')
 }
 
 function startsWithAny(line: string, prefixes: readonly string[]): boolean {

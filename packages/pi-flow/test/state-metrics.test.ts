@@ -481,6 +481,102 @@ test('an unregistered free-text step name is never a label value', () => {
 
 // --- renderStateMetricLines ---------------------------------------------
 
+// AIDEV-NOTE: PMR-ZV9Y fix round (P3a) — the open-step line is a LIVE-state
+// signal. A run that ends with an unclosed step (a code-review ask aborted, a
+// deviation verdict that kept mandating re-runs, a spec-approval pause on a
+// ticket later closed) has NO in-flight step any more once it is halted/done/
+// stale, but `scanStepWindows.open` still reports the unmatched start. The
+// gateway merges on write, so that phantom `pi_flow_step` line persists in the
+// stored group and surfaces on the piflow-runs Live-state row for a dead run.
+// renderStateMetricLines therefore suppresses open-step lines whenever the
+// DERIVED state is halted / done / stale — running and the two waiting states
+// keep them (a genuinely open step is real there).
+test('P3a: an unmatched step-start renders NO pi_flow_step once the run is halted', () => {
+  const events = [
+    runStart(),
+    loopState(shift(10), 'halted', 'validate'),
+    change('halted', 'label_miss', shift(20)),
+    // started, never stopped — but the run HALTED with the step open.
+    step('step-start', 'validate', 'validate.code-review', shift(5)),
+  ]
+  const lines = renderStateMetricLines(REF, events)
+  assert.equal(
+    lines.filter((line) => line.startsWith('pi_flow_step{')).length,
+    0,
+    lines.join('\n'),
+  )
+  // the run is still described by the halted state line, not by an in-flight step
+  assert.ok(
+    lines.some(
+      (l) => l.startsWith('pi_flow_state{') && l.includes('state="halted"'),
+    ),
+    lines.join('\n'),
+  )
+})
+
+test('P3a: an unmatched step-start renders NO pi_flow_step once the run is done', () => {
+  const events = [
+    runStart(),
+    loopState(shift(10), 'done', 'feedback'),
+    change('done', '', shift(20)),
+    step('step-start', 'validate', 'validate.deviation', shift(5)),
+  ]
+  const lines = renderStateMetricLines(REF, events)
+  assert.equal(
+    lines.filter((line) => line.startsWith('pi_flow_step{')).length,
+    0,
+    lines.join('\n'),
+  )
+})
+
+test('P3a: a stale derived state renders NO pi_flow_step (tombstone re-render guard)', () => {
+  const events = [
+    runStart(),
+    change('stale', '', shift(10)),
+    step('step-start', 'implement', 'implement.oneshot', shift(5)),
+  ]
+  const lines = renderStateMetricLines(REF, events)
+  assert.equal(
+    lines.filter((line) => line.startsWith('pi_flow_step{')).length,
+    0,
+    lines.join('\n'),
+  )
+})
+
+test('P3a: a running run KEEPS the open-step line (genuinely in flight)', () => {
+  const events = [
+    runStart(),
+    loopState(shift(10), 'running', 'validate'),
+    change('running', '', shift(10)),
+    step('step-start', 'validate', 'validate.code-review', shift(15)),
+  ]
+  const lines = renderStateMetricLines(REF, events)
+  assert.ok(
+    lines.some((line) =>
+      line.startsWith(
+        `pi_flow_step{ref="${REF}",phase="validate",step="validate.code-review"}`,
+      ),
+    ),
+    lines.join('\n'),
+  )
+})
+
+test('P3a: a waiting run KEEPS the open-step line (the wait is the step)', () => {
+  // spec-approval pause: waiting_human with plan.spec-approval open — that IS
+  // the live in-flight step and must keep rendering (it is what the boards
+  // show for a run genuinely parked mid-step).
+  const events = [
+    runStart(),
+    change('waiting_human', 'spec_approval_pending', shift(10)),
+    step('step-start', 'plan', 'plan.spec-approval', shift(10)),
+  ]
+  const lines = renderStateMetricLines(REF, events)
+  assert.ok(
+    lines.some((line) => line.startsWith('pi_flow_step{')),
+    lines.join('\n'),
+  )
+})
+
 test('happy path renders the six families in the plan table order', () => {
   const events = [
     runStart(),
