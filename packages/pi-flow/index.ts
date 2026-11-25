@@ -223,6 +223,7 @@ export {
 export {
   loadConfig,
   readConfigFile,
+  resolveLokiSettings,
   resolveMode,
   resolveRunServerEnabled,
   saveViewerPlacement,

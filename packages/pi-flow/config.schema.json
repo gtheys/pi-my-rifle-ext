@@ -65,6 +65,27 @@
           "minimum": 100,
           "maximum": 100000,
           "description": "Max characters per captured content attribute (default 2000). Tempo truncates attribute values beyond max_attribute_bytes (default 2048) silently — raise both together"
+        },
+        "loki": {
+          "type": "object",
+          "description": "Optional Loki transition-event stream, session-side only (PMR-ZV9Y 4.2)",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Push flow transition-event streams to Loki. Default false (disabled — zero network calls)"
+            },
+            "endpoint": {
+              "type": "string",
+              "description": "Loki base URL (user-provided, e.g. http://100.108.226.64:3100); events POST to <endpoint>/loki/api/v1/push. Required with telemetry.loki.enabled"
+            },
+            "headers": {
+              "type": "object",
+              "description": "Static extra headers for the Loki push. Secrets belong in env, not config",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": ["enabled", "otlpEndpoint"],

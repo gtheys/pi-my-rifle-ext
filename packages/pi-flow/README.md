@@ -133,6 +133,9 @@ checkout) instead of machine-wide.
 | `telemetry.captureContent` | `"off" \| "text" \| "tools" \| "all"` | `"off"` | Content layers added to spans (cumulative): `off` metadata only, `text` assistant text, `tools` + tool calls and tool input/output, `all` + model reasoning. See [Capturing content](#capturing-content-in-spans) |
 | `telemetry.jiraBaseUrl` | `string` | unset | Base URL for Jira issue links, e.g. `https://example.atlassian.net/browse/`. Work-mode spans then carry `flow.url` = base + Jira key, so dashboards can link tickets to Jira. Unset = no links |
 | `telemetry.maxContentChars` | `integer` (100–100000) | `2000` | Max characters per captured content attribute; longer values end with `…[truncated N chars]`. Tempo drops anything past its `max_attribute_bytes` (default 2048) silently, so raise both together |
+| `telemetry.loki.enabled` | `boolean` | `false` | Push flow **transition-event** streams (`state-change` / `step-start` / `step-stop`) to Loki from the live session (PMR-ZV9Y 4.2). `false` or a missing `loki` block = zero Loki network calls. Session-side only — the daemon never pushes Loki. See [Loki transition events](#loki-transition-events) |
+| `telemetry.loki.endpoint` | `string` | unset (required with `telemetry.loki.enabled`) | Loki **base** URL you provide yourself (e.g. `http://100.108.226.64:3100`); events POST to `<endpoint>/loki/api/v1/push` (the push path is appended for you) |
+| `telemetry.loki.headers` | `record<string, string>` | `{}` | Static extra headers for the Loki push (e.g. a Bearer token in front of a reverse proxy). Secrets belong in env, not config |
 | `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
 | `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is neither active nor todo, so the alerts only ever fire on runs that still need you. Setting it to `false` on a RUNNING daemon takes effect on the next tick; setting it to `true` again only takes effect at daemon start — a daemon that started with `enabled: false` armed no timer, so restart the daemon (or run `/flow-reconcile-push` once). See [Reconcile](#reconcile-stale-run-tombstoning) |
 | `reconcile.intervalMinutes` | `integer` (≥ 1) | `360` | Daemon reconcile interval in minutes (6 h by default). An interval change applies on the next cycle — no daemon restart needed |
@@ -148,6 +151,15 @@ checkout) instead of machine-wide.
   "avenWorkspace": "personal",
   "yolo": false,
   "landTestCommand": ["bun", "run", "test"],
+  "telemetry": {
+    "enabled": false,
+    "otlpEndpoint": "https://tempo.example.com:4478",
+    "loki": {
+      "enabled": false,
+      "endpoint": "http://100.108.226.64:3100",
+      "headers": {}
+    }
+  },
   "runServer": {
     "enabled": true
   },
@@ -281,6 +293,55 @@ Things to know before turning it on:
 - **Per-attribute cap.** Each value is cut at `maxContentChars` (default 2000) and ends with `…[truncated N chars]`. Tempo truncates attribute values beyond its `max_attribute_bytes` (default 2048) **silently**, so a larger `maxContentChars` only helps if you raise Tempo's limit too (Tempo exposes `tempo_distributor_attributes_truncated_total` to see it happening).
 - **Per span, not per run.** Content is on the individual gen/tool spans. Phase, root and worker-session spans stay metadata-only.
 - **Applies to every process.** Workers read the same config, so a worker's gen and tool spans carry content at the same level.
+- **Restart Pi** after changing the setting; the config is read once per session.
+
+#### Loki transition events
+
+Alongside OTLP traces, pi-flow can push the **v2 state-machine transitions**
+(`state-change`, `step-start`, `step-stop`) it journals to a Loki log stream,
+so Grafana can show a per-run timeline and the Waiting-on-me queue can read
+*what is waiting on me* straight from the events. This is a separate, opt-in
+transport nested under the same `telemetry` block; it has its own
+`loki.enabled` switch and ships **disabled by default**, so turning Loki on or
+off is independent of whether OTLP traces export.
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "otlpEndpoint": "https://tempo.example.com:4478",
+    "loki": {
+      "enabled": true,
+      "endpoint": "http://100.108.226.64:3100",
+      "headers": {}
+    }
+  }
+}
+```
+
+You expose the Loki endpoint yourself (PMR-ZV9Y D2 — no bundled collector);
+`telemetry.loki.endpoint` stores the **base** URL only and the pusher appends
+`/loki/api/v1/push`, so the example above POSTs to
+`http://100.108.226.64:3100/loki/api/v1/push`. A Bearer token in front of a
+reverse proxy belongs in `telemetry.loki.headers` (or better, env), not baked
+into a committed config.
+
+Semantics (test-gated, see `telemetry/loki.ts`):
+
+- **Closed labels only.** A stream carries `job="pi-flow"` plus the closed v2
+  enum set — `flow_ref`, `mode`, `phase`, `state`, `reason`, `wait_kind`,
+  `kind` — and nothing else. Free text (the halt `note` prose, deviation
+  reasons) rides the JSON **line**, never a label, so Loki cardinality stays
+  bounded. Query the whole family with `{job="pi-flow"}` and slice by `state`
+  or `flow_ref`.
+- **Session-side only.** The live session's journal-writer fan-out pushes
+  each event as it is recorded; the durable daemon never pushes Loki (it has
+  no live event stream). One strict config reader, no daemon mirror.
+- **Fail-silent.** Fire-and-forget with a 2.5 s timeout. An unreachable or
+  unconfigured endpoint writes **at most ONE** journal note per process and
+  then stays silent — no retry queue, never a rejected promise into the flow
+  loop. Runs proceed identically with no Loki backend at all. The unit tests
+  mock `fetch`, so nothing here depends on the endpoint being live.
 - **Restart Pi** after changing the setting; the config is read once per session.
 
 ### Cost rollup push (`/flow-cost --push`)

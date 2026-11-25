@@ -59,6 +59,7 @@
     "telemetry/content.ts",
     "telemetry/exporter.ts",
     "telemetry/index.ts",
+    "telemetry/loki.ts",
     "flow/ensure-labels.ts",
     "flow/jira-ref.ts",
     "flow/label-gate.ts",

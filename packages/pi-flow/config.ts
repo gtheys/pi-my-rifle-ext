@@ -107,6 +107,48 @@ const PiFlowConfigSchema = Type.Object({
               'Max characters per captured content attribute (default 2000). Tempo truncates attribute values beyond max_attribute_bytes (default 2048) silently — raise both together',
           }),
         ),
+        // AIDEV-NOTE: PMR-ZV9Y (4.2) — `telemetry.loki` gates the Loki
+        // transition-event stream (telemetry/loki.ts). SINGLE STRICT READER,
+        // session-side ONLY (do not add a tolerant daemon half): unlike
+        // `reconcile`/`liveness` (TWO READERS, ONE FILE), the daemon never
+        // pushes Loki — only the live session fan-out (subtask 4.3) does, so
+        // there is exactly one reader here (this schema, via readConfigFile,
+        // which throws on a malformed shape — AGENTS.md: never silent
+        // defaults). `enabled` defaults to false: absent/disabled = ZERO Loki
+        // network calls. `endpoint` stores the base URL only (user-provided,
+        // e.g. http://100.108.226.64:3100); the pusher appends
+        // /loki/api/v1/push (D2). `headers` are static extra headers (Bearer
+        // token belongs in env, never config). Free text (note/halt prose) is
+        // NEVER a label — it rides the JSON line (ISC-A-1).
+        loki: Type.Optional(
+          Type.Object(
+            {
+              enabled: Type.Optional(
+                Type.Boolean({
+                  description:
+                    'Push flow transition-event streams to Loki. Default false (disabled — zero network calls)',
+                  default: false,
+                }),
+              ),
+              endpoint: Type.Optional(
+                Type.String({
+                  description:
+                    'Loki base URL (user-provided, e.g. http://100.108.226.64:3100); events POST to <endpoint>/loki/api/v1/push. Required with telemetry.loki.enabled',
+                }),
+              ),
+              headers: Type.Optional(
+                Type.Record(Type.String(), Type.String(), {
+                  description:
+                    'Static extra headers for the Loki push. Secrets belong in env, not config',
+                }),
+              ),
+            },
+            {
+              description:
+                'Optional Loki transition-event stream, session-side only (PMR-ZV9Y 4.2)',
+            },
+          ),
+        ),
       },
       { description: 'Optional OTLP telemetry export (PMR-R8AG)' },
     ),
@@ -357,6 +399,33 @@ export function resolveLivenessSettings(config: Partial<PiFlowConfig>): {
   if (config.liveness?.intervalMinutes !== undefined) {
     settings.intervalMinutes = config.liveness.intervalMinutes
   }
+  return settings
+}
+
+/**
+ * AIDEV-NOTE: PMR-ZV9Y (4.2) — typed read of the session-side `telemetry.loki`
+ * block. SINGLE STRICT READER (no daemon/tolerant half — the daemon never
+ * pushes Loki, see the AIDEV-NOTE on the schema block): an invalid shape
+ * throws at the readConfigFile boundary before this is ever reached.
+ * Defaults: disabled (`enabled` absent/false → resolveLokiSettings.enabled
+ * false = ZERO Loki network calls), empty endpoint, empty headers. The
+ * `LokiSettings` this returns plugs straight into telemetry/loki.ts
+ * pushLokiEvent. Takes Partial so readConfigFile's return type plugs in.
+ */
+export function resolveLokiSettings(config: Partial<PiFlowConfig>): {
+  enabled: boolean
+  endpoint: string
+  headers: Record<string, string>
+} {
+  const loki = config.telemetry?.loki
+  const settings = {
+    enabled: false,
+    endpoint: '',
+    headers: {} as Record<string, string>,
+  }
+  if (loki?.enabled !== undefined) settings.enabled = loki.enabled
+  if (loki?.endpoint !== undefined) settings.endpoint = loki.endpoint
+  if (loki?.headers !== undefined) settings.headers = { ...loki.headers }
   return settings
 }
 
