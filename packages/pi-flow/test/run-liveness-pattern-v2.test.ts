@@ -1,17 +1,25 @@
 // AIDEV-NOTE: PMR-ZV9Y 3.2 — the liveness half of ISC-1's render requirement.
-// flow/liveness.ts gates on the V1 loop status (`projectsRunning`), then pushes
-// `buildPushBody(...)`, which renders the v1 frozen block plus the appended v2
-// blocks (flow/run-health.ts blocks 10+). So a running ref's liveness re-render
-// must carry `pi_flow_state{…state="running"}` without this pass having any v2
-// logic of its own — that is the whole point of routing both push producers
-// through the identical render seam (the PMR-8MQH invariant).
+// flow/liveness.ts gates on the V1 loop STATUS in the JOURNAL
+// (`projectsRunning`), then pushes `buildPushBody(...)`, which renders the
+// frozen run-health block plus the appended v2 state gauges. So a running
+// ref's liveness re-render must carry `pi_flow_state{…state="running"}`
+// without this pass having any v2 logic of its own — that is the whole point of
+// routing both push producers through the identical render seam (the PMR-8MQH
+// invariant).
 //
-// Deliberately a NEW file: test/run-liveness.test.ts stays untouched and green
-// (ISC-A-4). It owns the v1 liveness gates; this file only proves the v2 lines
-// ride the same body. Fixtures follow the run-liveness.test.ts wired pattern —
-// a REAL journal in a mkTmpDir agent dir, the engine on `createLivenessDeps`
-// output, and a capturing `fakeFetch` — so the path exercised is journal read →
-// projection gate → rollup → render → POST, not a mocked render.
+// AIDEV-NOTE (PMR-ZV9Y 7.1): the v1 STATE-VOCABULARY metric lines are retired,
+// but the liveness GATE is not — `projectsRunning` reads the journal's loop
+// record, never a metric line, which is why this pass needed no logic change.
+// The assertions below therefore probe the frozen block for a kept line
+// (`pi_flow_blocker_retries`, derived from the same loop record the retired
+// status gauge used) and assert the retired line is GONE.
+//
+// Deliberately a NEW file: test/run-liveness.test.ts owns the v1 liveness gates;
+// this file only proves the v2 lines ride the same body. Fixtures follow the
+// run-liveness.test.ts wired pattern — a REAL journal in a mkTmpDir agent dir,
+// the engine on `createLivenessDeps` output, and a capturing `fakeFetch` — so
+// the path exercised is journal read → projection gate → rollup → render →
+// POST, not a mocked render.
 import assert from 'node:assert/strict'
 import { readdirSync } from 'node:fs'
 import path from 'node:path'
@@ -115,10 +123,13 @@ test('the liveness re-render of a running ref carries pi_flow_state{state="runni
   assert.deepEqual(report, { scanned: 1, pushed: 1, skipped: 0, failed: 0 })
   assert.equal(calls.length, 1)
   const body = calls[0]?.body ?? ''
-  // the v1 frozen line is still there, unmodified
+  // AIDEV-NOTE (PMR-ZV9Y 7.1): pi_flow_run_status is retired — the frozen block
+  // must NOT carry it any more, and the kept loop-record counter proves the
+  // block rendered at all.
+  assert.ok(!body.includes('pi_flow_run_status'), body)
   assert.ok(
-    body.includes(`pi_flow_run_status{ref="${REF}",status="running"} 1`),
-    `missing the v1 status line:\n${body}`,
+    body.includes(`pi_flow_blocker_retries{ref="${REF}"} 0`),
+    `missing the frozen block:\n${body}`,
   )
   // the v2 line rides the same body, appended after it
   assert.ok(
@@ -135,9 +146,9 @@ test('the liveness re-render of a running ref carries pi_flow_state{state="runni
     body.includes(`pi_flow_phase{ref="${REF}",phase="plan"} 1`),
     `missing the v2 phase line:\n${body}`,
   )
-  // v2 strictly after the v1 block
+  // v2 strictly after the frozen block
   assert.ok(
-    body.indexOf('pi_flow_run_status') < body.indexOf('pi_flow_state{'),
+    body.indexOf('pi_flow_blocker_retries') < body.indexOf('pi_flow_state{'),
     body,
   )
   // the exposition stays a valid Pushgateway body: newline-terminated, no

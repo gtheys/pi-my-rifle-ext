@@ -1,11 +1,15 @@
 // AIDEV-NOTE: PMR-ZV9Y 3.2 — tests for the v2 half of `tombstoneBody`
-// (flow/reconcile.ts): the six v2 gauge families render into the SAME stored
-// group body as the frozen v1 lines, so a tombstone must flip
+// (flow/reconcile.ts): the v2 gauge families render into the SAME stored group
+// body as the frozen run-health lines, so a tombstone must flip
 // `pi_flow_state{…state="halted"|"waiting_human"|"waiting_machine"}` and its
 // `pi_flow_state_start_seconds` twin to `state="stale"` (ISC-8) with the exact
-// label-VALUE-only surgery v1 applies to `status="…"`. Deliberately a NEW file
-// so `test/reconcile.test.ts` stays untouched (ISC-A-4); the v1-only cases it
-// owns are the proof that the v1 behaviour did not move.
+// label-VALUE-only surgery the retired v1 status line used to get.
+//
+// AIDEV-NOTE (PMR-ZV9Y 7.1): the v1 state vocabulary is retired, so this file
+// is the ONLY tombstone shape: `tombstoneBody` flips nothing but the two v2
+// state families, and it DROPS no line at all any more (the halt_reason drop
+// disappeared with halt_reason itself). The fixtures keep one retired v1 line
+// each as a regression guard that the engine no longer touches it.
 //
 // Fixtures keep reconcile.test.ts's REAL shape: what `fetchGroupBody` reads
 // back from a live gateway, i.e. alphabetical labels (job, mode, reason, ref,
@@ -33,11 +37,14 @@ function haltedV2Lines(): string[] {
 test('tombstoneBody: v2 halted state lines flip to stale, values untouched', () => {
   const got = tombstoneBody(body(...haltedV2Lines()))
   assert.notEqual(got, null)
+  // AIDEV-NOTE (PMR-ZV9Y 7.1): the stored v1 status line in this fixture is a
+  // REGRESSION GUARD — the engine must leave it byte-identical, because the v1
+  // rewrite disappeared with the v1 lines. Nothing is dropped from the body.
   assert.equal(
     got,
     body(
       'pi_flow_blocker_retries{job="pi-flow",mode="work",ref="DP-236"} 0',
-      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-236",status="stale"} 1',
+      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-236",status="halted"} 1',
       'pi_flow_state{job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="stale"} 1',
       'pi_flow_state_start_seconds{job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="stale"} 1795428060',
     ),
@@ -118,15 +125,15 @@ test('tombstoneBody: the phase/step/wait v2 families are never tombstoned', () =
   ])
 })
 
-test('tombstoneBody: running and done are NOT flipped (v1 mirror)', () => {
-  // AIDEV-NOTE (PMR-ZV9Y 3.2 running-state decision): v1 leaves
-  // `pi_flow_run_status{status="running"}` and `status="done"` alone — they are
-  // outside LIVENESS_STATUSES, and a group holding ONLY such a line reads as
+test('tombstoneBody: running and done are NOT flipped (unchanged posture)', () => {
+  // AIDEV-NOTE (PMR-ZV9Y 3.2 running-state decision, unchanged by 7.1): v2
+  // leaves `state="running"` and `state="done"` alone — they are outside the
+  // tombstone targets, and a group holding ONLY such a line reads as
   // "already clean" (null) because the candidate filter is journal-keyed
-  // (livenessStatusOf). v2 mirrors that exactly: running/done/stale are not a
-  // tombstone target, so the known limitation P2-4 (a stored group that shows a
-  // status the journal has already moved past is not retired by this pass)
-  // behaves identically for both vocabularies instead of half-tombstoning one.
+  // (livenessStatusOf). That mirrors what the retired v1 status rewrite did for
+  // `status="running"|"done"`, so the known limitation P2-4 (a stored group
+  // that shows a status the journal has already moved past is not retired by
+  // this pass) behaves the same way as before the retirement.
   const running = tombstoneBody(
     body(
       'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="running"} 1',
@@ -210,23 +217,21 @@ test('tombstoneBody: comment lines pass through untouched (type-line rule)', () 
   )
 })
 
-test('tombstoneBody: a v1-only body behaves exactly as before', () => {
-  // The v1 pattern (test/reconcile.test.ts) pinned here once more for the
-  // mixed-vocabulary call site: halted status -> stale, halt_reason dropped.
+test('tombstoneBody: a v1-only body is no longer a target at all (7.1)', () => {
+  // The retired vocabulary: `pi_flow_run_status` used to flip to
+  // `status="stale"` and `pi_flow_run_halt_reason` used to be DROPPED from the
+  // re-POSTed body. Both behaviours disappeared with the lines themselves — a
+  // body that carries no v2 state line is now "already clean" and is never
+  // re-pushed, and every line in it survives byte-identical.
   const got = tombstoneBody(
     body(
       'pi_flow_run_halt_reason{job="pi-flow",mode="work",reason="boom",ref="DP-1"} 1',
       'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="paused"} 1',
       'pi_flow_gate_wait_seconds{choice="reject",gate="spec-review",job="pi-flow",mode="work",n="1",ref="DP-1"} 1830',
+      'pi_flow_human_wait_seconds{job="pi-flow",mode="work",ref="DP-1"} 1830',
     ),
   )
-  assert.equal(
-    got,
-    body(
-      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="stale"} 1',
-      'pi_flow_gate_wait_seconds{choice="reject",gate="spec-review",job="pi-flow",mode="work",n="1",ref="DP-1"} 1830',
-    ),
-  )
+  assert.equal(got, null)
 })
 
 test('tombstoneBody: an empty body and a body with no state line mean null', () => {
@@ -297,14 +302,20 @@ test('tombstoneBody: a body rendered by this package round-trips to stale', () =
     ),
     String(tombstoned),
   )
-  // the v1 status line flipped in the same pass, and nothing else moved
-  assert.ok(String(tombstoned).includes('status="stale"'), String(tombstoned))
+  // the retired v1 status line is gone from the rendered body, and the v2
+  // state lines flipped in its place
+  assert.ok(
+    !String(tombstoned).includes('pi_flow_run_status'),
+    String(tombstoned),
+  )
   assert.ok(!String(tombstoned).includes('state="halted"'), String(tombstoned))
+  // AIDEV-NOTE (PMR-ZV9Y 7.1): nothing may disappear from the body any more —
+  // the halt_reason drop retired with its metric, so the line count is equal.
   assert.equal(
     String(tombstoned)
       .split('\n')
       .filter((line) => line.length > 0).length,
-    rendered.split('\n').filter((line) => line.length > 0).length - 1,
-    'only pi_flow_run_halt_reason may disappear from the body',
+    rendered.split('\n').filter((line) => line.length > 0).length,
+    'a tombstone must rewrite values without dropping a line',
   )
 })

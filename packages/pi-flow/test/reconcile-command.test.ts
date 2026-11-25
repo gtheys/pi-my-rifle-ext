@@ -64,10 +64,15 @@ function haltedEvents(ref: string, trackRef: string): FlowRunEvent[] {
 }
 
 function haltedBody(trackRef: string): string {
+  // AIDEV-NOTE (PMR-ZV9Y 7.1): the v2 state pair is what makes this body a
+  // tombstone target now — the retired v1 lines below are kept only because a
+  // real stored group still carries them (gateway merges on write, PMR-WBC2).
   const lines = [
     `pi_flow_run_cost_usd{agent="main",job="pi-flow",mode="work",ref="${trackRef}",phase="plan",subtask=""} 0.5`,
     `pi_flow_run_halt_reason{job="pi-flow",mode="work",reason="flow halted at plan",ref="${trackRef}"} 1`,
     `pi_flow_run_status{job="pi-flow",mode="work",ref="${trackRef}",status="halted"} 1`,
+    `pi_flow_state{job="pi-flow",mode="work",reason="label_miss",ref="${trackRef}",state="halted"} 1`,
+    `pi_flow_state_start_seconds{job="pi-flow",mode="work",reason="label_miss",ref="${trackRef}",state="halted"} 1795428060`,
   ]
   return `${lines.join('\n')}\n`
 }
@@ -353,8 +358,9 @@ test('runReconcileCommand: a real POST body is the tombstone, not the fetched gr
   const engine = fakeEngine()
   const target = capture()
   await runReconcileCommand(gatewayDeps(engine), { kind: 'run' }, target.out)
-  assert.match(engine.pushes[0].body, /status="stale"/)
-  assert.equal(/halt_reason/.test(engine.pushes[0].body), false)
+  // AIDEV-NOTE (PMR-ZV9Y 7.1): the flip is on the v2 `state` label now, and no
+  // line is dropped from the body (the halt_reason drop retired with the metric).
+  assert.match(engine.pushes[0].body, /state="stale"/)
   assert.match(engine.pushes[0].body, /pi_flow_run_cost_usd/)
 })
 

@@ -35,17 +35,20 @@
 //     identical repeats do NOT restart the clock, a reason change DOES
 //     re-open (the seconds then land in the new reason's bucket, which is the
 //     point of the per-reason gauge). Open windows contribute nothing,
-//     re-opened waits sum, arithmetic stays unfloored — the same posture as
-//     scanPausedWindows in run-health.ts. Only waiting_human /
+//     re-opened waits sum, arithmetic stays unfloored — the same posture as the
+//     retired v1 scanPausedWindows in run-health.ts. Only waiting_human /
 //     waiting_machine accumulate; running / halted / done / stale never count
 //     as a wait.
 //  5. A journal with no 'state-change' events falls back to the paused-window
 //     scan re-implemented here (wait_kind 'human', reason '') rather than
 //     importing run-health.ts: that import is not on this subtask's allowlist
-//     and would deepen the cycle above. The arithmetic mirrors
-//     scanPausedWindows exactly, so ISC-6 values agree with the frozen
-//     pi_flow_human_wait_seconds aggregate. A v2 journal never runs the legacy
-//     scan — the two would double-count the same pause.
+//     and would deepen the cycle above. The arithmetic mirrored run-health.ts's
+//     scanPausedWindows exactly, so ISC-6 values agreed with the frozen
+//     pi_flow_human_wait_seconds aggregate. AIDEV-NOTE (PMR-ZV9Y 7.1): that
+//     aggregate and its scan are RETIRED, which makes this mirror the sole
+//     implementation of the paused-window arithmetic — the values it produces
+//     are unchanged, they simply no longer have a v1 twin to match. A v2 journal
+//     never runs the legacy scan — the two would double-count the same pause.
 //
 // AIDEV-NOTE: THE TYPE-LINE RULE — never add `# TYPE` / `# HELP` lines here,
 // even though that looks like the "correct" exposition format. No source in
@@ -150,7 +153,8 @@ function epochSeconds(at: string): number | undefined {
  * Positive finite span between two journal timestamps, in seconds. `undefined`
  * covers every unusable case (non-string, unparseable, zero, negative — the
  * last two mean the journal is out of order, which must never fabricate a
- * negative gauge). Same unfloored millisecond math as scanPausedWindows.
+ * negative gauge). Same unfloored millisecond math as the retired v1
+ * scanPausedWindows.
  */
 function spanSeconds(fromAt: string, toAt: string): number | undefined {
   if (typeof fromAt !== 'string' || typeof toAt !== 'string') return undefined
@@ -233,7 +237,9 @@ function addWait(
 }
 
 /**
- * Legacy paused-window scan, mirroring scanPausedWindows in run-health.ts:
+ * Legacy paused-window scan, mirroring run-health.ts's RETIRED
+ * scanPausedWindows (PMR-ZV9Y 7.1 — this is now the only implementation of
+ * that arithmetic):
  * a window opens at the first paused loop-state snapshot and closes at the
  * next event that is NOT a paused loop-state (consecutive paused snapshots do
  * not restart the clock); an unclosed window contributes nothing. Returns the

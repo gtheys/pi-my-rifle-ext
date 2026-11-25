@@ -23,6 +23,27 @@
 //     `sum(pi_flow_gate_wait_seconds)` / `pi_flow_human_wait_seconds` and all
 //     cost accounting are unaffected.
 //
+// AIDEV-NOTE (PMR-ZV9Y 7.1): the three bullets above are the PRE-retirement
+// (PMR-MSDJ/PMR-WBC2) semantics and are kept as history. The v1 state
+// vocabulary they describe (`pi_flow_run_status`, `pi_flow_run_halt_reason`)
+// is no longer rendered by flow/run-health.ts, so `tombstoneBody` now performs
+// the SAME label-VALUE-only surgery on the v2 STATE lines ONLY:
+// `pi_flow_state{…}` and `pi_flow_state_start_seconds{…}` with
+// `state="halted"|"waiting_human"|"waiting_machine"` become `state="stale"`.
+// No line is DROPPED any more: the only drop the engine ever made was
+// halt_reason, and that metric is gone with the v1 block, so the transform is
+// pure value surgery on the two v2 state families. The candidacy filter is
+// UNCHANGED and stays JOURNAL-keyed (`livenessStatusOf` reads the projected v1
+// loop status from the run journal, never a metric line), so retiring the v1
+// status series does not change WHICH refs are stale — only which lines in a
+// fetched body are rewritten.
+// Consequence to accept (matches the 6.5 cutover): a stored group that predates
+// the v2 render carries only v1 lines, so `tombstoneBody` reads it as "already
+// clean" (null) and never re-posts it. That is harmless because every alert
+// rule and board was cut to the v2 vocabulary in 6.2–6.5, so a stale v1-only
+// body drives nothing anymore; the pre-existing P2-4 "stored group the journal
+// no longer describes" limitation already covers this shape.
+//
 // AIDEV-NOTE: because a POST REPLACES THE WHOLE GROUP, the body must carry
 // every line that was stored — hence the GET-transform-POST round-trip via
 // `fetchGroupBody`. A body rebuilt from the journal could silently drop
@@ -89,8 +110,9 @@ const LIVE_ON_PROBE_REASON = 'ticket live on direct lookup'
 /** The tombstone status value (label-VALUE-only addition; frozen labels). */
 const STALE_STATUS = 'stale'
 
-const RUN_STATUS_METRIC = 'pi_flow_run_status{'
-const HALT_REASON_METRIC = 'pi_flow_run_halt_reason{'
+// AIDEV-NOTE (PMR-ZV9Y 7.1): the v1 line prefixes this engine used to key on
+// (`pi_flow_run_status{`, `pi_flow_run_halt_reason{`) are gone with the retired
+// v1 state vocabulary, so only the v2 state families below are targets now.
 
 // AIDEV-NOTE (PMR-ZV9Y 3.2): the v2 state families get the SAME label-VALUE-only
 // surgery as the v1 status line, for the same reason: renaming a metric or a
@@ -100,10 +122,10 @@ const HALT_REASON_METRIC = 'pi_flow_run_halt_reason{'
 // `pi_flow_state_start_seconds{` never matches `pi_flow_state{` because the 12th
 // char is `_`, not `{` — so one family can never shadow the other.
 //
-// The v1 rewrite retires `halted|paused`. Its v2 counterparts are `halted` (same
-// word) plus the two wait states v1 collapsed into `paused`:
-// `waiting_human` and `waiting_machine`. `running` and `done` are deliberately
-// NOT targets, mirroring v1 exactly: v1 never tombstones
+// The states the retired v1 rewrite used to retire were `halted|paused`. Its v2
+// counterparts are `halted` (same word) plus the two wait states v1 collapsed
+// into `paused`: `waiting_human` and `waiting_machine`. `running` and `done` are
+// deliberately NOT targets, mirroring v1 exactly: v1 never tombstoned
 // `status="running"|"done"`, and candidacy is JOURNAL-keyed
 // (`livenessStatusOf` reads the v1 loop status), so a group whose stored body
 // still shows a state the journal has moved past is reported "already clean"
@@ -168,43 +190,40 @@ export function computeStaleRefs(
 }
 
 /**
- * Pure line-wise transform of a group body read back from the gateway:
- * rewrite `status="halted"` / `status="paused"` to `status="stale"` on
- * `pi_flow_run_status` lines, drop `pi_flow_run_halt_reason` lines, keep
- * every other byte. Returns `null` when nothing was rewritten (already clean,
- * already tombstoned, a done run, or the group is gone) — callers skip those
- * so a body is never re-posted unchanged.
+ * Pure line-wise transform of a group body read back from the gateway: rewrite
+ * `state="halted"` / `state="waiting_human"` / `state="waiting_machine"` to
+ * `state="stale"` on `pi_flow_state` and `pi_flow_state_start_seconds` lines and
+ * keep every other byte. Returns `null` when nothing was rewritten (already
+ * clean, already tombstoned, a running/done run, or the group is gone) —
+ * callers skip those so a body is never re-posted unchanged.
+ *
+ * AIDEV-NOTE (PMR-ZV9Y 7.1): used to also rewrite `status="halted"|"paused"` on
+ * `pi_flow_run_status` and DROP every `pi_flow_run_halt_reason` line. Both
+ * behaviours disappeared with the v1 state vocabulary — the lines are no longer
+ * rendered, and a drop is exactly what the merge-on-write homelab gateway could
+ * not honour anyway (PMR-WBC2), so removing it loses nothing. `livenessStatusOf`
+ * below still decides candidacy from the JOURNAL's v1 loop status, which is
+ * untouched by this retirement (LoopStateRecord / LoopRunStatus stay, plan D2).
  *
  * AIDEV-NOTE (PMR-ZV9Y 3.2): since the v2 gauges render into the SAME push
- * body (flow/run-health.ts blocks 10+), the same pass now also flips
+ * body (flow/run-health.ts), the pass flips
  * `state="halted"|"waiting_human"|"waiting_machine"` to `state="stale"` on
  * `pi_flow_state` and `pi_flow_state_start_seconds` lines (ISC-8), so the
- * Waiting-on-me queue and the halted rule retire with the v1 status line
- * instead of keeping a dead run on the board. Every other v2 family
+ * Waiting-on-me queue and the halted rule retire with a closed run instead of
+ * keeping it on the board. Every other v2 family
  * (`pi_flow_phase`, `pi_flow_step`, `pi_flow_step_seconds`,
  * `pi_flow_wait_seconds`) is re-emitted byte-identical, exactly like the
  * counters and cost rows: only label VALUES on the state-bearing lines move.
  *
  * The rewrite is minimal substring surgery inside the label section: label
  * ORDER (the gateway emits them alphabetically, e.g.
- * `{job="pi-flow",mode="work",ref="X",status="halted"}`), all sibling labels
- * and the trailing ` 1` value must survive byte-identical.
+ * `{job="pi-flow",mode="work",ref="X",state="halted"}`), all sibling labels
+ * and the trailing value must survive byte-identical.
  */
 export function tombstoneBody(body: string): string | null {
   const out: string[] = []
   let rewrites = 0
   for (const line of body.split('\n')) {
-    if (line.startsWith(HALT_REASON_METRIC)) continue
-    if (line.startsWith(RUN_STATUS_METRIC)) {
-      const rewritten = swapLabelValue(line, 'status', LIVENESS_STATUSES)
-      if (rewritten !== null) {
-        out.push(rewritten)
-        rewrites += 1
-        continue
-      }
-      out.push(line)
-      continue
-    }
     if (startsWithAny(line, V2_STATE_METRICS)) {
       const rewritten = swapLabelValue(line, 'state', V2_LIVENESS_STATES)
       if (rewritten !== null) {
@@ -230,8 +249,7 @@ function startsWithAny(line: string, prefixes: readonly string[]): boolean {
  *  the line carries no retired value for that key. Only label tokens are
  *  touched: a `key="…"`-shaped sequence inside another label's VALUE (the
  *  gateway escapes those as `\"`) or a longer label name ending in the same
- *  characters is left alone. Shared by both vocabularies so the v1 status
- *  behaviour cannot drift from the v2 state behaviour. */
+ *  characters is left alone. */
 function swapLabelValue(
   line: string,
   key: string,

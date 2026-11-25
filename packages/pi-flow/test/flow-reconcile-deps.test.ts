@@ -60,11 +60,17 @@ function haltedWorkJournal(dir: string, ref = REF): Promise<void> {
 }
 
 /** A real-shaped `fetchGroupBody` result (the dump GET would filter to this
- *  group): alphabetical labels, `instance=""` already stripped by the fetcher. */
+ *  group): alphabetical labels, `instance=""` already stripped by the fetcher.
+ *  AIDEV-NOTE (PMR-ZV9Y 7.1): it deliberately carries BOTH the retired v1 state
+ *  lines (a homelab group stored before the retirement really does still serve
+ *  them — the gateway merges on write, PMR-WBC2) and the v2 state pair the
+ *  tombstone now keys on, so one fixture covers the parser and the engine. */
 const DUMP_LINES = [
   'pi_flow_run_cost_usd{agent="main",job="pi-flow",mode="work",phase="plan",ref="DP-236",session="main-01a202f3",subtask=""} 0.123456',
   'pi_flow_run_halt_reason{job="pi-flow",mode="work",reason="flow halted at plan",ref="DP-236"} 1',
   'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-236",status="halted"} 1',
+  'pi_flow_state{job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="halted"} 1',
+  'pi_flow_state_start_seconds{job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="halted"} 1795428060',
 ]
 const DUMP = `${[
   '# HELP pi_flow_run_status exported',
@@ -73,6 +79,8 @@ const DUMP = `${[
   `pi_flow_run_halt_reason{instance="",job="pi-flow",mode="work",reason="flow halted at plan",ref="DP-236"} 1`,
   `pi_flow_run_status{instance="",job="pi-flow",mode="work",ref="DP-236",status="halted"} 1`,
   'pi_flow_run_status{instance="",job="pi-flow",mode="work",ref="DP-OTHER",status="halted"} 1',
+  'pi_flow_state{instance="",job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="halted"} 1',
+  'pi_flow_state_start_seconds{instance="",job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="halted"} 1795428060',
 ].join('\n')}\n`
 
 interface FetchCall {
@@ -397,8 +405,15 @@ test('runReconcilePassOnce: one real pass tombstones the stale group and routes 
     post.url,
     'https://g:4479/metrics/job/pi-flow/ref/DP-236/mode/work',
   )
-  assert.ok(post.body?.includes('status="stale"'))
-  assert.ok(!post.body?.includes('pi_flow_run_halt_reason'))
+  // AIDEV-NOTE (PMR-ZV9Y 7.1): the tombstone flips the v2 STATE pair only. The
+  // retired v1 lines stay byte-identical in the re-POSTed body (the engine
+  // never dropped anything but halt_reason, and that drop retired with the
+  // metric) — harmless, because every consumer moved to v2 in 6.2-6.5.
+  assert.ok(post.body?.includes('state="stale"'), 'state pair must flip')
+  assert.ok(
+    post.body?.includes('pi_flow_run_halt_reason'),
+    'retired lines must pass through, not be dropped',
+  )
   assert.ok(post.body?.includes('pi_flow_run_cost_usd'))
 
   // aven fail-closed routes exactly one warning into the daemon log channel

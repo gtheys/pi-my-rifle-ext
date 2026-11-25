@@ -5,6 +5,8 @@
 // stripped, `#` comments already dropped. The same shape is in
 // test/push.test.ts (copied from the live gateway 2026-11-24) — keep both in
 // sync when the exposition changes.
+// AIDEV-NOTE (PMR-ZV9Y 7.1): the dump fixture below moved to the post-cutover
+// shape — the v2 state pair replaced the retired v1 state-vocabulary lines.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { TicketProbe } from '../aven/status.ts'
@@ -27,20 +29,23 @@ const TRACK_REF = 'DP-236'
 
 /** Real filtered group-body lines (verified against the live gateway with
  *  `fetchGroupBody` on 2026-11-24, then re-labelled to a work group): cost +
- *  tokens + tool calls + durations + liveness. The gateway's own
- *  push_time_seconds / push_failure_time_seconds lines are NOT here: the
+ *  tokens + tool calls + durations + the v2 liveness state lines. The gateway's
+ *  own push_time_seconds / push_failure_time_seconds lines are NOT here: the
  *  PMR-WBC2 fix drops them at read time (they carry the group labels but
  *  re-POSTing them untyped 400s the whole push). Note
- *  `pi_flow_tool_calls_total` carries its OWN `status="ok"` label — a decoy
- *  the surgery must never touch. */
+ *  `pi_flow_tool_calls_total` carries its OWN `status="ok"` label — a decoy the
+ *  surgery must never touch.
+ *  AIDEV-NOTE (PMR-ZV9Y 7.1): the retired v1 state-vocabulary lines
+ *  (`pi_flow_run_status`, `pi_flow_run_halt_reason`,
+ *  `pi_flow_human_wait_seconds`, `pi_flow_gate_wait_seconds`) are replaced by
+ *  the v2 `pi_flow_state` / `pi_flow_state_start_seconds` pair, which is what a
+ *  live halted work group actually holds after the 6.5 cutover. */
 const HALTED_LINES = [
   'pi_flow_blocker_retries{job="pi-flow",mode="work",ref="DP-236"} 0',
-  'pi_flow_gate_wait_seconds{choice="reject",gate="spec-review",job="pi-flow",mode="work",n="1",ref="DP-236"} 1830',
-  'pi_flow_human_wait_seconds{job="pi-flow",mode="work",ref="DP-236"} 1830',
   'pi_flow_run_cost_usd{agent="main",job="pi-flow",mode="work",phase="plan",ref="DP-236",session="main-01a202f3",subtask=""} 0.123456',
   'pi_flow_run_duration_seconds{job="pi-flow",mode="work",phase="plan",ref="DP-236"} 56.587',
-  'pi_flow_run_halt_reason{job="pi-flow",mode="work",reason="flow halted at plan: phase completed without landing the \\"planned\\" label",ref="DP-236"} 1',
-  'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-236",status="halted"} 1',
+  'pi_flow_state{job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="halted"} 1',
+  'pi_flow_state_start_seconds{job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="halted"} 1795428060',
   'pi_flow_tokens_total{agent="main",job="pi-flow",kind="input",mode="work",phase="plan",ref="DP-236",session="main-01a202f3"} 41943',
   'pi_flow_tool_calls_total{agent="main",job="pi-flow",mode="work",phase="plan",ref="DP-236",session="main-01a202f3",status="ok",tool="ask_user_question"} 2',
 ]
@@ -155,82 +160,52 @@ test('computeStaleRefs: output keeps the journal map iteration order', () => {
 // tombstoneBody
 // ---------------------------------------------------------------------------
 
-test('tombstoneBody: rewrites halted to stale and drops halt_reason', () => {
+// AIDEV-NOTE (PMR-ZV9Y 7.1): the v1-tombstone tests that lived here pinned the
+// `pi_flow_run_status` rewrite and the `pi_flow_run_halt_reason` drop. Both are
+// RETIRED behavior — the lines are no longer rendered and `tombstoneBody` now
+// performs label-VALUE surgery on the v2 state pair only. The v2 edge cases
+// (decoys, escaping, idempotence, running/done) are owned by
+// test/reconcile-tombstone-v2.test.ts; what stays here is the proof that the
+// surgery works on the REAL filtered gateway dump this file's fixtures come
+// from, and that no line is dropped any more.
+
+test('tombstoneBody: rewrites the halted v2 state pair and drops no line', () => {
   const got = tombstoneBody(`${HALTED_BODY}\n`)
   assert.notEqual(got, null)
-  const expected = HALTED_LINES.filter(
-    (line) => !line.startsWith('pi_flow_run_halt_reason{'),
-  ).map((line) =>
-    line.startsWith('pi_flow_run_status{')
-      ? line.replace('status="halted"', 'status="stale"')
+  const expected = HALTED_LINES.map((line) =>
+    line.startsWith('pi_flow_state')
+      ? line.replace('state="halted"', 'state="stale"')
       : line,
   )
   assert.equal(got, `${expected.join('\n')}\n`)
+  // both state families moved, and nothing left the body
+  assert.equal(String(got).match(/state="stale"/g)?.length, 2)
+  assert.equal(
+    String(got)
+      .split('\n')
+      .filter((line) => line.length > 0).length,
+    HALTED_LINES.length,
+  )
 })
 
-test('tombstoneBody: every non-status line stays byte-identical', () => {
+test('tombstoneBody: every non-state line stays byte-identical', () => {
   const got = tombstoneBody(`${HALTED_BODY}\n`)
   assert.notEqual(got, null)
   const original = HALTED_LINES.filter(
-    (line) =>
-      !line.startsWith('pi_flow_run_status{') &&
-      !line.startsWith('pi_flow_run_halt_reason{'),
+    (line) => !line.startsWith('pi_flow_state'),
   )
   const kept = String(got)
     .split('\n')
     .filter((line) => line.length > 0)
-    .filter(
-      (line) =>
-        !line.startsWith('pi_flow_run_status{') &&
-        !line.startsWith('pi_flow_run_halt_reason{'),
-    )
+    .filter((line) => !line.startsWith('pi_flow_state'))
   assert.deepEqual(kept, original)
 })
 
-test('tombstoneBody: rewrites paused to stale', () => {
-  const got = tombstoneBody(
-    body(
-      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="paused"} 1',
-    ),
-  )
-  assert.equal(
-    got,
-    body(
-      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="stale"} 1',
-    ),
-  )
-})
-
-test('tombstoneBody: personal group label set (no mode) is handled', () => {
-  const got = tombstoneBody(
-    body('pi_flow_run_status{job="pi-flow",ref="PMR-C0WG",status="halted"} 1'),
-  )
-  assert.equal(
-    got,
-    body('pi_flow_run_status{job="pi-flow",ref="PMR-C0WG",status="stale"} 1'),
-  )
-})
-
-test('tombstoneBody: halt_reason line is dropped, not rewritten', () => {
-  const got = tombstoneBody(
-    body(
-      'pi_flow_run_halt_reason{job="pi-flow",mode="work",reason="boom",ref="DP-1"} 1',
-      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="halted"} 1',
-    ),
-  )
-  assert.equal(
-    got,
-    body(
-      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="stale"} 1',
-    ),
-  )
-})
-
-test('tombstoneBody: no halted/paused status line means null (already clean)', () => {
+test('tombstoneBody: no v2 state line means null (already clean)', () => {
   assert.equal(
     tombstoneBody(
       body(
-        'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="done"} 1',
+        'pi_flow_state{job="pi-flow",mode="work",reason="",ref="DP-1",state="done"} 1',
       ),
     ),
     null,
@@ -242,56 +217,28 @@ test('tombstoneBody: no halted/paused status line means null (already clean)', (
   assert.equal(tombstoneBody(''), null)
 })
 
-test('tombstoneBody: a stray halt_reason with no liveness line still means null', () => {
-  // Fail-safe direction: the engine then records "already clean" and never
-  // re-posts a body that dropped lines without rewriting a status.
+test('tombstoneBody: a body of only retired v1 lines means null (7.1)', () => {
+  // The retirement guard for this engine: the status rewrite and the
+  // halt_reason drop are gone, so a group that carries nothing but the retired
+  // vocabulary is left completely alone (reported "already clean", never
+  // re-pushed). Safe because every alert rule and board moved to v2 in 6.2-6.5.
   assert.equal(
     tombstoneBody(
       body(
         'pi_flow_run_halt_reason{job="pi-flow",reason="boom",ref="DP-1"} 1',
-        'pi_flow_run_status{job="pi-flow",ref="DP-1",status="done"} 1',
+        'pi_flow_run_status{job="pi-flow",ref="DP-1",status="halted"} 1',
+        'pi_flow_human_wait_seconds{job="pi-flow",ref="DP-1"} 1830',
+        'pi_flow_gate_wait_seconds{gate="spec-review",job="pi-flow",n="1",ref="DP-1"} 1830',
       ),
     ),
     null,
   )
 })
 
-test('tombstoneBody: rewrites multiple liveness lines (defensive)', () => {
-  const got = tombstoneBody(
-    body(
-      'pi_flow_run_status{job="pi-flow",ref="DP-1",status="halted"} 1',
-      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="paused"} 1',
-    ),
-  )
-  assert.equal(
-    got,
-    body(
-      'pi_flow_run_status{job="pi-flow",ref="DP-1",status="stale"} 1',
-      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-1",status="stale"} 1',
-    ),
-  )
-})
-
-test('tombstoneBody: only pi_flow_run_status lines get surgery', () => {
-  // A cost line carrying a `phase="halted"`-shaped value must pass through
-  // untouched — the rewrite is keyed on the metric name prefix.
-  const line =
-    'pi_flow_run_cost_usd{job="pi-flow",phase="halted",ref="DP-1"} 0.25'
-  const got = tombstoneBody(
-    body(
-      line,
-      'pi_flow_run_status{job="pi-flow",ref="DP-1",status="halted"} 1',
-    ),
-  )
-  assert.equal(
-    got,
-    body(line, 'pi_flow_run_status{job="pi-flow",ref="DP-1",status="stale"} 1'),
-  )
-})
-
-test('tombstoneBody: a decoy status label on another metric is untouched', () => {
-  // pi_flow_tool_calls_total really does carry status="ok" on the live
-  // gateway, so the rewrite must stay keyed on the metric name.
+test('tombstoneBody: a decoy state label on another metric is untouched', () => {
+  // pi_flow_tool_calls_total really does carry a `status` label on the live
+  // gateway, so the rewrite must stay keyed on the metric name — and a cost
+  // line wearing a `state` label must not be dragged in either.
   const got = tombstoneBody(`${HALTED_BODY}\n`)
   assert.notEqual(got, null)
   assert.ok(
@@ -299,39 +246,39 @@ test('tombstoneBody: a decoy status label on another metric is untouched', () =>
       'pi_flow_tool_calls_total{agent="main",job="pi-flow",mode="work",phase="plan",ref="DP-236",session="main-01a202f3",status="ok",tool="ask_user_question"} 2',
     ),
   )
-  assert.equal(String(got).match(/status="stale"/g)?.length, 1)
+  assert.equal(String(got).match(/state="stale"/g)?.length, 2)
 })
 
 test('tombstoneBody: comment lines pass through untouched', () => {
   const got = tombstoneBody(
     body(
-      '# HELP pi_flow_run_status Auto-detected based on sample values below.',
-      '# TYPE pi_flow_run_status untyped',
-      'pi_flow_run_status{job="pi-flow",ref="DP-1",status="paused"} 1',
+      '# HELP pi_flow_state Auto-detected based on sample values below.',
+      '# TYPE pi_flow_state untyped',
+      'pi_flow_state{job="pi-flow",ref="DP-1",reason="",state="waiting_machine"} 1',
     ),
   )
   assert.equal(
     got,
     body(
-      '# HELP pi_flow_run_status Auto-detected based on sample values below.',
-      '# TYPE pi_flow_run_status untyped',
-      'pi_flow_run_status{job="pi-flow",ref="DP-1",status="stale"} 1',
+      '# HELP pi_flow_state Auto-detected based on sample values below.',
+      '# TYPE pi_flow_state untyped',
+      'pi_flow_state{job="pi-flow",ref="DP-1",reason="",state="stale"} 1',
     ),
   )
 })
 
-test('tombstoneBody: status surgery does not touch a status-like label value', () => {
-  // `reason="...status=\\"halted\\"..."` — escaped quotes inside a value must
-  // not be treated as the status label of the run_status line.
+test('tombstoneBody: state surgery does not touch a state-like label value', () => {
+  // `note="...state=\"halted\"..."` — escaped quotes inside a value must not be
+  // treated as the state label of the state line.
   const got = tombstoneBody(
     body(
-      'pi_flow_run_status{job="pi-flow",note="still status=\\"halted\\"",ref="DP-1",status="halted"} 1',
+      'pi_flow_state{job="pi-flow",note="still state=\\"halted\\"",reason="",ref="DP-1",state="halted"} 1',
     ),
   )
   assert.equal(
     got,
     body(
-      'pi_flow_run_status{job="pi-flow",note="still status=\\"halted\\"",ref="DP-1",status="stale"} 1',
+      'pi_flow_state{job="pi-flow",note="still state=\\"halted\\"",reason="",ref="DP-1",state="stale"} 1',
     ),
   )
 })
@@ -591,7 +538,7 @@ test('runReconcilePass: personal-mode stale run uses the personal group', async 
         {
           ok: true,
           body: body(
-            'pi_flow_run_status{job="pi-flow",ref="PMR-MSDJ",status="paused"} 1',
+            'pi_flow_state{job="pi-flow",reason="spec_approval_pending",ref="PMR-MSDJ",state="waiting_human"} 1',
           ),
         } as GroupBodyResult,
       ],
@@ -602,7 +549,9 @@ test('runReconcilePass: personal-mode stale run uses the personal group', async 
   assert.deepEqual(report.tombstoned, [REF_WORK])
   assert.equal(
     rec.pushes[0].body,
-    body('pi_flow_run_status{job="pi-flow",ref="PMR-MSDJ",status="stale"} 1'),
+    body(
+      'pi_flow_state{job="pi-flow",reason="spec_approval_pending",ref="PMR-MSDJ",state="stale"} 1',
+    ),
   )
 })
 
@@ -640,7 +589,7 @@ test('runReconcilePass: empty group body (gateway lost the group) is a clean ski
 test('runReconcilePass: already-clean body is a silent skip', async () => {
   const clean = body(
     'pi_flow_run_cost_usd{job="pi-flow",mode="work",ref="DP-236"} 1.5',
-    'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-236",status="stale"} 1',
+    'pi_flow_state{job="pi-flow",mode="work",reason="label_miss",ref="DP-236",state="stale"} 1',
   )
   const rec = fakeDeps({
     bodies: new Map([
@@ -718,9 +667,13 @@ test('runReconcilePass: tombstone body round-trips the full group (never rebuilt
   // PMR-WBC2 (inverted): this assertion used to REQUIRE push_time_seconds in
   // the re-POSTed body — pinning the bug that made every tombstone push 400.
   assert.ok(!pushed.includes('push_time_seconds'))
-  assert.ok(pushed.includes('pi_flow_human_wait_seconds'))
-  assert.ok(!pushed.includes('pi_flow_run_halt_reason'))
-  assert.ok(pushed.includes('status="stale"'))
+  // AIDEV-NOTE (PMR-ZV9Y 7.1): the group is re-pushed COMPLETE — the cost rows
+  // that only the stored body carries survive, and no line is dropped. That is
+  // the whole point of the GET-transform-POST round trip and it is unchanged by
+  // the retirement; only which lines get value surgery changed.
+  assert.ok(pushed.includes('pi_flow_run_duration_seconds'))
+  assert.ok(pushed.includes('pi_flow_tool_calls_total'))
+  assert.ok(pushed.includes('state="stale"'))
 })
 
 function runStartNamed(

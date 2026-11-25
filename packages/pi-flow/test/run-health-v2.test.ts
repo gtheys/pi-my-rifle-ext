@@ -1,16 +1,20 @@
 // AIDEV-NOTE: PMR-ZV9Y 3.2 — tests for the v2 append site in
-// `renderRunHealthLines` (flow/run-health.ts): blocks 10+ (the six v2 gauge
-// families from flow/state-metrics.ts) render AFTER the frozen v1 block, and
-// the v1 lines themselves do not move. This is the render half of ISC-1 and
-// the byte-identity half of ISC-A-4 — the live alert rules and the `piflow-*`
-// boards read the v1 series until the 6.5 cutover, so "additive" is a
-// production requirement, not a style preference.
+// `renderRunHealthLines` (flow/run-health.ts): the v2 state-machine gauges
+// (the six families from flow/state-metrics.ts) render AFTER the frozen block,
+// and the frozen lines themselves do not move. This is the render half of ISC-1
+// and the byte-identity half of ISC-A-4.
 //
-// Deliberately a NEW file: test/run-health.test.ts stays untouched and green
-// (ISC-A-4), and it owns the v1 exact-body pins. What is pinned here is the
-// seam between the two vocabularies — the v1 prefix byte-for-byte plus the v2
-// suffix in the plan's table order — and the no-derivation case where the body
-// must equal the v1 body exactly.
+// Deliberately a NEW file: it owns the seam between the surviving frozen block
+// and the v2 suffix — the frozen prefix byte-for-byte plus the v2 suffix in the
+// plan's table order — and the no-derivation case where the body must equal the
+// frozen body exactly.
+// AIDEV-NOTE (PMR-ZV9Y 7.1): the four v1 STATE-VOCABULARY lines
+// (`pi_flow_run_status`, `pi_flow_run_halt_reason`, `pi_flow_human_wait_seconds`,
+// `pi_flow_gate_wait_seconds`) are retired, so the "v1 prefix" this file used to
+// pin is now the SMALLER frozen set: gate decisions, retry attempts, blocker
+// retries, worktree sweep, run start. The assertions below were updated to that
+// shape; `splitLines().frozen` is the renamed former `splitLines().v1` bucket
+// (same filter, now literally the frozen contract).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { buildPushBody } from '../flow/cost.ts'
@@ -23,7 +27,16 @@ const REF = 'PMR-H'
 const T0 = '2026-11-23T10:00:00.000Z'
 const START_SECONDS = Math.floor(Date.parse(T0) / 1000)
 
-/** The metric families 3.2 appends, i.e. everything that is NOT v1. */
+/** The metric families the frozen run-health block renders (post-7.1 set). */
+const FROZEN_PREFIXES = [
+  'pi_flow_gate_decisions_total{',
+  'pi_flow_retry_attempts{',
+  'pi_flow_blocker_retries{',
+  'pi_flow_worktree_sweep_total{',
+  'pi_flow_run_start_seconds{',
+]
+
+/** The metric families flow/state-metrics.ts appends after the frozen block. */
 const V2_PREFIXES = [
   'pi_flow_state{',
   'pi_flow_state_start_seconds{',
@@ -84,20 +97,20 @@ function isV2Line(line: string): boolean {
   return V2_PREFIXES.some((prefix) => line.startsWith(prefix))
 }
 
-/** Split a rendered body into the v1 prefix and the appended v2 suffix. */
+/** Split a rendered body into the frozen prefix and the appended v2 suffix. */
 function splitLines(lines: readonly string[]): {
-  v1: string[]
+  frozen: string[]
   v2: string[]
 } {
   return {
-    v1: lines.filter((line) => !isV2Line(line)),
+    frozen: lines.filter((line) => !isV2Line(line)),
     v2: lines.filter((line) => isV2Line(line)),
   }
 }
 
 // ---------------------------------------------------- the append-site contract
 
-test('a v2 journal renders the frozen v1 prefix byte-for-byte, then the v2 suffix', () => {
+test('a v2 journal renders the frozen prefix byte-for-byte, then the v2 suffix', () => {
   const events = [
     runStart(),
     loopState(shift(1), 'running', 'plan'),
@@ -107,18 +120,23 @@ test('a v2 journal renders the frozen v1 prefix byte-for-byte, then the v2 suffi
     stepStart('plan', 'plan.spec-approval', shift(60)),
   ]
   const lines = renderRunHealthLines(REF, events)
-  // The v1 block, verbatim and in its original order: run status, the gate
-  // decision, the two counters, the run-start epoch, the per-gate wait. No
-  // pi_flow_human_wait_seconds here because nothing journaled a paused
-  // loop-state.
-  assert.deepEqual(splitLines(lines).v1, [
-    'pi_flow_run_status{ref="PMR-H",status="running"} 1',
+  // The frozen block, verbatim and in its original order: the gate decision,
+  // the two counters, the run-start epoch. AIDEV-NOTE (PMR-ZV9Y 7.1): the run
+  // status, halt reason and per-gate wait lines that used to open this block
+  // are retired — the v2 suffix below carries that vocabulary now.
+  assert.deepEqual(splitLines(lines).frozen, [
     'pi_flow_gate_decisions_total{ref="PMR-H",gate="spec-review",choice="approve"} 1',
     'pi_flow_retry_attempts{ref="PMR-H"} 0',
     'pi_flow_blocker_retries{ref="PMR-H"} 0',
     `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
-    'pi_flow_gate_wait_seconds{ref="PMR-H",gate="spec-review",choice="approve",n="1"} 0',
   ])
+  // every frozen line is on the post-7.1 frozen list (guards the rename above)
+  for (const line of splitLines(lines).frozen) {
+    assert.ok(
+      FROZEN_PREFIXES.some((prefix) => line.startsWith(prefix)),
+      `unexpected frozen line: ${line}`,
+    )
+  }
   // The v2 suffix, in the plan's vocabulary-table order.
   assert.deepEqual(splitLines(lines).v2, [
     `pi_flow_state{ref="PMR-H",state="waiting_human",reason="spec_approval_pending"} 1`,
@@ -126,13 +144,13 @@ test('a v2 journal renders the frozen v1 prefix byte-for-byte, then the v2 suffi
     'pi_flow_phase{ref="PMR-H",phase="plan"} 1',
     'pi_flow_step{ref="PMR-H",phase="plan",step="plan.spec-approval"} 1',
   ])
-  // strict position: every v2 line sits after every v1 line
-  let lastV1 = -1
+  // strict position: every v2 line sits after every frozen line
+  let lastFrozen = -1
   for (let index = 0; index < lines.length; index += 1) {
-    if (!isV2Line(lines[index])) lastV1 = index
+    if (!isV2Line(lines[index])) lastFrozen = index
   }
   const firstV2 = lines.findIndex(isV2Line)
-  assert.ok(firstV2 > lastV1, lines.join('\n'))
+  assert.ok(firstV2 > lastFrozen, lines.join('\n'))
 })
 
 test('the v2 suffix is exactly renderStateMetricLines output, appended unchanged', () => {
@@ -148,13 +166,12 @@ test('the v2 suffix is exactly renderStateMetricLines output, appended unchanged
     ...renderStateMetricLines(REF, events),
   ])
 })
-
-// -------------------------------------------------- nothing derives = v1 body
+// -------------------------------------------------- nothing derives = frozen body
 
 test('no v2 lines when the journal has a run-start but no state at all', () => {
-  // The projection exists (so the v1 block renders its counters) but carries
+  // The projection exists (so the frozen block renders its counters) but carries
   // neither a loop record nor a 'state-change': renderStateMetricLines derives
-  // nothing and the body IS the v1 body, byte for byte.
+  // nothing and the body IS the frozen body, byte for byte.
   const lines = renderRunHealthLines(REF, [runStart()])
   assert.deepEqual(lines, [
     'pi_flow_retry_attempts{ref="PMR-H"} 0',
@@ -169,7 +186,7 @@ test('an empty journal renders nothing in either vocabulary', () => {
 })
 
 test('a journal with no run-start renders nothing (no projection to agree with)', () => {
-  // Both blocks must describe the same run: with no projection the v1 block
+  // Both blocks must describe the same run: with no projection the frozen block
   // emits nothing, so the v2 block must not start a body on its own.
   const events = [
     loopState(shift(1), 'running', 'plan'),
@@ -183,21 +200,18 @@ test('a journal with no run-start renders nothing (no projection to agree with)'
 test('a legacy journal gains v2 lines through the append site (ISC-6)', () => {
   // No 'state-change' events at all: the v2 block comes from the legacy
   // loop-status fallback, so an old run shows the new vocabulary with reason
-  // "" while its frozen v1 lines stay exactly where they were.
+  // "" while its frozen lines stay exactly where they were.
   const events = [
     runStart(),
     loopState(shift(1), 'halted', 'validate'),
     gateAnswer(shift(2), 'code-review', 'fail'),
   ]
   const lines = renderRunHealthLines(REF, events)
-  assert.deepEqual(splitLines(lines).v1, [
-    'pi_flow_run_status{ref="PMR-H",status="halted"} 1',
-    'pi_flow_run_halt_reason{ref="PMR-H",reason=""} 1',
+  assert.deepEqual(splitLines(lines).frozen, [
     'pi_flow_gate_decisions_total{ref="PMR-H",gate="code-review",choice="fail"} 1',
     'pi_flow_retry_attempts{ref="PMR-H"} 0',
     'pi_flow_blocker_retries{ref="PMR-H"} 0',
     `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
-    'pi_flow_gate_wait_seconds{ref="PMR-H",gate="code-review",choice="fail",n="1"} 0',
   ])
   assert.deepEqual(splitLines(lines).v2, [
     'pi_flow_state{ref="PMR-H",state="halted",reason=""} 1',
@@ -239,7 +253,7 @@ test('the render is deterministic for identical events', () => {
   )
 })
 
-test('buildPushBody carries both vocabularies (the shared seam of both push paths)', () => {
+test('buildPushBody carries the frozen block and the v2 gauges (the shared seam of both push paths)', () => {
   // Both producers of a stored group go through buildPushBody: the terminal
   // autopush and the daemon liveness pass (flow/liveness.ts). Asserting the
   // v2 lines here proves the ISC-1 render half for the autopush path;
@@ -250,14 +264,15 @@ test('buildPushBody carries both vocabularies (the shared seam of both push path
     change('running', '', shift(1)),
   ]
   const body = buildPushBody(REF, [], [], events)
-  assert.ok(
-    body.includes('pi_flow_run_status{ref="PMR-H",status="running"} 1'),
-    body,
-  )
+  // AIDEV-NOTE (PMR-ZV9Y 7.1): the retired pi_flow_run_status line used to be
+  // the frozen-block probe here; pi_flow_blocker_retries carries that role —
+  // it derives from the same projected loop record and is still emitted.
+  assert.ok(body.includes('pi_flow_blocker_retries{ref="PMR-H"} 0'), body)
   assert.ok(
     body.includes('pi_flow_state{ref="PMR-H",state="running",reason=""} 1'),
     body,
   )
+  assert.ok(!body.includes('pi_flow_run_status'), body)
   assert.ok(body.endsWith('\n'))
   assert.ok(!body.endsWith('\n\n'))
 })

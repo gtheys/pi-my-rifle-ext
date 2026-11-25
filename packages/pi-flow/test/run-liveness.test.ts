@@ -545,8 +545,15 @@ function nullProjectionJournal(ref: string): FlowRunEvent[] {
   return [{ kind: 'note', at: AT_START, ref, text: 'no run-start here' }]
 }
 
-function statusLine(ref: string, status: LoopRunStatus): string {
-  return `pi_flow_run_status{ref="${ref}",status="${status}"} 1`
+// AIDEV-NOTE (PMR-ZV9Y 7.1): this helper used to build the
+// `pi_flow_run_status{…status="running"}` line that proved a liveness push
+// carried the run-health block. That metric is retired, so it now probes a KEPT
+// line of the same block — `pi_flow_retry_attempts`, which renderRunHealthLines
+// emits for every projected run. Prefix-only on purpose: the assertion is "the
+// health block for this ref is in the body", and the counter value depends on
+// the fixture's attempt records.
+function healthLine(ref: string): string {
+  return `pi_flow_retry_attempts{ref="${ref}"}`
 }
 
 interface FakeEngineOptions {
@@ -670,7 +677,7 @@ test('runLivenessPassOnce: no refs enumerated means no read, no push, no warn', 
 
 // ---- the running gate (ISC-1 / ISC-3) ------------------------------------
 
-test('runLivenessPassOnce: a running work ref is pushed with status=running AND cost lines (ISC-1/2/7)', async () => {
+test('runLivenessPassOnce: a running work ref is pushed with the health block AND cost lines (ISC-1/2/7)', async () => {
   const t = fakeEngine({
     refs: [REF],
     events: eventsMap([[REF, costJournal(REF, 'running')]]),
@@ -682,8 +689,8 @@ test('runLivenessPassOnce: a running work ref is pushed with status=running AND 
   assert.equal(t.posts[0]?.mode, 'work')
   const body = t.posts[0]?.body ?? ''
   assert.ok(
-    body.includes(statusLine(TRACK_REF, 'running')),
-    `expected a running status line, got:\n${body}`,
+    body.includes(healthLine(TRACK_REF)),
+    `expected the run-health block, got:\n${body}`,
   )
   assert.match(body, /pi_flow_run_cost_usd\{[^}]*\} 0\.5\n/)
   assert.match(body, /pi_flow_tokens_total\{[^}]*kind="input"[^}]*\} 10/)
@@ -760,7 +767,7 @@ test('runLivenessPassOnce: an empty-rollup running ref is pushed health-only (IS
   const report = await runLivenessPassOnce(t.deps)
   assert.deepEqual(report, { scanned: 1, pushed: 1, skipped: 0, failed: 0 })
   const body = t.posts[0]?.body ?? ''
-  assert.ok(body.includes(statusLine(REF, 'running')), body)
+  assert.ok(body.includes(healthLine(REF)), body)
   assert.match(body, /pi_flow_run_start_seconds\{/)
   assert.equal(body.includes('pi_flow_run_cost_usd'), false)
   assert.equal(body.includes('pi_flow_tokens_total'), false)
@@ -939,7 +946,7 @@ test('runLivenessPassOnce: wired deps POST the work group URL from real journals
     'https://g:4479/metrics/job/pi-flow/ref/DP-253/mode/work',
   )
   const body = calls[0]?.body ?? ''
-  assert.ok(body.includes(statusLine(TRACK_REF, 'running')), body)
+  assert.ok(body.includes(healthLine(TRACK_REF)), body)
   // the journaled session file does not exist here: a coverage gap renders
   // NO cost series (never an invented zero), only health lines.
   assert.equal(body.includes('pi_flow_run_cost_usd'), false)
