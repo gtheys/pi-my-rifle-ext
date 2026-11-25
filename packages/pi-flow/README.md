@@ -136,6 +136,7 @@ checkout) instead of machine-wide.
 | `telemetry.loki.enabled` | `boolean` | `false` | Push flow **transition-event** streams (`state-change` / `step-start` / `step-stop`) to Loki from the live session (PMR-ZV9Y 4.2). `false` or a missing `loki` block = zero Loki network calls. Session-side only — the daemon never pushes Loki. See [Loki transition events](#loki-transition-events) |
 | `telemetry.loki.endpoint` | `string` | unset (required with `telemetry.loki.enabled`) | Loki **base** URL you provide yourself (e.g. `http://100.108.226.64:3100`); events POST to `<endpoint>/loki/api/v1/push` (the push path is appended for you) |
 | `telemetry.loki.headers` | `record<string, string>` | `{}` | Static extra headers for the Loki push (e.g. a Bearer token in front of a reverse proxy). Secrets belong in env, not config |
+| `notify.desktop.enabled` | `boolean` | `true` | Send a desktop notification on `waiting_human` / `halted` flow transitions through [`pi-desktop-notify`](../pi-desktop-notify/README.md) (PMR-ZV9Y 5.2). `false` turns the **flow-side page** off — the user's own channel toggles (desktop / herdr / ntfy) still live in pi-desktop-notify's config, and Grafana alerting is unaffected (independent channel). See [Notifications](#notifications) |
 | `runServer.enabled` | `boolean` | `true` | Kill switch for the durable run server (PMR-XTQQ). `false` = never spawn the daemon; journal writers permanently use the full in-session path (runs don't survive a session exit) |
 | `reconcile.enabled` | `boolean` | `true` | Reconcile stale run-liveness metrics — tombstone `halted`/`paused` Pushgateway series whose aven ticket is neither active nor todo, so the alerts only ever fire on runs that still need you. Setting it to `false` on a RUNNING daemon takes effect on the next tick; setting it to `true` again only takes effect at daemon start — a daemon that started with `enabled: false` armed no timer, so restart the daemon (or run `/flow-reconcile-push` once). See [Reconcile](#reconcile-stale-run-tombstoning) |
 | `reconcile.intervalMinutes` | `integer` (≥ 1) | `360` | Daemon reconcile interval in minutes (6 h by default). An interval change applies on the next cycle — no daemon restart needed |
@@ -158,6 +159,11 @@ checkout) instead of machine-wide.
       "enabled": false,
       "endpoint": "http://100.108.226.64:3100",
       "headers": {}
+    }
+  },
+  "notify": {
+    "desktop": {
+      "enabled": true
     }
   },
   "runServer": {
@@ -343,6 +349,66 @@ Semantics (test-gated, see `telemetry/loki.ts`):
   loop. Runs proceed identically with no Loki backend at all. The unit tests
   mock `fetch`, so nothing here depends on the endpoint being live.
 - **Restart Pi** after changing the setting; the config is read once per session.
+
+### Notifications
+
+When a flow stops and needs someone, pi-flow can surface it two ways. They are
+**independent channels with independent off-switches** (PMR-ZV9Y D3): turn
+either one off and the other keeps working, and neither affects the run itself.
+
+| Channel | What it does | Off-switch |
+| --- | --- | --- |
+| **Desktop** | Pages you on a `waiting_human` or `halted` transition, through [`pi-desktop-notify`](../pi-desktop-notify/README.md) (notify-send / herdr / ntfy) | `notify.desktop.enabled` in pi-flow config (default `true`) — and the channel toggles in pi-desktop-notify's own config |
+| **Grafana alerting** | Fires the `pi-flow-runs` alert rules (`piflow-waiting-on-human`, `piflow-run-halted`, …) on the Prometheus/Loki series | Grafana itself: pause or mute the rule / alert group. pi-flow has no switch for it and never will — the alerting backend is not this extension's business |
+
+**Desktop channel.** Only two v2 states page: `waiting_human` (a human unblocks
+it) and `halted` (a human must). `waiting_machine` — a retry budget, a
+subagent still in flight, a deviation gate re-run — is a Grafana/Loki concern,
+never a notification, and `running` / `done` are silent. The message is the
+journal event, nothing else:
+
+```
+pi-flow PMR-ZV9Y: waiting_human
+/flow answer PMR-ZV9Y pass|fail — reason: code_review_pending
+```
+
+```
+pi-flow PMR-ZV9Y: halted
+reason: label_miss — recover with /flow PMR-ZV9Y
+```
+
+The first line of the body is the **expected action** — the exact command from
+the same `expectedAction` map the Waiting-on-me board renders, so what you type
+is what the board already advertised. Only the closed reason enum is quoted;
+free-text halt prose never enters a notification.
+
+Semantics (test-gated, see `telemetry/dispatch.ts` and `test/notify-hook.test.ts`):
+
+- **Opt-out.** `notify.desktop.enabled` defaults to `true`: a fresh install
+  pages. Set it to `false` (global or per-project config) for silence, no Pi
+  restart needed beyond the next config read (`session_start` / `/flow` start).
+- **One page per event, not per state.** The loop already suppresses
+  same-state repeats inside a process, so a duplicate only happens when a gate
+  genuinely re-asks (you declined a review, the run re-parked) — that earns a
+  second page. A resumed run in another session re-notifies the same wait:
+  accepted, because the journal is the audit record and the notification mirrors it.
+- **Fail-silent, optional dependency.** `@gtheys/pi-desktop-notify` is an
+  *optional* dependency, loaded by dynamic import on the first paging event.
+  Not installed, or its config malformed, or the notify backend dead → **one**
+  journal note (`desktop notify unavailable: … (channel off, further failures
+  silent)`) and the channel switches off for the session. It is fire-and-forget:
+  it never delays a journal write and never throws into the flow loop. Grafana
+  alerting is unaffected either way.
+
+```json
+{
+  "notify": {
+    "desktop": {
+      "enabled": false
+    }
+  }
+}
+```
 
 ### Cost rollup push (`/flow-cost --push`)
 

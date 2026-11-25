@@ -49,6 +49,7 @@ import {
   loadConfig,
   resolveLokiSettings,
   resolveMode,
+  resolveNotifySettings,
   resolveRunServerEnabled,
   saveViewerPlacement,
 } from './config.ts'
@@ -232,6 +233,7 @@ export {
   readConfigFile,
   resolveLokiSettings,
   resolveMode,
+  resolveNotifySettings,
   resolveRunServerEnabled,
   saveViewerPlacement,
 } from './config.ts'
@@ -441,6 +443,20 @@ export default function (
   //  - `telemetryHandle` is assigned right after registerTelemetry below,
   //    so telemetry-off sessions keep the absent-safe no-op path.
   let lokiSettings: LokiSettings | null = null
+  // AIDEV-NOTE: PMR-ZV9Y 5.2 — the DESKTOP-notify sink shares the same handler
+  // bag above (createTelemetryHandlers guards the Loki push and the notify
+  // sink SEPARATELY, so neither can cost the other). Both inputs are
+  // late-bound like `lokiSettings`:
+  //  - `notifyDesktop` is the `notify.desktop.enabled` gate — default TRUE,
+  //    an opt-OUT channel (the opposite of telemetry.loki's opt-in default),
+  //    so a fresh install pages on a waiting_human/halted transition;
+  //  - `sessionCwd` is the session cwd, which pi-desktop-notify needs to load
+  //    ITS OWN channel config (desktop / herdr / ntfy toggles stay the user's;
+  //    pi-flow only decides whether a flow event pages at all — D3).
+  // Grafana alerting is the independent second channel: neither switch here
+  // affects it, and it is paused/muted in Grafana, never from here.
+  let notifyDesktop = true
+  let sessionCwd = process.cwd()
   // late-bound: the telemetry handle only exists after registerTelemetry far
   // below; it is declared HERE because the v2 fan-out reads it per event (the
   // ad-hoc tracker uses the same holder).
@@ -469,8 +485,38 @@ export default function (
         })
       },
       env: process.env,
+      // PMR-ZV9Y 5.2 — fire-and-forget desktop page on waiting_human/halted.
+      // The sink never blocks the fan-out (it never awaits into `record`) and
+      // NEVER throws: an absent/broken @gtheys/pi-desktop-notify (it is an
+      // OPTIONAL dependency) journals ONE note, then the channel stays off.
+      notify: {
+        desktop: () => notifyDesktop,
+        cwd: () => sessionCwd,
+        onNote: (ref, error) => {
+          void journal({
+            kind: 'note',
+            at: new Date().toISOString(),
+            ref,
+            text: `desktop notify unavailable: ${error} (channel off, further failures silent)`,
+          })
+        },
+      },
     }),
   )
+
+  /** Resolve `notify.desktop.enabled` + the session cwd into the fan-out's
+   * notify sink. Called from the same config reads as syncLokiSettings
+   * (best-effort: an unreadable config keeps the enabled-by-default channel
+   * and the previous cwd, never throws). The cwd is what pi-desktop-notify
+   * loads ITS OWN channel config with, so a project override of the notify
+   * channels works exactly like the extension's own hooks do. */
+  function syncNotifySettings(
+    config: Parameters<typeof resolveNotifySettings>[0],
+    cwd: string,
+  ): void {
+    notifyDesktop = resolveNotifySettings(config).desktop.enabled
+    sessionCwd = cwd
+  }
 
   /** Resolve `telemetry.loki` into the fan-out's live settings. Called from
    * the session_start probe and every /flow config read (best-effort: an
@@ -920,6 +966,11 @@ export default function (
     notifyUser = (message, level) => ctx.ui.notify(message, level)
     mainSessionFile = ctx.sessionManager.getSessionFile() ?? null
     setAvenSessionCwd(ctx.cwd)
+    // AIDEV-NOTE: PMR-ZV9Y 5.2 — the notify sink's cwd is stamped HERE too,
+    // not only in syncNotifySettings: if the session_start telemetry probe's
+    // config read throws, pi-desktop-notify still resolves its project
+    // override against the real session cwd instead of process.cwd().
+    sessionCwd = ctx.cwd
     void ensureLabels(notifyUser)
     // AIDEV-NOTE: PMR-F8HB — register this workspace's aven project
     // prefixes so bare Jira-shaped aven refs (PMR-2424) classify as aven
@@ -1554,6 +1605,9 @@ export default function (
       // `telemetry.enabled: false` + `telemetry.loki.enabled: true` is a valid
       // combination: Loki pushes without any OTLP subscription.
       syncLokiSettings(config)
+      // PMR-ZV9Y 5.2: the notify channel is likewise independent of the OTLP
+      // master switch, so it syncs from this same session_start read.
+      syncNotifySettings(config, cwd)
       const telemetry = config.telemetry
       if (telemetry === undefined || !telemetry.enabled) return null
       const headers: Record<string, string> = { ...(telemetry.headers ?? {}) }
@@ -1874,6 +1928,8 @@ export default function (
       // a config edit lands on the NEXT /flow without waiting for a session
       // restart (the session_start probe above covers the no-/flow path).
       syncLokiSettings(config)
+      // PMR-ZV9Y 5.2: same re-sync for the desktop channel (+ the /flow cwd).
+      syncNotifySettings(config, ctx.cwd)
       if (runServerEnabled) {
         const ensured = await ensureDaemon(getAgentDir())
         if (

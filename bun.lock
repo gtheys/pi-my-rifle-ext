@@ -73,6 +73,9 @@
       "devDependencies": {
         "@mariozechner/pi-tui": "npm:@earendil-works/pi-tui@^1.4.0",
       },
+      "optionalDependencies": {
+        "@gtheys/pi-desktop-notify": "workspace:*",
+      },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
         "@earendil-works/pi-tui": "*",

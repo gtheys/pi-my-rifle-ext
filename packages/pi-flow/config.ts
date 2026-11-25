@@ -153,6 +153,42 @@ const PiFlowConfigSchema = Type.Object({
       { description: 'Optional OTLP telemetry export (PMR-R8AG)' },
     ),
   ),
+  // AIDEV-NOTE: PMR-ZV9Y (5.2) — `notify` gates the flow-side DESKTOP
+  // notification channel (telemetry/dispatch.ts createNotifySink). SINGLE
+  // STRICT READER, session-side ONLY (same posture as `telemetry.loki`, unlike
+  // the TWO-READER `reconcile`/`liveness` blocks): the daemon has no notify
+  // path, only the live session fan-out pages, so exactly one reader exists
+  // (this schema via readConfigFile, which throws on a malformed shape).
+  // DEFAULT TRUE — the channel is opt-OUT, so a fresh install pages on a
+  // waiting_human run instead of silently notifying nobody. pi-flow's switch
+  // gates the FLOW-side page only; the user's own channel toggles
+  // (desktop/herdr/ntfy) keep living in pi-desktop-notify's config, and
+  // Grafana alerting is the independent second channel with its own
+  // pause/mute (PMR-ZV9Y D3).
+  notify: Type.Optional(
+    Type.Object(
+      {
+        desktop: Type.Optional(
+          Type.Object(
+            {
+              enabled: Type.Optional(
+                Type.Boolean({
+                  description:
+                    'Send a desktop notification on waiting_human / halted flow transitions through pi-desktop-notify. Default true (opt-out)',
+                  default: true,
+                }),
+              ),
+            },
+            {
+              description:
+                'Desktop channel via @gtheys/pi-desktop-notify (optional dependency)',
+            },
+          ),
+        ),
+      },
+      { description: 'Flow-state notifications (PMR-ZV9Y 5.2)' },
+    ),
+  ),
   runServer: Type.Optional(
     Type.Object(
       {
@@ -426,6 +462,26 @@ export function resolveLokiSettings(config: Partial<PiFlowConfig>): {
   if (loki?.enabled !== undefined) settings.enabled = loki.enabled
   if (loki?.endpoint !== undefined) settings.endpoint = loki.endpoint
   if (loki?.headers !== undefined) settings.headers = { ...loki.headers }
+  return settings
+}
+
+/**
+ * AIDEV-NOTE: PMR-ZV9Y (5.2) — typed read of the session-side `notify`
+ * block. SINGLE STRICT READER, no daemon/tolerant half (the daemon has no
+ * notify path — see the AIDEV-NOTE on the schema block): a malformed shape
+ * throws at the readConfigFile boundary before this is ever reached.
+ * DEFAULT: `desktop.enabled` ABSENT resolves TRUE — the flow-side desktop
+ * channel is opt-OUT (the opposite of `telemetry.loki`, which is opt-IN), so a
+ * fresh install pages on a waiting_human/halted transition. Takes Partial so
+ * readConfigFile's return type plugs straight in; the returned object is
+ * freshly built, never aliased to the config.
+ */
+export function resolveNotifySettings(config: Partial<PiFlowConfig>): {
+  desktop: { enabled: boolean }
+} {
+  const settings = { desktop: { enabled: true } }
+  const enabled = config.notify?.desktop?.enabled
+  if (enabled !== undefined) settings.desktop.enabled = enabled
   return settings
 }
 

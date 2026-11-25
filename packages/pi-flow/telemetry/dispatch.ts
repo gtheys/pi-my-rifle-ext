@@ -1,7 +1,8 @@
 // AIDEV-NOTE: PMR-ZV9Y 4.3 — THE writer fan-out dispatcher (renderer #2's
 // router of the plan's three-renderer architecture: Prometheus folds the
 // journal in the push chain, THIS module re-renders each event live to Loki +
-// the Tempo step spans, pi-desktop-notify joins the same bag in phase 5).
+// the Tempo step spans, and since 5.2 pi-desktop-notify shares the same bag —
+// see createNotifySink below).
 //
 // ══ SEAM MAP: where v2 events are journaled, and why ONE wrap point covers
 // them all. Every v2 emission site routes through the mode-aware EventWriter
@@ -53,7 +54,17 @@
 // label builder (telemetry/loki.ts buildLokiStream) is the label guard and the
 // free text (note prose, deviation reasons, the step name) rides the JSON
 // line only — never a label (ISC-A-1).
-import { reasonWaitKind } from '../flow/vocabulary.ts'
+// PMR-ZV9Y 5.2: `recoveryCommand` is the single source of the `/flow <ref>`
+// hint (flow/binding-heal.ts) — reusing it keeps the notify body and the
+// session's recovery lines in lockstep. No cycle: binding-heal never imports
+// telemetry/.
+import { recoveryCommand } from '../flow/binding-heal.ts'
+import {
+  expectedAction,
+  type FlowState,
+  NO_EXPECTED_ACTION,
+  reasonWaitKind,
+} from '../flow/vocabulary.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 import { runTracking } from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
@@ -208,6 +219,15 @@ export interface TelemetryHandlerDeps {
   /** Process env, read lazily for the resume case (PI_FLOW_TRACK_REF/MODE). */
   env: Record<string, string | undefined>
   timeoutMs?: number
+  /**
+   * AIDEV-NOTE: PMR-ZV9Y 5.2 — the desktop-notify sink, COMPOSED into
+   * `onStateChange` beside the Loki push. Absent = no notify path at all
+   * (the telemetry-only wiring stays silent). Each sink runs in its OWN
+   * try/catch: a throwing notify never costs the Loki push and vice versa
+   * (ISC-A-5), and the sinks are independent switches (D3) — `notify.desktop
+   * = false` still pushes Loki, `telemetry.loki = false` still pages.
+   */
+  notify?: NotifySinkDeps
 }
 
 /**
@@ -228,6 +248,9 @@ export function createTelemetryHandlers(
 ): FanoutHandlers {
   const noteState: LokiNoteState = { noted: false }
   const identities = new Map<string, FanoutIdentity>()
+  // PMR-ZV9Y 5.2: null = no notify channel wired (telemetry-only sessions).
+  let notifySink: NotifySink | null = null
+  if (deps.notify !== undefined) notifySink = createNotifySink(deps.notify)
 
   const identityFor = (ref: string): FanoutIdentity => {
     const observed = identities.get(ref)
@@ -269,10 +292,20 @@ export function createTelemetryHandlers(
       identities.set(event.ref, runTracking([event], event.ref))
     },
     onStateChange: (event) => {
+      // Two independently guarded sinks (4.3 Loki, 5.2 notify): a throwing
+      // notify never costs the Loki push and vice versa.
       try {
         pushToLoki(event)
       } catch {
         // never-throw (ISC-A-5)
+      }
+      if (notifySink === null) return
+      try {
+        notifySink(event)
+      } catch {
+        // never-throw (ISC-A-5): the sink is fire-and-forget by construction
+        // (createNotifySink catches inside its own async body), so this guard
+        // only covers a throwing gate.
       }
     },
     onStepEvent: (event) => {
@@ -293,5 +326,158 @@ export function createTelemetryHandlers(
         // never-throw (ISC-A-5)
       }
     },
+  }
+}
+
+// ══ DESKTOP NOTIFY SINK (PMR-ZV9Y 5.2) ═══════════════════════════════════
+// AIDEV-NOTE: PMR-ZV9Y 5.2 — the second human-facing renderer of the v2 state
+// machine: the live session's paging channel. It is a SIBLING of the Loki push
+// inside `createTelemetryHandlers().onStateChange`, and each sink is guarded
+// SEPARATELY — a throwing notify never costs the Loki line, and vice versa
+// (ISC-A-5). pi-desktop-notify is an OPTIONAL dependency: the ONLY reference to
+// it in this file is `typeof import(...)` (type-only, erased at emit) plus the
+// dynamic `import()` in loadNotifyModule below. NEVER add a static import of
+// '@gtheys/pi-desktop-notify' here — test/notify-hook.test.ts pins that, and a
+// static edge would make an absent package a load-time crash instead of a
+// degraded channel.
+//
+// FIRE RULE (exactly two states, `shouldNotifyState`): `waiting_human` (a
+// human unblocks it) and `halted` (a human must). `waiting_machine` is Grafana/
+// Loki material, never a page; `running`/`done`/`stale` silent. Gate ORDER is
+// state → config → import, so a disabled or non-paging event never touches the
+// module system.
+//
+// DEDUPE (decided, pinned by test/notify-hook.test.ts): ONE notification per
+// state-change EVENT — no per-(ref, state, reason) once-guard. 2.1's guarded
+// emission already suppresses same-state repeats inside a process, so a repeat
+// only happens when a gate genuinely re-asks (waiting_human → running →
+// waiting_human), which earns a second page. Cross-process re-asks (a resumed
+// run, a second session) re-notify too: accepted, because the notification
+// mirrors the journal and the journal is the audit record.
+//
+// MESSAGE FORMAT (pinned; keep it short + grep-able — a notification is an
+// interruption, the journal is the detail):
+//   summary  `pi-flow <ref>: <state>`
+//   body     waiting_human → `<expectedAction> — reason: <reason>`
+//            e.g. `/flow answer PMR-ZV9Y pass|fail — reason: code_review_pending`
+//            halted        → `reason: <reason> — recover with /flow <ref>`
+//            no registered action/reason → `recover with /flow <ref>`
+// The action half comes from `expectedAction` (flow/vocabulary.ts is the single
+// source; the Waiting-on-me board mirrors the same strings), so the command an
+// operator types is exactly what the board already advertises. Free text (halt
+// prose) never enters the body — the closed reason enum only (ISC-A-1).
+//
+// FAILURE POSTURE: at most ONE `onNote` per sink instance (the sink is built
+// once per session, like the Loki note guard), then the channel is OFF for the
+// rest of the session — never a retry storm, never a rejected promise into the
+// host, never a throw into the flow loop.
+
+/** The `@gtheys/pi-desktop-notify/notify` surface (subtask 5.1), referenced
+ * TYPE-ONLY so an uninstalled optional dependency never breaks this module at
+ * RUNTIME (the type reference erases; only `loadNotifyModule` below touches the
+ * package, dynamically, inside a try/catch). Caveat: a consumer that runs `tsc`
+ * over pi-flow's SOURCES needs the optional package present to resolve the
+ * type — pi's loader does not typecheck, so an installed-without-notify setup
+ * still runs, it just degrades the channel on the first paging event. */
+export type DesktopNotifyModule =
+  typeof import('@gtheys/pi-desktop-notify/notify')
+
+/** The production dynamic-import seam. Rejects when the package is absent or
+ * broken; `createNotifySink` turns that into one warn line + channel off. */
+function loadNotifyModule(): Promise<DesktopNotifyModule> {
+  return import('@gtheys/pi-desktop-notify/notify')
+}
+
+export interface NotifySinkDeps {
+  /** Late-bound `notify.desktop.enabled` (default TRUE — an opt-out channel).
+   * Checked BEFORE the import, so a disabled channel loads nothing. */
+  desktop: () => boolean
+  /** Session cwd: pi-desktop-notify loads ITS OWN channel config (desktop /
+   * herdr / ntfy toggles) with it, so the user's per-repo notify settings win
+   * and pi-flow only decides whether a flow event pages at all. */
+  cwd: () => string
+  /** Dynamic-import seam (tests inject a fake; default = the 5.1 subpath). */
+  loadModule?: () => Promise<DesktopNotifyModule>
+  /** ONE call per sink instance on the first channel failure. */
+  onNote: (ref: string, error: string) => void
+}
+
+/** The v2 states that page a human (everything else stays board-only). */
+export function shouldNotifyState(state: FlowState): boolean {
+  if (state === 'waiting_human') return true
+  return state === 'halted'
+}
+
+/** Notification title: ref + state, the shortest grep-able identity. */
+export function notifySummary(event: StateChangeEvent): string {
+  return `pi-flow ${event.ref}: ${event.state}`
+}
+
+/** Notification body: the command that unblocks the run, then the closed
+ * reason. See the MESSAGE FORMAT note above. */
+export function notifyBody(event: StateChangeEvent): string {
+  const reason = event.reason
+  const action = expectedAction(event.state, reason ?? '', event.ref)
+  const parts: string[] = []
+  if (action !== NO_EXPECTED_ACTION) parts.push(action)
+  if (reason !== undefined && reason !== '') parts.push(`reason: ${reason}`)
+  // A halt registers no unblock command, so the recovery hint carries it; a
+  // transition with neither still says what to type.
+  if (event.state === 'halted' || parts.length === 0) {
+    parts.push(`recover with ${recoveryCommand(event.ref)}`)
+  }
+  return parts.join(' — ')
+}
+
+/** The sink's own handle: call it with every v2 state-change event. */
+export type NotifySink = (event: StateChangeEvent) => void
+
+/**
+ * Build the session's desktop-notify sink. ONE instance per session (like the
+ * handler bag that composes it), so the once-guard and the cached module
+ * import are exactly process-scoped.
+ */
+export function createNotifySink(deps: NotifySinkDeps): NotifySink {
+  const loadModule = deps.loadModule ?? loadNotifyModule
+  let loading: Promise<DesktopNotifyModule> | null = null
+  let noted = false
+  let off = false
+
+  const noteOnce = (ref: string, error: unknown): void => {
+    if (noted) return
+    noted = true
+    let text = 'unknown notify failure'
+    if (error instanceof Error) text = error.message
+    deps.onNote(ref, text)
+  }
+
+  return (event) => {
+    if (off) return
+    // Sync, allocation-free gate first (see the FIRE RULE note).
+    if (!shouldNotifyState(event.state)) return
+    // Fire-and-forget: the fan-out must never await a desktop notification.
+    void (async () => {
+      try {
+        if (!deps.desktop()) return
+        if (loading === null) loading = loadModule()
+        // Aliased so the await below keeps the narrowed type (a mutable
+        // closure variable loses its narrowing across an await).
+        const pending = loading
+        const notify = await pending
+        const config = await notify.loadConfig(deps.cwd())
+        await notify.dispatchNotification(
+          config,
+          notifySummary(event),
+          notifyBody(event),
+        )
+      } catch (error) {
+        // Absent/broken package, a malformed notify config, or a dead channel:
+        // ONE line, then the channel stays off for the session. The module
+        // import is not retried per event either (`loading` keeps the
+        // rejected promise, and `off` stops later calls from reaching it).
+        off = true
+        noteOnce(event.ref, error)
+      }
+    })()
   }
 }

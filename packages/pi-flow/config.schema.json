@@ -91,6 +91,25 @@
       "required": ["enabled", "otlpEndpoint"],
       "additionalProperties": false
     },
+    "notify": {
+      "type": "object",
+      "description": "Flow-state notifications (PMR-ZV9Y 5.2). The desktop channel pages on waiting_human / halted transitions through pi-desktop-notify; Grafana alerting is the independent second channel (paused/muted in Grafana).",
+      "properties": {
+        "desktop": {
+          "type": "object",
+          "description": "Desktop channel via @gtheys/pi-desktop-notify (optional dependency — absent package degrades to one journal note)",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Send a desktop notification on waiting_human / halted flow transitions through pi-desktop-notify. Default true (opt-out)"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "runServer": {
       "type": "object",
       "description": "Durable run server (daemon) settings",

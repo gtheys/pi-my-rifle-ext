@@ -178,5 +178,8 @@
   },
   "dependencies": {
     "@gtheys/pi-interactive-subagents": "workspace:*"
+  },
+  "optionalDependencies": {
+    "@gtheys/pi-desktop-notify": "workspace:*"
   }
 }
