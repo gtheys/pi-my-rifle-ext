@@ -104,6 +104,15 @@ export function createAttemptLedger(
         }
         return
       }
+      // AIDEV-NOTE: PMR-ZV9Y 4.3 (fan-out audit, scout §3 exception) — this
+      // direct recordRunEvent fallback is the ONE journal write on the tool
+      // paths that bypasses the mode-aware writer, so it also bypasses the
+      // telemetry fan-out wrapper. Deliberately NOT routed: the kind written
+      // here is `attempt-record`, not a v2 event, so there is nothing for
+      // Loki/Tempo to render, and index.ts always injects the `record` seam
+      // above anyway (the fallback only fires for bare-ledger callers). The
+      // escalation's v2 state-change rides deps.journalV2 -> the wrapped
+      // writer. Pinned by test/telemetry-dispatch.test.ts.
       try {
         await recordRunEvent(agentDir, event)
       } catch {
@@ -271,8 +280,10 @@ export function registerRunAttemptTool(
       // already-exhausted refusal above never reaches this line, so one
       // escalation journals exactly one wait. Best-effort and optional:
       // `journalV2?.()` + try/catch, a journal failure cannot change the
-      // escalation result (ISC-A-5). If this seam's route ever bypasses the
-      // phase-4 fan-out, PMR-ZV9Y 4.3 owns that audit.
+      // escalation result (ISC-A-5). AUDITED in PMR-ZV9Y 4.3: index.ts wires
+      // this seam onto the SAME writer the fan-out wraps, so the escalation
+      // wait DOES reach Loki, and it never touches the recordRunEvent
+      // fallback above (that kind is non-v2 and stays unrouted by design).
       try {
         await deps.journalV2?.({
           kind: 'state-change',

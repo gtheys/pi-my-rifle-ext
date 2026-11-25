@@ -57,6 +57,7 @@
     "flow/step-output.ts",
     "telemetry/attributes.ts",
     "telemetry/content.ts",
+    "telemetry/dispatch.ts",
     "telemetry/exporter.ts",
     "telemetry/index.ts",
     "telemetry/loki.ts",

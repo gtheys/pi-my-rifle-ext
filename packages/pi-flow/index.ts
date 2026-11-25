@@ -47,6 +47,7 @@ import {
 import { listTicketStatuses } from './aven/status.ts'
 import {
   loadConfig,
+  resolveLokiSettings,
   resolveMode,
   resolveRunServerEnabled,
   saveViewerPlacement,
@@ -183,7 +184,13 @@ import {
 import sonarqubeExtension from './sonarqube/sonarqube.ts'
 import { registerSpecCommands } from './spec-review/commands.ts'
 import { registerOpenInPane } from './spec-review/open-in-pane.ts'
+import {
+  createEventFanoutWriter,
+  createTelemetryHandlers,
+  lokiPushSettings,
+} from './telemetry/dispatch.ts'
 import { registerTelemetry } from './telemetry/index.ts'
+import type { LokiSettings } from './telemetry/loki.ts'
 import { registerCodeReviewTool } from './tools/code-review.ts'
 import { buildCodeReviewGatePrompt } from './tools/code-review-parse.ts'
 import { registerDeviationReviewTool } from './tools/deviation.ts'
@@ -420,10 +427,59 @@ export default function (
     deriveCandidates: makeDeriveCandidates(),
     heal: (ref, cwd) => healFlowBinding(ref, productionReviewDeps(pi, cwd)),
   }
-  const writer: EventWriter = createEventWriter(
-    getAgentDir(),
-    createDaemonAliveProbe(getAgentDir(), () => runServerEnabled),
+  // AIDEV-NOTE: PMR-ZV9Y 4.3 — THE v2 fan-out wrap point. `telemetry/dispatch.ts`
+  // carries the seam map; the short version is that every v2 emitter in the
+  // session (loop journal/journalV2 via journalSerial -> journal, the
+  // code-review and deviation gates, the run-attempt ledger + escalation seam,
+  // flow_submit, the receipt journals) holds THIS object, so wrapping it here
+  // routes every journaled v2 event exactly once — no double Loki push, no
+  // missed path. The daemon (server/daemon.ts) builds no writer and never
+  // gets this wrapper: session-side only, per the telemetry.loki AIDEV note
+  // in config.ts. Both sinks are late-bound on purpose:
+  //  - `loki` stays null until the session's config read resolves
+  //    telemetry.loki (disabled by default = ZERO fetch calls);
+  //  - `telemetryHandle` is assigned right after registerTelemetry below,
+  //    so telemetry-off sessions keep the absent-safe no-op path.
+  let lokiSettings: LokiSettings | null = null
+  // late-bound: the telemetry handle only exists after registerTelemetry far
+  // below; it is declared HERE because the v2 fan-out reads it per event (the
+  // ad-hoc tracker uses the same holder).
+  let telemetryHandle: ReturnType<typeof registerTelemetry> | null = null
+  const writer: EventWriter = createEventFanoutWriter(
+    createEventWriter(
+      getAgentDir(),
+      createDaemonAliveProbe(getAgentDir(), () => runServerEnabled),
+    ),
+    createTelemetryHandlers({
+      loki: () => lokiSettings,
+      handle: () => telemetryHandle,
+      fetchImpl: async (url, init) => {
+        const response = await fetch(url, init)
+        return { status: response.status }
+      },
+      now: () => Date.now(),
+      // At most ONE note per session (the shared once-guard inside the
+      // handler bag), mirroring the OTLP exporter-failure posture below.
+      onNote: (ref, error) => {
+        void journal({
+          kind: 'note',
+          at: new Date().toISOString(),
+          ref,
+          text: `loki push failed: ${error} (further failures silent)`,
+        })
+      },
+      env: process.env,
+    }),
   )
+
+  /** Resolve `telemetry.loki` into the fan-out's live settings. Called from
+   * the session_start probe and every /flow config read (best-effort: an
+   * unreadable config leaves Loki disabled, never throws). */
+  function syncLokiSettings(
+    config: Parameters<typeof resolveLokiSettings>[0],
+  ): void {
+    lokiSettings = lokiPushSettings(resolveLokiSettings(config))
+  }
 
   async function journal(
     event: Parameters<typeof writer.record>[0],
@@ -679,8 +735,6 @@ export default function (
   let autoPushCost: ((ref: string) => Promise<void>) | null = null
   // late-bound: the telemetry handle only exists after registerTelemetry below
   let syncTelemetryFlowEnv: (() => void) | null = null
-  // late-bound: same handle, used by the ad-hoc tracker for its run traces
-  let telemetryHandle: ReturnType<typeof registerTelemetry> | null = null
   // AIDEV-NOTE: PMR-81SX 5.2 — late-bound worktree cleanup at flow done. The
   // wrapper is wired into the loop before the worktree extension has resolved
   // its effects journal; the impl is assigned right after registration so the
@@ -1494,6 +1548,12 @@ export default function (
   const telemetry = registerTelemetry(pi, {
     loadSettings: async (cwd) => {
       const config = await loadConfig(cwd)
+      // AIDEV-NOTE: PMR-ZV9Y 4.3 — the OTLP session_start probe doubles as the
+      // ONE config read the Loki fan-out needs (README: telemetry.loki is read
+      // once per session). Synced BEFORE the enabled check below because
+      // `telemetry.enabled: false` + `telemetry.loki.enabled: true` is a valid
+      // combination: Loki pushes without any OTLP subscription.
+      syncLokiSettings(config)
       const telemetry = config.telemetry
       if (telemetry === undefined || !telemetry.enabled) return null
       const headers: Record<string, string> = { ...(telemetry.headers ?? {}) }
@@ -1810,6 +1870,10 @@ export default function (
       // the full-writer fallback is today's exact behavior).
       const config = await loadConfig(ctx.cwd)
       runServerEnabled = resolveRunServerEnabled(config)
+      // AIDEV-NOTE: PMR-ZV9Y 4.3 — re-sync the Loki fan-out per run start, so
+      // a config edit lands on the NEXT /flow without waiting for a session
+      // restart (the session_start probe above covers the no-/flow path).
+      syncLokiSettings(config)
       if (runServerEnabled) {
         const ensured = await ensureDaemon(getAgentDir())
         if (
