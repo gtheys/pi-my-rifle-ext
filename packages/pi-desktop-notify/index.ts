@@ -21,20 +21,15 @@
  * State persists across sessions via appendEntry.
  */
 
-import { execFile } from 'node:child_process'
 import { basename } from 'node:path'
-import { promisify } from 'node:util'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import {
-  buildNtfyRequest,
   channelEnabled,
-  DEFAULT_HERDR_SOUND,
   type DesktopNotifyConfig,
   loadConfig,
   notifyOnPromptEnabled,
 } from './config.ts'
-
-const execFileAsync = promisify(execFile)
+import { dispatchNotification } from './notify.ts'
 
 const DEFAULT_IDLE_THRESHOLD_MS = 30_000 // 30 seconds
 
@@ -81,57 +76,13 @@ export default function (pi: ExtensionAPI) {
     }
   })
 
-  // Send `summary`/`body` on every enabled channel. Best-effort per channel:
-  // a failing channel never blocks the others.
-  async function dispatch(summary: string, body: string): Promise<void> {
-    if (channelEnabled(config, 'desktop')) {
-      try {
-        await execFileAsync('notify-send', [
-          '--app-name=pi',
-          '--icon=utilities-terminal',
-          summary,
-          body,
-        ])
-      } catch (_e) {
-        // Silently ignore — notification daemon may not be running
-      }
-    }
-
-    // AIDEV-NOTE: herdr channel mirrors the desktop one — same enabled flag,
-    // same best-effort semantics. Gated on HERDR_ENV so we don't spawn herdr
-    // outside a herdr session.
-    if (process.env.HERDR_ENV === '1' && channelEnabled(config, 'herdr')) {
-      let sound = DEFAULT_HERDR_SOUND
-      if (config.herdr?.sound !== undefined) sound = config.herdr.sound
-      try {
-        await execFileAsync('herdr', [
-          'notification',
-          'show',
-          summary,
-          '--body',
-          body,
-          '--sound',
-          sound,
-        ])
-      } catch (_e) {
-        // Silently ignore — herdr server may not be running
-      }
-    }
-
-    if (channelEnabled(config, 'ntfy') && config.ntfy !== undefined) {
-      const req = buildNtfyRequest(config.ntfy, summary, body)
-      try {
-        await fetch(req.url, {
-          method: 'POST',
-          headers: req.headers,
-          body: req.body,
-          signal: AbortSignal.timeout(req.timeoutMs),
-        })
-      } catch (_e) {
-        // Silently ignore — ntfy server may be unreachable
-      }
-    }
-  }
+  // AIDEV-NOTE: PMR-ZV9Y 5.1 — the channel blocks lived here until 5.1 moved
+  // them verbatim to notify.ts:dispatchNotification so pi-flow can reuse the
+  // user's channel config through the '@gtheys/pi-desktop-notify/notify'
+  // subpath. Behavior (best-effort per channel) is unchanged; `config` is
+  // passed in rather than closed over.
+  const dispatch = (summary: string, body: string): Promise<void> =>
+    dispatchNotification(config, summary, body)
 
   pi.on('agent_start', async (_event, _ctx) => {
     // Track when agent starts — we'll check idle gap on agent_end

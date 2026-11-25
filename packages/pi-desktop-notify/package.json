@@ -18,8 +18,19 @@
   "publishConfig": {
     "access": "public"
   },
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.ts"
+    },
+    "./notify": {
+      "types": "./notify.ts",
+      "default": "./notify.ts"
+    }
+  },
   "files": [
     "index.ts",
+    "notify.ts",
     "config.ts",
     "config.schema.json",
     "README.md"
