@@ -85,7 +85,11 @@ import {
   receiptMetadataMutation,
 } from './flow/label-gate.ts'
 import { landingIntercept } from './flow/land-gate.ts'
-import { createFlowLoop } from './flow/loop.ts'
+import {
+  createFlowLoop,
+  resumePlanApprovalOpenFromEvents,
+  resumeV2StateFromEvents,
+} from './flow/loop.ts'
 import { nextPhase } from './flow/orchestrate.ts'
 import {
   commandPhaseInput,
@@ -690,6 +694,22 @@ export default function (
         cwd: string | undefined,
       ) => Promise<CleanupFlowWorktreeSummary>)
     | null = null
+  // AIDEV-NOTE: PMR-ZV9Y 2.1 — serialized journal sink for the loop. Every
+  // loop transition can now emit TWO projected writes back-to-back (the v1
+  // loop-state snapshot AND the v2 state-change) with no await between them;
+  // `void journal(event)` would let both `recordRunEvent` read-modify-write
+  // cycles observe the same pre-append projection and interleave their
+  // writeFile, corrupting the run-state JSON. Chaining each write onto the
+  // previous one keeps the fire-and-forget (never-throw) contract while
+  // strictly ordering appends and projection rewrites. journal + journalV2
+  // share the chain so the durable journal's event order matches emission
+  // order.
+  let journalChain: Promise<void> = Promise.resolve()
+  const journalSerial = (event: Parameters<typeof journal>[0]): void => {
+    journalChain = journalChain
+      .then(() => journal(event))
+      .catch(() => undefined)
+  }
   const loop = createFlowLoop({
     getSessionFile: () => mainSessionFile,
     onRunEnd: (ref) => {
@@ -706,7 +726,15 @@ export default function (
       }
     },
     journal: (event) => {
-      void journal(event)
+      journalSerial(event)
+    },
+    // AIDEV-NOTE: PMR-ZV9Y 2.1 — the v2 emission seam routes to the SAME
+    // best-effort writer as `journal`, so state-change/step events land in the
+    // durable run journal and reach the phase-4 telemetry fan-out; a separate
+    // dep name only (never a second writer). The loop wraps the call, so a
+    // throwing seam cannot halt a phase (ISC-A-5).
+    journalV2: (event) => {
+      journalSerial(event)
     },
     readLabels: (ref) => readAvenLabels(ref),
     readPlanState: (ref) => readPlanState(ref),
@@ -1881,10 +1909,15 @@ export default function (
       // over a fresh rebuild ONLY while their gitRoot still exists (else the
       // fresh commandPhaseInput result is used). Phase position is never
       // seeded — aven labels re-derive it via nextPhase above.
-      const seed = resumeSeedFromEvents(
-        await readRunEvents(getAgentDir(), ref),
-        (p) => existsSync(p),
-      )
+      // PMR-ZV9Y 2.1: the SAME tail seeds the guarded v2 emission state and
+      // the plan.spec-approval pairing flag, so a restart does not re-emit the
+      // last state-change the prior process journaled (no running→running
+      // spam across /flow re-entry) and a paused-for-approval restart still
+      // closes the step it opened.
+      const seedEvents = await readRunEvents(getAgentDir(), ref)
+      const seed = resumeSeedFromEvents(seedEvents, (p) => existsSync(p))
+      const seedV2State = resumeV2StateFromEvents(seedEvents)
+      const seedPlanApprovalOpen = resumePlanApprovalOpenFromEvents(seedEvents)
       // AIDEV-NOTE (yolo plan 2.1/2.2, 6.1): thread --yolo BEFORE
       // mergeSeedInput — the journaled seed wins for yolo (flag-less resume of
       // a yolo run stays yolo; --yolo cannot upgrade a running non-yolo seed).
@@ -1921,6 +1954,14 @@ export default function (
       if (seed.resume !== undefined) {
         startInput.resume = seed.resume
       }
+      // AIDEV-NOTE: PMR-ZV9Y 2.1 — v2 emission seed (guarded, derived above).
+      // resumeState absent on a genuinely fresh run → the loop seeds null and
+      // start()'s snapshot('running') emits running; on a restart it equals the
+      // last journaled state-change so the same state is NOT re-emitted.
+      if (seedV2State !== undefined) {
+        startInput.resumeState = seedV2State
+      }
+      startInput.resumePlanApprovalOpen = seedPlanApprovalOpen
       // AIDEV-NOTE: PMR-YG2N 4.1 — fire-and-forget sweep immediately before
       // loop.start: a restarting flow is never done, so the labels-done gate
       // keeps its own worktree safe without a skip-list.

@@ -15,7 +15,8 @@
 // seeds `resume` from the journal so a restart restores the blocker-retry
 // budget and the validate blockers-note cutoff exactly.
 import { MAX_ATTEMPTS } from '../implement/retry.ts'
-import type { FlowRunEvent, LoopRunStatus } from '../run-state.ts'
+import type { FlowPhase, FlowRunEvent, LoopRunStatus } from '../run-state.ts'
+import { projectRunState } from '../run-state.ts'
 import {
   clearFlowEnv,
   type FlowEnv,
@@ -24,12 +25,25 @@ import {
 } from './attribution.ts'
 import { nextPhase, PHASE_LABEL, type Phase } from './orchestrate.ts'
 import { buildPhasePrompt, type PhasePromptInput } from './phase-prompts.ts'
+import { FLOW_STATES, type FlowReason, type FlowState } from './vocabulary.ts'
 import { type FlowWorktree, getFlowWorktree } from './worktree-context.ts'
 
 export interface FlowLoopDeps {
   notify(message: string, level: 'info' | 'warning'): void
   /** Best-effort journal write; must never throw. */
   journal(event: FlowRunEvent): void
+  /**
+   * AIDEV-NOTE: PMR-ZV9Y 2.1 — best-effort v2 state-machine emission seam
+   * (`state-change`/`step-start`/`step-stop`). Optional and routed in index.ts
+   * to the SAME journal() writer as `journal`, so the durable run journal and
+   * the later telemetry fan-out (PMR-ZV9Y phase 4) see every v2 event. It is a
+   * SEPARATE dep name on purpose: the existing loop.test.ts / flow.test.ts
+   * harnesses never set it, so their exact `h.events` kind-sequence assertions
+   * stay byte-identical (ISC-A-2 — the v1 loop-state stream is untouched).
+   * The loop wraps the call in a try/catch, so a throwing seam must NEVER
+   * propagate into a phase (ISC-A-5).
+   */
+  journalV2?(event: FlowRunEvent): void
   /** Current aven labels on the ref; null = aven unavailable/failed. */
   readLabels(ref: string): Promise<string[] | null>
   /**
@@ -123,6 +137,21 @@ export interface FlowStartInput {
    * seeded — aven labels re-derive it.
    */
   resume?: { blockerRetries: number; validateStartedAt: string }
+  /**
+   * AIDEV-NOTE: PMR-ZV9Y 2.1 — v2 emission guard seed. The last state this
+   * run emitted (journal tail) so a restart/resume does NOT re-emit it. When
+   * absent the loop seeds from the journal itself in start()/resume (see
+   * resumeV2StateFromEvents). Explicitly seeded on the index.ts resume path.
+   */
+  resumeState?: FlowState
+  /**
+   * AIDEV-NOTE: PMR-ZV9Y 2.1 — seed the plan.spec-approval pairing flag from
+   * the journal tail on a cross-process resume (true when a step-start for
+   * plan.spec-approval was journaled without a matching step-stop). Absent on
+   * a fresh start; on a same-instance restart index.ts supplies the derived
+   * value so the stop stays paired with the start. See resumeV2StateFromEvents.
+   */
+  resumePlanApprovalOpen?: boolean
 }
 
 interface FlowLoopState {
@@ -154,6 +183,18 @@ class FlowLoopImpl implements FlowLoop {
   // one-shot: the first sendPhasePrompt after a resumed start must not
   // overwrite the seeded validateStartedAt (blockers-note cutoff)
   private pendingResume = false
+  // AIDEV-NOTE: PMR-ZV9Y 2.1 — guarded v2 emission: the last state-machine
+  // state this run emitted. emitStateChange skips when the new state equals
+  // this, so running->running re-snapshots never spam the journal (plan
+  // "no running→running duplicates"). Seeded on start()/resume from the
+  // journal tail (last state-change, else derived via the phase-1 fold).
+  private lastEmittedV2: FlowState | null = null
+  // AIDEV-NOTE: PMR-ZV9Y 2.1 — pairing guard for plan.spec-approval. The
+  // spec-approval pause journals step-start; the step-stop is emitted where
+  // the plan phase completes (advanceAfter). This flag keeps them paired so an
+  // orphan stop never appears when a run never paused for approval. Seeded on
+  // a cross-process resume from the journal tail (resumePlanApprovalOpen).
+  private specApprovalStepOpen = false
 
   constructor(deps: FlowLoopDeps) {
     this.deps = deps
@@ -218,6 +259,21 @@ class FlowLoopImpl implements FlowLoop {
     }
     const resume = input.resume
     const resumed = resume !== undefined
+    // AIDEV-NOTE: PMR-ZV9Y 2.1 — seed the guarded v2 state and the
+    // plan.spec-approval pairing flag from the journal tail (index.ts derives
+    // both via resumeV2StateFromEvents / resumePlanApprovalOpenFromEvents).
+    // When resumeState is absent the guard starts from null so the first
+    // snapshot('running') below emits; an explicit 'running' seed suppresses
+    // the re-emit. resumePlanApprovalOpen is only overridden when supplied, so
+    // a same-instance restart keeps the open start set by the earlier pause.
+    if (input.resumeState !== undefined) {
+      this.lastEmittedV2 = input.resumeState
+    } else {
+      this.lastEmittedV2 = null
+    }
+    if (input.resumePlanApprovalOpen !== undefined) {
+      this.specApprovalStepOpen = input.resumePlanApprovalOpen
+    }
     if (resumed) {
       this.state = {
         ref: input.ref,
@@ -256,7 +312,11 @@ class FlowLoopImpl implements FlowLoop {
     const phase = this.state.currentPhase
     const labels = await this.deps.readLabels(this.state.ref)
     if (labels === null) {
-      await this.halt(phase, 'cannot read aven labels (fail-closed)')
+      await this.halt(
+        phase,
+        'cannot read aven labels (fail-closed)',
+        'aven_read_failed',
+      )
       return
     }
     const label = PHASE_LABEL[phase]
@@ -271,6 +331,12 @@ class FlowLoopImpl implements FlowLoop {
             ref: state.ref,
             text: `settled at ${phase} without the "${label}" label but a subagent is in flight — flow stays armed`,
           })
+          // AIDEV-NOTE: PMR-ZV9Y 2.1 (ISC-7) — this branch has NO loop-state
+          // snapshot, so the waiting state would be invisible to v2 without an
+          // explicit emission. The next settle that advances runs
+          // snapshot('running') (via sendPhasePrompt), which is a different
+          // state than waiting_machine so it emits the return transition.
+          this.emitStateChange('waiting_machine', 'subagent_in_flight')
         }
         return
       }
@@ -289,7 +355,14 @@ class FlowLoopImpl implements FlowLoop {
           await this.deps.avenNote(ref, text)
           this.deps.journal({ kind: 'note', at: now(), ref, text })
           this.deps.notify(`/flow ${ref}: ${text}`, 'info')
-          this.snapshot('paused')
+          // AIDEV-NOTE: PMR-ZV9Y 2.1 — spec-approval pause maps to v2
+          // waiting_human{spec_approval_pending} (paused) PLUS the
+          // plan.spec-approval step boundary. The step-stop is emitted where
+          // the plan phase completes (advanceAfter) so the pair stays closed
+          // even across a restart (specApprovalStepOpen flag + resume seed).
+          this.snapshot('paused', 'spec_approval_pending')
+          this.emitStep('step-start', 'plan', 'plan.spec-approval')
+          this.specApprovalStepOpen = true
           this.state = null
           clearFlowEnv(this.env)
           this.deps.onFlowEnvChange?.()
@@ -314,6 +387,7 @@ class FlowLoopImpl implements FlowLoop {
       await this.halt(
         phase,
         `phase completed without landing the "${label}" label`,
+        'label_miss',
       )
       return
     }
@@ -327,6 +401,7 @@ class FlowLoopImpl implements FlowLoop {
       await this.halt(
         'validate',
         `review blockers persist after ${state.blockerRetries} implement retries (budget exhausted)`,
+        'blocker_budget_exhausted',
       )
       return true
     }
@@ -350,7 +425,15 @@ class FlowLoopImpl implements FlowLoop {
     return true
   }
 
-  private async halt(phase: Phase, reason: string): Promise<void> {
+  // AIDEV-NOTE: PMR-ZV9Y 2.1 — `v2reason` is the closed-enum halt reason
+  // mapped onto the `state-change{halted, ...}` emission (default
+  // `label_miss` — the generic halt). The free-text `reason` stays the
+  // journal-note/halt-record text; it is NEVER a label value (ISC-A-1).
+  private async halt(
+    phase: Phase,
+    reason: string,
+    v2reason: FlowReason = 'label_miss',
+  ): Promise<void> {
     const ref = this.state?.ref ?? ''
     const text = `flow halted at ${phase}: ${reason}`
     await this.deps.avenNote(ref, text)
@@ -374,7 +457,7 @@ class FlowLoopImpl implements FlowLoop {
     }
     this.deps.journal({ kind: 'note', at: now(), ref, text })
     this.deps.notify(`/flow ${ref}: ${text}`, 'warning')
-    this.snapshot('halted')
+    this.snapshot('halted', v2reason)
     this.state = null
     // AIDEV-NOTE: PMR-HFK1 — terminal transition: no child spawned from now
     // on may attribute to this (dead) run.
@@ -388,7 +471,11 @@ class FlowLoopImpl implements FlowLoop {
     if (this.state === null) return
     const labels = await this.deps.readLabels(this.state.ref)
     if (labels === null) {
-      await this.halt(phase, 'cannot read aven labels (fail-closed)')
+      await this.halt(
+        phase,
+        'cannot read aven labels (fail-closed)',
+        'aven_read_failed',
+      )
       return
     }
     const result = await buildPhasePrompt(phase, {
@@ -403,7 +490,7 @@ class FlowLoopImpl implements FlowLoop {
         : {}),
     })
     if (result.kind === 'block') {
-      await this.halt(phase, result.reason)
+      await this.halt(phase, result.reason, 'prompt_send_failed')
       return
     }
     this.deps.journal({
@@ -454,7 +541,7 @@ class FlowLoopImpl implements FlowLoop {
   // (paused, awaitingOutcome=false — phase-3's pending protocol parks ONLY
   // on awaitingOutcome=true + running), every retry increment, and on the
   // terminal transitions (halted/done). Last-wins in the projection.
-  private snapshot(status: LoopRunStatus): void {
+  private snapshot(status: LoopRunStatus, v2reason?: FlowReason): void {
     if (this.state === null) return
     this.deps.journal({
       kind: 'loop-state',
@@ -468,6 +555,66 @@ class FlowLoopImpl implements FlowLoop {
         status,
       },
     })
+    // AIDEV-NOTE: PMR-ZV9Y 2.1 — snapshot is the v1 choke point AND the v2
+    // one: every status transition maps to exactly one state-change. `v2reason`
+    // is passed per-site because the choke point cannot always know it (all
+    // halts map to v2 `halted` but carry different reasons — aven_read_failed,
+    // blocker_budget_exhausted, prompt_send_failed, label_miss; paused maps to
+    // waiting_human but only the spec-approval pause has a reason). running/done
+    // carry none. The emission is guarded (see emitStateChange).
+    this.emitStateChange(v2StateForStatus(status), v2reason)
+  }
+
+  // AIDEV-NOTE: PMR-ZV9Y 2.1 — guarded v2 state-change emission. Skips when the
+  // new state equals the last one this instance emitted (seeded from the
+  // journal tail), so the repeated snapshot('running') at every phase prompt
+  // never spams running->running and a resume does not re-emit its seeded
+  // state. `reason` is dropped when the state carries none. The journalV2 seam
+  // is optional and wrapped, so a throwing/absent seam NEVER propagates
+  // (ISC-A-5) — the loop always proceeds.
+  private emitStateChange(state: FlowState, reason?: FlowReason): void {
+    if (this.state === null) return
+    if (this.lastEmittedV2 === state) return
+    this.lastEmittedV2 = state
+    const event: FlowRunEvent = {
+      kind: 'state-change',
+      at: now(),
+      ref: this.state.ref,
+      state,
+    }
+    if (reason !== undefined) {
+      event.reason = reason
+    }
+    this.emitV2(event)
+  }
+
+  // AIDEV-NOTE: PMR-ZV9Y 2.1 — journal-only v2 step boundary. step-start and
+  // step-stop are NOT state-guarded (they are paired evidence, not a
+  // last-wins state); they still route through the same never-throw seam.
+  private emitStep(
+    kind: 'step-start' | 'step-stop',
+    phase: FlowPhase,
+    step: string,
+  ): void {
+    if (this.state === null) return
+    this.emitV2({
+      kind,
+      at: now(),
+      ref: this.state.ref,
+      phase,
+      step,
+    })
+  }
+
+  // AIDEV-NOTE: PMR-ZV9Y 2.1 — the single best-effort v2 write. journalV2 is
+  // optional (older harnesses/consumers omit it → no-op) and wrapped so a
+  // throwing seam is swallowed; the loop must NEVER halt on a telemetry write.
+  private emitV2(event: FlowRunEvent): void {
+    try {
+      this.deps.journalV2?.(event)
+    } catch {
+      // best-effort — never-throw (ISC-A-5)
+    }
   }
 
   // AIDEV-NOTE: advanceAfter runs after a settled phase turn whose label
@@ -483,6 +630,18 @@ class FlowLoopImpl implements FlowLoop {
       phase,
       label: PHASE_LABEL[phase],
     })
+    // AIDEV-NOTE: PMR-ZV9Y 2.1 — spec-approval step-stop. The mapping row
+    // ("answer/spec-approve resolution → step-stop{plan.spec-approval}") has no
+    // in-loop answer handler here: /flow answer approve restarts the loop and
+    // the approval resolves when the plan phase COMPLETES. So the step-stop is
+    // journaled at the plan phase-complete (the one loop site that is the
+    // resolution of the pause), paired by the specApprovalStepOpen flag so a
+    // run that never paused emits no orphan stop. `this.state` is still set
+    // here (teardown happens only in the done branch below).
+    if (phase === 'plan' && this.specApprovalStepOpen) {
+      this.emitStep('step-stop', 'plan', 'plan.spec-approval')
+      this.specApprovalStepOpen = false
+    }
     const next = nextPhase(labels, this.state?.promptInput.mode)
     if (next.kind === 'done') {
       this.deps.journal({
@@ -519,6 +678,90 @@ class FlowLoopImpl implements FlowLoop {
 
 export function createFlowLoop(deps: FlowLoopDeps): FlowLoop {
   return new FlowLoopImpl(deps)
+}
+
+// AIDEV-NOTE: PMR-ZV9Y 2.1 — the v1 `LoopRunStatus` → v2 `FlowState` map (the
+// snapshot choke point's status is v1; the state-change it emits is v2).
+// running→running, paused→waiting_human, halted→halted, done→done. waiting_
+// machine is never reached through this map (only the subagent-in-flight
+// branch emits it, and that site has no snapshot — see onSettled).
+function v2StateForStatus(status: LoopRunStatus): FlowState {
+  if (status === 'running') {
+    return 'running'
+  }
+  if (status === 'paused') {
+    return 'waiting_human'
+  }
+  if (status === 'halted') {
+    return 'halted'
+  }
+  return 'done'
+}
+
+/**
+ * AIDEV-NOTE: PMR-ZV9Y 2.1 — seed the loop's guarded v2 emission state from
+ * the journal tail: the LAST `state-change` event wins (validated against the
+ * closed enum — journals parse leniently, same posture as applyEvent), else
+ * derived from the projected v1 loop status via the phase-1 fold + the
+ * v1→v2 map. `undefined` = nothing seeded (fresh run / no journal), so the
+ * first snapshot('running') emits.
+ */
+export function resumeV2StateFromEvents(
+  events: readonly FlowRunEvent[] | null,
+): FlowState | undefined {
+  if (events === null) {
+    return undefined
+  }
+  let last: FlowState | undefined
+  for (const event of events) {
+    if (event.kind !== 'state-change') {
+      continue
+    }
+    if (!FLOW_STATES.includes(event.state)) {
+      continue
+    }
+    last = event.state
+  }
+  if (last !== undefined) {
+    return last
+  }
+  const projected = projectRunState(events)
+  if (projected !== null && projected.loop !== undefined) {
+    return v2StateForStatus(projected.loop.status)
+  }
+  return undefined
+}
+
+/**
+ * AIDEV-NOTE: PMR-ZV9Y 2.1 — is a plan.spec-approval step open on resume? A
+ * restart after the spec-approval pause must still emit the matching
+ * step-stop; this flag (seeded here from the raw step events) drives the
+ * pairing guard in advanceAfter so only a real, unresolved start yields a
+ * stop. The step boundary is journaled-only evidence, so the scan is over the
+ * raw event list, not the projection.
+ */
+export function resumePlanApprovalOpenFromEvents(
+  events: readonly FlowRunEvent[] | null,
+): boolean {
+  if (events === null) {
+    return false
+  }
+  let open = false
+  for (const event of events) {
+    if (event.kind !== 'step-start' && event.kind !== 'step-stop') {
+      continue
+    }
+    if (event.phase !== 'plan' || event.step !== 'plan.spec-approval') {
+      continue
+    }
+    if (event.kind === 'step-start') {
+      open = true
+    }
+    if (event.kind === 'step-stop') {
+      open = false
+    }
+  }
+  return open
 }
 
 function fixRoundSuffix(ref: string): string {
