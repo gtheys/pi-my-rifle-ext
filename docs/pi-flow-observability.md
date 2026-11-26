@@ -86,8 +86,8 @@ single source `flow/vocabulary.ts` (zero-import, pure) and mirrored in the Grafa
 | `state` | `running \| waiting_human \| waiting_machine \| halted \| done \| stale` | `flow/vocabulary.ts FlowState` |
 | `phase` | `plan \| implement \| validate \| feedback` | unchanged `FlowPhase` (loop / `PHASE_LABEL` world) |
 | `step` | registered names only (§4): `plan.spec-approval`, `validate.code-review`, `validate.deviation`, `validate.spec-diff`, `validate.aven-notes` | `flow/steps.ts STEP_REGISTRY` |
-| `reason` (closed enum, 10) | `spec_approval_pending \| code_review_pending \| escalation \| retry_budget_exhausted \| blocker_budget_exhausted \| label_miss \| deviation_gate_rerun \| subagent_in_flight \| prompt_send_failed \| aven_read_failed` | `flow/vocabulary.ts FlowReason` |
-| `wait_kind` | `human \| machine` — derived from the reason | `reasonWaitKind()` (`spec_approval_pending`, `code_review_pending`, `escalation` → human; all others → machine) |
+| `reason` (closed enum, 11) | `spec_approval_pending \| code_review_pending \| escalation \| retry_budget_exhausted \| blocker_budget_exhausted \| label_miss \| deviation_gate_rerun \| subagent_in_flight \| subagent_ask_pending \| prompt_send_failed \| aven_read_failed` | `flow/vocabulary.ts FlowReason` |
+| `wait_kind` | `human \| machine` — derived from the reason | `reasonWaitKind()` (`spec_approval_pending`, `code_review_pending`, `escalation`, `subagent_ask_pending` → human; all others → machine) |
 | `gate` | `spec-review \| code-review \| deviation \| answer` | existing gate-answer labels, unchanged |
 
 `LoopRunStatus` (`running | paused | halted | done`) is **NOT** renamed or overwritten — v2 state is **derived** from
@@ -103,6 +103,7 @@ in the board, NOT — see §6 gotcha):
 | `spec_approval_pending` | `/flow answer {ref} approve` |
 | `code_review_pending` | `/flow answer {ref} pass\|fail` |
 | `escalation` | `intervene: /flow {ref} (or fix forward)` |
+| `subagent_ask_pending` | `answer the subagent (its pane or answer_subagent)` — the only human action with **no** `{ref}`: no slash command unblocks it |
 | everything else | `—` |
 
 **Journal v2 event kinds (in `run-state.ts`):**
@@ -182,6 +183,13 @@ always receive the wrapped writer in production, so no v2 event is lost. Pinned 
 **Subagent-in-flight wait** (loop.ts) is now visible as `state-change{waiting_machine, subagent_in_flight}` — the
 branch has no `snapshot()` call, so the loop emits it explicitly (it was invisible in v1). The next settle emits the
 return to `running`.
+
+**Subagent-blocked-on-a-human wait** (loop.ts, worker-ask-wait fix) splits that branch: when the in-flight child has an
+open `ask_owner` record (`hasPendingAskForParent` from `@gtheys/pi-interactive-subagents`), the loop emits
+`state-change{waiting_human, subagent_ask_pending}` instead — the bottleneck is the operator answering, so the run must
+land on the Waiting-on-me board rather than in the machine-wait rows. Same ISC-7 shape (no `snapshot()`, armed for the
+next settle, which emits the return to `running`); the label falls back to `subagent_in_flight` whenever the probe is
+absent, false, or the ask record is malformed (fail closed).
 
 ### The v2 Prometheus gauges
 

@@ -29,7 +29,9 @@ export type FlowState =
  * The closed v2 reason enum. `answer_pending` was dropped from the brainstorm
  * list (no emission site produces it — dead vocabulary); `prompt_send_failed`
  * and `aven_read_failed` were added (real halt paths in flow/loop.ts the
- * brainstorm missed).
+ * brainstorm missed); `subagent_ask_pending` was added by the worker-ask-wait
+ * fix (an in-flight child parked on ask_owner is a HUMAN wait — flow/loop.ts
+ * emits it instead of `subagent_in_flight` when a pending ask exists).
  */
 export type FlowReason =
   | 'spec_approval_pending'
@@ -40,6 +42,7 @@ export type FlowReason =
   | 'label_miss'
   | 'deviation_gate_rerun'
   | 'subagent_in_flight'
+  | 'subagent_ask_pending'
   | 'prompt_send_failed'
   | 'aven_read_failed'
 
@@ -66,14 +69,21 @@ export const FLOW_REASONS: readonly FlowReason[] = [
   'label_miss',
   'deviation_gate_rerun',
   'subagent_in_flight',
+  'subagent_ask_pending',
   'prompt_send_failed',
   'aven_read_failed',
 ]
 
 /**
- * reason -> wait_kind. The three human reasons are the ones an operator can
+ * reason -> wait_kind. The four human reasons are the ones an operator can
  * resolve; everything else clears itself (or needs a code/label fix, which is
  * still not an interactive wait).
+ *
+ * AIDEV-NOTE (worker-ask-wait fix): `subagent_ask_pending` is human because the
+ * blocker is the OPERATOR answering an ask_owner question in a child pane — the
+ * machine half (`subagent_in_flight`, the child still working) is a different
+ * wait. Before this reason existed, that case was labelled machine and the
+ * "Waiting on me — act now" board missed it.
  */
 export const WAIT_KIND: Readonly<Record<FlowReason, WaitKind>> = {
   spec_approval_pending: 'human',
@@ -84,6 +94,7 @@ export const WAIT_KIND: Readonly<Record<FlowReason, WaitKind>> = {
   label_miss: 'machine',
   deviation_gate_rerun: 'machine',
   subagent_in_flight: 'machine',
+  subagent_ask_pending: 'human',
   prompt_send_failed: 'machine',
   aven_read_failed: 'machine',
 }
@@ -92,11 +103,17 @@ export const WAIT_KIND: Readonly<Record<FlowReason, WaitKind>> = {
  * reason -> the command that unblocks the run, with `{ref}` as the placeholder.
  * Only the human wait kinds have one; the Waiting-on-me board mirrors these
  * strings as value mappings and the desktop notification uses them verbatim.
+ *
+ * AIDEV-NOTE (worker-ask-wait fix): `subagent_ask_pending` is the one human wait
+ * with NO slash command — the operator answers the child in its pane (or tells
+ * the parent to run `answer_subagent`), so its action is plain prose and
+ * deliberately carries no `{ref}` placeholder.
  */
 export const EXPECTED_ACTION: Readonly<Partial<Record<FlowReason, string>>> = {
   spec_approval_pending: '/flow answer {ref} approve',
   code_review_pending: '/flow answer {ref} pass|fail',
   escalation: 'intervene: /flow {ref} (or fix forward)',
+  subagent_ask_pending: 'answer the subagent (its pane or answer_subagent)',
 }
 
 /** Rendered when nothing unblocks the run (no human action registered). */

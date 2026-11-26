@@ -18,6 +18,7 @@ import {
 import type { AssignmentRecord } from '@gtheys/pi-interactive-subagents'
 import {
   hasLiveAssignmentForParent,
+  hasPendingAskForParent,
   listAssignments,
   onFlowSpawn,
 } from '@gtheys/pi-interactive-subagents'
@@ -896,6 +897,12 @@ export default function (
     },
     epicHasOpenChildren: (ref) => epicHasOpenChildren(ref),
     hasInFlightSubagent: () => hasLiveAssignmentForParent(process.pid),
+    // AIDEV-NOTE (worker-ask-wait fix): same record scan as the in-flight guard
+    // above, but additionally requires an open ask_owner record — it reclassifies
+    // the loop's in-flight wait as waiting_human{subagent_ask_pending} so the run
+    // shows up on the "Waiting on me — act now" board while a child waits on the
+    // operator (flow/loop.ts onSettled).
+    hasPendingSubagentAsk: () => hasPendingAskForParent(process.pid),
     setActiveRef: (ref) => {
       if (ref === null) {
         setActiveFlowRef(null)

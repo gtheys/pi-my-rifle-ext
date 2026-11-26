@@ -27,7 +27,7 @@ test('FLOW_STATES is the v2 state enum (6 values)', () => {
   )
 })
 
-test('FLOW_REASONS is the v2 reason enum (10 values)', () => {
+test('FLOW_REASONS is the v2 reason enum (11 values)', () => {
   assert.deepEqual(
     [...FLOW_REASONS],
     [
@@ -39,6 +39,7 @@ test('FLOW_REASONS is the v2 reason enum (10 values)', () => {
       'label_miss',
       'deviation_gate_rerun',
       'subagent_in_flight',
+      'subagent_ask_pending',
       'prompt_send_failed',
       'aven_read_failed',
     ],
@@ -57,11 +58,12 @@ test('WAIT_KIND covers every reason exactly once', () => {
   assert.deepEqual(keys, [...FLOW_REASONS].sort())
 })
 
-test('reasonWaitKind: the three human reasons are human, the rest machine', () => {
+test('reasonWaitKind: the four human reasons are human, the rest machine', () => {
   const human: FlowReason[] = [
     'spec_approval_pending',
     'code_review_pending',
     'escalation',
+    'subagent_ask_pending',
   ]
   for (const reason of human) {
     assert.equal(reasonWaitKind(reason), 'human', reason)
@@ -103,6 +105,21 @@ test('expectedAction: waiting_human + escalation points a human at the run', () 
   assert.ok(action.includes('/flow PMR-X'), action)
 })
 
+// AIDEV-NOTE: the subagent-ask wait has NO slash command (the human answers the
+// child in its pane or through the parent's answer_subagent tool), so its
+// expected action is plain prose and must NOT carry a {ref} placeholder — an
+// unsubstituted literal would leak into the desktop notification body and the
+// Waiting-on-me board value mapping.
+test('expectedAction: waiting_human + subagent_ask_pending tells the human where to answer', () => {
+  const action = expectedAction(
+    'waiting_human',
+    'subagent_ask_pending',
+    'PMR-X',
+  )
+  assert.equal(action, 'answer the subagent (its pane or answer_subagent)')
+  assert.ok(!action.includes('{ref}'), action)
+})
+
 test('expectedAction: machine reasons, no reason, and non-human states all have no action', () => {
   assert.equal(
     expectedAction('waiting_human', 'subagent_in_flight', 'PMR-X'),
@@ -126,7 +143,7 @@ test('EXPECTED_ACTION only maps reasons the wait-kind derivation calls human', (
     assert.ok(FLOW_REASONS.includes(reason), `unknown reason ${reason}`)
     assert.equal(reasonWaitKind(reason), 'human', reason)
   }
-  assert.equal(Object.keys(EXPECTED_ACTION).length, 3)
+  assert.equal(Object.keys(EXPECTED_ACTION).length, 4)
 })
 
 // --- step registry ---

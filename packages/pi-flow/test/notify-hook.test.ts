@@ -265,6 +265,23 @@ test('notifyBody: expected action first, then the closed reason', () => {
   assert.equal(notifyBody(RUNNING), 'recover with /flow PMR-ZV9Y')
 })
 
+// AIDEV-NOTE (worker-ask-wait fix): the new human wait has prose for an action
+// (no slash command exists), so this pins that the body still leads with the
+// action and quotes only the closed reason — the shape the README documents and
+// the operator reads on the page.
+test('notifyBody: subagent_ask_pending pages with the answer guidance', () => {
+  assert.equal(
+    notifyBody({
+      kind: 'state-change',
+      at: AT,
+      ref: 'PMR-ZV9Y',
+      state: 'waiting_human',
+      reason: 'subagent_ask_pending',
+    }),
+    'answer the subagent (its pane or answer_subagent) — reason: subagent_ask_pending',
+  )
+})
+
 // --- the sink alone -------------------------------------------------------
 
 test('sink: one notification per paging event (no silent in-process dedupe)', async () => {

@@ -20,6 +20,11 @@
 // pre-existing acceptance as pi-flow's run-state.ts). Never import the root
 // extension index (`./index.ts`) from here; the graph is locked by
 // test/subpath-exports.test.ts.
+// AIDEV-NOTE (worker-ask-wait fix): `hasPendingAskForParent` added a second
+// relative edge, `./asks.ts` (readAskRecord). That stays inside the accepted
+// graph: asks.ts imports node builtins plus `./dataroot.ts` only, so the
+// pi-coding-agent reach is unchanged (dataroot.ts is still the single file that
+// loads it) and the subpath-exports closure guard stays green.
 import {
   closeSync,
   existsSync,
@@ -32,6 +37,7 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { readAskRecord } from './asks.ts'
 import { ensureSubagentsDataDir, subagentsDataRoot } from './dataroot.ts'
 import type { UsageTotals } from './usage.ts'
 
@@ -311,6 +317,35 @@ export function hasLiveAssignmentForParent(
     if (view.record.claim.pid !== pid) continue
     if (view.record.status === 'lost') continue
     return true
+  }
+  return false
+}
+
+/**
+ * True when at least one in-flight child of `pid` is BLOCKED ON THE HUMAN
+ * through the ask_owner protocol (PMR-WXG0): it owns a live, non-lost
+ * assignment record AND an open ask record (`asks/<childId>.json`).
+ *
+ * AIDEV-NOTE (worker-ask-wait fix): consumer is pi-flow's /flow loop, which
+ * labels a settle with an in-flight child `waiting_machine{subagent_in_flight}`.
+ * An ask-blocked child is the opposite situation — nothing moves until a human
+ * answers — so the loop needs this second probe to keep those runs on the
+ * "Waiting on me — act now" board instead of the machine-wait rows. Same
+ * liveness semantics as hasLiveAssignmentForParent ('owned' + not 'lost'): a
+ * lost/orphaned child never steers its parent back, so its leftover ask record
+ * must not make the human a bottleneck. `readAskRecord` fails closed to null on
+ * a malformed record, so a corrupt ask file degrades to the old machine wait.
+ * A reply record does NOT count as answered here on purpose: the ask stays on
+ * disk until the child's pump confirms ingestion, and until then the child is
+ * still parked — the worst case is a wait that clears a few seconds after the
+ * human answered, never a missed one.
+ */
+export function hasPendingAskForParent(pid: number, root?: string): boolean {
+  for (const view of listAssignments(root)) {
+    if (view.state !== 'owned') continue
+    if (view.record.claim.pid !== pid) continue
+    if (view.record.status === 'lost') continue
+    if (readAskRecord(view.childId, root) !== null) return true
   }
   return false
 }

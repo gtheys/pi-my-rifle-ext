@@ -32,6 +32,13 @@ interface Harness {
   labels: string[] | null
   planState: string | null
   inFlight?: boolean
+  /**
+   * The `hasPendingSubagentAsk` dep (worker-ask-wait fix): true = an in-flight
+   * child of this parent is blocked on an ask_owner question. Default false, so
+   * every pre-existing in-flight test keeps asserting the machine wait; the
+   * ABSENT-dep case is covered by deleting the key in its own test.
+   */
+  pendingAsk?: boolean
   /** when true, the journalV2 seam throws on every call. */
   v2Throws?: boolean
 }
@@ -66,6 +73,7 @@ function makeHarness(labels: string[] | null = []): Harness {
     },
     epicHasOpenChildren: async () => false,
     hasInFlightSubagent: () => h.inFlight ?? false,
+    hasPendingSubagentAsk: () => h.pendingAsk ?? false,
     sendPrompt: (prompt) => {
       h.sent.push(prompt)
     },
@@ -217,6 +225,122 @@ test('subagent-in-flight: emits waiting_machine{subagent_in_flight}; next settle
       reason: 'subagent_in_flight',
     },
     { kind: 'state-change', state: 'running', reason: undefined },
+  ])
+})
+
+// ===========================================================================
+// worker-ask-wait fix: an in-flight subagent that is BLOCKED ON THE HUMAN
+// (ask_owner) is a human wait, not a machine wait. Before this fix the loop
+// labelled every in-flight settle `waiting_machine{subagent_in_flight}`, so the
+// Grafana "Waiting on me — act now" panel (state="waiting_human") never showed
+// the run even though the human was the bottleneck.
+// ===========================================================================
+
+test('subagent-in-flight WITH a pending ask: emits waiting_human{subagent_ask_pending}', async () => {
+  const h = makeHarness([])
+  h.inFlight = true
+  h.pendingAsk = true
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled()
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+    {
+      kind: 'state-change',
+      state: 'waiting_human',
+      reason: 'subagent_ask_pending',
+    },
+  ])
+  // Armed exactly as before: the wait ends when the child is answered and
+  // steers back, and the next settle emits the running return (ISC-7 — still
+  // NO loop-state snapshot in this branch).
+  assert.deepEqual(
+    h.events.filter((e) => e.kind === 'loop-state').length,
+    2,
+    'the in-flight branch must not journal a loop-state snapshot',
+  )
+  h.pendingAsk = false
+  h.inFlight = false
+  h.labels = ['planned']
+  await loop.onSettled()
+  assert.deepEqual(
+    v2View(h).slice(2),
+    [{ kind: 'state-change', state: 'running', reason: undefined }],
+    'the answer + label landing returns the run to running',
+  )
+})
+
+test('subagent-in-flight journal note says the child waits on the HUMAN when an ask is pending', async () => {
+  const h = makeHarness([])
+  h.inFlight = true
+  h.pendingAsk = true
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled()
+  const note = h.events.find((e) => e.kind === 'note')
+  assert.ok(note && note.kind === 'note', 'the branch journals a note')
+  if (note && note.kind === 'note') {
+    assert.match(note.text, /waiting on the human/)
+    // Still armed: the "flow stays armed" wording is what the operator reads
+    // when they reopen the journal.
+    assert.match(note.text, /flow stays armed/)
+  }
+})
+
+test('subagent-in-flight WITHOUT a pending ask: unchanged waiting_machine{subagent_in_flight} and unchanged note', async () => {
+  const h = makeHarness([])
+  h.inFlight = true
+  h.pendingAsk = false
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled()
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+    {
+      kind: 'state-change',
+      state: 'waiting_machine',
+      reason: 'subagent_in_flight',
+    },
+  ])
+  const note = h.events.find((e) => e.kind === 'note')
+  assert.ok(note && note.kind === 'note')
+  if (note && note.kind === 'note') {
+    assert.match(note.text, /a subagent is in flight/)
+    assert.ok(!note.text.includes('waiting on the human'), note.text)
+  }
+})
+
+test('hasPendingSubagentAsk dep ABSENT: fail closed to the old machine wait', async () => {
+  // Optional dep (no fixture churn for older consumers): absent => false.
+  const h = makeHarness([])
+  h.inFlight = true
+  delete h.deps.hasPendingSubagentAsk
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled()
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+    {
+      kind: 'state-change',
+      state: 'waiting_machine',
+      reason: 'subagent_in_flight',
+    },
+  ])
+})
+
+test('pending ask WITHOUT an in-flight subagent: no human wait is claimed', async () => {
+  // The ask probe only reclassifies the in-flight branch. A settle with no live
+  // child but a leftover ask record (crashed child, record not yet cleaned) is
+  // the ordinary label-miss halt — never a phantom "waiting on you" row.
+  const h = makeHarness([])
+  h.inFlight = false
+  h.pendingAsk = true
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled()
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+    { kind: 'state-change', state: 'halted', reason: 'label_miss' },
   ])
 })
 

@@ -292,6 +292,31 @@ test('only waiting_human / waiting_machine windows are waits', () => {
   ])
 })
 
+// AIDEV-NOTE: worker-ask-wait fix — subagent_ask_pending must pass the
+// FLOW_REASONS vocabulary filter in stateTransitions (an unregistered reason is
+// silently DROPPED there, which would make the new human wait invisible on the
+// board even though the loop emits it). Pinned as a rendered line, not only a
+// bucket, so a vocabulary/filter regression shows up as a missing series.
+test('subagent_ask_pending is in the reason vocabulary and buckets as a human wait', () => {
+  const events = [
+    runStart(),
+    change('waiting_machine', 'subagent_in_flight', shift(0)),
+    change('waiting_human', 'subagent_ask_pending', shift(60)),
+    change('running', '', shift(160)),
+  ]
+  assert.deepEqual(waitEntries(scanStateWindows(events).seconds), [
+    ['machine', 'subagent_in_flight', 60],
+    ['human', 'subagent_ask_pending', 100],
+  ])
+  const lines = renderStateMetricLines(REF, events)
+  assert.ok(
+    lines.includes(
+      `pi_flow_wait_seconds{ref="${REF}",wait_kind="human",reason="subagent_ask_pending"} 100`,
+    ),
+    lines.join('\n'),
+  )
+})
+
 test('wait_kind comes from the reason, not the state label', () => {
   // The plan derives wait_kind from the reason enum; a drifted writer that
   // pairs a human reason with waiting_machine still buckets as human.

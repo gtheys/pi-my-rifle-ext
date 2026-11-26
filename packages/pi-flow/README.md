@@ -14,7 +14,7 @@ Runtime:
 
 | Package | Why | Used by |
 |---|---|---|
-| `@gtheys/pi-interactive-subagents` (`workspace:*`) | Spawn-and-watch substrate: launches agent sessions into herdr panes, keeps durable assignment records, steers results back | `review/review.ts` (reviewer spawn), `spec-review/publish.ts` (publish worker), `index.ts` (`hasLiveAssignmentForParent` for the flow loop) |
+| `@gtheys/pi-interactive-subagents` (`workspace:*`) | Spawn-and-watch substrate: launches agent sessions into herdr panes, keeps durable assignment records, steers results back | `review/review.ts` (reviewer spawn), `spec-review/publish.ts` (publish worker), `index.ts` (`hasLiveAssignmentForParent` + `hasPendingAskForParent` for the flow loop) |
 
 Peers: `@earendil-works/pi-coding-agent` (host API), `@earendil-works/pi-tui`
 (review UI), `typebox` (config schema validation).
@@ -399,9 +399,12 @@ either one off and the other keeps working, and neither affects the run itself.
 
 **Desktop channel.** Only two v2 states page: `waiting_human` (a human unblocks
 it) and `halted` (a human must). `waiting_machine` — a retry budget, a
-subagent still in flight, a deviation gate re-run — is a Grafana/Loki concern,
-never a notification, and `running` / `done` are silent. The message is the
-journal event, nothing else:
+subagent still working, a deviation gate re-run — is a Grafana/Loki concern,
+never a notification, and `running` / `done` are silent. A subagent that is in
+flight **but parked on an `ask_owner` question** is the exception that used to
+be mislabelled: it pages as `waiting_human` / `subagent_ask_pending`, because
+nothing moves until you answer it. The message is the journal event, nothing
+else:
 
 ```
 pi-flow PMR-ZV9Y: waiting_human
@@ -413,9 +416,16 @@ pi-flow PMR-ZV9Y: halted
 reason: label_miss — recover with /flow PMR-ZV9Y
 ```
 
+```
+pi-flow PMR-ZV9Y: waiting_human
+answer the subagent (its pane or answer_subagent) — reason: subagent_ask_pending
+```
+
 The first line of the body is the **expected action** — the exact command from
 the same `expectedAction` map the Waiting-on-me board renders, so what you type
-is what the board already advertised. Only the closed reason enum is quoted;
+is what the board already advertised. `subagent_ask_pending` is the one human
+wait with no command to type: its action is prose pointing at the child's pane
+(or the parent's `answer_subagent` tool). Only the closed reason enum is quoted;
 free-text halt prose never enters a notification.
 
 Semantics (test-gated, see `telemetry/dispatch.ts` and `test/notify-hook.test.ts`):

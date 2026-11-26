@@ -4959,7 +4959,11 @@ export type { AssignmentRecord } from './assignments.ts'
 // AIDEV-NOTE (PMR-EA8X): flow-cost rollup surface consumed by pi-flow —
 // session-file usage accounting (session jsonl stays the authority) and the
 // durable assignment records (sessionFile + subtask attribution).
-export { hasLiveAssignmentForParent, listAssignments } from './assignments.ts'
+export {
+  hasLiveAssignmentForParent,
+  hasPendingAskForParent,
+  listAssignments,
+} from './assignments.ts'
 export type { FlowSpawnInfo } from './flow-env.ts'
 // AIDEV-NOTE (PMR-HFK1): flow attribution surface consumed by pi-flow —
 // env validators for stamping the main process + the spawn listener registry.

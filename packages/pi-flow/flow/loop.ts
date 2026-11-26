@@ -71,6 +71,17 @@ export interface FlowLoopDeps {
   epicHasOpenChildren(ref: string): Promise<boolean>
   /** True while this session has an in-flight subagent (mid-phase async wait). */
   hasInFlightSubagent(): boolean
+  /**
+   * AIDEV-NOTE (worker-ask-wait fix): true when one of this session's in-flight
+   * subagents is parked on an ask_owner question (`asks/<childId>.json` exists
+   * for a live, non-lost assignment). The /flow loop uses it ONLY inside the
+   * hasInFlightSubagent branch to split that wait into the two situations the
+   * board must show apart: child working (waiting_machine{subagent_in_flight})
+   * vs child waiting for a human answer (waiting_human{subagent_ask_pending}).
+   * Optional and fail-closed — absent or false keeps the machine label, so
+   * existing fixtures and consumers need no changes.
+   */
+  hasPendingSubagentAsk?(): boolean
   sendPrompt(prompt: string): void
   // AIDEV-NOTE: PMR-1CCT — optional active-ref sink so the review tool can
   // resolve the flow worktree (flow/worktree-context.ts). Called with the
@@ -420,18 +431,36 @@ class FlowLoopImpl implements FlowLoop {
         const state = this.state
         if (state !== null) {
           state.awaitingOutcome = true
+          // AIDEV-NOTE (worker-ask-wait fix): an in-flight child is NOT always a
+          // machine wait — if it parked on ask_owner, nothing moves until the
+          // OPERATOR answers, so the run belongs on the "Waiting on me — act
+          // now" board (state="waiting_human"), not in the machine-wait rows.
+          // The probe is optional and fail-closed: absent or false keeps the
+          // original waiting_machine{subagent_in_flight} label. Only the v2
+          // label and the note wording change — the v1 journal shape, the
+          // arming (awaitingOutcome=true) and the running return on the next
+          // settle are untouched.
+          const askPending = this.deps.hasPendingSubagentAsk?.() === true
+          let noteText = `settled at ${phase} without the "${label}" label but a subagent is in flight — flow stays armed`
+          if (askPending) {
+            noteText = `settled at ${phase} without the "${label}" label — a subagent is in flight and waiting on the human (ask_owner) — flow stays armed`
+          }
           this.deps.journal({
             kind: 'note',
             at: now(),
             ref: state.ref,
-            text: `settled at ${phase} without the "${label}" label but a subagent is in flight — flow stays armed`,
+            text: noteText,
           })
           // AIDEV-NOTE: PMR-ZV9Y 2.1 (ISC-7) — this branch has NO loop-state
           // snapshot, so the waiting state would be invisible to v2 without an
-          // explicit emission. The next settle that advances runs
-          // snapshot('running') (via sendPhasePrompt), which is a different
-          // state than waiting_machine so it emits the return transition.
-          this.emitStateChange('waiting_machine', 'subagent_in_flight')
+          // explicit emission (true for both labels here). The next settle that
+          // advances runs snapshot('running') (via sendPhasePrompt), which is a
+          // different state than either wait so it emits the return transition.
+          if (askPending) {
+            this.emitStateChange('waiting_human', 'subagent_ask_pending')
+          } else {
+            this.emitStateChange('waiting_machine', 'subagent_in_flight')
+          }
         }
         return
       }

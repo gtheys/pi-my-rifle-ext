@@ -53,6 +53,7 @@ import {
   findAssignmentByBranch,
   findStartingAssignment,
   hasLiveAssignmentForParent,
+  hasPendingAskForParent,
   listAssignments,
   readAssignment,
   recordAssignmentUsage,
@@ -6393,6 +6394,18 @@ describe('assignments.ts durable branch-owned assignments (PMR-Z5KR)', () => {
     }
   }
 
+  /** An ask record for the hasPendingAskForParent cases below. */
+  function ask(childId: string, askId: string, question: string): AskRecord {
+    return {
+      askId,
+      childId,
+      name: `agent-${childId}`,
+      question,
+      sessionFile: `/tmp/${childId}.jsonl`,
+      createdAt: new Date().toISOString(),
+    }
+  }
+
   it('writes a record atomically at the canonical path with timestamps', () => {
     const record = writeAssignment(draft('w-1'), root)
     const path = assignmentPath('w-1', root)
@@ -6466,6 +6479,79 @@ describe('assignments.ts durable branch-owned assignments (PMR-Z5KR)', () => {
     writeAssignment(draft('lost-1', { status: 'lost' }), isolated)
     assert.equal(hasLiveAssignmentForParent(process.pid, isolated), false)
     assert.equal(hasLiveAssignmentForParent(4194304, isolated), false)
+  })
+
+  // AIDEV-NOTE (worker-ask-wait fix): hasPendingAskForParent is the pi-flow
+  // loop's "is my in-flight child actually blocked on the HUMAN?" probe — the
+  // records are the only cross-process evidence (the ask protocol writes
+  // asks/<childId>.json before it parks), so the cases below pin the shapes the
+  // loop can meet: a live child with an open ask (true), and a live child
+  // without one, a foreign parent's asked child, a lost child, an orphaned
+  // child and a malformed ask record (all false — a child that can never steer
+  // its parent back must never make the human a bottleneck on the board).
+  it('hasPendingAskForParent: true for an owned child with an open ask record', () => {
+    const isolated = join(root, 'ask-true')
+    writeAssignment(draft('ask-1'), isolated)
+    writeAskRecord(ask('ask-1', 'ask-1-id', 'which table?'), isolated)
+    assert.equal(hasPendingAskForParent(process.pid, isolated), true)
+  })
+
+  it('hasPendingAskForParent: false for an owned child with no ask record', () => {
+    const isolated = join(root, 'ask-none')
+    writeAssignment(draft('ask-2'), isolated)
+    assert.equal(hasPendingAskForParent(process.pid, isolated), false)
+  })
+
+  it('hasPendingAskForParent: false for a foreign parent, a lost child, an orphaned child, and a malformed ask', () => {
+    // (a) another LIVE pid owns the child — a foreign parent's ask is never
+    // this parent's human wait. process.ppid is live and never equals our pid.
+    const foreign = join(root, 'ask-foreign')
+    writeAssignment(
+      draft('ask-3', { claim: { pid: process.ppid, id: 'other-parent' } }),
+      foreign,
+    )
+    writeAskRecord(ask('ask-3', 'ask-3-id', 'which table?'), foreign)
+    assert.equal(hasPendingAskForParent(process.pid, foreign), false)
+    assert.equal(hasPendingAskForParent(process.ppid, foreign), true)
+
+    // (b) our child but LOST: it can never steer back, so a stale ask file
+    // must not make the human the bottleneck (same fail-closed rule as
+    // hasLiveAssignmentForParent).
+    const lost = join(root, 'ask-lost')
+    writeAssignment(draft('ask-4', { status: 'lost' }), lost)
+    writeAskRecord(ask('ask-4', 'ask-4-id', 'stale?'), lost)
+    assert.equal(hasPendingAskForParent(process.pid, lost), false)
+
+    // (c) our child but the claim pid is dead -> the view is ORPHANED, not
+    // owned, so the ask belongs to no live parent.
+    const orphan = join(root, 'ask-orphan')
+    writeAssignment(
+      draft('ask-5', { claim: { pid: 4194304, id: 'dead-parent' } }),
+      orphan,
+    )
+    writeAskRecord(ask('ask-5', 'ask-5-id', 'orphan?'), orphan)
+    assert.equal(hasPendingAskForParent(process.pid, orphan), false)
+    assert.equal(hasPendingAskForParent(4194304, orphan), false)
+
+    // (d) our live child with a MALFORMED ask record: readAskRecord fails
+    // closed to null -> machine wait, exactly the old behaviour.
+    const malformed = join(root, 'ask-malformed')
+    writeAssignment(draft('ask-6'), malformed)
+    writeFileSync(askRecordPath('ask-6', malformed), '{not json')
+    assert.equal(hasPendingAskForParent(process.pid, malformed), false)
+  })
+
+  it('hasPendingAskForParent: false with no records at all and an absent dir', () => {
+    const isolated = join(root, 'ask-empty')
+    assert.equal(hasPendingAskForParent(process.pid, isolated), false)
+    assert.equal(
+      hasPendingAskForParent(process.pid, join(isolated, 'nope')),
+      false,
+    )
+  })
+
+  it('hasPendingAskForParent is exported from the package entry (pi-flow consumer)', () => {
+    assert.equal(typeof subagentsModule.hasPendingAskForParent, 'function')
   })
 
   it('listAssignments marks dead claim pids as orphaned with a resume hint', () => {
