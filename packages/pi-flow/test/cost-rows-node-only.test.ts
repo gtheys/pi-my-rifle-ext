@@ -43,6 +43,14 @@ const CLOSURE_ROOTS = [
   'flow/cost-rows.ts',
   'flow/run-health.ts',
   'flow/state-metrics.ts',
+  // fix-round-3 (deviation #3): state-metrics.ts now value-imports
+  // isRegisteredStep from steps.ts, so steps.ts is genuinely in the push-chain
+  // closure. Register it as its own root so the per-root textual allowlist
+  // (ROOT_ALLOWLISTS['flow/steps.ts'] = ['./orchestrate.ts'], type-only) guards
+  // the LAST daemon-safe hop — an unmapped pi/session runtime import added to
+  // steps.ts fails here, not in production. The transitive walk below strips
+  // the type-only './orchestrate.ts' so orchestrate.ts is never loaded.
+  'flow/steps.ts',
 ]
 
 /** Everything flow/cost-rows.ts is allowed to import. */
@@ -106,8 +114,23 @@ test('the guard itself rejects the package root and the pi runtime', () => {
 
 // AIDEV-NOTE (PMR-ZV9Y 3.2): per-root node-only allowlists for the two modules
 // the v2 render added to the push chain. An edge to the pi runtime, the
-// package root, `flow/cost.ts`, `flow/steps.ts` or `flow/loop.ts` (all
-// session-side) fails here instead of crashing the daemon in production.
+// package root, `flow/cost.ts`, `flow/loop.ts` or any other session-side
+// module fails here instead of crashing the daemon in production.
+//
+// AIDEV-NOTE (PMR-ZV9Y fix-round-3, deviation #3): `flow/steps.ts` is NOT
+// session-side — the earlier comment listing it alongside loop.ts was wrong.
+// steps.ts is pure data (`STEP_REGISTRY` const map + `isRegisteredStep`
+// predicate, no I/O, no pi runtime); its only import is `import type { Phase }
+// from './orchestrate.ts'`, which is TYPE-ONLY and erased at runtime, so the
+// transitive CLOSURE walk (runtimeImportSpecifiers) strips it and the daemon
+// never loads orchestrate.ts. state-metrics.ts now VALUE-imports
+// `isRegisteredStep` from './steps.ts' to registry-close the `step` label
+// surface (plan.md:37), so './steps.ts' joins its direct allowlist and
+// 'flow/steps.ts' is registered as its own root with the type-only
+// './orchestrate.ts' edge allowlisted there. The mutation guard below proves
+// this still bites: a RUNTIME (non-type-only) `import { getAgentDir } from
+// '@earendil-works/pi-coding-agent'` added to steps.ts trips the direct
+// textual check (it is not in ROOT_ALLOWLISTS['flow/steps.ts']).
 const ROOT_ALLOWLISTS: Record<string, readonly string[]> = {
   'flow/cost-rows.ts': ALLOWED,
   'flow/run-health.ts': [
@@ -116,15 +139,22 @@ const ROOT_ALLOWLISTS: Record<string, readonly string[]> = {
     './state-metrics.ts',
   ],
   // state-metrics.ts is deliberately NARROWER than its importers: types +
-  // projectRunState, the closed-enum vocabulary, and labelString. Not
-  // './steps.ts' (its registry membership check is enforced at the emit
-  // boundary instead — see the STEP_NAME_RE note in that module) and not
-  // './run-health.ts' (would deepen the cycle for no gain).
+  // projectRunState, the closed-enum vocabulary, labelString, and (fix-round-3)
+  // the registry predicate isRegisteredStep. Not './run-health.ts' (would
+  // deepen the cycle for no gain) and not any session-side module.
   'flow/state-metrics.ts': [
     '../run-state.ts',
     './cost-rows.ts',
     './vocabulary.ts',
+    './steps.ts',
   ],
+  // steps.ts is pure data. Its ONE import is the type-only Phase from
+  // './orchestrate.ts' (erased at runtime — see the AIDEV note above), so the
+  // daemon never transitively loads orchestrate.ts; the transitive walk enforces
+  // that, and this entry is exactly what a RUNTIME import there could not hide
+  // behind. Nothing else is allowlisted: any other edge fails the per-root
+  // check.
+  'flow/steps.ts': ['./orchestrate.ts'],
 }
 
 function isAllowedIn(specifier: string, root: string): boolean {
@@ -166,6 +196,17 @@ test('the v2 closure guards reject the pi runtime and the session-side graph', (
   assert.ok(isAllowedIn('./state-metrics.ts', 'flow/run-health.ts'))
   assert.ok(isAllowedIn('./vocabulary.ts', 'flow/state-metrics.ts'))
   assert.ok(isAllowedIn('node:fs', 'flow/cost-rows.ts'))
+  // fix-round-3 (deviation #3): steps.ts is a push-chain root and its only
+  // allowed edge is the TYPE-ONLY './orchestrate.ts' (erased at runtime, so the
+  // transitive closure never loads orchestrate.ts). A RUNTIME pi/session import
+  // added to steps.ts is NOT allowlisted there -> the per-root textual check
+  // bites (the mutation this round runs by hand: inject
+  // `import { getAgentDir } from '@earendil-works/pi-coding-agent'` into
+  // steps.ts -> `flow/steps.ts imports stay inside its node-only allowlist`
+  // goes red -> revert).
+  assert.ok(isAllowedIn('./orchestrate.ts', 'flow/steps.ts'))
+  assert.ok(!isAllowedIn('@earendil-works/pi-coding-agent', 'flow/steps.ts'))
+  assert.ok(!isAllowedIn('./loop.ts', 'flow/steps.ts'))
 })
 
 test('cost.ts keeps re-exporting the moved rollup so importers are unchanged', () => {

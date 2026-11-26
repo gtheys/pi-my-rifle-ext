@@ -85,10 +85,28 @@
 // were unreachable. That was imprecise — it is reachable; it is simply not on
 // the deliberately narrow direct allowlist, and adding it would force an edit
 // to the frozen closure guard for a check the emit boundary already performs.
+// AIDEV-NOTE (PMR-ZV9Y fix-round-3, deviation #3): that P3b posture is now
+// SUPERSEDED — the closure guard is widened and state-metrics.ts DOES
+// value-import isRegisteredStep from './steps.ts' (the widening is safe exactly
+// as P3b described it: steps.ts is pure data, its lone './orchestrate.ts' edge
+// is type-only and erased at runtime, so the transitive closure walk never
+// loads orchestrate.ts; flow/steps.ts is registered as its own guard root).
+// The `step` label is therefore now REGISTRY-CLOSED at the render boundary
+// (scanStepWindows rejects any step isRegisteredStep(phase, step) is false for,
+// for BOTH pi_flow_step and pi_flow_step_seconds), which is the spec's
+// "Registered names only" rule (plan.md:37) and the real bounded-cardinality
+// guarantee ISC-A-1 wanted. STEP_NAME_RE is kept as a cheap pre-filter that
+// rejects structurally-broken values (spaces, over-length) before the registry
+// lookup — NOT as the cardinality control any more. The journal + Loki line
+// still carry unregistered / free-form step names (implement + feedback
+// registries are empty by design); only the Prometheus LABEL surface is
+// registry-closed. The paragraph above (charset-only rationale) is retained as
+// history per G-1 — it is no longer the implemented contract.
 
 import type { FlowPhase, FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
 import { labelString } from './cost-rows.ts'
+import { isRegisteredStep } from './steps.ts'
 import type { FlowReason, FlowState, WaitKind } from './vocabulary.ts'
 import { FLOW_REASONS, FLOW_STATES, reasonWaitKind } from './vocabulary.ts'
 
@@ -141,23 +159,30 @@ const PHASE_VALUES: readonly FlowPhase[] = [
 ]
 
 /**
- * Structural guard for a journaled step name. Registry membership lives in
- * flow/steps.ts and is enforced at the EMIT boundary (subtask 1.2: the
- * registry plus the flow_submit advisory warning), so this module does not
- * need to consult it — and './steps.ts' is deliberately absent from the
- * per-root direct allowlist `ROOT_ALLOWLISTS['flow/state-metrics.ts']` in
- * test/cost-rows-node-only.test.ts (locked for 3.1/3.2; the only v2 imports
- * kept here are run-state / cost-rows / vocabulary). steps.ts itself is
- * daemon-reachable (its sole import is type-only), so a value import would
- * pass the transitive closure WALK but fail that direct textual allowlist — a
- * guard this fix round is not permitted to widen, and widening it would buy
- * nothing the emit boundary does not already check. The charset mirrors
- * flow_submit's own validation (FLOW_VALUE_RE: alphanumeric plus `. _ -`,
- * ≤64 chars) and the registry's `<phase>.<name>` naming, so a free-text value
- * (a note pasted by a future writer) can never become a label value — ISC-A-1.
+ * Structural pre-filter for a journaled step name. This is NO LONGER the
+ * cardinality control on its own — the registry IS (see below). It rejects
+ * structurally-broken values (spaces, over-length) cheaply BEFORE the
+ * `isRegisteredStep` lookup in scanStepWindows, so a pasted free-text halt note
+ * never even reaches a registry call. The registry gate is the authority now
+ * (PMR-ZV9Y fix-round-3, deviation #3): this module value-imports
+ * `isRegisteredStep` from './steps.ts' and scanStepWindows drops any
+ * (phase, step) the registry does not list, for BOTH pi_flow_step and
+ * pi_flow_step_seconds. The earlier "enforced at the emit boundary only, so
+ * this module does not consult the registry" posture is RETIRED — the charset
+ * alone let a well-formed-but-unregistered name (validate.bogus) become a label
+ * value, which is exactly the unbounded-cardinality leak ISC-A-1 forbids.
+ * './steps.ts' is now on the per-root direct allowlist
+ * `ROOT_ALLOWLISTS['flow/state-metrics.ts']` in test/cost-rows-node-only.test.ts
+ * and flow/steps.ts is registered as its own guard root; the widening is safe
+ * because steps.ts is pure data (a const map + a predicate, no I/O, no pi
+ * runtime) whose lone './orchestrate.ts' edge is type-only and erased at
+ * runtime. The charset mirrors flow_submit's own validation (FLOW_VALUE_RE:
+ * alphanumeric plus `. _ -`, ≤64 chars) and the registry's `<phase>.<name>`
+ * naming, so a free-text value can never become a label value — ISC-A-1.
  * AIDEV-NOTE (PMR-ZV9Y fix round, P3b): corrected from the earlier "would
  * violate the node-only allowlist" wording, which overstated a reachability
- * limit that is really a narrow, deliberate allowlist choice.
+ * limit that is really a narrow, deliberate allowlist choice. (Superseded by
+ * fix-round-3: the choice is gone — the allowlist is widened deliberately.)
  */
 const STEP_NAME_RE = /^[a-z]+\.[A-Za-z0-9._-]{1,63}$/
 
@@ -347,6 +372,16 @@ export function scanStepWindows(
     if (!PHASE_VALUES.includes(event.phase)) continue
     if (typeof event.step !== 'string') continue
     if (!STEP_NAME_RE.test(event.step)) continue
+    // AIDEV-NOTE: PMR-ZV9Y fix-round-3 (deviation #3) — the registry is now
+    // the label-surface authority (plan.md:37 "Registered names only"). A
+    // charset-valid but UNREGISTERED name is ignored for BOTH gauges, which
+    // also empties implement/feedback (free-form flow_submit names by design).
+    // The journal + Loki line still carry them — only the Prometheus label
+    // surface is registry-closed (bounded cardinality, ISC-A-1). Keeping
+    // STEP_NAME_RE above is still load-bearing: it rejects structurally-broken
+    // values (spaces, >64 chars) cheaply before the registry lookup, and
+    // isRegisteredStep would otherwise index a free-text halt note.
+    if (!isRegisteredStep(event.phase, event.step)) continue
     if (typeof event.at !== 'string') continue
     const key = `${event.phase}\u0000${event.step}`
     if (event.kind === 'step-start') {

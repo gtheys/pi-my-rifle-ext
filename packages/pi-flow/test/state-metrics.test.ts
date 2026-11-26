@@ -455,10 +455,15 @@ test('re-opened steps sum and distinct steps keep separate keys', () => {
 })
 
 test('an unregistered free-text step name is never a label value', () => {
-  // ISC-A-1: registry membership is enforced at the emit boundary
-  // (flow/steps.ts + flow_submit, subtask 1.2); the derivation cannot import
-  // the registry (node-only allowlist), so it applies the structural guard
-  // instead: "<prefix>.<flow-value>" and nothing else.
+  // ISC-A-1: the `step` label is registry-closed at the render boundary since
+  // fix-round-3 (deviation #3) — scanStepWindows consults
+  // isRegisteredStep(flow/steps.ts) — on top of the structural charset guard
+  // that rejects free text before the lookup. (Originally the derivation could
+  // not import the registry under the node-only allowlist and relied on the
+  // charset alone; that is superseded, but this fixture's outcome is unchanged:
+  // 'look at the diff please' fails the charset, the 'research' phase fails the
+  // PHASE_VALUES gate, and only the registered validate.code-review pair
+  // survives.)
   const events: FlowRunEvent[] = [
     runStart(),
     step('step-start', 'validate', 'look at the diff please', shift(100)),
@@ -477,6 +482,67 @@ test('an unregistered free-text step name is never a label value', () => {
     ['validate', 'validate.code-review', 100],
   ])
   assert.deepEqual(scan.open, [])
+})
+
+// AIDEV-NOTE: PMR-ZV9Y fix-round-3 (deviation #3) — the `step` label is now
+// registry-CLOSED, not charset-only. The spec (plan.md:37) says
+// "Registered names only"; a closed enum as a label value is what bounds
+// cardinality (ISC-A-1). scanStepWindows is the PURE Prometheus derivation
+// (it feeds pi_flow_step AND pi_flow_step_seconds and nothing else — Loki/Tempo
+// read the RAW events through telemetry/dispatch.ts), so the registry gate
+// lives here: an unregistered name contributes neither an open step nor a
+// completed bucket, so it reaches NEITHER gauge. implement/feedback registries
+// are EMPTY by design (free-form flow_submit step names), so EVERY
+// implement/feedback step is now ignored on the Prometheus surface. The journal
+// + Loki line still carry them — only the label surface is registry-closed.
+test('registry gating: an unregistered (charset-valid) step is dropped from BOTH scans', () => {
+  const events = [
+    runStart(),
+    // charset-valid (matches STEP_NAME_RE) but NOT in STEP_REGISTRY.validate.
+    step('step-start', 'validate', 'validate.bogus', shift(100)),
+    step('step-stop', 'validate', 'validate.bogus', shift(200)),
+    // implement registry is empty -> even a well-formed name is unregistered.
+    step('step-start', 'implement', 'implement.any-freeform', shift(100)),
+  ]
+  const scan = scanStepWindows(events)
+  assert.equal(
+    scan.seconds.size,
+    0,
+    'no completed bucket for unregistered steps',
+  )
+  assert.deepEqual(scan.open, [], 'no open step for unregistered steps')
+})
+
+test('registry gating: pi_flow_step AND pi_flow_step_seconds carry ONLY registered names', () => {
+  const events = [
+    runStart(),
+    loopState(shift(10), 'running', 'validate'),
+    change('running', '', shift(10)),
+    // registered + completed -> pi_flow_step_seconds only.
+    step('step-start', 'validate', 'validate.code-review', shift(20)),
+    step('step-stop', 'validate', 'validate.code-review', shift(80)),
+    // registered + open -> pi_flow_step only (state is waiting_machine = live).
+    step('step-start', 'validate', 'validate.deviation', shift(90)),
+    // unregistered charset-valid -> ignored in BOTH gauges.
+    step('step-start', 'validate', 'validate.bogus', shift(95)),
+    step('step-stop', 'validate', 'validate.bogus', shift(120)),
+    // free-form implement step -> ignored in BOTH gauges (empty registry).
+    step('step-start', 'implement', 'implement.any-freeform', shift(100)),
+    change('waiting_machine', 'subagent_in_flight', shift(130)),
+  ]
+  const lines = renderStateMetricLines(REF, events)
+  assert.deepEqual(
+    lines.filter((l) => l.startsWith('pi_flow_step{')),
+    [`pi_flow_step{ref="${REF}",phase="validate",step="validate.deviation"} 1`],
+    lines.join('\n'),
+  )
+  assert.deepEqual(
+    lines.filter((l) => l.startsWith('pi_flow_step_seconds{')),
+    [
+      `pi_flow_step_seconds{ref="${REF}",phase="validate",step="validate.code-review"} 60`,
+    ],
+    lines.join('\n'),
+  )
 })
 
 // --- renderStateMetricLines ---------------------------------------------
