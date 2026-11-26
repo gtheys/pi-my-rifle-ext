@@ -362,6 +362,32 @@ class FlowLoopImpl implements FlowLoop {
         promptInput: input.promptInput,
       }
     }
+    // AIDEV-NOTE: PMR-ZV9Y 2.1 — spec-approval step-stop at the EARLIEST
+    // faithful restart site. Spec Behaviour 3 (plan.md:68) requires the journal
+    // ORDER `step-stop{plan.spec-approval}` THEN `state-change{running}`: the
+    // approval wait ends when the loop is RE-ENTERED after /flow answer, and
+    // `specApprovalStepOpen` (seeded from the journal tail on a cross-process
+    // resume, or kept set by this same instance's earlier pause) is exactly
+    // "the step is still open". Closing it HERE — before the running snapshot
+    // below — (a) orders the journal as the spec says, (b) bounds
+    // pi_flow_step_seconds / the Tempo span to the approval wait instead of
+    // stretching it to the plan phase-complete, and (c) guarantees a stop even
+    // when the restarted run HALTS before plan completes. It is
+    // PHASE-INDEPENDENT on purpose: /flow answer approve moves plan-state to
+    // approved so the restart can re-enter at implement, where the old
+    // advanceAfter-only close (gated on `phase === 'plan'`) would never fire
+    // and the step would leak. /flow answer reject routes the spec back to
+    // draft (more plan work, no label) — the wait STILL ENDED, so step-stop is
+    // correct there too; both answers restart the loop and neither keeps the
+    // approval step open. This does NOT replace the advanceAfter close, it
+    // pre-empts it: the flag is cleared here, so the same `if (phase === 'plan'
+    // && this.specApprovalStepOpen)` guard in advanceAfter (kept as an
+    // idempotent fallback for the same-instance pause→advance path that skips a
+    // fresh start) cannot double-stop — at-most-once is guaranteed by the flag.
+    if (this.specApprovalStepOpen) {
+      this.emitStep('step-stop', 'plan', 'plan.spec-approval')
+      this.specApprovalStepOpen = false
+    }
     // AIDEV-NOTE: PMR-XTQQ — loop-state snapshot journaling: budget and
     // cutoff live on the journal so a restart restores them; cleared only
     // by terminal snapshots.
@@ -426,9 +452,14 @@ class FlowLoopImpl implements FlowLoop {
           this.deps.notify(`/flow ${ref}: ${text}`, 'info')
           // AIDEV-NOTE: PMR-ZV9Y 2.1 — spec-approval pause maps to v2
           // waiting_human{spec_approval_pending} (paused) PLUS the
-          // plan.spec-approval step boundary. The step-stop is emitted where
-          // the plan phase completes (advanceAfter) so the pair stays closed
-          // even across a restart (specApprovalStepOpen flag + resume seed).
+          // plan.spec-approval step boundary. The matching step-stop is emitted
+          // at the EARLIEST restart site — start(), when the seeded
+          // specApprovalStepOpen flag says the step is still open (fix-round-3,
+          // deviation #1) — ordered BEFORE the running snapshot, with the
+          // advanceAfter plan phase-complete close kept as an idempotent
+          // fallback for the same-instance pause→advance path. The
+          // specApprovalStepOpen flag pairs them so a run that never paused
+          // emits no orphan stop and at-most-once stop is journaled.
           this.snapshot('paused', 'spec_approval_pending')
           this.emitStep('step-start', 'plan', 'plan.spec-approval')
           this.specApprovalStepOpen = true
@@ -705,14 +736,16 @@ class FlowLoopImpl implements FlowLoop {
       phase,
       label: PHASE_LABEL[phase],
     })
-    // AIDEV-NOTE: PMR-ZV9Y 2.1 — spec-approval step-stop. The mapping row
-    // ("answer/spec-approve resolution → step-stop{plan.spec-approval}") has no
-    // in-loop answer handler here: /flow answer approve restarts the loop and
-    // the approval resolves when the plan phase COMPLETES. So the step-stop is
-    // journaled at the plan phase-complete (the one loop site that is the
-    // resolution of the pause), paired by the specApprovalStepOpen flag so a
-    // run that never paused emits no orphan stop. `this.state` is still set
-    // here (teardown happens only in the done branch below).
+    // AIDEV-NOTE: PMR-ZV9Y 2.1 — spec-approval step-stop (IDEMPOTENT FALLBACK
+    // only). The PRIMARY close is now in start() (fix-round-3, deviation #1):
+    // a restart-after-answer emits step-stop BEFORE the running snapshot. This
+    // plan phase-complete close stays for the SAME-INSTANCE pause→advance path
+    // that reaches advanceAfter without a fresh start() — e.g. the loop pauses
+    // for approval, the human answers, and the next onSettled lands the label
+    // on the still-running instance. It is guarded by the SAME
+    // specApprovalStepOpen flag start() clears, so it can never double-emit: at
+    // most one stop is ever journaled. `this.state` is still set here
+    // (teardown happens only in the done branch below).
     if (phase === 'plan' && this.specApprovalStepOpen) {
       this.emitStep('step-stop', 'plan', 'plan.spec-approval')
       this.specApprovalStepOpen = false

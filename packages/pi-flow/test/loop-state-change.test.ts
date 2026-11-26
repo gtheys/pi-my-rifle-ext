@@ -289,6 +289,127 @@ test('spec-approval resolution: step-stop{plan.spec-approval} journaled when pla
   }
 })
 
+// ===========================================================================
+// PMR-ZV9Y fix-round-3 (deviation #1): the plan.spec-approval step-stop timing.
+// Spec Behaviour 3 (plan.md:68) — "the answer/spec-approve path journals
+// step-stop{plan.spec-approval}; the loop's NEXT snapshot journals
+// state-change{running}" — so on the restart that /flow answer triggers the
+// journal ORDER must be step-stop THEN running. Before this fix the loop
+// emitted running on the restart and deferred the stop to the plan phase-
+// complete (advanceAfter), inverting the order, extending pi_flow_step_seconds
+// / the Tempo span past the approval, and emitting NO stop at all if the run
+// halted before plan completed. The fix closes the step at the earliest
+// faithful site: start(), when the seeded specApprovalStepOpen flag says the
+// approval step is still open. A reject restarts the loop the same way, so the
+// wait ENDED (approve OR reject) and step-stop is correct for both.
+// ===========================================================================
+
+test('fix-round-3 #1: restart-after-approve journals step-stop BEFORE running (Behaviour 3 order)', async () => {
+  const h = makeHarness([])
+  h.planState = 'review'
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled() // pause -> waiting_human + step-start (flag open)
+  const beforeRestart = h.v2.length
+  h.planState = 'approved'
+  h.labels = ['planned']
+  await loop.start({
+    ...startInput(),
+    resumeState: 'waiting_human',
+    resumePlanApprovalOpen: true,
+  })
+  assert.deepEqual(v2View(h).slice(beforeRestart), [
+    { kind: 'step-stop', phase: 'plan', step: 'plan.spec-approval' },
+    { kind: 'state-change', state: 'running', reason: undefined },
+  ])
+})
+
+test('fix-round-3 #1: restart-after-reject journals step-stop BEFORE running (the wait ended)', async () => {
+  // /flow answer reject routes back to plan work (spec to draft); the loop only
+  // sees a restart with the approval step still open, exactly like approve. The
+  // wait ENDED either way, so step-stop is correct for the reject path too.
+  const h = makeHarness([])
+  h.planState = 'review'
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled() // pause -> waiting_human + step-start (flag open)
+  const beforeRestart = h.v2.length
+  h.planState = 'draft' // reject: spec went back to draft, no label landed yet
+  h.labels = []
+  await loop.start({
+    ...startInput(),
+    resumeState: 'waiting_human',
+    resumePlanApprovalOpen: true,
+  })
+  assert.deepEqual(v2View(h).slice(beforeRestart), [
+    { kind: 'step-stop', phase: 'plan', step: 'plan.spec-approval' },
+    { kind: 'state-change', state: 'running', reason: undefined },
+  ])
+})
+
+test('fix-round-3 #1: halt before plan completes still journals the step-stop, BEFORE the halt', async () => {
+  const h = makeHarness([])
+  h.planState = 'review'
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled() // pause -> step-start
+  await loop.start({
+    ...startInput(),
+    resumeState: 'waiting_human',
+    resumePlanApprovalOpen: true,
+  }) // restart -> step-stop + running (the fix)
+  // now halt before plan can complete (no label, not review -> label_miss).
+  h.planState = 'draft'
+  h.labels = []
+  await loop.onSettled()
+  const stopIdx = h.v2.findIndex((e) => e.kind === 'step-stop')
+  const haltIdx = h.v2.findIndex(
+    (e) => e.kind === 'state-change' && e.state === 'halted',
+  )
+  assert.ok(
+    stopIdx >= 0,
+    'a halt after an approval restart must still see a stop',
+  )
+  assert.ok(
+    haltIdx > stopIdx,
+    `stop must precede the halt: ${String(stopIdx)} vs ${String(haltIdx)}`,
+  )
+})
+
+test('fix-round-3 #1: no double step-stop when advanceAfter later closes the plan phase', async () => {
+  const h = makeHarness([])
+  h.planState = 'review'
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  await loop.onSettled() // pause -> step-start
+  h.planState = 'approved'
+  h.labels = ['planned']
+  await loop.start({
+    ...startInput(),
+    resumeState: 'waiting_human',
+    resumePlanApprovalOpen: true,
+  }) // restart -> step-stop (flag now cleared)
+  await loop.onSettled() // planned lands -> advanceAfter('plan') -> must NOT re-stop
+  const stops = h.v2.filter((e) => e.kind === 'step-stop')
+  assert.equal(
+    stops.length,
+    1,
+    `at-most-once stop, got ${String(stops.length)}: ${JSON.stringify(v2View(h))}`,
+  )
+})
+
+test('fix-round-3 #1: a fresh run with no prior pause emits no step events', async () => {
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  assert.equal(
+    h.v2.filter((e) => e.kind === 'step-start' || e.kind === 'step-stop')
+      .length,
+    0,
+    JSON.stringify(v2View(h)),
+  )
+})
+
 test('journalV2 throwing never propagates and the loop still proceeds (ISC-A-5)', async () => {
   const h = makeHarness([])
   h.v2Throws = true
