@@ -195,8 +195,8 @@ values come from the closed enums above.
 | `pi_flow_state_start_seconds` | `ref, state, reason` | epoch seconds | when the current state began — alerts compute `time() - …` so a wait ages **without needing pushes** (liveness gates on `running`; a `waiting_human` ref gets no re-push, so a duration gauge would freeze) |
 | `pi_flow_phase` | `ref, phase` | 1 | current phase |
 | `pi_flow_wait_seconds` | `ref, wait_kind, reason` | cumulative seconds | total wait per kind/reason across the run |
-| `pi_flow_step` | `ref, phase, step` | 1 | in-flight registered step (last `step-start` without a stop) |
-| `pi_flow_step_seconds` | `ref, phase, step` | cumulative seconds | completed step durations |
+| `pi_flow_step` | `ref, phase, step` | 1 | in-flight **registered** step (last `step-start` without a stop) — only names in `flow/steps.ts::STEP_REGISTRY` reach this label (fix-round-3, deviation #3) |
+| `pi_flow_step_seconds` | `ref, phase, step` | cumulative seconds | completed **registered** step durations — same registry closure; the journal + Loki line still carry free-form names |
 
 **Legacy fallback (ISC-6).** A journal with no `state-change` events derives v2 state from the projected loop status —
 `paused` → `waiting_human` (reason `""`), `halted` → `halted` (reason `""`), `running` → `running`, `done` → `done`;
@@ -226,13 +226,21 @@ v2 lines. Bare lines are the repo convention, not an omission — see the module
 **Retired (PMR-ZV9Y 7.1), rendered nowhere:** `pi_flow_run_status`, `pi_flow_run_halt_reason`,
 `pi_flow_human_wait_seconds`, `pi_flow_gate_wait_seconds`.
 
-**Tombstone (reconcile).** `tombstoneBody` (`flow/reconcile.ts`) is the same label-VALUE-only surgery it always was,
-now on the **v2 state lines**: `pi_flow_state` / `pi_flow_state_start_seconds` with
-`state="halted"|"waiting_human"|"waiting_machine"` become `state="stale"`. No line is dropped any more (the only drop
-was `pi_flow_run_halt_reason`, gone with the v1 block). Candidacy stays journal-keyed (the projected loop status), so
-retiring the v1 status series did not change which refs are stale — only which lines in a fetched body are rewritten.
-A stored group that predates the v2 render carries only v1 lines, so the tombstone reads it as "already clean" and
-never re-posts it — harmless because every consumer was cut to v2 (§10). §5 keeps the liveness detail.
+**Tombstone (reconcile).** `tombstoneBody` (`flow/reconcile.ts`) does the v2 label-VALUE surgery on the **state
+lines** — `pi_flow_state` / `pi_flow_state_start_seconds` with
+`state="halted"|"waiting_human"|"waiting_machine"` become `state="stale"` — **and drops the transient
+`pi_flow_step{…}` open-step gauge** from the re-POSTed body (P3a). `pi_flow_step` is the only v2 family with no
+`state` label whose meaning ("a step is in flight right now") is definitively false for a retired run, so it cannot
+be value-flipped — dropping is the only lever; it fires only when a state line was flipped and never touches
+`pi_flow_step_seconds`. The **primary** anti-phantom lever is render-side suppression (`state-metrics.ts`
+`isTerminalState` emits no open-step line for a halted/done/stale run); the tombstone drop is the belt-and-braces
+half that also cleans an already-stored phantom on a replace-semantic gateway (a harmless no-op on the
+merge-on-write homelab gateway, PMR-WBC2). Every other family (`pi_flow_phase`, `pi_flow_wait_seconds`,
+`pi_flow_step_seconds`, the counters, cost rows) is re-emitted byte-identical. Candidacy stays journal-keyed (the
+projected loop status), so retiring the v1 status series did not change which refs are stale — only which lines in a
+fetched body are rewritten. A stored group that predates the v2 render carries only v1 lines, so the tombstone reads
+it as "already clean" and never re-posts it — harmless because every consumer was cut to v2 (§10). §5 keeps the
+liveness detail.
 
 ## 5. Step registry, prompts, and the emission guard
 
@@ -253,7 +261,7 @@ boundary exists for them (they are prose steps in `validate/prompt.ts`), so `flo
 
 | Anchor | Registry name | Where |
 | --- | --- | --- |
-| approval wait | `plan.spec-approval` | `plan/prompt.ts` `APPROVAL_SUFFIX` (loop pause → step-start, `/flow answer approve` → step-stop) |
+| approval wait | `plan.spec-approval` | `plan/prompt.ts` `APPROVAL_SUFFIX` (loop pause → step-start; the restart after `/flow answer` — approve **or** reject — journals step-stop in `loop.ts::start()` **before** the `state-change{running}` snapshot, fix-round-3 deviation #1) |
 | D1 | `validate.spec-diff` | `validate/prompt.ts` deviation gate |
 | D2 | `validate.aven-notes` | `validate/prompt.ts` deviation gate |
 | D3 | `validate.deviation` | `validate/prompt.ts` deviation gate (the `deviation_review` tool boundary) |
@@ -261,6 +269,14 @@ boundary exists for them (they are prose steps in `validate/prompt.ts`), so `flo
 
 `flow_submit` (in `flow/step-output.ts`) gives an **advisory hint** on an unregistered step name (it lists the
 registered names) and **never rejects** — advisory posture throughout, a warned submission never gates a phase.
+
+**Render-boundary registry closure (ISC-A-1, fix-round-3 deviation #3).** The `step` label value on `pi_flow_step` /
+`pi_flow_step_seconds` is registry-CLOSED at the Prometheus render boundary, not merely charset-filtered:
+`flow/state-metrics.ts::scanStepWindows` value-imports `isRegisteredStep` from `flow/steps.ts` and drops any
+`(phase, step)` the registry does not list, so `implement`/`feedback` (empty registries) contribute no step-gauge
+lines. The journal and the Loki JSON line still carry free-form step names — only the label surface is closed
+(bounded cardinality). `flow/steps.ts` is pure data (its lone `./orchestrate.ts` edge is type-only, erased at runtime),
+so it stays daemon-reachable and is registered as its own root in the `cost-rows-node-only` closure guard.
 
 **Emission guard (loop).** A private `emitStateChange` keeps the last-emitted v2 state on the loop instance (seeded on
 `start()`/resume from the journal tail — last `state-change`, else the phase-1 fold), and skips when the new state

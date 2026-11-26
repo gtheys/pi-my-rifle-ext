@@ -6,10 +6,15 @@
 // label-VALUE-only surgery the retired v1 status line used to get.
 //
 // AIDEV-NOTE (PMR-ZV9Y 7.1): the v1 state vocabulary is retired, so this file
-// is the ONLY tombstone shape: `tombstoneBody` flips nothing but the two v2
-// state families, and it DROPS no line at all any more (the halt_reason drop
-// disappeared with halt_reason itself). The fixtures keep one retired v1 line
-// each as a regression guard that the engine no longer touches it.
+// is the ONLY tombstone shape: `tombstoneBody` flips the two v2 state families
+// to `state="stale"`. AIDEV-NOTE (PMR-ZV9Y fix round 1, P3a — corrected this
+// header's original "it DROPS no line at all any more" wording, which was wrong
+// after P3a): the pass ALSO DROPS the transient `pi_flow_step{…}` open-step
+// gauge (pinned by the drop test below); `pi_flow_step_seconds`,
+// `pi_flow_phase` and `pi_flow_wait_seconds` stay byte-identical, and the
+// halt_reason drop is gone with the v1 block itself. The fixtures keep one
+// retired v1 line each as a regression guard that the engine no longer touches
+// it.
 //
 // Fixtures keep reconcile.test.ts's REAL shape: what `fetchGroupBody` reads
 // back from a live gateway, i.e. alphabetical labels (job, mode, reason, ref,
@@ -39,7 +44,9 @@ test('tombstoneBody: v2 halted state lines flip to stale, values untouched', () 
   assert.notEqual(got, null)
   // AIDEV-NOTE (PMR-ZV9Y 7.1): the stored v1 status line in this fixture is a
   // REGRESSION GUARD — the engine must leave it byte-identical, because the v1
-  // rewrite disappeared with the v1 lines. Nothing is dropped from the body.
+  // rewrite disappeared with the v1 lines. This fixture carries NO
+  // `pi_flow_step{` line, so the P3a open-step drop has nothing to remove here
+  // and every line survives (the drop itself is pinned separately below).
   assert.equal(
     got,
     body(

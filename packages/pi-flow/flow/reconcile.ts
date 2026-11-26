@@ -30,13 +30,37 @@
 // the SAME label-VALUE-only surgery on the v2 STATE lines ONLY:
 // `pi_flow_state{…}` and `pi_flow_state_start_seconds{…}` with
 // `state="halted"|"waiting_human"|"waiting_machine"` become `state="stale"`.
-// No line is DROPPED any more: the only drop the engine ever made was
-// halt_reason, and that metric is gone with the v1 block, so the transform is
-// pure value surgery on the two v2 state families. The candidacy filter is
-// UNCHANGED and stays JOURNAL-keyed (`livenessStatusOf` reads the projected v1
-// loop status from the run journal, never a metric line), so retiring the v1
-// status series does not change WHICH refs are stale — only which lines in a
-// fetched body are rewritten.
+// The candidacy filter is UNCHANGED and stays JOURNAL-keyed (`livenessStatusOf`
+// reads the projected v1 loop status from the run journal, never a metric line),
+// so retiring the v1 status series does not change WHICH refs are stale — only
+// which lines in a fetched body are rewritten.
+// AIDEV-NOTE (PMR-ZV9Y fix round 1, P3a — RETRACTS the "no line is DROPPED any
+// more" sentence this note originally carried): the tombstone is NOT pure value
+// surgery. `tombstoneBody` (1) VALUE-FLIPS `pi_flow_state` and
+// `pi_flow_state_start_seconds` from `halted|waiting_human|waiting_machine` to
+// `stale`, AND (2) DROPS the transient `pi_flow_step{…} 1` gauge entirely from
+// the re-POSTed body. The drop exists because `pi_flow_step` is the only v2
+// family with NO state label whose whole meaning ("a step is in flight right
+// now") is definitively FALSE for a retired run — it cannot be value-flipped to
+// stale, so dropping is the only lever. It fires ONLY when a state line was
+// actually flipped (`rewrites > 0`), so a live run's open step is never touched,
+// and it matches only `pi_flow_step{` (the `{`), never `pi_flow_step_seconds{`.
+// WHY a drop is correct despite this file's own earlier note (P3a): under
+// OFFICIAL Pushgateway REPLACE semantics (the contract the GET-transform-POST
+// round-trip assumes) an omitted series is gone after the re-POST — which is
+// exactly the phantom-in-flight-step cleanup we want for a dead run. On the
+// homelab gateway that MERGES on write (PMR-WBC2) the drop degrades to a
+// harmless no-op (the stored series persists until overwritten), just like the
+// retired halt_reason drop; the PRIMARY anti-phantom lever is the render-side
+// suppression in flow/state-metrics.ts `isTerminalState` (halted/done/stale
+// emit NO open-step line), so this tombstone-side drop is the belt-and-braces
+// half that also cleans an ALREADY-STORED phantom on a replace-semantic gateway.
+// Every OTHER v2 family (`pi_flow_phase`, `pi_flow_wait_seconds`,
+// `pi_flow_step_seconds`) is re-emitted byte-identical — only `pi_flow_step`
+// is dropped. The tests in test/reconcile-tombstone-v2.test.ts PIN this drop.
+// (Fix round 3 note: the README and docs/pi-flow-observability.md previously
+// still said "no line is dropped any more" and listed `pi_flow_step` among the
+// byte-identical re-emissions — both were corrected to this contract.)
 // Consequence to accept (matches the 6.5 cutover): a stored group that predates
 // the v2 render carries only v1 lines, so `tombstoneBody` reads it as "already
 // clean" (null) and never re-posts it. That is harmless because every alert
@@ -210,10 +234,16 @@ export function computeStaleRefs(
  * `state="halted"|"waiting_human"|"waiting_machine"` to `state="stale"` on
  * `pi_flow_state` and `pi_flow_state_start_seconds` lines (ISC-8), so the
  * Waiting-on-me queue and the halted rule retire with a closed run instead of
- * keeping it on the board. Every other v2 family
- * (`pi_flow_phase`, `pi_flow_step`, `pi_flow_step_seconds`,
- * `pi_flow_wait_seconds`) is re-emitted byte-identical, exactly like the
- * counters and cost rows: only label VALUES on the state-bearing lines move.
+ * keeping it on the board. AIDEV-NOTE (PMR-ZV9Y fix round 1, P3a — corrected
+ * the earlier "every other family is byte-identical" wording, which wrongly
+ * listed `pi_flow_step`): beyond the two value flips this pass DROPS the
+ * transient `pi_flow_step{…}` open-step gauge (no state label, meaning
+ * definitively false for a retired run — see the file header P3a note for the
+ * why and the merge-vs-replace posture). Every OTHER v2 family
+ * (`pi_flow_phase`, `pi_flow_wait_seconds`, `pi_flow_step_seconds`) plus all
+ * counters and cost rows is re-emitted byte-identical: label VALUES move on the
+ * state lines, the open-step gauge is dropped, and `pi_flow_step_seconds` (the
+ * cumulative bucket) stays.
  *
  * The rewrite is minimal substring surgery inside the label section: label
  * ORDER (the gateway emits them alphabetically, e.g.

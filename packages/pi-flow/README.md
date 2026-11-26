@@ -465,8 +465,8 @@ closed PER REF: one bad shell-out costs one tombstone, not the whole pass, and
 the question can only ever cancel a tombstone — it is asked solely for refs
 the listing already lacked.
 
-**What a tombstone does.** The run's Pushgateway group is re-pushed with one
-change and nothing else:
+**What a tombstone does.** The run's Pushgateway group is re-pushed with two
+changes and nothing else:
 
 - `pi_flow_state{…}` and `pi_flow_state_start_seconds{…}` whose
   `state="halted"|"waiting_human"|"waiting_machine"` become `state="stale"` —
@@ -475,18 +475,27 @@ change and nothing else:
   run. The label-value flip lands even though the homelab gateway MERGES on
   write rather than applying official Pushgateway replace semantics
   (PMR-WBC2, verified live 2026-11-24): same-identity series are overwritten in
-  place, so `state="stale"` replaces the old value. No line is **dropped** any
-  more — the only drop the engine ever made was the now-retired
-  `pi_flow_run_halt_reason`, and a drop is exactly what a merge-on-write
-  gateway could not honour (a stored halt_reason kept being served until
-  overwritten), so removing it loses nothing.
+  place, so `state="stale"` replaces the old value.
+- the transient `pi_flow_step{…} 1` **open-step gauge is dropped** from the
+  re-POSTed body. It is the only v2 family with no `state` label whose whole
+  meaning ("a step is in flight right now") is definitively false for a retired
+  run, so it cannot be value-flipped to `stale` — dropping it is the only lever.
+  The drop fires only when a state line was actually flipped (never for a live
+  run), matches `pi_flow_step{` and not `pi_flow_step_seconds{`, and is the
+  belt-and-braces half of the anti-phantom fix: the **primary** lever is
+  render-side suppression in `flow/state-metrics.ts` (a halted/done/stale run
+  emits no open-step line at all), so this drop also cleans an ALREADY-STORED
+  phantom on a replace-semantic gateway. On the merge-on-write homelab gateway
+  it degrades to a harmless no-op, exactly like the now-retired `halt_reason`
+  drop.
 
 Every other line (cost, tokens, tool calls, durations, gate decisions, retry
-and blocker counters, worktree sweep, run start, and the non-state v2 families
-`pi_flow_phase`/`pi_flow_wait_seconds`/`pi_flow_step`/`pi_flow_step_seconds`) is
+and blocker counters, worktree sweep, run start, and the remaining non-state v2
+families `pi_flow_phase`/`pi_flow_wait_seconds`/`pi_flow_step_seconds`) is
 re-emitted byte-identical, so done-run cost history on the runs board is
 untouched. **Nothing is ever deleted** — deleting the group would erase those
-cost rows too.
+cost rows too (the `pi_flow_step` drop is a per-series omission inside a
+full-group re-POST, not a group delete).
 
 One consequence of cutting over to v2 (matches the 6.5 cutover): a group
 **stored before the v2 render landed** carries only v1 lines and no
