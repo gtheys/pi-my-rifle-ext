@@ -12,16 +12,16 @@
       "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-health.json",
       "grafana.app/sourceTimestamp": "1795531426000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-25T13:24:18Z"
+      "grafana.app/updatedTimestamp": "2026-11-26T09:12:34Z"
     },
     "creationTimestamp": "2026-11-07T02:57:54Z",
-    "generation": 32,
+    "generation": 33,
     "labels": {
       "grafana.app/deprecatedInternalID": "2208897950658560"
     },
     "name": "piflow-health",
     "namespace": "default",
-    "resourceVersion": "1795613058553008",
+    "resourceVersion": "1795684354705019",
     "uid": "33585720-5e94-4275-82d5-c2bd439f777d"
   },
   "spec": {
@@ -1441,7 +1441,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"plan\"})",
+                        "expr": "label_join(sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"plan\"}) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" \u2014 \", \"ref\", \"title\")\n  or\n  label_replace(sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"plan\"}) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "plan",
@@ -1464,7 +1464,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"implement\"})",
+                        "expr": "label_join(sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"implement\"}) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" \u2014 \", \"ref\", \"title\")\n  or\n  label_replace(sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"implement\"}) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "implement",
@@ -1487,7 +1487,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"validate\"})",
+                        "expr": "label_join(sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"validate\"}) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" \u2014 \", \"ref\", \"title\")\n  or\n  label_replace(sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"validate\"}) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "validate",
@@ -1510,7 +1510,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"feedback\"})",
+                        "expr": "label_join(sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"feedback\"}) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" \u2014 \", \"ref\", \"title\")\n  or\n  label_replace(sum by (ref) (pi_flow_run_duration_seconds{mode=~\"${mode:raw}\", ref=~\"$ref\", phase=\"feedback\"}) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "feedback",
@@ -1551,7 +1551,22 @@
                         "mode": true,
                         "mode 1": true,
                         "mode 2": true,
-                        "mode 3": true
+                        "mode 3": true,
+                        "ticket 1": true,
+                        "ticket 2": true,
+                        "ticket 3": true,
+                        "title": true,
+                        "title 1": true,
+                        "title 2": true,
+                        "title 3": true
+                      },
+                      "indexByName": {
+                        "Value #A": 2,
+                        "Value #B": 3,
+                        "Value #C": 4,
+                        "Value #D": 5,
+                        "ref": 1,
+                        "ticket": 0
                       },
                       "renameByName": {
                         "Value #A": "plan",
@@ -1565,7 +1580,7 @@
               ]
             }
           },
-          "description": "Where the wall-clock time went, per phase (plan / implement / validate / feedback). Durations are phase-start to phase-complete and INCLUDE waiting_human time (spec approval, code review), so a long validate bar is usually the human, not the machine. Kept metric (pi_flow_run_duration_seconds); the per-state wait breakdown lives on the runs board.",
+          "description": "Where the wall-clock time went, per phase (plan / implement / validate / feedback). Durations are phase-start to phase-complete and INCLUDE waiting_human time (spec approval, code review), so a long validate bar is usually the human, not the machine. Kept metric (pi_flow_run_duration_seconds); the per-state wait breakdown lives on the runs board. X-axis shows the joined `ticket` label: \"REF \u2014 title\" once pi_flow_run_title_info has data, plain ref for title-less runs.",
           "id": 7,
           "links": [],
           "title": "Run duration per ticket, stacked by phase",
@@ -1607,6 +1622,7 @@
                   "mode": "multi",
                   "sort": "desc"
                 },
+                "xField": "ticket",
                 "xTickLabelRotation": -45,
                 "xTickLabelSpacing": 100
               }
