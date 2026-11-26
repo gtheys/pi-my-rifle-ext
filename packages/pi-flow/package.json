@@ -122,6 +122,7 @@
     "server/daemon.ts",
     "server/lifecycle.ts",
     "server/pending.ts",
+    "server/staleness.ts",
     "server/writer.ts",
     "shared/diff-base.ts",
     "shared/flow-base.ts",
