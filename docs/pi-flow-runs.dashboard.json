@@ -11,16 +11,16 @@
       "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-runs.json",
       "grafana.app/sourceTimestamp": "1795532624000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-25T12:24:42Z"
+      "grafana.app/updatedTimestamp": "2026-11-26T08:58:08Z"
     },
     "creationTimestamp": "2026-11-23T06:41:52Z",
-    "generation": 13,
+    "generation": 16,
     "labels": {
       "grafana.app/deprecatedInternalID": "3559868436422656"
     },
     "name": "piflow-runs",
     "namespace": "default",
-    "resourceVersion": "1795609482094998",
+    "resourceVersion": "1795683488748018",
     "uid": "49c326b0-dd77-43ff-b3a2-8d47c1081b7f"
   },
   "spec": {
@@ -226,7 +226,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "count(pi_flow_state{state=\"waiting_machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) or vector(0)",
+                        "expr": "count(pi_flow_state{state=\"waiting_machine\", reason!=\"subagent_in_flight\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) or vector(0)",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -296,7 +296,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "count(pi_flow_state{state=\"running\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) or vector(0)",
+                        "expr": "count(pi_flow_state{state=\"running\", mode=~\"${mode:raw}\", ref=~\"$ref\"} or pi_flow_state{state=\"waiting_machine\", reason=\"subagent_in_flight\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) or vector(0)",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -312,7 +312,7 @@
               "transformations": []
             }
           },
-          "description": "",
+          "description": "Runs actively working: orchestrator mid-turn (state=running) or an implementation/review subagent in flight (waiting_machine, reason=subagent_in_flight). No human action needed.",
           "id": 3,
           "links": [],
           "title": "Running now",
@@ -505,7 +505,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "label_replace(label_replace(max by (ref, mode) (pi_flow_state{state=\"waiting_human\", mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "expr": "label_replace(label_replace(\n  (label_join(max by (ref, mode) (pi_flow_state{state=\"waiting_human\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\")\n  or\n  label_replace(max by (ref, mode) (pi_flow_state{state=\"waiting_human\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")),\n  \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"),\n  \"url\", \"\", \"mode\", \"^$|personal\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -542,15 +542,17 @@
                         "Value #A": true,
                         "__name__": true,
                         "job": true,
-                        "mode": true
+                        "mode": true,
+                        "title": true
                       },
                       "indexByName": {
-                        "Jira": 1,
-                        "Waiting": 4,
-                        "Waiting since": 5,
-                        "reason": 3,
-                        "ref": 0,
-                        "state": 2
+                        "Jira": 2,
+                        "Waiting": 5,
+                        "Waiting since": 6,
+                        "reason": 4,
+                        "ref": 1,
+                        "state": 3,
+                        "ticket": 0
                       },
                       "renameByName": {
                         "Value #B": "Waiting",
@@ -558,6 +560,7 @@
                         "reason": "Reason",
                         "ref": "Ref",
                         "state": "State",
+                        "ticket": "Ticket",
                         "url": "Jira"
                       }
                     }
@@ -570,6 +573,7 @@
                     "options": {
                       "include": {
                         "names": [
+                          "Ticket",
                           "Ref",
                           "Jira",
                           "State",
@@ -619,6 +623,18 @@
                   "noValue": "–"
                 },
                 "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 260
+                      }
+                    ]
+                  },
                   {
                     "matcher": {
                       "id": "byName",
@@ -758,6 +774,11 @@
                                 "color": "orange",
                                 "index": 0,
                                 "text": "/flow answer {ref} approve"
+                              },
+                              "subagent_ask_pending": {
+                                "color": "blue",
+                                "index": 3,
+                                "text": "answer the subagent (its pane or answer_subagent)"
                               }
                             },
                             "type": "value"
@@ -766,7 +787,7 @@
                             "options": {
                               "match": "__other__",
                               "result": {
-                                "index": 3,
+                                "index": 4,
                                 "text": "—"
                               }
                             },
@@ -851,7 +872,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "pi_flow_state{state=\"waiting_machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "expr": "pi_flow_state{state=\"waiting_machine\", reason!=\"subagent_in_flight\", mode=~\"${mode:raw}\", ref=~\"$ref\"}",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -874,7 +895,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "time() - max by (ref) (pi_flow_state_start_seconds{state=\"waiting_machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"})",
+                        "expr": "time() - max by (ref) (pi_flow_state_start_seconds{state=\"waiting_machine\", reason!=\"subagent_in_flight\", mode=~\"${mode:raw}\", ref=~\"$ref\"})",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -966,7 +987,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "label_replace(label_replace(max by (ref, mode) (pi_flow_state{state=\"waiting_machine\", mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "expr": "label_replace(label_replace(\n  (label_join(max by (ref, mode) (pi_flow_state{state=\"waiting_machine\", reason!=\"subagent_in_flight\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\")\n  or\n  label_replace(max by (ref, mode) (pi_flow_state{state=\"waiting_machine\", reason!=\"subagent_in_flight\", mode=~\"${mode:raw}\", ref=~\"$ref\"}) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")),\n  \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"),\n  \"url\", \"\", \"mode\", \"^$|personal\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1005,17 +1026,19 @@
                         "Value #A": true,
                         "__name__": true,
                         "job": true,
-                        "mode": true
+                        "mode": true,
+                        "title": true
                       },
                       "indexByName": {
-                        "Attempts": 4,
-                        "Blocker retries": 5,
-                        "Jira": 1,
-                        "Machine wait": 6,
-                        "Stalled for": 3,
-                        "reason": 30,
-                        "ref": 0,
-                        "state": 2
+                        "Attempts": 5,
+                        "Blocker retries": 6,
+                        "Jira": 2,
+                        "Machine wait": 7,
+                        "Stalled for": 4,
+                        "reason": 31,
+                        "ref": 1,
+                        "state": 3,
+                        "ticket": 0
                       },
                       "renameByName": {
                         "Value #B": "Stalled for",
@@ -1025,6 +1048,7 @@
                         "reason": "Reason",
                         "ref": "Ref",
                         "state": "State",
+                        "ticket": "Ticket",
                         "url": "Jira"
                       }
                     }
@@ -1037,6 +1061,7 @@
                     "options": {
                       "include": {
                         "names": [
+                          "Ticket",
                           "Ref",
                           "Jira",
                           "State",
@@ -1088,7 +1113,7 @@
               ]
             }
           },
-          "description": "Runs waiting on the MACHINE, not you — retry/blocker budget waits, subagents in flight, label misses. No action column (these self-clear or need a code/label fix). Stalled for = live seconds in waiting_machine; Attempts/Blocker retries are the kept pi_flow_retry_attempts / pi_flow_blocker_retries ledgers; Machine wait = cumulative pi_flow_wait_seconds{wait_kind=\"machine\"}.",
+          "description": "Runs waiting on the MACHINE, not you — retry/blocker budget waits, label misses. No action column (these self-clear or need a code/label fix). Stalled for = live seconds in waiting_machine; Attempts/Blocker retries are the kept pi_flow_retry_attempts / pi_flow_blocker_retries ledgers; Machine wait = cumulative pi_flow_wait_seconds{wait_kind=\"machine\"}.",
           "id": 6,
           "links": [],
           "title": "Retry-blocked / machine waits",
@@ -1108,6 +1133,18 @@
                   "noValue": "–"
                 },
                 "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 260
+                      }
+                    ]
+                  },
                   {
                     "matcher": {
                       "id": "byName",
@@ -1526,7 +1563,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "label_replace(label_replace(max by (ref, mode) (pi_flow_state{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "expr": "label_replace(label_replace(\n  (label_join(max by (ref, mode) (pi_flow_state{mode=~\"${mode:raw}\", ref=~\"$ref\"}) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\")\n  or\n  label_replace(max by (ref, mode) (pi_flow_state{mode=~\"${mode:raw}\", ref=~\"$ref\"}) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")),\n  \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.+)\"),\n  \"url\", \"\", \"mode\", \"^$|personal\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1567,18 +1604,20 @@
                         "Value #B": true,
                         "Value #C": true,
                         "job": true,
-                        "mode": true
+                        "mode": true,
+                        "title": true
                       },
                       "indexByName": {
-                        "In state": 6,
-                        "Jira": 1,
-                        "Last pushed": 8,
-                        "Phase": 4,
-                        "Reason": 3,
-                        "Ref": 0,
-                        "Started": 7,
-                        "State": 2,
-                        "Step": 5
+                        "In state": 7,
+                        "Jira": 2,
+                        "Last pushed": 9,
+                        "Phase": 5,
+                        "Reason": 4,
+                        "Ref": 1,
+                        "Started": 8,
+                        "State": 3,
+                        "Step": 6,
+                        "ticket": 0
                       },
                       "renameByName": {
                         "Value #D": "In state",
@@ -1589,6 +1628,7 @@
                         "ref": "Ref",
                         "state": "State",
                         "step": "Step",
+                        "ticket": "Ticket",
                         "url": "Jira"
                       }
                     }
@@ -1601,6 +1641,7 @@
                     "options": {
                       "include": {
                         "names": [
+                          "Ticket",
                           "Ref",
                           "Jira",
                           "State",
@@ -1653,6 +1694,18 @@
                   "noValue": "–"
                 },
                 "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 260
+                      }
+                    ]
+                  },
                   {
                     "matcher": {
                       "id": "byName",
@@ -1823,6 +1876,11 @@
                                 "index": 0,
                                 "text": "spec approval"
                               },
+                              "subagent_ask_pending": {
+                                "color": "blue",
+                                "index": 3,
+                                "text": "answer the subagent (its pane or answer_subagent)"
+                              },
                               "subagent_in_flight": {
                                 "color": "blue",
                                 "index": 7,
@@ -1924,7 +1982,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "pi_flow_retry_attempts{mode=~\"${mode:raw}\", ref=~\"$ref\"}",
+                        "expr": "(label_join(sum by (ref, mode) (pi_flow_retry_attempts{mode=~\"${mode:raw}\", ref=~\"$ref\"}) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\")\n  or\n  label_replace(sum by (ref, mode) (pi_flow_retry_attempts{mode=~\"${mode:raw}\", ref=~\"$ref\"}) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\"))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1996,21 +2054,25 @@
                     "options": {
                       "excludeByName": {
                         "Time": true,
+                        "__name__": true,
                         "__name__ 1": true,
                         "__name__ 2": true,
                         "job": true,
-                        "mode": true
+                        "mode": true,
+                        "title": true
                       },
                       "indexByName": {
-                        "Total": 3,
-                        "Value #A": 1,
-                        "Value #B": 2,
-                        "ref": 0
+                        "Total": 4,
+                        "Value #A": 2,
+                        "Value #B": 3,
+                        "ref": 1,
+                        "ticket": 0
                       },
                       "renameByName": {
                         "Value #A": "Attempts",
                         "Value #B": "Blocker retries",
-                        "ref": "Ref"
+                        "ref": "Ref",
+                        "ticket": "Ticket"
                       }
                     }
                   }
@@ -2073,6 +2135,18 @@
                   "noValue": "–"
                 },
                 "overrides": [
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 260
+                      }
+                    ]
+                  },
                   {
                     "matcher": {
                       "id": "byName",
