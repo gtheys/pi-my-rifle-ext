@@ -217,6 +217,39 @@ still resumes automatically, no question asked.
 On-disk layout under `<agentDir>/pi-flow/`: `server.pid`, `server.log`,
 `pending/`, `runs/`.
 
+**Restarting the daemon (after pi-flow code changes)**: a running daemon keeps
+the code it loaded at startup — there is no hot-reload. The `/flow`-start probe
+only kills + respawns on a `SERVER_PROTOCOL_VERSION` mismatch, so ordinary
+changes to the daemon's closure (`server/`, `flow/liveness.ts`,
+`flow/reconcile.ts`, `flow/cost-rows.ts`, `run-state.ts`, `flow/push.ts`) need
+a manual restart to take effect (a stale daemon silently missed the whole
+PMR-8MQH liveness engine once — PMR-7B8M tracks a drift warning). Restarting
+mid-run is safe: the daemon only reads journals, writes projections, and
+pushes; while it is down, journal writers fall back to the in-session path.
+
+1. Easiest — kill it and let the next `/flow` respawn it with fresh code:
+
+   ```sh
+   kill $(jq -r .pid ~/.pi/agent/pi-flow/server.pid)
+   ```
+
+2. Immediate restart (when no `/flow` start is coming soon) — mirror what
+   `ensureDaemon` spawns. The daemon inherits the launching shell's env, so
+   `PI_FLOW_PUSHGATEWAY_URL` / `PI_FLOW_PUSHGATEWAY_TOKEN` must be set there
+   for the liveness/reconcile pushes to arm:
+
+   ```sh
+   cd packages/pi-flow
+   PI_FLOW_AGENT_DIR=~/.pi/agent nohup node server/daemon.ts \
+     >> ~/.pi/agent/pi-flow/server.log 2>&1 &
+   ```
+
+3. Verify: `server.pid` shows the new pid, `server.log` gains a
+   `daemon started pid=…` line, and ~60 s later the first pass summaries
+   (`liveness pass: scanned=… pushed=…`, `reconcile pass: …`) appear — the
+   first pass runs 60 s after startup, then every `liveness.intervalMinutes` /
+   `reconcile.intervalMinutes`.
+
 - **Disable**: set `"runServer": { "enabled": false }` — the daemon is never
   spawned and writers permanently use the in-session full path.
 - **Degrade**: daemon absent or dead = today's pre-PMR-XTQQ behavior. The
