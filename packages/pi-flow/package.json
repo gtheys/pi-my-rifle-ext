@@ -117,6 +117,7 @@
     "review/sem-guidance.mjs",
     "review/verdict.ts",
     "run-state.ts",
+    "run-title.ts",
     "server/consumer.ts",
     "server/daemon.ts",
     "server/lifecycle.ts",
