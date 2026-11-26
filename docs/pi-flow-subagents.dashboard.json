@@ -11,16 +11,16 @@
       "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-subagents.json",
       "grafana.app/sourceTimestamp": "1795424851000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-25T13:10:10Z"
+      "grafana.app/updatedTimestamp": "2026-11-26T09:39:35Z"
     },
     "creationTimestamp": "2026-11-15T05:26:02Z",
-    "generation": 13,
+    "generation": 17,
     "labels": {
       "grafana.app/deprecatedInternalID": "641681257533440"
     },
     "name": "piflow-subagents",
     "namespace": "default",
-    "resourceVersion": "1795612210778005",
+    "resourceVersion": "1795685975426986",
     "uid": "2c3cf51d-de7e-41ff-869e-64f985a1e674"
   },
   "spec": {
@@ -35,7 +35,7 @@
           "legacyOptions": {
             "type": "dashboard"
           },
-          "name": "Annotations \u0026 Alerts",
+          "name": "Annotations & Alerts",
           "query": {
             "datasource": {
               "name": "-- Grafana --"
@@ -70,7 +70,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
+                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} >= (time() - $__range_s)))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -305,7 +305,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "count(sum by (ref, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
+                        "expr": "count(sum by (ref, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} >= (time() - $__range_s)))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -386,7 +386,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "avg(sum by (ref, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
+                        "expr": "avg(sum by (ref, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} >= (time() - $__range_s)))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -467,7 +467,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "quantile(0.5, sum by (ref, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
+                        "expr": "quantile(0.5, sum by (ref, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} >= (time() - $__range_s)))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -548,7 +548,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e (time() - 86400) and push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003c= time())) or vector(0)",
+                        "expr": "sum(sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} > (time() - 86400) and push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} <= time())) or vector(0)",
                         "format": "time_series",
                         "instant": false,
                         "interval": "1h",
@@ -627,7 +627,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref, role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) * on (ref, session) group_left (role) pi_flow_run_role_info{mode=~\"${mode:raw}\"}) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) unless on (ref, session) pi_flow_run_role_info{mode=~\"${mode:raw}\"}, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\")) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))",
+                        "expr": "label_join(( sum by (ref, role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) * on (ref, session) group_left (role) pi_flow_run_role_info{mode=~\"${mode:raw}\"}) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) unless on (ref, session) pi_flow_run_role_info{mode=~\"${mode:raw}\"}, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\")) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} >= (time() - $__range_s)) ) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\") or label_replace(( sum by (ref, role) (label_replace(label_replace(sum by (ref, role, session) ((sum by (ref, agent, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) * on (ref, session) group_left (role) pi_flow_run_role_info{mode=~\"${mode:raw}\"}) or label_replace(sum by (ref, agent, session) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) unless on (ref, session) pi_flow_run_role_info{mode=~\"${mode:raw}\"}, \"role\", \"$1\", \"agent\", \"^([^:]*).*\")), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\")) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} >= (time() - $__range_s)) ) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -647,8 +647,8 @@
                   "spec": {
                     "options": {
                       "indexByName": {
-                        "ref": 0,
-                        "role": 1
+                        "role": 1,
+                        "ticket": 0
                       }
                     }
                   }
@@ -660,7 +660,7 @@
                     "options": {
                       "columnField": "role",
                       "emptyValue": "zero",
-                      "rowField": "ref",
+                      "rowField": "ticket",
                       "valueField": "Value"
                     }
                   }
@@ -957,7 +957,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "label_replace(label_replace(label_join(label_replace(label_replace(label_replace(label_replace(topk(10, sum by (ref, agent, session, subtask, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"})), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"), \"subtask\", \"–\", \"subtask\", \"^$\"), \"key\", \"|\", \"ref\", \"session\"), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "expr": "label_join(( label_replace(label_replace(label_join(label_replace(label_replace(label_replace(label_replace(topk(10, sum by (ref, agent, session, subtask, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"})), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"), \"subtask\", \"–\", \"subtask\", \"^$\"), \"key\", \"|\", \"ref\", \"session\"), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\") ) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\") or label_replace(( label_replace(label_replace(label_join(label_replace(label_replace(label_replace(label_replace(topk(10, sum by (ref, agent, session, subtask, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"})), \"role\", \"$1\", \"agent\", \"^([^:]*).*\"), \"role\", \"review\", \"role\", \"^Review$\"), \"role\", \"deviation check\", \"role\", \"^Deviation check$\"), \"subtask\", \"–\", \"subtask\", \"^$\"), \"key\", \"|\", \"ref\", \"session\"), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\") ) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1019,9 +1019,9 @@
                       "renameByName": {
                         "Value #A": "Cost",
                         "Value #B": "Tokens",
-                        "ref": "Ticket",
                         "role": "Role",
                         "subtask": "Subtask",
+                        "ticket": "Ticket",
                         "url": "Jira"
                       }
                     }
@@ -1233,7 +1233,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))",
+                        "expr": "sum by (ref) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent!=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} >= (time() - $__range_s))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1321,7 +1321,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "label_replace(label_replace(sum by (ref, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "expr": "label_replace(label_replace(label_join(( sum by (ref, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}) ) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\"), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\") or label_replace(label_replace(label_replace(( sum by (ref, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}) ) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\"), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1373,14 +1373,15 @@
                   "spec": {
                     "options": {
                       "indexByName": {
-                        "Jira": 1,
-                        "Last pushed": 7,
-                        "Most expensive session": 4,
-                        "Orchestrator": 5,
-                        "Sessions": 3,
-                        "Subagents": 2,
+                        "Jira": 2,
+                        "Last pushed": 8,
+                        "Most expensive session": 5,
+                        "Orchestrator": 6,
+                        "Ref": 1,
+                        "Sessions": 4,
+                        "Subagents": 3,
                         "Ticket": 0,
-                        "Ticket total (orchestrator + subagents)": 6
+                        "Ticket total (orchestrator + subagents)": 7
                       },
                       "renameByName": {
                         "Value #A": "Subagents",
@@ -1389,7 +1390,8 @@
                         "Value #D": "Orchestrator",
                         "Value #E": "Ticket total (orchestrator + subagents)",
                         "Value #F": "Last pushed",
-                        "ref": "Ticket",
+                        "ref": "Ref",
+                        "ticket": "Ticket",
                         "url": "Jira"
                       }
                     }
@@ -1403,6 +1405,7 @@
                       "include": {
                         "names": [
                           "Ticket",
+                          "Ref",
                           "Jira",
                           "Subagents",
                           "Sessions",
@@ -1626,7 +1629,7 @@
                   {
                     "matcher": {
                       "id": "byName",
-                      "options": "Ticket"
+                      "options": "Ref"
                     },
                     "properties": [
                       {
