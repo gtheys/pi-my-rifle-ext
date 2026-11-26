@@ -192,6 +192,16 @@ Since PMR-XTQQ, a small detached daemon (plain node, own event loop) makes
 session does not spawn it — only the pending-record consumer runs then; a
 dead daemon is respawned by the next `/flow`.
 
+**Stale-code warning**: since PMR-7B8M the daemon records the git SHA of the
+checkout it was spawned from in `server.pid`. Sessions compare that SHA against
+the **main checkout's** HEAD — resolved from any worktree via `git worktree list
+--porcelain` — and warn when the two differ (main moved on, or the daemon came
+from an unmerged branch) or when the pidfile carries no SHA at all (an older
+daemon): `kill <pid>`, the daemon is re-ensured at the next `/flow` start. A
+worktree's own commits never move main HEAD, so they never trigger this.
+Staleness only ever warns: a protocol-version mismatch remains the only
+condition that kills + respawns.
+
 What it does: the daemon is the ONLY projection writer while alive — journal
 writers route journal-only through `server/writer.ts` (per-write liveness
 probe) and the daemon reprojects. Parked runs (awaiting an outcome at a phase
