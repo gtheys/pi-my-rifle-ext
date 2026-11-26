@@ -77,7 +77,7 @@
             },
             "endpoint": {
               "type": "string",
-              "description": "Loki base URL (user-provided, e.g. http://100.108.226.64:3100); events POST to <endpoint>/loki/api/v1/push. Required with telemetry.loki.enabled"
+              "description": "Loki base URL (user-provided, e.g. http://loki.example.com:3100); events POST to <endpoint>/loki/api/v1/push. Required with telemetry.loki.enabled"
             },
             "headers": {
               "type": "object",

@@ -116,7 +116,7 @@ const PiFlowConfigSchema = Type.Object({
         // which throws on a malformed shape — AGENTS.md: never silent
         // defaults). `enabled` defaults to false: absent/disabled = ZERO Loki
         // network calls. `endpoint` stores the base URL only (user-provided,
-        // e.g. http://100.108.226.64:3100); the pusher appends
+        // e.g. http://loki.example.com:3100); the pusher appends
         // /loki/api/v1/push (D2). `headers` are static extra headers (Bearer
         // token belongs in env, never config). Free text (note/halt prose) is
         // NEVER a label — it rides the JSON line (ISC-A-1).
@@ -133,7 +133,7 @@ const PiFlowConfigSchema = Type.Object({
               endpoint: Type.Optional(
                 Type.String({
                   description:
-                    'Loki base URL (user-provided, e.g. http://100.108.226.64:3100); events POST to <endpoint>/loki/api/v1/push. Required with telemetry.loki.enabled',
+                    'Loki base URL (user-provided, e.g. http://loki.example.com:3100); events POST to <endpoint>/loki/api/v1/push. Required with telemetry.loki.enabled',
                 }),
               ),
               headers: Type.Optional(
