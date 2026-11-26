@@ -38,6 +38,10 @@
 // @gtheys/pi-interactive-subagents) or `aven/client.ts` (imports config.ts).
 // The agent dir arrives via PI_FLOW_AGENT_DIR from the spawner
 // (server/lifecycle.ts), never from getAgentDir().
+// The spawn-side git SHA arrives the same way via PI_FLOW_DAEMON_GIT_SHA
+// (PMR-7B8M): validated as 40-hex lowercase in gitShaFromEnv, dropped
+// otherwise, and ADVISORY-ONLY — it is recorded in the pidfile so sessions can
+// judge staleness; it never affects liveness, respawn, or any daemon decision.
 //
 // KEEPALIVE RULE (PMR-XTQQ review fix): the 1s poll interval is the daemon's
 // LIVENESS BACKSTOP and must NEVER be unref'd — fs.watch(runsDir) can fail at
@@ -140,6 +144,41 @@ export interface ReprojectOutcome {
   result: ReprojectResult
   /** Reprojected state; null when there is no readable journal/projection. */
   state: FlowRunState | null
+}
+
+/**
+ * AIDEV-NOTE: PMR-7B8M — the spawner's checkout HEAD arrives via env (like
+ * PI_FLOW_AGENT_DIR); validated 40-hex lowercase, anything else is dropped
+ * because gitSha is an advisory pidfile field the daemon must never trust.
+ * Pure (reads only the passed env) so it is unit-testable without a spawn.
+ */
+export function gitShaFromEnv(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = env.PI_FLOW_DAEMON_GIT_SHA
+  if (typeof raw !== 'string') return undefined
+  if (!/^[0-9a-f]{40}$/.test(raw)) return undefined
+  return raw
+}
+
+/**
+ * PMR-7B8M: serialize the pidfile line. gitSha is included only when present
+ * so pidfiles written outside a repo keep the pre-feature shape exactly
+ * (lifecycle.ts treats an absent gitSha as "predates staleness tracking").
+ */
+export function pidfileLine(fields: {
+  pid: number
+  version: string
+  startedAt: string
+  agentDir: string
+  gitSha?: string
+}): string {
+  const payload: Record<string, unknown> = {
+    pid: fields.pid,
+    version: fields.version,
+    startedAt: fields.startedAt,
+    agentDir: fields.agentDir,
+  }
+  if (fields.gitSha !== undefined) payload.gitSha = fields.gitSha
+  return `${JSON.stringify(payload)}\n`
 }
 
 /** AIDEV-NOTE: pending/ lives next to runs/ under <agentDir>/pi-flow/. */
@@ -851,18 +890,24 @@ function main(): void {
 
   // Pidfile: the extension's lifecycle module (subtask 1.2) uses pid +
   // version + startedAt + agentDir for liveness and version-mismatch respawn.
+  // PMR-7B8M adds the ADVISORY gitSha — the spawning checkout's HEAD, dropped
+  // unless it validates as 40-hex — which later sessions compare against their
+  // own HEAD to warn about a daemon running stale code. It never influences
+  // this daemon's behavior.
   const pidPath = path.join(agentDir, 'pi-flow', PID_FILE_NAME)
+  const gitSha = gitShaFromEnv(process.env)
   fsp
     .mkdir(path.dirname(pidPath), { recursive: true })
     .then(() =>
       fsp.writeFile(
         pidPath,
-        `${JSON.stringify({
+        pidfileLine({
           pid: process.pid,
           version: SERVER_PROTOCOL_VERSION,
           startedAt: new Date().toISOString(),
           agentDir,
-        })}\n`,
+          gitSha,
+        }),
         'utf8',
       ),
     )

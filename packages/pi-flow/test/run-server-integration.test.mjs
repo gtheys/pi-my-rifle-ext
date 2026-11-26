@@ -6,6 +6,10 @@
 // exercises pending maintenance: a parked loop-state produces
 // pending/<ref>.json, a terminal snapshot clears it, and a stray
 // <ref>.consumed.json is swept.
+// AIDEV-NOTE: PMR-7B8M — the daemon records its spawner's checkout SHA in
+// server.pid (via PI_FLOW_DAEMON_GIT_SHA) so later sessions can warn about
+// staleness: the first test asserts the SHA lands in the pidfile, the no-runs
+// dir test asserts the key stays absent when the spawn env carried none.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import {
@@ -46,7 +50,12 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
   )
 
   const child = spawn(process.execPath, [DAEMON_SCRIPT], {
-    env: { ...process.env, PI_FLOW_AGENT_DIR: agentDir },
+    env: {
+      ...process.env,
+      PI_FLOW_AGENT_DIR: agentDir,
+      // PMR-7B8M ISC-1: the spawn-side checkout SHA must land in the pidfile.
+      PI_FLOW_DAEMON_GIT_SHA: 'a'.repeat(40),
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stderr = ''
@@ -64,6 +73,11 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
       return pidInfo !== null
     }, 'pidfile')
     assert.equal(pidInfo?.pid, child.pid)
+    assert.equal(
+      pidInfo?.gitSha,
+      'a'.repeat(40),
+      'pidfile must record the spawn env git SHA (ISC-1)',
+    )
 
     // Seeded journal is reprojected (torn-write tolerant read, PMR-572Y).
     let projected = null
@@ -237,7 +251,14 @@ test('real daemon: no runs/ dir at startup → stays alive on poll, picks up lat
   const projectionFile = join(runsDir, `${ref}.json`)
 
   const child = spawn(process.execPath, [DAEMON_SCRIPT], {
-    env: { ...process.env, PI_FLOW_AGENT_DIR: agentDir },
+    // PMR-7B8M: no PI_FLOW_DAEMON_GIT_SHA in the spawn env → the pidfile keeps
+    // the pre-feature shape (no gitSha key at all), and it is stripped from the
+    // inherited environment so a polluted parent cannot leak through the spread.
+    env: (() => {
+      const env = { ...process.env, PI_FLOW_AGENT_DIR: agentDir }
+      delete env.PI_FLOW_DAEMON_GIT_SHA
+      return env
+    })(),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stderr = ''
@@ -255,6 +276,11 @@ test('real daemon: no runs/ dir at startup → stays alive on poll, picks up lat
       return pidInfo !== null
     }, 'pidfile')
     assert.equal(pidInfo?.pid, child.pid)
+    assert.equal(
+      pidInfo?.gitSha,
+      undefined,
+      'pidfile must omit gitSha when the spawn env carried none',
+    )
 
     // THE BLOCKER: daemon must STILL be alive after 1.5s with no runs/ dir
     // (old code exited code 0 within milliseconds).

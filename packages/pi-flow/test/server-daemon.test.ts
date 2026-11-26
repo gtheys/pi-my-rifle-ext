@@ -21,9 +21,11 @@ import {
   createScanCache,
   createSerialQueue,
   decidePending,
+  gitShaFromEnv,
   isJournalWatchEvent,
   maintainPending,
   pendingDirPath,
+  pidfileLine,
   projectionChanged,
   reprojectRun,
   SERVER_PROTOCOL_VERSION,
@@ -371,6 +373,62 @@ test('projectionChanged: identical serialization means unchanged', () => {
 
 test('projectionChanged: differing content means changed', () => {
   assert.equal(projectionChanged('{"ref":"X"}', { ref: 'Y' } as never), true)
+})
+
+// --- pidfile helpers (PMR-7B8M: spawn checkout SHA recorded for staleness) ---
+
+const SHA40 = '0123456789abcdef0123456789abcdef01234567'
+
+test('gitShaFromEnv: valid 40-hex lowercase passes through', () => {
+  assert.equal(gitShaFromEnv({ PI_FLOW_DAEMON_GIT_SHA: SHA40 }), SHA40)
+})
+
+test('gitShaFromEnv: anything malformed or non-string is dropped', () => {
+  // Too short, non-hex, uppercase, non-string, absent — advisory field, so
+  // every invalid shape degrades to absent rather than failing the write.
+  assert.equal(gitShaFromEnv({ PI_FLOW_DAEMON_GIT_SHA: 'abc' }), undefined)
+  assert.equal(
+    gitShaFromEnv({ PI_FLOW_DAEMON_GIT_SHA: SHA40.toUpperCase() }),
+    undefined,
+  )
+  assert.equal(
+    gitShaFromEnv({ PI_FLOW_DAEMON_GIT_SHA: `${SHA40.slice(0, 39)}z` }),
+    undefined,
+  )
+  assert.equal(
+    gitShaFromEnv({ PI_FLOW_DAEMON_GIT_SHA: 42 as unknown as string }),
+    undefined,
+  )
+  assert.equal(gitShaFromEnv({}), undefined)
+})
+
+test('pidfileLine: writes pid/version/startedAt/agentDir plus gitSha', () => {
+  const line = pidfileLine({
+    pid: 1234,
+    version: SERVER_PROTOCOL_VERSION,
+    startedAt: '2026-11-26T00:00:00.000Z',
+    agentDir: '/tmp/agent',
+    gitSha: SHA40,
+  })
+  assert.ok(line.endsWith('\n'))
+  assert.equal(line.match(/\n/g)?.length, 1, 'exactly one trailing newline')
+  const rec = JSON.parse(line) as Record<string, unknown>
+  assert.equal(rec.pid, 1234)
+  assert.equal(rec.version, SERVER_PROTOCOL_VERSION)
+  assert.equal(rec.startedAt, '2026-11-26T00:00:00.000Z')
+  assert.equal(rec.agentDir, '/tmp/agent')
+  assert.equal(rec.gitSha, SHA40)
+})
+
+test('pidfileLine: omits gitSha entirely when absent (old-shape pidfile)', () => {
+  const line = pidfileLine({
+    pid: 1234,
+    version: SERVER_PROTOCOL_VERSION,
+    startedAt: '2026-11-26T00:00:00.000Z',
+    agentDir: '/tmp/agent',
+  })
+  const rec = JSON.parse(line) as Record<string, unknown>
+  assert.equal('gitSha' in rec, false, 'key must be absent, not undefined')
 })
 
 // --- createSerialQueue (scan scheduling) ---

@@ -87,9 +87,18 @@ function makeIo(pidfile: string | null): LifecycleIo & {
         detached: opts.detached,
         env: opts.env as Record<string, string | undefined>,
       })
-      // Fake daemon: immediately write the fresh pidfile like the real one.
+      // Fake daemon: immediately write the fresh pidfile like the real one,
+      // including the PMR-7B8M gitSha it was handed via the spawn env.
       const pid = 4242
-      io.pidfile = `${JSON.stringify({ pid, version: '1', startedAt: 'now', agentDir: AGENT_DIR })}\n`
+      const gitSha = opts.env.PI_FLOW_DAEMON_GIT_SHA
+      const pidfile: Record<string, unknown> = {
+        pid,
+        version: '1',
+        startedAt: 'now',
+        agentDir: AGENT_DIR,
+      }
+      if (typeof gitSha === 'string') pidfile.gitSha = gitSha
+      io.pidfile = `${JSON.stringify(pidfile)}\n`
       return { pid, unref: () => undefined }
     },
     mkdir: async () => undefined,
@@ -194,6 +203,64 @@ test('probe: readFile rejection degrades to no-pidfile (never throws)', async ()
   const res = await probeDaemon(AGENT_DIR, io)
   assert.equal(res.alive, false)
   if (!res.alive) assert.equal(res.reason, 'no-pidfile')
+})
+
+// --- PMR-7B8M: advisory gitSha in the pidfile ---
+
+const SHA40 = '0123456789abcdef0123456789abcdef01234567'
+
+test('probe: pidfile with gitSha → alive result carries it', async () => {
+  const io = makeIo(
+    `{"pid":123,"version":"1","startedAt":"now","agentDir":"${AGENT_DIR}","gitSha":"${SHA40}"}`,
+  )
+  const res = await probeDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { alive: true, pid: 123, gitSha: SHA40 })
+})
+
+test('probe: pidfile WITHOUT gitSha (pre-feature daemon) → alive, key absent', async () => {
+  const io = makeIo('{"pid":123,"version":"1","startedAt":"now"}')
+  const res = await probeDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { alive: true, pid: 123 })
+  assert.equal('gitSha' in res, false, 'must be absent, not undefined')
+})
+
+// AIDEV-NOTE: PMR-7B8M ISC-8 — gitSha is advisory: a wrong-typed value must
+// degrade to absent. Flipping this pidfile to malformed-pidfile would SIGTERM
+// a perfectly healthy daemon, which is the exact failure mode the plan lists
+// as a risk.
+test('probe: wrong-typed gitSha degrades to absent, still alive (never malformed)', async () => {
+  const io = makeIo(
+    `{"pid":123,"version":"1","gitSha":${JSON.stringify(12345)}}`,
+  )
+  const res = await probeDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, { alive: true, pid: 123 })
+})
+
+test('probe: non-string gitSha shapes (object, null, array) all stay alive', async () => {
+  const shapes = [
+    '{"pid":1,"version":"1","gitSha":{}}',
+    '{"pid":1,"version":"1","gitSha":null}',
+    '{"pid":1,"version":"1","gitSha":["a"]}',
+    '{"pid":1,"version":"1","gitSha":true}',
+  ]
+  for (const raw of shapes) {
+    const io = makeIo(raw)
+    const res = await probeDaemon(AGENT_DIR, io)
+    assert.equal(res.alive, true, `alive expected for ${raw}`)
+    if (res.alive) assert.equal('gitSha' in res, false)
+  }
+})
+
+// A live pidfile with a valid gitSha must still trigger the version-mismatch
+// path exactly as before — the new field never rescues a mismatched daemon.
+test('probe: gitSha present but version mismatch → unchanged malformed/mismatch verdict', async () => {
+  const io = makeIo(`{"pid":123,"version":"0","gitSha":"${SHA40}"}`)
+  const res = await probeDaemon(AGENT_DIR, io)
+  assert.equal(res.alive, false)
+  if (!res.alive) {
+    assert.equal(res.reason, 'version-mismatch')
+    assert.equal(res.pid, 123)
+  }
 })
 
 // --- ensureDaemon ---
@@ -589,4 +656,88 @@ test('ensure: released claim → a later ensureDaemon can spawn again', async ()
   const second = await ensureDaemon(AGENT_DIR, io)
   assert.deepEqual(second, { status: 'spawned', pid: 4242 })
   assert.equal(io.spawns.length, 2)
+})
+
+// --- PMR-7B8M: spawn env carries the spawner's git SHA ---
+
+test('ensure: {gitSha} → spawn env carries PI_FLOW_DAEMON_GIT_SHA (ISC-1/9)', async () => {
+  const io = makeIo(DEAD_PIDFILE)
+  io.isProcessAlive = deadUntil(999)
+  const res = await ensureDaemon(AGENT_DIR, io, { gitSha: SHA40 })
+  assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+  assert.equal(io.spawns.length, 1)
+  assert.equal(io.spawns[0].env.PI_FLOW_DAEMON_GIT_SHA, SHA40)
+  assert.equal(io.spawns[0].env.PI_FLOW_AGENT_DIR, AGENT_DIR)
+  // Round-trip through the fake daemon's pidfile: a session probing later sees
+  // the SHA the spawn env carried.
+  const probed = await probeDaemon(AGENT_DIR, io)
+  assert.deepEqual(probed, { alive: true, pid: 4242, gitSha: SHA40 })
+})
+
+test('ensure: no opts argument → spawn env has no PI_FLOW_DAEMON_GIT_SHA', async () => {
+  const io = makeIo(DEAD_PIDFILE)
+  io.isProcessAlive = deadUntil(999)
+  await ensureDaemon(AGENT_DIR, io)
+  assert.equal(io.spawns[0].env.PI_FLOW_DAEMON_GIT_SHA, undefined)
+  assert.equal(
+    'PI_FLOW_DAEMON_GIT_SHA' in io.spawns[0].env,
+    false,
+    'key must be deleted, not present-with-undefined',
+  )
+})
+
+// AIDEV-NOTE: PMR-7B8M ISC-9 — the spawn env is built from ...process.env, so
+// a PI_FLOW_DAEMON_GIT_SHA left in the PARENT environment would otherwise be
+// inherited by a daemon we could not resolve a SHA for: the pidfile would
+// record a SHA the daemon was never spawned from. ensureDaemon must delete it.
+test('ensure: {gitSha:null} with polluted parent env → var deleted from spawn env', async () => {
+  process.env.PI_FLOW_DAEMON_GIT_SHA = SHA40
+  try {
+    const io = makeIo(DEAD_PIDFILE)
+    io.isProcessAlive = deadUntil(999)
+    const res = await ensureDaemon(AGENT_DIR, io, { gitSha: null })
+    assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+    assert.equal(
+      'PI_FLOW_DAEMON_GIT_SHA' in io.spawns[0].env,
+      false,
+      'leaked parent value must not reach the spawn env',
+    )
+  } finally {
+    delete process.env.PI_FLOW_DAEMON_GIT_SHA
+  }
+})
+
+test('ensure: empty-string gitSha is treated as unresolved (deleted, not set)', async () => {
+  process.env.PI_FLOW_DAEMON_GIT_SHA = SHA40
+  try {
+    const io = makeIo(DEAD_PIDFILE)
+    io.isProcessAlive = deadUntil(999)
+    await ensureDaemon(AGENT_DIR, io, { gitSha: '' })
+    assert.equal(
+      'PI_FLOW_DAEMON_GIT_SHA' in io.spawns[0].env,
+      false,
+      'an empty SHA must not be recorded by the daemon',
+    )
+  } finally {
+    delete process.env.PI_FLOW_DAEMON_GIT_SHA
+  }
+})
+
+test('ensure: resolved gitSha wins over a polluted parent env value', async () => {
+  process.env.PI_FLOW_DAEMON_GIT_SHA = 'f'.repeat(40)
+  try {
+    const io = makeIo(DEAD_PIDFILE)
+    io.isProcessAlive = deadUntil(999)
+    await ensureDaemon(AGENT_DIR, io, { gitSha: SHA40 })
+    assert.equal(io.spawns[0].env.PI_FLOW_DAEMON_GIT_SHA, SHA40)
+  } finally {
+    delete process.env.PI_FLOW_DAEMON_GIT_SHA
+  }
+})
+
+test('ensure: already-running daemon ignores opts.gitSha (no spawn, no env)', async () => {
+  const io = makeIo('{"pid":123,"version":"1"}')
+  const res = await ensureDaemon(AGENT_DIR, io, { gitSha: SHA40 })
+  assert.deepEqual(res, { status: 'already-running', pid: 123 })
+  assert.equal(io.spawns.length, 0)
 })

@@ -181,7 +181,16 @@ const realIo: LifecycleIo = {
 }
 
 export type ProbeResult =
-  | { alive: true; pid: number }
+  | {
+      alive: true
+      pid: number
+      /**
+       * PMR-7B8M: git SHA of the spawning checkout, from the pidfile; absent
+       * on pre-feature pidfiles. Used only for session-side staleness
+       * warnings, never by the liveness/respawn decision.
+       */
+      gitSha?: string
+    }
   | {
       alive: false
       reason:
@@ -196,6 +205,10 @@ export type ProbeResult =
 interface ParsedPidfile {
   pid: number
   version: string
+  /** PMR-7B8M: advisory git SHA of the spawner's checkout. Absent on older
+   *  pidfiles. NEVER affects the malformed verdict — a wrong type degrades to
+   *  absent (a bad gitSha must not SIGTERM a healthy daemon). */
+  gitSha?: string
 }
 
 function parsePidfile(raw: string): ParsedPidfile | null {
@@ -206,10 +219,14 @@ function parsePidfile(raw: string): ParsedPidfile | null {
     return null
   }
   if (typeof parsed !== 'object' || parsed === null) return null
-  const rec = parsed as { pid?: unknown; version?: unknown }
+  const rec = parsed as { pid?: unknown; version?: unknown; gitSha?: unknown }
   if (typeof rec.pid !== 'number' || !Number.isInteger(rec.pid)) return null
   if (typeof rec.version !== 'string') return null
-  return { pid: rec.pid, version: rec.version }
+  const parsedPidfile: ParsedPidfile = { pid: rec.pid, version: rec.version }
+  // PMR-7B8M: advisory — only a string is kept, everything else (number,
+  // object, null, bool) is dropped so the probe stays `alive`.
+  if (typeof rec.gitSha === 'string') parsedPidfile.gitSha = rec.gitSha
+  return parsedPidfile
 }
 
 /** Liveness probe: never throws, every failure mode a distinct reason. */
@@ -236,7 +253,11 @@ export async function probeDaemon(
       pid: parsed.pid,
     }
   }
-  return { alive: true, pid: parsed.pid }
+  const result: ProbeResult = { alive: true, pid: parsed.pid }
+  // PMR-7B8M: assigned conditionally so callers can distinguish "pre-feature
+  // pidfile" (key absent) from a present SHA.
+  if (parsed.gitSha !== undefined) result.gitSha = parsed.gitSha
+  return result
 }
 
 // AIDEV-NOTE: PMR-HRGJ — spawn claim. Before spawning, ensureDaemon claims
@@ -432,6 +453,15 @@ async function spawnInProgressStatus(
   return { status: 'spawn-in-progress' }
 }
 
+export interface EnsureDaemonOptions {
+  /**
+   * PMR-7B8M: git SHA of the spawner's checkout, handed to a fresh daemon via
+   * PI_FLOW_DAEMON_GIT_SHA so it records the SHA in its pidfile. Ignored when
+   * a daemon is already running; null/absent outside a git repo.
+   */
+  gitSha?: string | null
+}
+
 /**
  * Ensure a live, version-matching daemon. Alive+matching → no-op; stale,
  * mismatched or dead → best-effort SIGTERM of the old pid, then spawn
@@ -441,6 +471,7 @@ async function spawnInProgressStatus(
 export async function ensureDaemon(
   agentDir: string,
   io: LifecycleIo = realIo,
+  opts: EnsureDaemonOptions = {},
 ): Promise<EnsureDaemonResult> {
   try {
     const probe = await probeDaemon(agentDir, io)
@@ -494,10 +525,27 @@ export async function ensureDaemon(
       const logFd = io.openLogFd(logFilePath(agentDir))
       let child: SpawnedProcess
       try {
+        // AIDEV-NOTE: PMR-7B8M — the daemon never runs git itself (DEPENDENCY
+        // CONTRACT in server/daemon.ts): the session owns the checkout, so the
+        // SHA is resolved spawn-side and passed in via the env, mirroring the
+        // PI_FLOW_AGENT_DIR precedent.
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          PI_FLOW_AGENT_DIR: agentDir,
+        }
+        if (typeof opts.gitSha === 'string' && opts.gitSha.length > 0) {
+          env.PI_FLOW_DAEMON_GIT_SHA = opts.gitSha
+        } else {
+          // AIDEV-NOTE: PMR-7B8M ISC-9 — delete, not omit: the ...process.env
+          // spread above can carry a stale PI_FLOW_DAEMON_GIT_SHA from the
+          // parent env, and a spawn without a resolvable SHA must not inherit
+          // it (the pidfile would claim a provenance it does not have).
+          delete env.PI_FLOW_DAEMON_GIT_SHA
+        }
         child = io.spawn(process.execPath, [daemonEntryPath()], {
           detached: true,
           stdio: ['ignore', logFd, logFd],
-          env: { ...process.env, PI_FLOW_AGENT_DIR: agentDir },
+          env,
         })
       } finally {
         io.closeFd(logFd)
