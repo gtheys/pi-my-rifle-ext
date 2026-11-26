@@ -469,7 +469,7 @@ Push failures print a warning and never fail the command; rerun `/flow-cost <ref
 
 **Automatic push**: with `PI_FLOW_PUSHGATEWAY_URL` set, the same rollup is pushed for you whenever a `/flow` run ends — completed, halted, or paused for spec approval. A one-line notice confirms it (`flow-cost <ref>: cost metrics pushed to the pushgateway.`); a failure shows a warning with the retry command. With the URL unset nothing happens. Pushing is idempotent (same-identity series are overwritten in place — official Pushgateway replaces the whole group, the homelab build was verified to merge on write, PMR-WBC2), so a resumed flow just refreshes the numbers. The rollup covers spawned workers and, for runs started after the `main-session` journal event existed, the main session split across plan / implement / validate. It also includes a per-phase **step outputs** section summarizing `flow_submit` submissions (advisory evidence, never blocking). While a run is still in flight the daemon refreshes the same body on its own timer — see [Liveness](#liveness-running-flow-visibility).
 
-**Run title info (`pi_flow_run_title_info{ref,title} 1`).** One extra line per run carries the ticket title so the boards can show `PMR-9DZ0 — Show the ticket title next to every ref` instead of a bare ref. It is an **info series** (value always `1`, one series per `ref`, labels `ref` and `title`) and it is **journal-derived**: the title is resolved once at run-start (aven's ticket title in personal mode, the Jira summary in work mode, sanitized to a single ≤120-char line) and journaled on the `run-start` event, and every push body re-renders it from that journal — never from a live ticket lookup at push time. That is what lets the daemon-side liveness push (see [Liveness](#liveness-running-flow-visibility)) carry it too: both push paths render the same body through `buildPushBody(trackRef, rows, durations, events)`. The render rule is **last title wins** — a resume that re-journals `run-start` with a new title supersedes the old one, while a resume whose lookup failed journals no title and therefore keeps the earlier one — and a run with no title anywhere in its journal emits **no line at all**, never an empty one. `filterGroupLines` (`flow/push.ts`) drops the family from every re-POSTed group body (the tombstone path in [Reconcile](#reconcile-stale-run-tombstoning)) because the homelab gateway merges on write: a stale title series from an earlier run of the same tracking ref would otherwise coexist with the current one and fan out the join. Consumers query it as `... * on (ref) group_left (title) pi_flow_run_title_info`, with an `or ... unless on (ref)` fallback arm so title-less runs (including every run journaling before this landed) stay visible; the label `ref` is preserved, so `ref=~"$ref"` filtering keeps working. Runs started before the title was journaled pick it up on their next start or resume.
+**Run title info (`pi_flow_run_title_info{ref,title} 1`).** One extra line per run carries the ticket title so the boards can show `PMR-9DZ0 — Show the ticket title next to every ref` instead of a bare ref. It is an **info series** (value always `1`, one series per `ref`, labels `ref` and `title`) and it is **journal-derived**: the title is resolved once at run-start (aven's ticket title in personal mode, the Jira summary in work mode, sanitized to a single ≤120-char line) and journaled on the `run-start` event, and every push body re-renders it from that journal — never from a live ticket lookup at push time. That is what lets the daemon-side liveness push (see [Liveness](#liveness-running-flow-visibility)) carry it too: both push paths render the same body through `buildPushBody(trackRef, rows, durations, events)`. The render rule is **last title wins** — a resume that re-journals `run-start` with a new title supersedes the old one, while a resume whose lookup failed journals no title and therefore keeps the earlier one — and a run with no title anywhere in its journal emits **no line at all**, never an empty one. `filterGroupLines` (`flow/push.ts`) drops the family from every re-POSTed group body (the tombstone path in [Reconcile](#reconcile-stale-run-tombstoning)) because that path is a GET → transform → POST round-trip: under official Pushgateway **replace** semantics a series omitted from the POST is deleted, so re-posting the stored title line would **resurrect** whatever title the gateway happened to hold — including a stale one from an earlier run of the same tracking ref — on every tombstone. On the homelab gateway, which **merges on write**, the drop is a harmless no-op, and merging is precisely why the prune cannot delete a series that is already stored there: a title *change* across runs of one tracking ref keeps the old series served until a fresh push overwrites it or it is removed by hand (duplicate `group_left (title)` join rows on the boards). That residual is accepted and recorded in the `flow/push.ts` AIDEV note; the dashboard-side lever is `topk by (ref) (1, pi_flow_run_title_info)`. Every fresh push re-adds exactly the current title, so the normal push path is never affected. Consumers query it as `... * on (ref) group_left (title) pi_flow_run_title_info`, with an `or ... unless on (ref)` fallback arm so title-less runs (including every run journaling before this landed) stay visible; the label `ref` is preserved, so `ref=~"$ref"` filtering keeps working. Runs started before the title was journaled pick it up on their next start or resume.
 
 ### Reconcile (stale run tombstoning)
 
@@ -510,7 +510,7 @@ closed PER REF: one bad shell-out costs one tombstone, not the whole pass, and
 the question can only ever cancel a tombstone — it is asked solely for refs
 the listing already lacked.
 
-**What a tombstone does.** The run's Pushgateway group is re-pushed with two
+**What a tombstone does.** The run's Pushgateway group is re-pushed with three
 changes and nothing else:
 
 - `pi_flow_state{…}` and `pi_flow_state_start_seconds{…}` whose
@@ -533,14 +533,23 @@ changes and nothing else:
   phantom on a replace-semantic gateway. On the merge-on-write homelab gateway
   it degrades to a harmless no-op, exactly like the now-retired `halt_reason`
   drop.
+- the `pi_flow_run_title_info{…}` title series is **pruned from the fetched body**
+  before the re-POST (`filterGroupLines` in `flow/push.ts`, PMR-9DZ0). It is not a
+  stale-run signal and it is re-rendered from the journal by every fresh push, so
+  re-posting the stored copy would only carry whatever title the gateway happened
+  to hold. Under official Pushgateway replace semantics the omission also means
+  the round-trip cannot resurrect an earlier run's title; on the merge-on-write
+  homelab gateway the prune is a no-op (accepted residual — see the **Run title
+  info** paragraph above).
 
 Every other line (cost, tokens, tool calls, durations, gate decisions, retry
-and blocker counters, worktree sweep, run start, and the remaining non-state v2
-families `pi_flow_phase`/`pi_flow_wait_seconds`/`pi_flow_step_seconds`) is
-re-emitted byte-identical, so done-run cost history on the runs board is
-untouched. **Nothing is ever deleted** — deleting the group would erase those
-cost rows too (the `pi_flow_step` drop is a per-series omission inside a
-full-group re-POST, not a group delete).
+and blocker counters, worktree sweep, run start, `pi_flow_run_role_info`, and the
+remaining non-state v2 families `pi_flow_phase`/`pi_flow_wait_seconds`/
+`pi_flow_step_seconds`) is re-emitted byte-identical, so done-run cost history on
+the runs board is untouched. **Nothing is ever deleted** — deleting the group
+would erase those cost rows too (the `pi_flow_step` and `pi_flow_run_title_info`
+omissions are per-series omissions inside a full-group re-POST, not a group
+delete).
 
 One consequence of cutting over to v2 (matches the 6.5 cutover): a group
 **stored before the v2 render landed** carries only v1 lines and no

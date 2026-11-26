@@ -152,7 +152,8 @@ flowchart LR
 ```
 
 **Renderer 1 — Prometheus (pure fold).** `flow/state-metrics.ts` (node-only, daemon-reachable) derives the six v2
-gauges from the journal; `flow/run-health.ts::renderRunHealthLines` appends them after the kept frozen block. Both
+gauges from the journal; `flow/run-health.ts::renderRunHealthLines` appends them after the kept frozen block, then the
+additive `pi_flow_run_title_info` tail (PMR-9DZ0 — item 3 of the push-body order in §4). Both
 push paths — the terminal autopush and the daemon liveness pass — call the identical `buildPushBody` →
 `renderRunHealthLines` chain (the PMR-8MQH invariant), so a running flow and a finished flow carry the same series
 shapes.
@@ -206,6 +207,13 @@ values come from the closed enums above.
 | `pi_flow_step` | `ref, phase, step` | 1 | in-flight **registered** step (last `step-start` without a stop) — only names in `flow/steps.ts::STEP_REGISTRY` reach this label (fix-round-3, deviation #3) |
 | `pi_flow_step_seconds` | `ref, phase, step` | cumulative seconds | completed **registered** step durations — same registry closure; the journal + Loki line still carry free-form names |
 
+One further gauge sits **outside** this six-family table because `state-metrics.ts` does not render it: the additive
+run-title tail `pi_flow_run_title_info{ref,title} 1`, emitted by `flow/run-health.ts::renderRunHealthLines` after the
+six gauges above (PMR-9DZ0, item 3 of the push-body order below). It carries no state vocabulary — the `title` label
+is the sanitized ticket title from the journaled `run-start` event, value always `1`, one series per `ref`, and no
+line at all for a title-less journal. Dashboards join it with `* on (ref) group_left (title)` and an
+`or … unless on (ref)` fallback arm so title-less runs stay visible.
+
 **Legacy fallback (ISC-6).** A journal with no `state-change` events derives v2 state from the projected loop status —
 `paused` → `waiting_human` (reason `""`), `halted` → `halted` (reason `""`), `running` → `running`, `done` → `done`;
 wait windows fall back to the (retired-v1) paused-window scan re-implemented in `state-metrics.ts` (wait_kind `human`,
@@ -230,6 +238,15 @@ v2 lines. Bare lines are the repo convention, not an omission — see the module
    their queries).
 2. **v2 state gauges** — `pi_flow_state`, `pi_flow_state_start_seconds`, `pi_flow_phase`, `pi_flow_wait_seconds`,
    `pi_flow_step`, `pi_flow_step_seconds`.
+3. **run-title tail block (PMR-9DZ0)** — `pi_flow_run_title_info{ref,title} 1`, the additive journal-derived info
+   series rendered by `run-health.ts` itself (last title-carrying `run-start` wins, no line when the journal has no
+   title). It is neither frozen vocabulary nor a v2 state family, and it appends after both, so every line above it
+   keeps its exact position byte-for-byte. `filterGroupLines` (`flow/push.ts`) strips it from a re-POSTed group body:
+   under official Pushgateway replace semantics omitting it from the POST deletes the series, which is what stops a
+   tombstone round-trip from resurrecting an earlier run's title; on the merge-on-write homelab gateway the drop is a
+   no-op and a title *change* can leave the old series served until a fresh push overwrites it or it is deleted by
+   hand (accepted residual — same class as the `pi_flow_step` drop below; `topk by (ref) (1, pi_flow_run_title_info)`
+   is the dashboard-side lever).
 
 **Retired (PMR-ZV9Y 7.1), rendered nowhere:** `pi_flow_run_status`, `pi_flow_run_halt_reason`,
 `pi_flow_human_wait_seconds`, `pi_flow_gate_wait_seconds`.
@@ -518,7 +535,7 @@ the kept-metrics `piflow-retry-budget` rule proved it was still firing through t
 | `flow/vocabulary.ts` | **v2 vocabulary (pure, zero imports):** `FlowState`/`FlowReason`/`WaitKind` unions, `FLOW_STATES`/`FLOW_REASONS` guard sets, `WAIT_KIND` map + `reasonWaitKind()`, `EXPECTED_ACTION` map + `expectedAction()`. The single source every consumer reads. |
 | `flow/steps.ts` | **step registry (pure):** `STEP_REGISTRY` + `isRegisteredStep(phase, step)`. The closed set of named step boundaries (§5). |
 | `flow/state-metrics.ts` | **v2 Prometheus derivation (node-only, daemon-reachable, pure):** `deriveV2State` (projection + ISC-6 legacy fallback), `scanStateWindows` (cumulative waits), `scanStepWindows` (step boundaries), `renderStateMetricLines` (the six gauges, bare lines — TYPE-line rule §4). |
-| `flow/run-health.ts` | Appends `renderStateMetricLines` output after the kept frozen block; header AIDEV notes the frozen set + the 7.1 retirement history. |
+| `flow/run-health.ts` | Appends `renderStateMetricLines` output after the kept frozen block, then the additive `pi_flow_run_title_info` tail (PMR-9DZ0); header AIDEV notes the frozen set + the 7.1 retirement history and the 2.1 tail amendment. |
 | `flow/reconcile.ts` | `tombstoneBody` — v2 state-line `state="stale"` label-value surgery (§4); candidacy journal-keyed. |
 | `run-state.ts` | The v2 journal kinds (`state-change` projected → `FlowRunState.currentState`; `step-start`/`step-stop` journal-only) + the PMR-C998 `isJournalOnlyEvent` note. |
 | `flow/loop.ts` | Guarded `emitStateChange` + `emitStep` v2 seams, seeded from the journal tail on resume, wired into `snapshot()`, the subagent-in-flight branch, every halt site, done, spec-approval pause. |

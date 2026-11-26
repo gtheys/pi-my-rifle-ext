@@ -57,9 +57,15 @@
 // run-start carrying a title wins), renders through the existing
 // labelString/escapeLabelValue seam above, and adds NO import — the node-only
 // closure guarded by test/cost-rows-node-only.test.ts is untouched. Dashboards
-// join it as `* on (ref) group_left (title)`; because the gateway MERGES on
-// write (PMR-WBC2), flow/push.ts prunes this family from re-posted group
-// bodies so a stale title can never fan out that join.
+// join it as `* on (ref) group_left (title)`. flow/push.ts prunes this family
+// from re-posted group bodies, which protects the join under OFFICIAL
+// Pushgateway REPLACE semantics (a series omitted from the POST is deleted, so
+// the tombstone GET→transform→POST round-trip would otherwise resurrect an
+// earlier run's title). On the homelab gateway, which MERGES on write
+// (PMR-WBC2), that prune is a no-op — merging is exactly why omitting the line
+// cannot delete an already-stored series, so a title change can leave the old
+// series served until a fresh push overwrites it or it is removed by hand
+// (accepted residual; see the push.ts PMR-9DZ0 2.2 note).
 import type { FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
 import { labelString } from './cost-rows.ts'
