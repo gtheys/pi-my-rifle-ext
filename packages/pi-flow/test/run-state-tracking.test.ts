@@ -8,8 +8,19 @@
 // back to the aven ref only when that event's trackRef is absent or empty.
 
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { test } from 'node:test'
-import { type FlowRunEvent, runTracking } from '../run-state.ts'
+import {
+  type FlowRunEvent,
+  journalPathFor,
+  projectRunState,
+  readRunEvents,
+  recordRunEvent,
+  runStatePath,
+  runTracking,
+} from '../run-state.ts'
 
 function runStart(
   mode: 'work' | 'personal',
@@ -93,4 +104,85 @@ test('runTracking: empty-string trackRef falls back to the aven ref (mode kept)'
     trackRef: 'PMR-AB12',
     mode: 'work',
   })
+})
+
+// AIDEV-NOTE: PMR-9DZ0 1.4 — a run-start may now carry `title?`. These pins
+// prove the field round-trips through the journal (write → read) and that the
+// title is fully transparent to runTracking/projectRunState: a title-carrying
+// event must project identically to the same event without one.
+test('PMR-9DZ0: run-start title round-trips through the journal', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-flow-title-'))
+  try {
+    const statePath = runStatePath(dir, 'PMR-AB12')
+    assert.ok(statePath !== null)
+    const journalPath = journalPathFor(statePath)
+    await recordRunEvent(dir, {
+      kind: 'run-start',
+      at: '2026-11-07T07:00:00.000Z',
+      ref: 'PMR-AB12',
+      mode: 'personal',
+      title: 'Show the ticket title next to the ref',
+    })
+    const line = readFileSync(journalPath, 'utf8').trim()
+    assert.equal(
+      JSON.parse(line).title,
+      'Show the ticket title next to the ref',
+    )
+    const events = await readRunEvents(dir, 'PMR-AB12')
+    assert.ok(events !== null)
+    assert.equal(events[0]?.kind, 'run-start')
+    assert.equal(
+      (events[0] as { title?: string }).title,
+      'Show the ticket title next to the ref',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('PMR-9DZ0: a title-less run-start omits the title key from the journal line', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-flow-notitle-'))
+  try {
+    const statePath = runStatePath(dir, 'PMR-AB12')
+    assert.ok(statePath !== null)
+    const journalPath = journalPathFor(statePath)
+    await recordRunEvent(dir, {
+      kind: 'run-start',
+      at: '2026-11-07T07:00:00.000Z',
+      ref: 'PMR-AB12',
+      mode: 'personal',
+    })
+    const line = readFileSync(journalPath, 'utf8').trim()
+    // The key is absent, never written as undefined/null (old journals stay
+    // byte-identical and title-less runs are not polluted).
+    assert.equal('title' in JSON.parse(line), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('PMR-9DZ0: title is transparent to runTracking and projectRunState', () => {
+  const withTitle: FlowRunEvent = {
+    kind: 'run-start',
+    at: '2026-11-07T07:00:00.000Z',
+    ref: 'PMR-AB12',
+    mode: 'work',
+    trackRef: 'DP-236',
+    title: 'Some ticket title',
+  }
+  const withoutTitle: FlowRunEvent = {
+    kind: 'run-start',
+    at: '2026-11-07T07:00:00.000Z',
+    ref: 'PMR-AB12',
+    mode: 'work',
+    trackRef: 'DP-236',
+  }
+  assert.deepEqual(
+    runTracking([withTitle], 'PMR-AB12'),
+    runTracking([withoutTitle], 'PMR-AB12'),
+  )
+  assert.deepEqual(
+    projectRunState([withTitle]),
+    projectRunState([withoutTitle]),
+  )
 })

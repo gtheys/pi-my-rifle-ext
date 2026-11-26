@@ -37,6 +37,7 @@ import {
   lastAvenResolutionFailure,
   listReadyTickets,
   readAvenLabels,
+  readAvenSnapshot,
   readFreshBlockers,
   readGateAnswer,
   readJiraRef,
@@ -176,6 +177,7 @@ import {
   readRunEvents,
   runStatePath,
 } from './run-state.ts'
+import { resolveRunTitle } from './run-title.ts'
 import { type ResumeConsumerDeps, resumeParkedRun } from './server/consumer.ts'
 import { pendingDirPath } from './server/daemon.ts'
 import { ensureDaemon } from './server/lifecycle.ts'
@@ -1986,8 +1988,17 @@ export default function (
           )
         }
       }
-      const labels = await readAvenLabels(ref)
-      if (labels === null) {
+      // AIDEV-NOTE: PMR-9DZ0 — single shared aven call feeds BOTH the
+      // fail-closed labels read and the best-effort title: readAvenSnapshot
+      // replaces readAvenLabels here and returns the full snapshot, so the
+      // title is free (zero extra aven shell-outs in personal mode). The
+      // fail-closed abort below is byte-identical in message and behavior —
+      // `!snapshot.ok` (fuzzy-match / bad-json / exec throw, all recorded via
+      // lastAvenResolutionFailure) aborts exactly as a null labels read did.
+      // The title itself is sanitized at the journal write seam (run-title.ts)
+      // and is best-effort: a title lookup never blocks the run.
+      const snapshot = await readAvenSnapshot(ref)
+      if (snapshot === null || !snapshot.ok) {
         const detail =
           lastAvenResolutionFailure() ??
           'Check that the ref exists and aven is available.'
@@ -1997,6 +2008,7 @@ export default function (
         )
         return
       }
+      const labels = snapshot.labels
       const next = nextPhase(labels, mode)
       if (next.kind === 'done') {
         // AIDEV-NOTE: PMR-YG2N — harness-orchestrated flows never enter the
@@ -2052,13 +2064,43 @@ export default function (
         jiraId: parsed.kind === 'jira' ? parsed.jiraId : undefined,
         epicJiraRef,
       })
-      await journal({
+      // AIDEV-NOTE: PMR-9DZ0 — best-effort run title, journaled on run-start
+      // so the dashboards can show "REF — title". WHY single shared aven call:
+      // personal mode reads the title off the `snapshot` above (zero extra
+      // shell-outs); work mode resolves it from the Jira key (typed ref, else
+      // the epic's jira-ref metadata) via the shared acli helper. The title is
+      // sanitized at the journal write seam (run-title.ts). resolveRunTitle
+      // never throws, but its warning must NOT abort the run: notify at
+      // 'warning' and keep journaling run-start without a title.
+      let jiraKey: string | null = null
+      if (mode === 'work') {
+        if (parsed.kind === 'jira') {
+          jiraKey = parsed.jiraId
+        } else {
+          jiraKey = epicJiraRef
+        }
+      }
+      const titleResult = await resolveRunTitle(pi, {
+        mode,
+        avenTitle: snapshot.title,
+        jiraKey,
+      })
+      if (titleResult.warning !== null) {
+        ctx.ui.notify(`pi-flow: ${titleResult.warning}`, 'warning')
+      }
+      const runStartEvent: FlowRunEvent = {
         kind: 'run-start',
         at: new Date().toISOString(),
         ref,
         mode,
         trackRef,
-      })
+      }
+      // Omit the title key entirely when unresolved (never write undefined)
+      // so old journals and title-less runs stay byte-identical.
+      if (titleResult.title !== undefined) {
+        runStartEvent.title = titleResult.title
+      }
+      await journal(runStartEvent)
       // AIDEV-NOTE: PMR-T9ZQ 1.2 — owner identity stamp. PROJECTED event (not
       // journal-only): the parked-run resume picker reads state.owner through
       // readRunEvents + projectRunState, so this must go through the

@@ -111,6 +111,17 @@ export type FlowRunEvent =
       mode: 'work' | 'personal'
       /** Ref the run is tracked by (Jira key in work mode); absent = `ref`. */
       trackRef?: string
+      /**
+       * AIDEV-NOTE: PMR-9DZ0 — optional, sanitized ticket title (single line,
+       * <=120 chars, control chars stripped) journaled at run-start so the
+       * Grafana dashboards can show "REF — title" next to every ref. Additive
+       * only: runTracking/applyEvent/projectRunState never read it (pinned by
+       * test/run-state-tracking.test.ts), so a title-carrying event projects
+       * identically to a title-less one. The key is OMITTED (never written as
+       * undefined) when no title resolved, so old journals and title-less runs
+       * are byte-identical. Resolve with run-title.ts at the index.ts write
+       * seam; render is Phase 2 (flow/run-health.ts). */
+      title?: string
     }
   | {
       kind: 'phase-start'
