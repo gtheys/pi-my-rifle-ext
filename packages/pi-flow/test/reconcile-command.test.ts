@@ -116,7 +116,7 @@ const STALE: DaemonStaleness = {
   kind: 'stale',
   pid: 4242,
   daemonSha: '0123456789abcdef0123456789abcdef01234567',
-  headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+  mainHeadSha: 'fedcba9876543210fedcba9876543210fedcba98',
 }
 
 const UNKNOWN_NO_GITSHA: DaemonStaleness = {

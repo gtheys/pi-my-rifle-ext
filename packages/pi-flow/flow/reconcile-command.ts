@@ -209,8 +209,9 @@ export function formatReconcileReport(
   // shared summary, never inside `reconcileSummaryLine` (that line is the
   // daemon's log line too and the daemon can never be the judge of its own
   // staleness). `daemonStalenessMessage` returns null for the silent verdicts
-  // (fresh, unknown/git-error, unchecked), so a healthy or absent daemon adds
-  // nothing to the output.
+  // (fresh, unchecked — rev 1: equality against main HEAD leaves no
+  // "git could not judge" class), so a healthy or absent daemon adds nothing
+  // to the output.
   if (report.daemonStaleness !== undefined) {
     const stalenessLine = daemonStalenessMessage(report.daemonStaleness)
     if (stalenessLine !== null) lines.push(stalenessLine)

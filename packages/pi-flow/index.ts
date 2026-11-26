@@ -1020,9 +1020,11 @@ export default function (
     // override against the real session cwd instead of process.cwd().
     sessionCwd = ctx.cwd
     void ensureLabels(notifyUser)
-    // AIDEV-NOTE: PMR-7B8M — best-effort daemon staleness probe at session
-    // start: the daemon records the spawner checkout's SHA in the pidfile; warn
-    // when this session's HEAD moved past it (or the pidfile predates tracking).
+    // AIDEV-NOTE: PMR-7B8M rev 1 — best-effort daemon staleness probe at
+    // session start: the daemon records the spawner checkout's SHA in the
+    // pidfile; warn when it differs from the MAIN-checkout HEAD (resolved from
+    // this session's worktree) or the pidfile predates tracking. A worktree's
+    // own commits never move main HEAD, so they never trigger this.
     // Fire-and-forget + never-throws, like the telemetry probe above.
     // Deliberately NOT gated on runServerEnabled — a disabled daemon is simply
     // not alive → 'unchecked' → silent. ctx.cwd is passed explicitly because

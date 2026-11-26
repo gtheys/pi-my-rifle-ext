@@ -1,9 +1,10 @@
-// AIDEV-NOTE: PMR-7B8M unit tests for server/staleness.ts — the session-side
-// daemon staleness verdict, the git seams, and the warning text. All edges are
-// faked: StalenessDeps closures return fixed verdicts, StalenessExec returns
-// recorded {stdout, code} shapes or throws. Expected strings are independent
-// literals (never recomputed through the implementation) because the message
-// text is a contract shared with the reconcile and notify surfaces (1.3/1.4).
+// AIDEV-NOTE: PMR-7B8M rev 1 unit tests for server/staleness.ts — the
+// session-side daemon staleness verdict (MAIN-checkout HEAD equality), the git
+// seams, and the warning text. All edges are faked: StalenessDeps closures
+// return fixed verdicts, StalenessExec returns recorded {stdout, code} shapes or
+// throws. Expected strings are independent literals (never recomputed through
+// the implementation) because the message text is a contract shared with the
+// reconcile and notify surfaces (1.3/1.4).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ProbeResult } from '../server/lifecycle.ts'
@@ -11,8 +12,8 @@ import {
   checkDaemonStaleness,
   type DaemonStaleness,
   daemonStalenessMessage,
-  mergeBaseIsAncestor,
   resolveHeadSha,
+  resolveMainHeadSha,
   type StalenessDeps,
   type StalenessExec,
   sessionStalenessDeps,
@@ -34,24 +35,19 @@ interface FakeDepsResult {
   calls: string[]
 }
 
-/** Fake deps with a probe: alive pidfile carrying DAEMON_SHA, HEAD_SHA repo,
- *  ancestor verdict defaulting to true (fresh). */
+/** Fake deps with a probe: alive pidfile carrying DAEMON_SHA, main HEAD
+ *  HEAD_SHA (so the default verdict is STALE — main differs from the daemon). */
 function fakeDeps(input: {
   probe?: ProbeResult
-  head?: string | null
-  ancestor?: boolean | null
+  mainHead?: string | null
 }): FakeDepsResult {
   let probe: ProbeResult = { alive: true, pid: PID, gitSha: DAEMON_SHA }
   if (input.probe !== undefined) {
     probe = input.probe
   }
-  let head: string | null = HEAD_SHA
-  if (input.head !== undefined) {
-    head = input.head
-  }
-  let ancestor: boolean | null = true
-  if (input.ancestor !== undefined) {
-    ancestor = input.ancestor
+  let mainHead: string | null = HEAD_SHA
+  if (input.mainHead !== undefined) {
+    mainHead = input.mainHead
   }
   const calls: string[] = []
   return {
@@ -61,13 +57,9 @@ function fakeDeps(input: {
         calls.push('probe')
         return probe
       },
-      headSha: async () => {
-        calls.push('headSha')
-        return head
-      },
-      isAncestor: async (daemonSha: string, headSha: string) => {
-        calls.push(`isAncestor:${daemonSha}:${headSha}`)
-        return ancestor
+      mainHeadSha: async () => {
+        calls.push('mainHeadSha')
+        return mainHead
       },
     },
   }
@@ -107,38 +99,49 @@ function fakeExec(input: {
   return { exec, calls }
 }
 
+/** Multi-block `git worktree list --porcelain` fixture: main first, then a
+ *  linked worktree (the realistic case for a session running in a worktree). */
+function porcelain(mainSha: string, linkedSha: string): string {
+  return [
+    'worktree /repo/main',
+    `HEAD ${mainSha}`,
+    'branch refs/heads/main',
+    '',
+    'worktree /repo/.wt/feature',
+    `HEAD ${linkedSha}`,
+    'detached',
+    '',
+  ].join('\n')
+}
+
 // ---------------------------------------------------------------------------
-// checkDaemonStaleness — decision matrix
+// checkDaemonStaleness — decision matrix (rev 1: equality vs main HEAD)
 // ---------------------------------------------------------------------------
 
-test('staleness: HEAD descends from daemon SHA (ancestor=true) → fresh', async () => {
-  const { deps, calls } = fakeDeps({ ancestor: true })
+test('staleness: pidfile SHA equals main HEAD → fresh, silent', async () => {
+  const { deps, calls } = fakeDeps({
+    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA },
+    mainHead: DAEMON_SHA,
+  })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'fresh' })
-  // Ancestry must be asked daemon→head, not the other way around: reversing
-  // the arguments would invert the verdict.
-  assert.deepEqual(calls, [
-    'headSha',
-    'probe',
-    `isAncestor:${DAEMON_SHA}:${HEAD_SHA}`,
-  ])
+  // Main HEAD is resolved BEFORE the pidfile is read: outside a repo there is
+  // nothing to compare against.
+  assert.deepEqual(calls, ['mainHeadSha', 'probe'])
 })
 
-test('staleness: HEAD does not descend (ancestor=false) → stale with pid + both SHAs', async () => {
-  const { deps } = fakeDeps({ ancestor: false })
+test('staleness: pidfile SHA differs from main HEAD → stale with pid + both SHAs', async () => {
+  // The Nov 26 incident shape: the daemon predates main's forward move, so the
+  // daemon SHA is an ANCESTOR of main HEAD — ancestry said "fresh", equality
+  // must say stale.
+  const { deps } = fakeDeps({ mainHead: HEAD_SHA })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, {
     kind: 'stale',
     pid: PID,
     daemonSha: DAEMON_SHA,
-    headSha: HEAD_SHA,
+    mainHeadSha: HEAD_SHA,
   })
-})
-
-test('staleness: merge-base cannot judge (ancestor=null) → unknown/git-error', async () => {
-  const { deps } = fakeDeps({ ancestor: null })
-  const got = await checkDaemonStaleness(deps)
-  assert.deepEqual(got, { kind: 'unknown', pid: PID, reason: 'git-error' })
 })
 
 test('staleness: alive pidfile without gitSha → unknown/no-gitsha', async () => {
@@ -147,11 +150,10 @@ test('staleness: alive pidfile without gitSha → unknown/no-gitsha', async () =
   })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unknown', pid: PID, reason: 'no-gitsha' })
-  // Nothing to compare against — ancestry must never be probed here.
-  assert.deepEqual(calls, ['headSha', 'probe'])
+  assert.deepEqual(calls, ['mainHeadSha', 'probe'])
 })
 
-test('staleness: daemon not alive → unchecked/daemon-not-running, no git calls', async () => {
+test('staleness: daemon not alive → unchecked/daemon-not-running', async () => {
   const probes: ProbeResult[] = [
     { alive: false, reason: 'no-pidfile' },
     { alive: false, reason: 'dead-process', pid: PID },
@@ -162,22 +164,22 @@ test('staleness: daemon not alive → unchecked/daemon-not-running, no git calls
     const { deps, calls } = fakeDeps({ probe })
     const got = await checkDaemonStaleness(deps)
     assert.deepEqual(got, { kind: 'unchecked', reason: 'daemon-not-running' })
-    assert.deepEqual(calls, ['headSha', 'probe'])
+    assert.deepEqual(calls, ['mainHeadSha', 'probe'])
   }
 })
 
-test('staleness: no resolvable HEAD (outside a repo) → unchecked/no-repo, probe skipped', async () => {
-  const { deps, calls } = fakeDeps({ head: null })
+test('staleness: unresolvable main HEAD (outside a repo) → unchecked/no-repo, probe skipped', async () => {
+  const { deps, calls } = fakeDeps({ mainHead: null })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unchecked', reason: 'no-repo' })
-  // HEAD is resolved first: with no checkout there is nothing to compare,
-  // so the pidfile is never read.
-  assert.deepEqual(calls, ['headSha'])
+  // With no main checkout there is nothing to compare, so the pidfile is
+  // never read.
+  assert.deepEqual(calls, ['mainHeadSha'])
 })
 
 test('staleness: no-repo wins over a dead daemon (check order is pinned)', async () => {
   const { deps } = fakeDeps({
-    head: null,
+    mainHead: null,
     probe: { alive: false, reason: 'no-pidfile' },
   })
   const got = await checkDaemonStaleness(deps)
@@ -191,23 +193,23 @@ test('staleness: an empty-string gitSha in the pidfile is treated as no-gitsha',
   })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unknown', pid: PID, reason: 'no-gitsha' })
-  assert.deepEqual(calls, ['headSha', 'probe'])
+  assert.deepEqual(calls, ['mainHeadSha', 'probe'])
 })
 
 // ---------------------------------------------------------------------------
 // daemonStalenessMessage — the single source for all warning surfaces
 // ---------------------------------------------------------------------------
 
-test('message: stale verdict names both short SHAs and the kill command', async () => {
+test('message: stale verdict names both short SHAs, the main checkout, and the kill command', async () => {
   const got = daemonStalenessMessage({
     kind: 'stale',
     pid: PID,
     daemonSha: DAEMON_SHA,
-    headSha: HEAD_SHA,
+    mainHeadSha: HEAD_SHA,
   })
   assert.equal(
     got,
-    'daemon is running stale code — started from aaaaaaa, this checkout is at bbbbbbb. Restart: kill 4242 — the daemon is re-ensured at the next /flow start.',
+    'daemon is running stale code — started from aaaaaaa, the main checkout is at bbbbbbb. Restart: kill 4242 — the daemon is re-ensured at the next /flow start.',
   )
   if (got === null) {
     assert.fail('stale verdict must produce warning text')
@@ -215,6 +217,7 @@ test('message: stale verdict names both short SHAs and the kill command', async 
   // Acceptance keywords (ISC-2) — pinned separately from the exact text so a
   // reword that drops one still fails loudly here.
   assert.ok(got.includes('kill 4242'))
+  assert.ok(got.includes('the main checkout is at'))
   assert.ok(got.includes('aaaaaaa'))
   assert.ok(got.includes('bbbbbbb'))
   assert.ok(got.includes('re-ensured at the next /flow start'))
@@ -239,10 +242,9 @@ test('message: no-gitsha verdict says predates staleness tracking + restart reco
   assert.ok(got.includes('kill 4242'))
 })
 
-test('message: fresh, git-error and unchecked verdicts produce nothing', async () => {
+test('message: fresh and unchecked verdicts produce nothing', async () => {
   const silent: DaemonStaleness[] = [
     { kind: 'fresh' },
-    { kind: 'unknown', pid: PID, reason: 'git-error' },
     { kind: 'unchecked', reason: 'daemon-not-running' },
     { kind: 'unchecked', reason: 'no-repo' },
   ]
@@ -256,7 +258,7 @@ test('message: full 40-hex SHAs are never printed, only the 7-char prefix', asyn
     kind: 'stale',
     pid: PID,
     daemonSha: DAEMON_SHA,
-    headSha: HEAD_SHA,
+    mainHeadSha: HEAD_SHA,
   })
   if (got === null) {
     assert.fail('stale verdict must produce warning text')
@@ -266,7 +268,7 @@ test('message: full 40-hex SHAs are never printed, only the 7-char prefix', asyn
 })
 
 // ---------------------------------------------------------------------------
-// resolveHeadSha
+// resolveHeadSha (spawn-side provenance only)
 // ---------------------------------------------------------------------------
 
 test('resolveHeadSha: 40-hex stdout (with newline) → the SHA', async () => {
@@ -308,72 +310,101 @@ test('resolveHeadSha: exec throwing (missing git binary) → null, never throws'
 })
 
 // ---------------------------------------------------------------------------
-// mergeBaseIsAncestor
+// resolveMainHeadSha (rev 1: the staleness reference)
 // ---------------------------------------------------------------------------
 
-test('mergeBaseIsAncestor: exit 0 → true, args in daemon-then-head order', async () => {
-  const { exec, calls } = fakeExec({ code: 0 })
-  assert.equal(await mergeBaseIsAncestor(exec, DAEMON_SHA, HEAD_SHA), true)
+test('resolveMainHeadSha: first block is the main worktree, linked blocks are ignored', async () => {
+  const { exec, calls } = fakeExec({
+    stdout: porcelain(HEAD_SHA, DAEMON_SHA),
+    code: 0,
+  })
+  assert.equal(await resolveMainHeadSha(exec), HEAD_SHA)
   assert.deepEqual(calls, [
     {
       command: 'git',
-      args: ['merge-base', '--is-ancestor', DAEMON_SHA, HEAD_SHA],
+      args: ['worktree', 'list', '--porcelain'],
       options: {},
     },
   ])
 })
 
-test('mergeBaseIsAncestor: exit 1 → false', async () => {
-  const { exec } = fakeExec({ code: 1 })
-  assert.equal(await mergeBaseIsAncestor(exec, DAEMON_SHA, HEAD_SHA), false)
+test('resolveMainHeadSha: single-block output (main only) → its HEAD', async () => {
+  const { exec } = fakeExec({
+    stdout: `worktree /repo/main\nHEAD ${HEAD_SHA}\ndetached\n`,
+    code: 0,
+  })
+  assert.equal(await resolveMainHeadSha(exec), HEAD_SHA)
 })
 
-test('mergeBaseIsAncestor: exit 128 → null (cannot judge, stays silent)', async () => {
+test('resolveMainHeadSha: a linked-worktree cwd still yields the main HEAD', async () => {
+  // Git resolves the worktree list from the cwd, so a session running in a
+  // worktree gets the main checkout's block first.
+  const { exec, calls } = fakeExec({
+    stdout: porcelain(HEAD_SHA, DAEMON_SHA),
+    code: 0,
+  })
+  assert.equal(await resolveMainHeadSha(exec, '/repo/.wt/feature'), HEAD_SHA)
+  assert.deepEqual(calls[0]?.options, { cwd: '/repo/.wt/feature' })
+})
+
+test('resolveMainHeadSha: non-zero exit (not a repo / broken git) → null', async () => {
   const { exec } = fakeExec({
-    stdout: '',
+    stdout: 'fatal: not a git repository\n',
     code: 128,
   })
-  assert.equal(await mergeBaseIsAncestor(exec, DAEMON_SHA, HEAD_SHA), null)
+  assert.equal(await resolveMainHeadSha(exec), null)
 })
 
-test('mergeBaseIsAncestor: any other non-zero exit → null', async () => {
-  const { exec } = fakeExec({ code: 2 })
-  assert.equal(await mergeBaseIsAncestor(exec, DAEMON_SHA, HEAD_SHA), null)
-})
-
-test('mergeBaseIsAncestor: exec throwing → null, never throws', async () => {
+test('resolveMainHeadSha: exec throwing → null, never throws', async () => {
   const { exec } = fakeExec({ throws: 'spawn git EACCES' })
-  assert.equal(await mergeBaseIsAncestor(exec, DAEMON_SHA, HEAD_SHA), null)
+  assert.equal(await resolveMainHeadSha(exec), null)
 })
 
-test('mergeBaseIsAncestor: cwd is forwarded to exec', async () => {
-  const { exec, calls } = fakeExec({ code: 0 })
-  await mergeBaseIsAncestor(exec, DAEMON_SHA, HEAD_SHA, '/tmp/checkout')
-  assert.deepEqual(calls[0]?.options, { cwd: '/tmp/checkout' })
+test('resolveMainHeadSha: non-hex / short HEAD → null', async () => {
+  for (const stdout of [
+    `worktree /repo/main\nHEAD ${NOT_HEX_SHA}\n`,
+    'worktree /repo/main\nHEAD abc1234\n',
+    'worktree /repo/main\nHEAD \n',
+  ]) {
+    const { exec } = fakeExec({ stdout, code: 0 })
+    assert.equal(await resolveMainHeadSha(exec), null)
+  }
+})
+
+test('resolveMainHeadSha: unborn HEAD (no HEAD line in the first block) → null', async () => {
+  // A fresh repo with no commits lists the worktree but has no HEAD yet.
+  const { exec } = fakeExec({
+    stdout: 'worktree /repo/main\nbranch refs/heads/master\n\n',
+    code: 0,
+  })
+  assert.equal(await resolveMainHeadSha(exec), null)
+})
+
+test('resolveMainHeadSha: empty output → null', async () => {
+  const { exec } = fakeExec({ stdout: '', code: 0 })
+  assert.equal(await resolveMainHeadSha(exec), null)
 })
 
 // ---------------------------------------------------------------------------
 // sessionStalenessDeps — wiring
 // ---------------------------------------------------------------------------
 
-test('sessionDeps: headSha and isAncestor run through the injected exec with cwd', async () => {
-  const { exec, calls } = fakeExec({ stdout: `${HEAD_SHA}\n`, code: 0 })
+test('sessionDeps: mainHeadSha runs through the injected exec with cwd', async () => {
+  const { exec, calls } = fakeExec({
+    stdout: porcelain(HEAD_SHA, DAEMON_SHA),
+    code: 0,
+  })
   const deps = sessionStalenessDeps(exec, '/tmp/fake-agent', '/tmp/checkout')
-  assert.equal(await deps.headSha(), HEAD_SHA)
-  assert.equal(await deps.isAncestor(DAEMON_SHA, HEAD_SHA), true)
+  assert.equal(await deps.mainHeadSha(), HEAD_SHA)
   assert.deepEqual(
     calls.map((c) => c.args),
-    [
-      ['rev-parse', 'HEAD'],
-      ['merge-base', '--is-ancestor', DAEMON_SHA, HEAD_SHA],
-    ],
+    [['worktree', 'list', '--porcelain']],
   )
   assert.deepEqual(calls[0]?.options, { cwd: '/tmp/checkout' })
-  assert.deepEqual(calls[1]?.options, { cwd: '/tmp/checkout' })
 })
 
 test('sessionDeps: probe reads the pidfile under the given agent dir (missing → not alive)', async () => {
-  const { exec } = fakeExec({ stdout: `${HEAD_SHA}\n` })
+  const { exec } = fakeExec({ stdout: porcelain(HEAD_SHA, DAEMON_SHA) })
   const deps = sessionStalenessDeps(
     exec,
     '/tmp/pi-flow-staleness-test-missing-agent-dir',
@@ -387,7 +418,7 @@ test('sessionDeps: probe reads the pidfile under the given agent dir (missing �
 // ---------------------------------------------------------------------------
 
 test('warn: stale verdict notifies once with the pi-flow prefix at warning level', async () => {
-  const { deps } = fakeDeps({ ancestor: false })
+  const { deps } = fakeDeps({ mainHead: HEAD_SHA })
   const notes: Array<{ message: string; level: string }> = []
   await warnDaemonStaleness(deps, (message, level) => {
     notes.push({ message, level })
@@ -396,7 +427,7 @@ test('warn: stale verdict notifies once with the pi-flow prefix at warning level
   assert.equal(notes[0]?.level, 'warning')
   assert.equal(
     notes[0]?.message,
-    'pi-flow: daemon is running stale code — started from aaaaaaa, this checkout is at bbbbbbb. Restart: kill 4242 — the daemon is re-ensured at the next /flow start.',
+    'pi-flow: daemon is running stale code — started from aaaaaaa, the main checkout is at bbbbbbb. Restart: kill 4242 — the daemon is re-ensured at the next /flow start.',
   )
 })
 
@@ -415,17 +446,16 @@ test('warn: no-gitsha verdict notifies with the restart-recommended text', async
   ])
 })
 
-test('warn: fresh, git-error and unchecked verdicts notify nothing', async () => {
+test('warn: fresh and unchecked verdicts notify nothing', async () => {
   // Every silent shape from the decision matrix — none of them may produce a
-  // notification (ISC-5 fresh, ISC-7 git-error, dead daemon / no repo silent).
+  // notification (ISC-5 fresh, dead daemon / no repo silent).
   const silent: Array<Parameters<typeof fakeDeps>[0]> = [
-    { ancestor: true },
-    { ancestor: null },
+    { mainHead: DAEMON_SHA },
     { probe: { alive: false, reason: 'no-pidfile' } },
     { probe: { alive: false, reason: 'version-mismatch', pid: PID } },
     { probe: { alive: false, reason: 'dead-process', pid: PID } },
     { probe: { alive: false, reason: 'malformed-pidfile' } },
-    { head: null },
+    { mainHead: null },
   ]
   for (const input of silent) {
     const { deps } = fakeDeps(input)

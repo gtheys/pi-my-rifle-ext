@@ -1,9 +1,13 @@
-// AIDEV-NOTE: PMR-7B8M — session-side daemon staleness check. The daemon
+// AIDEV-NOTE: PMR-7B8M rev 1 — session-side daemon staleness check. The daemon
 // records its spawner checkout's SHA in the pidfile; a later session compares
-// that SHA against its own HEAD via `git merge-base --is-ancestor`:
-//   exit 0 → fresh (silent) | exit 1 → STALE (warn + restart command)
-//   other → cannot judge (different repo / missing object / broken git) →
-//           typed unknown, SILENT — cross-repo daemons must not false-positive.
+// that SHA against the MAIN-CHECKOUT HEAD (resolved from any worktree via
+// `git worktree list --porcelain`) with plain string equality:
+//   equal → fresh (silent) | different → STALE (warn + restart command)
+//   main HEAD unresolvable → unchecked/no-repo, SILENT (nothing to compare).
+// Ancestry (`git merge-base --is-ancestor`) was REMOVED here: the 1.5 smoke
+// proved it inverted — when main moves FORWARD (the Nov 26 incident: daemon at
+// the Nov 21 SHA, HEAD at a descendant Nov 24 SHA) the daemon SHA stays an
+// ancestor → "fresh" → silent. Equality against main HEAD catches exactly that.
 // A pidfile without gitSha (daemon predates PMR-7B8M) is unknown + WARN
 // "restart recommended". Staleness NEVER respawns — only the protocol-version
 // pin does (EXPECTED_SERVER_PROTOCOL_VERSION stays untouched).
@@ -16,8 +20,8 @@ import { type ProbeResult, probeDaemon } from './lifecycle.ts'
 
 export type DaemonStaleness =
   | { kind: 'fresh' }
-  | { kind: 'stale'; pid: number; daemonSha: string; headSha: string }
-  | { kind: 'unknown'; pid: number; reason: 'no-gitsha' | 'git-error' }
+  | { kind: 'stale'; pid: number; daemonSha: string; mainHeadSha: string }
+  | { kind: 'unknown'; pid: number; reason: 'no-gitsha' }
   | { kind: 'unchecked'; reason: 'daemon-not-running' | 'no-repo' }
 
 /** Narrow structural slice of pi.exec (ExecResult.code carries the exit
@@ -31,39 +35,38 @@ export type StalenessExec = (
 
 export interface StalenessDeps {
   probe: () => Promise<ProbeResult>
-  headSha: () => Promise<string | null>
-  isAncestor: (daemonSha: string, headSha: string) => Promise<boolean | null>
+  mainHeadSha: () => Promise<string | null>
 }
 
 /**
- * Verdict for the current session against the running daemon. HEAD is
- * resolved FIRST: outside a repo there is nothing to compare against, so the
- * pidfile is never read (unchecked/no-repo).
+ * Verdict for the current session against the running daemon. The MAIN-checkout
+ * HEAD is resolved FIRST: outside a repo there is nothing to compare against,
+ * so the pidfile is never read (unchecked/no-repo).
  */
 export async function checkDaemonStaleness(
   deps: StalenessDeps,
 ): Promise<DaemonStaleness> {
-  const head = await deps.headSha()
-  if (head === null) return { kind: 'unchecked', reason: 'no-repo' }
+  const mainHead = await deps.mainHeadSha()
+  if (mainHead === null) return { kind: 'unchecked', reason: 'no-repo' }
   const probe = await deps.probe()
   if (!probe.alive) return { kind: 'unchecked', reason: 'daemon-not-running' }
   // AIDEV-NOTE: PMR-7B8M — empty string counts as absent: parsePidfile keeps
-  // any string, and `git merge-base --is-ancestor "" <head>` would only
-  // produce a git error. An unusable SHA is the actionable "no provenance"
-  // case (restart recommended), never a silent one.
+  // any string, and an empty SHA could never equal a real main HEAD, so it is
+  // the same "no provenance" case. An unusable SHA is the actionable warning,
+  // never a silent one.
   if (probe.gitSha === undefined || probe.gitSha === '') {
     return { kind: 'unknown', pid: probe.pid, reason: 'no-gitsha' }
   }
-  const ancestor = await deps.isAncestor(probe.gitSha, head)
-  if (ancestor === null) {
-    return { kind: 'unknown', pid: probe.pid, reason: 'git-error' }
-  }
-  if (ancestor) return { kind: 'fresh' }
+  // Rev 1: string equality, not ancestry. A worktree session stays quiet while
+  // main is unchanged (its own commits never move main HEAD); a daemon spawned
+  // from an unmerged branch warns until merged or restarted — accepted, the
+  // daemon really does run unmerged code.
+  if (probe.gitSha === mainHead) return { kind: 'fresh' }
   return {
     kind: 'stale',
     pid: probe.pid,
     daemonSha: probe.gitSha,
-    headSha: head,
+    mainHeadSha: mainHead,
   }
 }
 
@@ -74,7 +77,7 @@ export async function checkDaemonStaleness(
  */
 export function daemonStalenessMessage(st: DaemonStaleness): string | null {
   if (st.kind === 'stale') {
-    return `daemon is running stale code — started from ${st.daemonSha.slice(0, 7)}, this checkout is at ${st.headSha.slice(0, 7)}. Restart: kill ${st.pid} — the daemon is re-ensured at the next /flow start.`
+    return `daemon is running stale code — started from ${st.daemonSha.slice(0, 7)}, the main checkout is at ${st.mainHeadSha.slice(0, 7)}. Restart: kill ${st.pid} — the daemon is re-ensured at the next /flow start.`
   }
   if (st.kind === 'unknown' && st.reason === 'no-gitsha') {
     return `daemon predates staleness tracking (pidfile has no git SHA) — restart recommended: kill ${st.pid} — the daemon is re-ensured at the next /flow start.`
@@ -83,7 +86,11 @@ export function daemonStalenessMessage(st: DaemonStaleness): string | null {
 }
 
 /** The session's own checkout HEAD as 40-hex, or null (not a repo, git
- *  broken/missing, unexpected output). Never throws. */
+ *  broken/missing, unexpected output). Never throws.
+ *  AIDEV-NOTE: PMR-7B8M — kept for the SPAWN-side provenance only (index.ts
+ *  /flow start records the spawning session's own HEAD in the pidfile); the
+ *  staleness verdict itself compares against the main checkout, see
+ *  resolveMainHeadSha. */
 export async function resolveHeadSha(
   exec: StalenessExec,
   cwd?: string,
@@ -101,27 +108,39 @@ export async function resolveHeadSha(
 }
 
 /**
- * Ancestry probe: true = daemon SHA is contained in the session history
- * (fresh), false = the daemon predates it (stale), null = git could not
- * judge (exit > 1 or a thrown exec) — callers must stay silent on null.
+ * The MAIN-checkout HEAD as 40-hex, resolved from ANY worktree, or null.
  * Never throws.
+ *
+ * AIDEV-NOTE: PMR-7B8M rev 1 — `git worktree list --porcelain` always lists
+ * the main worktree FIRST (git-worktree docs); blocks are separated by blank
+ * lines and each starts with a `worktree <path>` line followed by its
+ * `HEAD <sha>` line. So the answer is the first `HEAD` line before the first
+ * blank line. An unborn HEAD (fresh repo, no commits) prints no `HEAD` line at
+ * all → null → the verdict is unchecked/no-repo, silent. Same for a non-repo,
+ * a broken git, or a non-hex value — we never guess, never false-positive.
  */
-export async function mergeBaseIsAncestor(
+export async function resolveMainHeadSha(
   exec: StalenessExec,
-  daemonSha: string,
-  headSha: string,
   cwd?: string,
-): Promise<boolean | null> {
+): Promise<string | null> {
   const options: { cwd?: string } = {}
   if (cwd !== undefined) options.cwd = cwd
   try {
     const result = await exec(
       'git',
-      ['merge-base', '--is-ancestor', daemonSha, headSha],
+      ['worktree', 'list', '--porcelain'],
       options,
     )
-    if (result.code === 0) return true
-    if (result.code === 1) return false
+    if (result.code !== 0) return null
+    for (const line of result.stdout.split('\n')) {
+      // Blank line ends the first (main) block — no HEAD there, no verdict.
+      if (line === '') break
+      if (line.startsWith('HEAD ')) {
+        const sha = line.slice('HEAD '.length).trim()
+        if (!/^[0-9a-f]{40}$/.test(sha)) return null
+        return sha
+      }
+    }
     return null
   } catch {
     return null
@@ -136,9 +155,7 @@ export function sessionStalenessDeps(
 ): StalenessDeps {
   return {
     probe: () => probeDaemon(agentDir),
-    headSha: () => resolveHeadSha(exec, cwd),
-    isAncestor: (daemonSha, headSha) =>
-      mergeBaseIsAncestor(exec, daemonSha, headSha, cwd),
+    mainHeadSha: () => resolveMainHeadSha(exec, cwd),
   }
 }
 
