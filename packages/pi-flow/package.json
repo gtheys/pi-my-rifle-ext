@@ -96,6 +96,7 @@
     "plan-tools/helpers.ts",
     "plan-tools/jira-branch-tool.ts",
     "plan-tools/jira-branch.ts",
+    "plan-tools/jira-issue.ts",
     "plan-tools/resolve-feature-path.ts",
     "plan-tools/resolve-notes-path.ts",
     "plan-tools/resolve-spec-path.ts",

@@ -6,6 +6,7 @@
  */
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { fetchJiraIssue } from './jira-issue.ts'
 
 // AIDEV-NOTE: Extend this map for additional Jira issue types. Keys lowercase.
 const TYPE_PREFIX_MAP: Record<string, string> = {
@@ -23,10 +24,6 @@ const TYPE_PREFIX_MAP: Record<string, string> = {
 }
 const DEFAULT_PREFIX = 'feature'
 const PARENT_BRANCH = 'develop'
-// AIDEV-NOTE: Ported from the original bash script's arg-parsing regex.
-// Also closes a real gap: guarantees jiraId only ever contains [A-Z0-9-]
-// before it's interpolated into a branch ref / exec arg.
-const JIRA_ID_RE = /^[A-Z]+-[0-9]+$/
 
 function slugify(summary: string): string {
   return summary
@@ -48,50 +45,19 @@ export interface DeriveBranchResult {
   prefix: string
 }
 
-/** Fetch the issue from Jira via acli and derive the branch name. */
+/**
+ * Fetch the issue from Jira via acli and derive the branch name.
+ *
+ * AIDEV-NOTE: PMR-9DZ0 — the acli fetch/validation/parse moved to the shared
+ * helper (plan-tools/jira-issue.ts); its thrown messages are unchanged, so
+ * this stays fail-closed: an invalid key, a failing acli, or a summary-less
+ * ticket aborts branch derivation before any git ref is built.
+ */
 export async function deriveBranchName(
   pi: ExtensionAPI,
   jiraId: string,
 ): Promise<DeriveBranchResult> {
-  if (!JIRA_ID_RE.test(jiraId)) {
-    throw new Error(
-      `Invalid Jira key '${jiraId}' — expected format like IMP-1234`,
-    )
-  }
-
-  const result = await pi.exec(
-    'acli',
-    [
-      'jira',
-      'workitem',
-      'view',
-      jiraId,
-      '--json',
-      '--fields',
-      'summary,issuetype',
-    ],
-    {},
-  )
-  if (result.code !== 0) {
-    throw new Error(
-      `acli failed to fetch '${jiraId}': ${result.stderr || result.stdout}`,
-    )
-  }
-
-  let parsed: { fields?: { summary?: string; issuetype?: { name?: string } } }
-  try {
-    parsed = JSON.parse(result.stdout)
-  } catch {
-    throw new Error(`Could not parse acli JSON response for '${jiraId}'`)
-  }
-
-  const summary = parsed.fields?.summary ?? ''
-  const issueType = parsed.fields?.issuetype?.name ?? ''
-  if (!summary) {
-    throw new Error(
-      `Could not parse summary from Jira response for '${jiraId}'`,
-    )
-  }
+  const { summary, issueType } = await fetchJiraIssue(pi, jiraId)
 
   const prefix = TYPE_PREFIX_MAP[issueType.toLowerCase()] ?? DEFAULT_PREFIX
   const branch = `${prefix}/${jiraId}-${slugify(summary)}`
