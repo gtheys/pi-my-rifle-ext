@@ -243,6 +243,93 @@ test('an empty handler bag is a pure pass-through', async () => {
   assert.deepEqual(probe.written, [STATE_CHANGE, STEP_START])
 })
 
+// --- onV2StateChangeObserved: the loop-bookkeeping seam (PMR-ZV9Y fix round) --
+// AIDEV-NOTE: PMR-ZV9Y fix-round-2 (P1 blocker) — these tests are the DIRECT
+// mutation anchor for the ~7-line observer block in dispatch.ts route(). The
+// production loop is wired to onV2StateChangeObserved (index.ts:519), NOT
+// onStateChange; before fix-round-2 this slot had ZERO coverage, so deleting or
+// reordering the block kept every test green while silently reintroducing the
+// P1 symptom. Remove that block and the assertions below fail.
+
+test('observer: onV2StateChangeObserved fires for every state-change, NOT for step/non-v2 kinds', async () => {
+  const probe = probeWriter()
+  const observed: FlowRunEvent[] = []
+  const fanout = createEventFanoutWriter(probe.writer, {
+    onV2StateChangeObserved: (event) => {
+      observed.push(event)
+    },
+  })
+  await fanout.record(STATE_CHANGE)
+  await fanout.record(STEP_START)
+  await fanout.record(RUN_START)
+  assert.deepEqual(observed, [STATE_CHANGE], 'state-change only')
+})
+
+test('observer: fires even when onStateChange is undefined (telemetry fully off)', async () => {
+  // The whole reason for the SEPARATE slot: a Loki/notify-disabled session must
+  // still get the loop-guard invalidation. onStateChange absent here entirely.
+  const probe = probeWriter()
+  let calls = 0
+  const fanout = createEventFanoutWriter(probe.writer, {
+    onV2StateChangeObserved: () => {
+      calls += 1
+    },
+  })
+  assert.equal(await fanout.record(STATE_CHANGE), true)
+  assert.equal(calls, 1, 'observer ran with no telemetry sink wired')
+})
+
+test('observer: fires on recordJournalOnly too (one dispatcher, both seams)', async () => {
+  const probe = probeWriter()
+  let calls = 0
+  const fanout = createEventFanoutWriter(probe.writer, {
+    onV2StateChangeObserved: () => {
+      calls += 1
+    },
+  })
+  await fanout.recordJournalOnly(STATE_CHANGE)
+  assert.equal(calls, 1)
+})
+
+test('observer: fires FIRST and a throwing onStateChange never costs it (ISC-A-5)', async () => {
+  const probe = probeWriter()
+  const order: string[] = []
+  const fanout = createEventFanoutWriter(probe.writer, {
+    onV2StateChangeObserved: () => {
+      order.push('observer')
+    },
+    onStateChange: () => {
+      order.push('sink')
+      throw new Error('notify exploded')
+    },
+  })
+  assert.equal(
+    await fanout.record(STATE_CHANGE),
+    true,
+    'never-throw out of record (ISC-A-5)',
+  )
+  assert.deepEqual(order, ['observer', 'sink'], 'observer precedes the sink')
+})
+
+test('observer: a throwing observer never costs onStateChange routing (ISC-A-5)', async () => {
+  const probe = probeWriter()
+  let sinkCalls = 0
+  const fanout = createEventFanoutWriter(probe.writer, {
+    onV2StateChangeObserved: () => {
+      throw new Error('loop bookkeeping exploded')
+    },
+    onStateChange: () => {
+      sinkCalls += 1
+    },
+  })
+  assert.equal(await fanout.record(STATE_CHANGE), true)
+  assert.equal(
+    sinkCalls,
+    1,
+    'the telemetry sink still routed past a throwing observer',
+  )
+})
+
 test('onEvent sees every journaled kind and its throw is swallowed too', async () => {
   const probe = probeWriter()
   const seen: string[] = []
@@ -826,6 +913,21 @@ test('index.ts wraps its ONE session writer in the fan-out dispatcher', () => {
   assert.ok(
     index.includes('createTelemetryHandlers({'),
     'the production handler bag is wired at the wrap point',
+  )
+  // PMR-ZV9Y fix-round-2 (P1 blocker): the loop guard is invalidated from the
+  // onV2StateChangeObserved OBSERVER, not the onStateChange telemetry sink, and
+  // the event `at` is threaded through for the P2a monotonic guard. A future
+  // reader who "aligns" this to onStateChange loses the ISC-A-5 isolation and
+  // the telemetry-off posture — this assertion keeps production honest.
+  assert.ok(
+    index.includes('telemetryHandlers.onV2StateChangeObserved = (event) => {'),
+    'index.ts must wire the loop to the observer slot',
+  )
+  assert.ok(
+    index.includes(
+      'flowLoopForV2.noteExternalV2State(event.ref, event.state, event.at)',
+    ),
+    'index.ts must thread event.at into noteExternalV2State (P2a recency)',
   )
 })
 

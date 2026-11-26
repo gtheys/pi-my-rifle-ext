@@ -366,25 +366,40 @@ test('resumeV2StateFromEvents: null/empty journal seeds nothing', () => {
 })
 
 // ===========================================================================
-// PMR-ZV9Y fix round (P1 blocker): the guarded v2 emission must be invalidated
-// by a TOOL-journaled state-change, not only by the loop's own emissions.
+// PMR-ZV9Y fix round (P1 blocker) + fix-round-2 (P2a): the guarded v2 emission
+// must be invalidated by a TOOL-journaled state-change, not only by the loop's
+// own emissions.
 //
-// Mechanism under test: `noteExternalV2State(ref, state)` is the seam index.ts
-// calls from the fan-out writer's `onStateChange` sink — the single choke point
-// that sees EVERY journaled v2 state-change (loop AND tools, per the
-// telemetry/dispatch.ts seam map). run-attempt escalate (waiting_human) and
-// deviation rerun (waiting_machine) journal a wait but never journal the
-// running return, so the loop's `lastEmittedV2` stays pinned at `running` and
-// the next snapshot('running') is guard-suppressed (pi_flow_state stuck at the
-// wait while the run is actively working).
-//
-// The fix: the sink re-seeds `lastEmittedV2` to the journaled wait, so the
-// loop's next differing-state emission is NOT suppressed.
+// Mechanism under test: `noteExternalV2State(ref, state, at)` is the seam index.ts
+// calls from the fan-out dispatcher's `onV2StateChangeObserved` observer — NOT
+// the `onStateChange` telemetry sink. PRODUCTION DESIGN (index.ts:519 +
+// telemetry/dispatch.ts route()): every journaled v2 state-change — loop AND
+// tool, per the telemetry/dispatch.ts seam map — reaches the single choke point
+// `route`, which fires the observer FIRST and in its OWN try/catch, fully
+// independent of the `onStateChange` Loki/notify sinks. So (a) a throwing
+// telemetry sink never costs the loop bookkeeping, (b) the loop learns the wait
+// even when telemetry is off (`onStateChange === undefined`), and (c) the
+// observer is monotonic on `event.at` (fix-round-2 P2a) because tool v2 writes
+// bypass `journalSerial` and can route a stale loop echo AFTER a newer tool
+// wait. run-attempt escalate (waiting_human) and deviation rerun
+// (waiting_machine) journal a wait but never the running return, so without the
+// observer the loop's `lastEmittedV2` stays pinned at `running` and the next
+// snapshot('running') is guard-suppressed (pi_flow_state stuck at the wait).
 // ===========================================================================
 
-// A fixed ISO timestamp for the hand-built journal events (the fold/render
-// assertions only care about ordering + vocabulary, not wall-clock).
+// A fixed ISO timestamp for the hand-built JOURNAL events (the fold/render
+// assertions only care about array order + vocabulary, not wall-clock).
 const AT = '2026-11-25T09:00:00.000Z'
+
+// The loop's own emitStateChange stamps `at = now()` (real wall-clock) and, since
+// fix-round-2, that timestamp advances the recency watermark. An external
+// observation is therefore only applied when its `at` is STRICTLY newer, so the
+// hand-driven tests date it relative to real now (offsetSec > 0). The ISO format
+// is fixed-width UTC, so the test helper's string compare is a valid
+// chronological compare — the same property loop.ts relies on.
+function atOffset(sec: number): string {
+  return new Date(Date.now() + sec * 1000).toISOString()
+}
 
 test('P1: a tool-journaled wait un-pins the loop — the next running snapshot emits', async () => {
   const h = makeHarness([])
@@ -393,9 +408,10 @@ test('P1: a tool-journaled wait un-pins the loop — the next running snapshot e
   assert.deepEqual(v2View(h), [
     { kind: 'state-change', state: 'running', reason: undefined },
   ])
-  // The sink mirrors a tool-side wait (run-attempt escalate / deviation rerun)
-  // WITHOUT the tool journaling the running return.
-  loop.noteExternalV2State('TP-1', 'waiting_human')
+  // The observer mirrors a tool-side wait (run-attempt escalate / deviation
+  // rerun) WITHOUT the tool journaling the running return. The wait is NEWER
+  // than the loop's own running stamp, so the P2a monotonic guard accepts it.
+  loop.noteExternalV2State('TP-1', 'waiting_human', atOffset(60))
   // The loop re-arms and advances (plan lands -> implement prompt) — its
   // snapshot('running') MUST now emit, because lastEmittedV2 is waiting_human.
   h.labels = ['planned']
@@ -410,8 +426,9 @@ test('P1 guard: an external wait for a DIFFERENT ref never touches the active gu
   const h = makeHarness([])
   const loop = createFlowLoop(h.deps)
   await loop.start(startInput()) // active ref TP-1, lastEmittedV2 = 'running'
-  // A foreign run's wait must not un-pin THIS run's guard.
-  loop.noteExternalV2State('OTHER-1', 'waiting_human')
+  // A foreign run's wait must not un-pin THIS run's guard (ref-guard runs
+  // BEFORE the recency guard, so a future-dated foreign wait is still ignored).
+  loop.noteExternalV2State('OTHER-1', 'waiting_human', atOffset(60))
   h.labels = ['planned']
   await loop.onSettled() // advance -> snapshot('running') still suppressed (own running)
   assert.deepEqual(v2View(h), [
@@ -432,13 +449,17 @@ test('P1 no-duplicate: a plain running->running re-snapshot stays suppressed (no
   ])
 })
 
-test('P1 sink (real fan-out): a tool state-change recorded through the wrapped writer un-pins the loop', async () => {
-  // Locks the wiring mechanism (option a): index.ts's single choke point is the
-  // fan-out dispatcher wrapping the mode-aware writer; its onStateChange sink
-  // calls loop.noteExternalV2State. Here we drive that sink for real.
+test('P1 observer (real fan-out): a tool state-change recorded through onV2StateChangeObserved un-pins the loop', async () => {
+  // Repointed to the PRODUCTION wiring (fix-round-2 P1 blocker). index.ts:519
+  // assigns the loop to the fan-out dispatcher's `onV2StateChangeObserved`
+  // observer (NOT `onStateChange`, which is the Loki/notify telemetry sink);
+  // dispatch.ts route() fires the observer first, in its own try/catch, on EVERY
+  // journaled state-change. This test wires that observer exactly like index.ts
+  // does, so deleting or reordering the ~7-line observer block in route() turns
+  // it red (see the mutation note in the fix-round task).
   const h = makeHarness([])
   const loop = createFlowLoop(h.deps)
-  await loop.start(startInput()) // running emitted
+  await loop.start(startInput()) // running emitted (stamps real now())
   const written: FlowRunEvent[] = []
   const baseWriter: EventWriter = {
     record: async (event) => {
@@ -449,16 +470,20 @@ test('P1 sink (real fan-out): a tool state-change recorded through the wrapped w
       written.push(event)
     },
   }
+  // onStateChange is UNDEFINED here on purpose: the telemetry-off posture is
+  // exactly what the separate observer slot exists to cover.
   const handlers: FanoutHandlers = {
-    onStateChange: (event) => {
-      loop.noteExternalV2State(event.ref, event.state)
+    onV2StateChangeObserved: (event) => {
+      loop.noteExternalV2State(event.ref, event.state, event.at)
     },
   }
   const fanout = createEventFanoutWriter(baseWriter, handlers)
-  // The tool journals ONLY the wait through the shared sink.
+  // The tool journals ONLY the wait through the dispatcher's observer. The
+  // `at` is strictly newer than the loop's own running stamp so the P2a
+  // monotonic guard accepts it.
   await fanout.record({
     kind: 'state-change',
-    at: AT,
+    at: atOffset(60),
     ref: 'TP-1',
     state: 'waiting_human',
     reason: 'escalation',
@@ -484,6 +509,170 @@ test('P1 sink (real fan-out): a tool state-change recorded through the wrapped w
   )
 })
 
+// Fix-round-2 (P1 blocker) — the observer slot itself, not just the loop seam.
+// index.ts wires the loop to onV2StateChangeObserved; onStateChange is the
+// Loki/notify TELEMETRY sink. These cases pin the isolation properties the
+// separate slot exists for (ISC-A-5) and that the observer is the ONLY thing
+// that updates the loop guard (the mutation the blocker warned about).
+
+function baseWriterProbe() {
+  const written: FlowRunEvent[] = []
+  const writer: EventWriter = {
+    record: async (event) => {
+      written.push(event)
+      return true
+    },
+    recordJournalOnly: async (event) => {
+      written.push(event)
+    },
+  }
+  return { writer, written }
+}
+
+test('P1 observer (a): a throwing onV2StateChangeObserved never costs onStateChange routing and never throws out of record', async () => {
+  // ISC-A-5: the observer runs in its OWN try/catch, so a loop-bookkeeping bug
+  // can never also cost the telemetry sink.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  const { writer, written } = baseWriterProbe()
+  const sinks: FlowRunEvent[] = []
+  const handlers: FanoutHandlers = {
+    onV2StateChangeObserved: () => {
+      throw new Error('observer exploded')
+    },
+    onStateChange: (event) => {
+      sinks.push(event)
+    },
+  }
+  const fanout = createEventFanoutWriter(writer, handlers)
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'escalation',
+  })
+  assert.equal(written.length, 1, 'writer reached')
+  assert.equal(
+    sinks.length,
+    1,
+    'the telemetry sink STILL routed despite a throwing observer',
+  )
+  void loop // the throwing observer is bookkeeping-irrelevant here; the assertion is the routing
+})
+
+test('P1 observer (b): a throwing onStateChange never costs the observer — observer fires FIRST', async () => {
+  // Order property: dispatch.ts route() invokes the observer BEFORE onStateChange
+  // and in a separate try/catch, so a throwing notify/Loki sink can never cost
+  // the loop its wait (the loop must still un-pin).
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  const { writer } = baseWriterProbe()
+  const order: string[] = []
+  const handlers: FanoutHandlers = {
+    onV2StateChangeObserved: (event) => {
+      order.push('observer')
+      loop.noteExternalV2State(event.ref, event.state, event.at)
+    },
+    onStateChange: () => {
+      order.push('sink')
+      throw new Error('notify exploded')
+    },
+  }
+  const fanout = createEventFanoutWriter(writer, handlers)
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'escalation',
+  })
+  assert.deepEqual(
+    order,
+    ['observer', 'sink'],
+    'observer fires before the sink',
+  )
+  // The loop un-pinned even though the telemetry sink threw -> the next
+  // differing snapshot emits.
+  h.labels = ['planned']
+  await loop.onSettled()
+  const runnings = h.v2.filter(
+    (e) => e.kind === 'state-change' && e.state === 'running',
+  )
+  assert.equal(runnings.length, 2, 'loop un-pinned despite the throwing sink')
+})
+
+test('P1 observer (c): onV2StateChangeObserved alone (onStateChange undefined) still updates the loop guard', async () => {
+  // The telemetry-fully-disabled posture (no Loki, no notify): the ONLY handler
+  // present is the observer, and the loop must still learn the wait. This is
+  // the exact reason a separate slot exists (option (a) over reusing
+  // onStateChange). It overlaps the real-fan-out test but pins it at the
+  // routing level (no onStateChange key at all).
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  const { writer, written } = baseWriterProbe()
+  const handlers: FanoutHandlers = {
+    onV2StateChangeObserved: (event) => {
+      loop.noteExternalV2State(event.ref, event.state, event.at)
+    },
+  }
+  const fanout = createEventFanoutWriter(writer, handlers)
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_machine',
+    reason: 'deviation_gate_rerun',
+  })
+  assert.equal(written.length, 1)
+  h.labels = ['planned']
+  await loop.onSettled()
+  const runnings = h.v2.filter(
+    (e) => e.kind === 'state-change' && e.state === 'running',
+  )
+  assert.equal(runnings.length, 2, 'observer-only wiring un-pins the loop')
+})
+
+test('P1 observer (d, mutation guard): WITHOUT the observer the loop guard stays stale and the running snapshot is suppressed', async () => {
+  // The failure mode the P1 blocker described: the loop is wired ONLY through
+  // the dispatcher's observer block, so if that ~7-line block were deleted or
+  // reordered out of route(), the wait never reaches the loop. Model that here
+  // by wiring ONLY the telemetry sink (as production does — it never touches
+  // the loop) and NO observer, then assert the next running snapshot stays
+  // suppressed. The real-fan-out test (above) goes red under the same mutation
+  // (runnings 1 not 2); this test pins the counterfactual explicitly.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  const { writer } = baseWriterProbe()
+  const handlers: FanoutHandlers = {
+    // A pure telemetry sink: Loki/notify, NOT the loop. This is what
+    // onStateChange is in production.
+    onStateChange: () => {},
+  }
+  const fanout = createEventFanoutWriter(writer, handlers)
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'escalation',
+  })
+  h.labels = ['planned']
+  await loop.onSettled()
+  const runnings = h.v2.filter(
+    (e) => e.kind === 'state-change' && e.state === 'running',
+  )
+  assert.equal(
+    runnings.length,
+    1,
+    'no observer -> guard stays pinned at running -> the re-snapshot is suppressed (the original P1 symptom)',
+  )
+})
+
 test('P1 fold: escalate-wait then a running snapshot renders pi_flow_state{running} through the real projection', async () => {
   // The reviewer's reproduced journal sequence, driven through the REAL
   // projectRunState + renderStateMetricLines fold (not just emission mocks).
@@ -497,7 +686,11 @@ test('P1 fold: escalate-wait then a running snapshot renders pi_flow_state{runni
   }
   const loop = createFlowLoop(h.deps)
   await loop.start(startInput()) // running journaled into the journal
-  // The tool journals the wait into the SAME journal, then the sink re-seeds.
+  // The tool journals the wait into the SAME journal, then the observer
+  // re-seeds. The observer `at` is strictly newer than the loop's own running
+  // stamp so the P2a monotonic guard accepts it (the journal entry keeps its
+  // fixed AT for the array-order fold — the projection reads the journal, not
+  // the guard, so the two timestamps need not match).
   journal.push({
     kind: 'state-change',
     at: new Date(Date.parse(AT) + 1000).toISOString(),
@@ -505,7 +698,7 @@ test('P1 fold: escalate-wait then a running snapshot renders pi_flow_state{runni
     state: 'waiting_human',
     reason: 'escalation',
   })
-  loop.noteExternalV2State('TP-1', 'waiting_human')
+  loop.noteExternalV2State('TP-1', 'waiting_human', atOffset(60))
   // The loop advances -> running snapshot (the fix makes it emit).
   h.labels = ['planned']
   await loop.onSettled()
@@ -534,4 +727,83 @@ test('P1 fold: escalate-wait then a running snapshot renders pi_flow_state{runni
   // waiting_human).
   const projected = projectRunState(journal)
   assert.equal(projected?.currentState?.state, 'running')
+})
+
+// ===========================================================================
+// PMR-ZV9Y fix-round-2 (P2a): the external observer is MONOTONIC on the event
+// timestamp. Tool v2 writes bypass `journalSerial`, so an already-enqueued loop
+// `running` event can route AFTER a tool's later `waiting_human`. Without a
+// recency guard, route(waiting_human) sets the guard, then the late
+// route(running echo) reverts it to `running` and the next differing snapshot
+// is suppressed again — the original P1 symptom in a narrow window. The fix:
+// ignore external observations whose `at` is older-or-equal than the last
+// applied one. ISO-8601 fixed-width UTC makes a lexicographic string compare a
+// correct chronological compare.
+// ===========================================================================
+
+test('P2a: an older external wait is ignored — the guard stays pinned (recency, not just state)', async () => {
+  // The external wait is a VALID un-pin by state (waiting_human != running),
+  // but its `at` predates the loop's own start stamp -> it is recency-skipped,
+  // so the loop's next running snapshot stays suppressed (only 1 running).
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput()) // running at real now(), lastV2At = now()
+  loop.noteExternalV2State('TP-1', 'waiting_human', atOffset(-60)) // older -> ignored
+  h.labels = ['planned']
+  await loop.onSettled() // snapshot('running') still suppressed (guard = running)
+  const runnings = h.v2.filter(
+    (e) => e.kind === 'state-change' && e.state === 'running',
+  )
+  assert.equal(runnings.length, 1, 'older external observation recency-skipped')
+})
+
+test('P2a: a late loop echo cannot revert a newer tool wait (the narrow-window symptom)', async () => {
+  // The exact regression. Sequence the guard must survive:
+  //   1. loop emits running (lastV2At = now).
+  //   2. tool's waiting_human routes FIRST  at +120s -> applied (newer).
+  //   3. the loop's queued running echo routes LATER at +60s -> OLDER than the
+  //      wait -> recency-skipped (the guard stays waiting_human).
+  //   4. loop advances -> snapshot('running') DIFFERS from the guard -> emits.
+  // Without the monotonic guard step 3 would revert the guard to `running`,
+  // suppress step 4, and only 1 running would be journaled (the P1 symptom).
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput()) // running, lastV2At = now()
+  loop.noteExternalV2State('TP-1', 'waiting_human', atOffset(120)) // tool wait (newer)
+  loop.noteExternalV2State('TP-1', 'running', atOffset(60)) // late loop echo (older)
+  h.labels = ['planned']
+  await loop.onSettled()
+  const runnings = h.v2.filter(
+    (e) => e.kind === 'state-change' && e.state === 'running',
+  )
+  assert.equal(
+    runnings.length,
+    2,
+    'the stale running echo did not re-pin the guard -> running return emitted',
+  )
+})
+
+test('P2a: the loop is never locked out by a future-dated external stamp', async () => {
+  // The loop's own emitStateChange is NOT recency-gated (only the external
+  // observer is) — so a stale/foreign FUTURE `at` on an external observation
+  // can never suppress the loop's own next differing emission. Sequence:
+  //   1. loop emits running (lastV2At = now).
+  //   2. external waiting_machine at +3600s (far future) -> applied, lastV2At = +3600.
+  //   3. loop advances -> snapshot('running') at real now (< +3600) -> STILL
+  //      emits, because the loop's own emission only checks state equality, not
+  //      recency. Two runnings proves the loop was not locked out.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  await loop.start(startInput())
+  loop.noteExternalV2State('TP-1', 'waiting_machine', atOffset(3600))
+  h.labels = ['planned']
+  await loop.onSettled()
+  const runnings = h.v2.filter(
+    (e) => e.kind === 'state-change' && e.state === 'running',
+  )
+  assert.equal(
+    runnings.length,
+    2,
+    'loop emit advances the guard regardless of a future-dated lastV2At',
+  )
 })

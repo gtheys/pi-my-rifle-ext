@@ -506,19 +506,23 @@ export default function (
       },
     },
   })
-  // AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — compose the loop-guard
-  // invalidator onto the single choke point (the fan-out dispatcher's `route`).
-  // Every journaled v2 state-change reaches it, loop- OR tool-emitted, so a
-  // run-attempt escalate / deviation rerun wait re-seeds the loop's
-  // `lastEmittedV2` and the loop's next differing-state emission is NOT
+  // AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) + fix-round-2 (P2a) — compose
+  // the loop-guard invalidator onto the single choke point (the fan-out
+  // dispatcher's `route`). Every journaled v2 state-change reaches it, loop- OR
+  // tool-emitted, so a run-attempt escalate / deviation rerun wait re-seeds the
+  // loop's `lastEmittedV2` and the loop's next differing-state emission is NOT
   // suppressed. Late-bound on `flowLoopForV2` (a pre-loop event skips it).
   // Idempotent for the loop's OWN emissions (it re-writes the value it just
   // emitted), so running->running stays suppressed and no transition is
   // fabricated. The dispatcher guards this observer separately from the Loki +
-  // notify sinks (ISC-A-5), so telemetry-off sessions still get the fix.
+  // notify sinks (ISC-A-5), so telemetry-off sessions still get the fix. The
+  // event `at` is threaded through so noteExternalV2State stays monotonic on
+  // recency: a tool write bypasses journalSerial and can route after the loop's
+  // queued running echo, so without the timestamp the guard could revert to a
+  // stale state (the original P1 symptom in a narrow window).
   telemetryHandlers.onV2StateChangeObserved = (event) => {
     if (flowLoopForV2 === null) return
-    flowLoopForV2.noteExternalV2State(event.ref, event.state)
+    flowLoopForV2.noteExternalV2State(event.ref, event.state, event.at)
   }
   const writer: EventWriter = createEventFanoutWriter(
     createEventWriter(

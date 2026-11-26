@@ -186,13 +186,30 @@ export interface FlowLoop {
    * guard-suppressed and `pi_flow_state` stays stuck at the wait while the flow
    * is actively working (false waiting-on-human page, phantom Waiting-on-me row,
    * wait-seconds mis-attribution). index.ts calls this from the fan-out writer's
-   * `onStateChange` sink — THE single choke point that sees every journaled v2
-   * event (see the telemetry/dispatch.ts seam map), so no journal re-read.
-   * Setting `lastEmittedV2` to the value the loop just emitted is a harmless
-   * no-op (the loop's own emissions pass the same sink): the update is guarded
-   * by ref (a foreign run never touches this run's guard) and is idempotent.
+   * `onV2StateChangeObserved` observer — THE single choke point that sees every
+   * journaled v2 event (see the telemetry/dispatch.ts seam map), so no journal
+   * re-read. Setting `lastEmittedV2` to the value the loop just emitted is a
+   * harmless no-op (the loop's own emissions pass the same observer): the update
+   * is guarded by ref (a foreign run never touches this run's guard) and is
+   * idempotent.
+   *
+   * AIDEV-NOTE: PMR-ZV9Y fix-round-2 (P2a) — the observer is MONOTONIC on the
+   * event timestamp `at`. Tool v2 writes bypass `journalSerial` (run-attempt /
+   * deviation go straight to `writer.record`), so an already-enqueued loop
+   * `running` event can route AFTER a tool's later `waiting_human`: without a
+   * recency guard route(waiting_human) sets the guard, then the late
+   * route(running echo) resets it to `running` and the next differing snapshot
+   * is suppressed again — the original P1 symptom in a narrow window. So an
+   * external update whose `at` is older-or-equal than the last applied
+   * observation is ignored. `at` is always `new Date().toISOString()` (loop
+   * `now()`, the tools, run-state.recordRunEvent) — a fixed-width UTC-`Z`
+   * format, so a plain lexicographic string compare is a correct chronological
+   * compare (no timezone/locale drift, same precision everywhere). `lastV2At`
+   * is set by BOTH this method and the loop's own `emitStateChange`; the loop's
+   * own emission is never recency-blocked (it writes the guard unconditionally),
+   * so a stale future-dated external write can never lock the loop out.
    */
-  noteExternalV2State(ref: string, state: FlowState): void
+  noteExternalV2State(ref: string, state: FlowState, at: string): void
 }
 
 class FlowLoopImpl implements FlowLoop {
@@ -208,6 +225,12 @@ class FlowLoopImpl implements FlowLoop {
   // "no running→running duplicates"). Seeded on start()/resume from the
   // journal tail (last state-change, else derived via the phase-1 fold).
   private lastEmittedV2: FlowState | null = null
+  // AIDEV-NOTE: PMR-ZV9Y fix-round-2 (P2a) — recency watermark for the external
+  // observer. The ISO-8601 `at` of the last v2 observation applied to
+  // lastEmittedV2, set by BOTH emitStateChange and noteExternalV2State. Fixed-
+  // width UTC-`Z` format everywhere, so string compare == chronological compare.
+  // null = nothing applied yet (the first external observation always wins).
+  private lastV2At: string | null = null
   // AIDEV-NOTE: PMR-ZV9Y 2.1 — pairing guard for plan.spec-approval. The
   // spec-approval pause journals step-start; the step-stop is emitted where
   // the plan phase completes (advanceAfter). This flag keeps them paired so an
@@ -229,20 +252,25 @@ class FlowLoopImpl implements FlowLoop {
     return this.state.ref
   }
 
-  // AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — see the FlowLoop method doc.
-  // Invalidates the guarded v2 emission when a state-change for the ACTIVE run
-  // is journaled through the shared fan-out sink by a tool seam (not the loop's
-  // own emitStateChange path). The `state` is re-written into lastEmittedV2 so
-  // the loop's next DIFFERING emission is not suppressed. Ref-guarded (a foreign
-  // run never moves this run's guard) and vocabulary-guarded. The loop's own
-  // emissions also pass the sink: writing the just-emitted state back is a
-  // harmless idempotent no-op, so re-seeding never fabricates or drops a
-  // transition and running->running stays suppressed within the loop.
-  noteExternalV2State(ref: string, state: FlowState): void {
+  // AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) + fix-round-2 (P2a) — see the
+  // FlowLoop method doc. Invalidates the guarded v2 emission when a state-change
+  // for the ACTIVE run is journaled through the shared fan-out observer by a tool
+  // seam (not the loop's own emitStateChange path). The `state` is re-written
+  // into lastEmittedV2 so the loop's next DIFFERING emission is not suppressed.
+  // Ref-guarded (a foreign run never moves this run's guard), vocabulary-guarded,
+  // and MONOTONIC on `at`: an observation older-or-equal than the last applied
+  // one is ignored, so a late-routed loop echo cannot revert the guard to a stale
+  // state (a tool write bypasses journalSerial and can route after the loop's
+  // queued running event). The loop's own emissions also pass the observer:
+  // writing the just-emitted state back is a harmless idempotent no-op — and the
+  // echo's `at` equals lastV2At so it is recency-skipped, never a re-pin.
+  noteExternalV2State(ref: string, state: FlowState, at: string): void {
     if (this.state === null) return
     if (this.state.ref !== ref) return
     if (!FLOW_STATES.includes(state)) return
+    if (this.lastV2At !== null && at <= this.lastV2At) return
     this.lastEmittedV2 = state
+    this.lastV2At = at
   }
 
   async start(input: FlowStartInput): Promise<void> {
@@ -306,6 +334,12 @@ class FlowLoopImpl implements FlowLoop {
     } else {
       this.lastEmittedV2 = null
     }
+    // PMR-ZV9Y fix-round-2 (P2a): a fresh/superseding start resets the recency
+    // watermark so a stale `at` from the previous run can never recency-block the
+    // new run's external observations. The seed's own timestamp is unknown here
+    // (only the state is threaded through resumeState), so null = the first
+    // observation (the loop's own emit below or a tool write) always applies.
+    this.lastV2At = null
     if (input.resumePlanApprovalOpen !== undefined) {
       this.specApprovalStepOpen = input.resumePlanApprovalOpen
     }
@@ -617,6 +651,12 @@ class FlowLoopImpl implements FlowLoop {
       ref: this.state.ref,
       state,
     }
+    // PMR-ZV9Y fix-round-2 (P2a): the loop's OWN emission advances the recency
+    // watermark unconditionally (no comparison) — so a future-dated stale external
+    // write can never lock the loop out of emitting. The echo of this same event
+    // back through noteExternalV2State carries at === lastV2At, so it is
+    // recency-skipped (older-or-equal): the idempotent no-op holds.
+    this.lastV2At = event.at
     if (reason !== undefined) {
       event.reason = reason
     }

@@ -92,19 +92,26 @@ export interface FanoutHandlers {
   onStateChange?: (event: StateChangeEvent) => void
   onStepEvent?: (event: StepBoundaryEvent) => void
   /**
-   * AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) — a SEPARATELY guarded observer
-   * that fires for EVERY journaled `state-change` event, regardless of which
-   * seam emitted it. index.ts wires it to the flow loop's
-   * `noteExternalV2State(ref, state)` so the loop's guarded v2 emission is
-   * invalidated by TOOL-journaled waits (run-attempt escalate, deviation rerun)
-   * that the loop does not emit through its own seam. `onStateChange` is NOT
+   * AIDEV-NOTE: PMR-ZV9Y fix round (P1 blocker) + fix-round-2 (P2a) — a
+   * SEPARATELY guarded observer that fires for EVERY journaled `state-change`
+   * event, regardless of which seam emitted it. index.ts wires it to the flow
+   * loop's `noteExternalV2State(ref, state, event.at)` so the loop's guarded v2
+   * emission is invalidated by TOOL-journaled waits (run-attempt escalate,
+   * deviation rerun) that the loop does not emit through its own seam. The full
+   * event is passed (not just ref/state) so the loop can keep the guard
+   * MONOTONIC on `event.at`: tool v2 writes bypass `journalSerial`, so a late
+   * loop `running` echo can route after a tool's `waiting_human`, and without a
+   * recency guard that echo would revert the guard to a stale state (the original
+   * P1 symptom in a narrow window). `onStateChange` is NOT
    * reused for that: it is the telemetry/Loki+notify sink and a throwing notify
    * would then also cost the loop bookkeeping (ISC-A-5). This observer runs in
    * its OWN try/catch BEFORE onStateChange, so neither can cost the other and
    * the loop learns the wait even when Loki/notify are off. The dispatcher is
    * the single choke point (see the seam map above); hooking here needs zero
    * journal re-reads and never re-validates the label (ISC-A-1 — the loop
-   * re-validates against FLOW_STATES itself).
+   * re-validates against FLOW_STATES itself). Pinned by
+   * test/loop-state-change.test.ts (the real-fan-out observer tests) and
+   * test/telemetry-dispatch.test.ts.
    */
   onV2StateChangeObserved?: (event: StateChangeEvent) => void
 }
