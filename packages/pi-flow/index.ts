@@ -183,7 +183,9 @@ import { pendingDirPath } from './server/daemon.ts'
 import { ensureDaemon } from './server/lifecycle.ts'
 import {
   checkDaemonStaleness,
+  resolveHeadSha,
   sessionStalenessDeps,
+  warnDaemonStaleness,
 } from './server/staleness.ts'
 import {
   createDaemonAliveProbe,
@@ -1018,6 +1020,22 @@ export default function (
     // override against the real session cwd instead of process.cwd().
     sessionCwd = ctx.cwd
     void ensureLabels(notifyUser)
+    // AIDEV-NOTE: PMR-7B8M — best-effort daemon staleness probe at session
+    // start: the daemon records the spawner checkout's SHA in the pidfile; warn
+    // when this session's HEAD moved past it (or the pidfile predates tracking).
+    // Fire-and-forget + never-throws, like the telemetry probe above.
+    // Deliberately NOT gated on runServerEnabled — a disabled daemon is simply
+    // not alive → 'unchecked' → silent. ctx.cwd is passed explicitly because
+    // sessions may run outside the process cwd.
+    void warnDaemonStaleness(
+      sessionStalenessDeps(
+        (command: string, args: string[], options?: { cwd?: string }) =>
+          pi.exec(command, args, options),
+        getAgentDir(),
+        ctx.cwd,
+      ),
+      (message, level) => ctx.ui.notify(message, level),
+    )
     // AIDEV-NOTE: PMR-F8HB — register this workspace's aven project
     // prefixes so bare Jira-shaped aven refs (PMR-2424) classify as aven
     // instead of colliding with JIRA_RE. Best-effort: aven unavailable or
@@ -1989,8 +2007,19 @@ export default function (
       syncLokiSettings(config)
       // PMR-ZV9Y 5.2: same re-sync for the desktop channel (+ the /flow cwd).
       syncNotifySettings(config, ctx.cwd)
+      // AIDEV-NOTE: PMR-7B8M — resolve the checkout HEAD BEFORE ensureDaemon:
+      // a fresh spawn records it in the pidfile (PI_FLOW_DAEMON_GIT_SHA env);
+      // an already-running daemon is probed for staleness instead. 'spawned' is
+      // fresh by construction (its pidfile carries this session's HEAD).
+      const headSha = await resolveHeadSha(
+        (command: string, args: string[], options?: { cwd?: string }) =>
+          pi.exec(command, args, options),
+        ctx.cwd,
+      )
       if (runServerEnabled) {
-        const ensured = await ensureDaemon(getAgentDir())
+        const ensured = await ensureDaemon(getAgentDir(), undefined, {
+          gitSha: headSha,
+        })
         if (
           ensured.status === 'spawn-timeout' ||
           ensured.status === 'spawn-failed'
@@ -2002,6 +2031,22 @@ export default function (
           ctx.ui.notify(
             `pi-flow: run server not started${detail} — continuing in-session; runs won't survive a session exit`,
             'warning',
+          )
+        }
+        // AIDEV-NOTE: PMR-7B8M — only an already-running daemon can be stale;
+        // 'spawned' is fresh by construction and spawn-timeout/spawn-failed keep
+        // their existing warnings above. Awaited (never-throws, bounded) so the
+        // notification lands before the run continues; a stale pidfile only
+        // warns, it never blocks the flow.
+        if (ensured.status === 'already-running') {
+          await warnDaemonStaleness(
+            sessionStalenessDeps(
+              (command: string, args: string[], options?: { cwd?: string }) =>
+                pi.exec(command, args, options),
+              getAgentDir(),
+              ctx.cwd,
+            ),
+            (message, level) => ctx.ui.notify(message, level),
           )
         }
       }
