@@ -24,6 +24,14 @@
 // the report banner.
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import type { FlowRunEvent } from '../run-state.ts'
+// AIDEV-NOTE: PMR-7B8M — VALUE import is fine here: this module is
+// session-side only (registered from index.ts, never reachable from the daemon
+// graph), unlike flow/reconcile.ts which must keep its staleness edge
+// type-only.
+import {
+  type DaemonStaleness,
+  daemonStalenessMessage,
+} from '../server/staleness.ts'
 import {
   AVEN_FAILED_WARNING,
   computeStaleRefs,
@@ -78,6 +86,14 @@ export interface ReconcileCommandDeps {
   listJournalRefs: () => Promise<string[]>
   readRunEvents: (ref: string) => Promise<readonly FlowRunEvent[] | null>
   listTicketStatuses: () => Promise<Map<string, string> | null>
+  /**
+   * AIDEV-NOTE: PMR-7B8M — REQUIRED, no default and no silent degradation
+   * (PMR-HRGJ precedent): a missing seam is a wiring bug, so it must fail
+   * loudly at the type level. SESSION-SIDE ONLY — the daemon's own timer pass
+   * runs `runReconcilePass` in flow/reconcile.ts and never calls this; only
+   * the `/flow-reconcile-push` command fills `report.daemonStaleness`.
+   */
+  checkDaemonStaleness: () => Promise<DaemonStaleness>
 }
 
 const RECONCILE_USAGE =
@@ -112,13 +128,15 @@ export async function runReconcileCommand(
       out(NO_GATEWAY_MESSAGE, 'error')
       return
     }
-    out(
-      formatReconcileReport(await scanWithoutGateway(deps, warn), 'no-gateway'),
-      'info',
-    )
+    const scanned = await scanWithoutGateway(deps, warn)
+    // PMR-7B8M: filled on BOTH report paths, before rendering.
+    scanned.daemonStaleness = await deps.checkDaemonStaleness()
+    out(formatReconcileReport(scanned, 'no-gateway'), 'info')
     return
   }
   const report = await runReconcilePass(engine, { dryRun })
+  // PMR-7B8M: the gateway half of the same advisory.
+  report.daemonStaleness = await deps.checkDaemonStaleness()
   out(formatReconcileReport(report, 'gateway'), 'info')
 }
 
@@ -187,6 +205,16 @@ export function formatReconcileReport(
   if (report.dryRun) lines.push('DRY RUN — nothing pushed')
   if (inspected === 'no-gateway') lines.push(NOT_INSPECTED_HEADER)
   lines.push(reconcileSummaryLine(report))
+  // AIDEV-NOTE: PMR-7B8M — the staleness line is rendered HERE, after the
+  // shared summary, never inside `reconcileSummaryLine` (that line is the
+  // daemon's log line too and the daemon can never be the judge of its own
+  // staleness). `daemonStalenessMessage` returns null for the silent verdicts
+  // (fresh, unknown/git-error, unchecked), so a healthy or absent daemon adds
+  // nothing to the output.
+  if (report.daemonStaleness !== undefined) {
+    const stalenessLine = daemonStalenessMessage(report.daemonStaleness)
+    if (stalenessLine !== null) lines.push(stalenessLine)
+  }
   if (report.avenFailed) lines.push(AVEN_FAILED_BANNER)
   for (const entry of report.stale) {
     lines.push(`  ${formatStaleLine(report, entry)}`)

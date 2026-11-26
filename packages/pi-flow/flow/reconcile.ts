@@ -94,6 +94,17 @@ import {
   projectRunState,
   runTracking,
 } from '../run-state.ts'
+// AIDEV-NOTE: PMR-7B8M — TYPE-ONLY import by design. `ReconcileReport.daemonStaleness`
+// below is an advisory, SESSION-SIDE-ONLY field: the daemon's own reconcile
+// passes can never fill it (a daemon cannot judge its staleness against a
+// session checkout — it does not know one), so it stays undefined on the
+// daemon path and formatReconcileReport renders nothing. flow/reconcile.ts is
+// daemon-reachable and node-only per the daemon DEPENDENCY CONTRACT (file
+// header), so this module must gain NO runtime edge to
+// server/staleness.ts (which value-imports session-side server/lifecycle.ts).
+// test/cost-rows-node-only.test.ts strips type-only edges when it walks the
+// runtime graph, which is exactly why this one is safe.
+import type { DaemonStaleness } from '../server/staleness.ts'
 import type { GroupBodyResult, PushResult } from './push.ts'
 
 /** Liveness statuses that a tombstone retires.
@@ -477,6 +488,15 @@ export interface ReconcileReport {
   avenFailed: boolean
   /** Echo of the dry-run flag (so callers can render one message shape). */
   dryRun: boolean
+  /**
+   * Daemon staleness verdict — filled ONLY by the session-side command
+   * (`/flow-reconcile-push`, PMR-7B8M), NEVER by `runReconcilePass`: the
+   * daemon cannot judge its own staleness (no session checkout to compare
+   * against), so on the daemon path this stays undefined and
+   * `formatReconcileReport` renders no line. Session-side only — see the
+   * type-only import of `DaemonStaleness` at the top of this file.
+   */
+  daemonStaleness?: DaemonStaleness
 }
 
 /**

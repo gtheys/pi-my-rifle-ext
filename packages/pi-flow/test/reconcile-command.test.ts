@@ -28,7 +28,12 @@ import {
   registerReconcileCommand,
   runReconcileCommand,
 } from '../flow/reconcile-command.ts'
+import { reconcileSummaryLine } from '../flow/reconcile-deps.ts'
 import type { FlowRunEvent, LoopRunStatus } from '../run-state.ts'
+import {
+  type DaemonStaleness,
+  daemonStalenessMessage,
+} from '../server/staleness.ts'
 
 const REF_A = 'PMR-AAAA'
 const REF_B = 'PMR-BBBB'
@@ -92,7 +97,35 @@ interface EngineOptions {
   /** return an empty group body for every ref (already-clean / lost group) */
   emptyBodies?: boolean
   refs?: string[]
+  /**
+   * AIDEV-NOTE (PMR-7B8M 1.3): the staleness verdict the command fixture's
+   * REQUIRED `checkDaemonStaleness` dep answers with. Default
+   * `unchecked/daemon-not-running` so every pre-existing assertion in this
+   * file holds unchanged (an unchecked verdict renders NO line at all).
+   */
+  staleness?: DaemonStaleness
 }
+
+/** Fixture default: silent, and the shape a machine without a daemon gives. */
+const UNCHECKED: DaemonStaleness = {
+  kind: 'unchecked',
+  reason: 'daemon-not-running',
+}
+
+const STALE: DaemonStaleness = {
+  kind: 'stale',
+  pid: 4242,
+  daemonSha: '0123456789abcdef0123456789abcdef01234567',
+  headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+}
+
+const UNKNOWN_NO_GITSHA: DaemonStaleness = {
+  kind: 'unknown',
+  pid: 4242,
+  reason: 'no-gitsha',
+}
+
+const FRESH: DaemonStaleness = { kind: 'fresh' }
 
 /** Fake ENGINE deps: records every gateway + journal call. */
 function fakeEngine(options: EngineOptions = {}): EngineRecording {
@@ -187,6 +220,7 @@ function capture(): Capture {
  */
 function gatewayDeps(
   engine: EngineRecording,
+  staleness: DaemonStaleness = UNCHECKED,
 ): ReconcileCommandDeps & { gatewayCalls: number } {
   let gatewayCalls = 0
   return {
@@ -200,6 +234,7 @@ function gatewayDeps(
     listJournalRefs: engine.deps.listJournalRefs,
     readRunEvents: engine.deps.readRunEvents,
     listTicketStatuses: engine.deps.listTicketStatuses,
+    checkDaemonStaleness: async () => staleness,
   }
 }
 
@@ -215,6 +250,7 @@ function noGatewayDeps(options: EngineOptions = {}) {
     listJournalRefs: engine.deps.listJournalRefs,
     readRunEvents: engine.deps.readRunEvents,
     listTicketStatuses: engine.deps.listTicketStatuses,
+    checkDaemonStaleness: async () => options.staleness ?? UNCHECKED,
   }
   return { deps, engine, gatewayCalls: () => gatewayCalls }
 }
@@ -472,8 +508,120 @@ test('formatReconcileReport: dry-run + gateway-less headers come first', () => {
 })
 
 // ---------------------------------------------------------------------------
+// PMR-7B8M 1.3: the daemon-staleness line (advisory, session-side only)
+// ---------------------------------------------------------------------------
+
+test('runReconcileCommand: a stale daemon renders the exact message in the gateway dry-run', async () => {
+  const engine = fakeEngine()
+  const target = capture()
+  await runReconcileCommand(
+    gatewayDeps(engine, STALE),
+    { kind: 'dry-run' },
+    target.out,
+  )
+  const message = daemonStalenessMessage(STALE) as string
+  const lines = target.text.split('\n')
+  assert.ok(
+    lines.includes(message),
+    `expected the exact staleness line in:\n${target.text}`,
+  )
+  // rendered AFTER the summary line, never inside it
+  const summary = lines.findIndex((line) => /scanned=\d+/.test(line))
+  assert.ok(summary >= 0)
+  assert.ok(lines.indexOf(message) > summary)
+  assert.equal(/scanned=\d+.*stale code/.test(target.text), false)
+})
+
+test('runReconcileCommand: a stale daemon renders the exact message with no gateway', async () => {
+  const { deps } = noGatewayDeps({ staleness: STALE })
+  const target = capture()
+  await runReconcileCommand(deps, { kind: 'dry-run' }, target.out)
+  const message = daemonStalenessMessage(STALE) as string
+  const lines = target.text.split('\n')
+  assert.ok(
+    lines.includes(message),
+    `expected the exact staleness line in:\n${target.text}`,
+  )
+  assert.ok(lines.indexOf(message) > 1, 'after the headers and summary line')
+})
+
+test('runReconcileCommand: an old pidfile (unknown/no-gitsha) renders the restart warning', async () => {
+  const { deps } = noGatewayDeps({ staleness: UNKNOWN_NO_GITSHA })
+  const target = capture()
+  await runReconcileCommand(deps, { kind: 'dry-run' }, target.out)
+  assert.ok(
+    target.text
+      .split('\n')
+      .includes(daemonStalenessMessage(UNKNOWN_NO_GITSHA) as string),
+    target.text,
+  )
+})
+
+test('runReconcileCommand: fresh and unchecked daemons render no staleness line', async () => {
+  for (const staleness of [FRESH, UNCHECKED]) {
+    const engine = fakeEngine()
+    const gatewayTarget = capture()
+    await runReconcileCommand(
+      gatewayDeps(engine, staleness),
+      { kind: 'dry-run' },
+      gatewayTarget.out,
+    )
+    const { deps } = noGatewayDeps({ staleness })
+    const plainTarget = capture()
+    await runReconcileCommand(deps, { kind: 'dry-run' }, plainTarget.out)
+    for (const target of [gatewayTarget, plainTarget]) {
+      assert.equal(
+        /stale code|predates staleness tracking/.test(target.text),
+        false,
+        `${staleness.kind} must stay silent:\n${target.text}`,
+      )
+    }
+  }
+})
+
+test('formatReconcileReport: a daemon-shaped report (no field) renders no staleness line', () => {
+  const base: ReconcileReport = {
+    scanned: 1,
+    candidates: 1,
+    stale: [{ ref: REF_A, journalStatus: 'halted', ticketStatus: 'done' }],
+    tombstoned: [REF_A],
+    skipped: [],
+    avenFailed: false,
+    dryRun: false,
+  }
+  const staleReport: ReconcileReport = { ...base, daemonStaleness: STALE }
+  const without = formatReconcileReport(base, 'gateway')
+  const withStale = formatReconcileReport(staleReport, 'gateway')
+  // summary + one stale line, nothing else
+  assert.equal(without.split('\n').length, 2)
+  assert.equal(
+    /stale code/.test(without),
+    false,
+    'a daemon-shaped report must stay silent',
+  )
+  assert.ok(
+    withStale.split('\n').includes(daemonStalenessMessage(STALE) as string),
+  )
+  // ISC-A-5: the SHARED summary line is byte-identical either way
+  assert.equal(reconcileSummaryLine(base), reconcileSummaryLine(staleReport))
+  assert.equal(
+    withStale.split('\n')[0],
+    without.split('\n')[0],
+    'the summary line must not move or change',
+  )
+})
+
+// ---------------------------------------------------------------------------
 // the command and the engine agree (no parallel truth)
 // ---------------------------------------------------------------------------
+
+// AIDEV-NOTE: PMR-7B8M anti-pattern guard — the engine must NEVER fill the
+// advisory field (a daemon pass has no session checkout to judge against), so
+// the daemon-shape report reaches formatReconcileReport without it.
+test('runReconcilePass never fills daemonStaleness', async () => {
+  const direct = await runReconcilePass(fakeEngine().deps, { dryRun: true })
+  assert.equal(direct.daemonStaleness, undefined)
+})
 
 test('runReconcileCommand: gateway path reports EXACTLY what runReconcilePass returns', async () => {
   const engine = fakeEngine()
@@ -520,6 +668,7 @@ test('registerReconcileCommand registers flow-reconcile-push wired to ctx.ui.not
     listJournalRefs: engine.deps.listJournalRefs,
     readRunEvents: engine.deps.readRunEvents,
     listTicketStatuses: engine.deps.listTicketStatuses,
+    checkDaemonStaleness: async () => UNCHECKED,
   })
   const def = commands.get('flow-reconcile-push')
   assert.ok(def !== undefined)

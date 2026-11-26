@@ -182,6 +182,10 @@ import { type ResumeConsumerDeps, resumeParkedRun } from './server/consumer.ts'
 import { pendingDirPath } from './server/daemon.ts'
 import { ensureDaemon } from './server/lifecycle.ts'
 import {
+  checkDaemonStaleness,
+  sessionStalenessDeps,
+} from './server/staleness.ts'
+import {
   createDaemonAliveProbe,
   createEventWriter,
   type EventWriter,
@@ -1518,6 +1522,19 @@ export default function (
     listJournalRefs: () => listJournalRefs(getAgentDir()),
     readRunEvents: (ref) => readRunEvents(getAgentDir(), ref),
     listTicketStatuses: () => listTicketStatuses(),
+    // AIDEV-NOTE: PMR-7B8M — session-side daemon staleness probe for the
+    // /flow-reconcile-push report. `pi.exec` is wrapped in an arrow closure
+    // (a bare method reference loses `this`); cwd is NOT passed, so git runs
+    // in the process cwd — the command surface has no ctx here (subtask 4's
+    // session_start / /flow surfaces pass ctx.cwd explicitly).
+    checkDaemonStaleness: () =>
+      checkDaemonStaleness(
+        sessionStalenessDeps(
+          (command: string, args: string[], options?: { cwd?: string }) =>
+            pi.exec(command, args, options),
+          getAgentDir(),
+        ),
+      ),
   }
   registerReconcileCommand(pi, reconcileDeps)
 
