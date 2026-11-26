@@ -152,42 +152,67 @@ export async function specApprove(params: {
 // AIDEV-NOTE: Shared aven helpers (labels are the run state, notes are the
 // halt record). Used by the /implement and /flow command handlers and by the
 // flow loop deps — one parsing path, fail-closed (null/[] on any failure).
-export async function readAvenLabels(
+//
+// AIDEV-NOTE: PMR-9DZ0 1.1 — readAvenLabels was split so the run-start
+// journal (subtask 1.4) can reuse the SAME `aven show --json` read for the
+// ticket title without a second shell-out. readAvenSnapshot does the work
+// that readAvenLabels did verbatim before (avenArgsWithWorkspace routing,
+// AVEN_TIMEOUT_MS, identical recordAvenFailure messages) and hands back the
+// full AvenTicketSnapshot; readAvenLabels is now a thin wrapper that keeps
+// its EXACT contract for every existing caller — null on any failure
+// (exec throw OR a fuzzy-match/bad-json snapshot), the labels array on ok.
+// This is a behaviour-preserving refactor: the failure wording and the
+// recordAvenFailure calls are unchanged, only relocated.
+export async function readAvenSnapshot(
   ref: string,
   workspace?: string,
-): Promise<string[] | null> {
+): Promise<AvenTicketSnapshot | null> {
   try {
-    // PMR-3VWM: an explicit workspace threads into the labels read exactly
-    // like the receipt read (showFullGuarded) and approveSpec's readLabels —
-    // explicit wins over config/per-ref resolution (the resolveSpecWorkspace
+    // PMR-3VWM: an explicit workspace threads into the read exactly like the
+    // receipt read (showFullGuarded) and approveSpec's readLabels — explicit
+    // wins over config/per-ref resolution (the resolveSpecWorkspace
     // priority), so the spec_approve oneshot exemption cannot resolve a
     // DIFFERENT ticket than the gate answer and edit when the explicit
     // workspace diverges from config/per-ref resolution. Omitted = the
     // unchanged config/per-ref path.
-    const args =
-      workspace !== undefined
-        ? ['show', ref, '--json', '--workspace', workspace]
-        : await avenArgsWithWorkspace(['show', ref, '--json'], ref)
+    let args: string[]
+    if (workspace !== undefined) {
+      args = ['show', ref, '--json', '--workspace', workspace]
+    } else {
+      args = await avenArgsWithWorkspace(['show', ref, '--json'], ref)
+    }
     const { stdout } = await execFileAsync('aven', args, {
       timeout: AVEN_TIMEOUT_MS,
     })
     const snapshot = ticketSnapshotFor(JSON.parse(stdout), ref)
     if (snapshot.ok) {
-      return snapshot.labels
+      return snapshot
     }
     // PMR-F8HB: aven prefix-matches refs (`aven show PMR-TPN` happily
     // returns PMR-TPN7), so a truncated or typo'd ref would silently read
     // (and later write) the WRONG ticket's labels. Fail closed instead.
-    recordAvenFailure(
-      snapshot.kind === 'fuzzy-match'
-        ? `aven matched ${ref} to ${snapshot.resolvedRef} — not an exact ticket ref; use the full ref`
-        : 'aven show returned a ticket without a labels array',
-    )
-    return null
+    let message: string
+    if (snapshot.kind === 'fuzzy-match') {
+      message = `aven matched ${ref} to ${snapshot.resolvedRef} — not an exact ticket ref; use the full ref`
+    } else {
+      message = 'aven show returned a ticket without a labels array'
+    }
+    recordAvenFailure(message)
+    return snapshot
   } catch (error: unknown) {
     recordAvenFailure(error)
     return null
   }
+}
+
+export async function readAvenLabels(
+  ref: string,
+  workspace?: string,
+): Promise<string[] | null> {
+  const snapshot = await readAvenSnapshot(ref, workspace)
+  if (snapshot === null) return null
+  if (snapshot.ok) return snapshot.labels
+  return null
 }
 
 // AIDEV-NOTE: PMR-YG2N — durable-binding read for the worktree cleanup sweep
@@ -215,9 +240,18 @@ export async function avenShowFull(ref: string): Promise<string | null> {
  * the ref that was asked for. `fuzzy-match` means aven resolved the ref to
  * a DIFFERENT ticket (prefix match); every caller must treat that as a
  * failure, never as data about the requested ticket.
+ *
+ * AIDEV-NOTE: PMR-9DZ0 1.1 — the ok-variant now carries `title?: string`,
+ * parsed additively from the `aven show --json` record so the run-start
+ * journal (subtask 1.4) can show "REF — title" without a second aven call.
+ * WHY additive-only: readAvenLabels must keep its exact fail-closed contract
+ * for every existing caller, so a missing / non-string / empty title can
+ * NEVER turn an otherwise-ok snapshot into a failure — it is `undefined`
+ * instead. The title is metadata, not identity, so it is not part of the
+ * fuzzy-match / bad-json guards below.
  */
 export type AvenTicketSnapshot =
-  | { ok: true; labels: string[]; resolvedRef: string }
+  | { ok: true; labels: string[]; resolvedRef: string; title?: string }
   | {
       ok: false
       kind: 'bad-json' | 'fuzzy-match'
@@ -231,7 +265,11 @@ export function ticketSnapshotFor(
   if (typeof raw !== 'object' || raw === null) {
     return { ok: false, kind: 'bad-json', resolvedRef: null }
   }
-  const record = raw as { labels?: unknown; ref?: unknown }
+  const record = raw as {
+    labels?: unknown
+    ref?: unknown
+    title?: unknown
+  }
   if (!Array.isArray(record.labels)) {
     return { ok: false, kind: 'bad-json', resolvedRef: null }
   }
@@ -246,7 +284,13 @@ export function ticketSnapshotFor(
   // Case-insensitive compare: a case variant of the same ref is the same
   // ticket; anything else (PMR-TPN vs PMR-TPN7) is a different ticket.
   if (resolvedRef.toUpperCase() === requestedRef.toUpperCase()) {
-    return { ok: true, labels, resolvedRef }
+    // PMR-9DZ0 — additive title parse: only a non-empty string is a title;
+    // anything else stays undefined and never blocks the ok result.
+    let title: string | undefined
+    if (typeof record.title === 'string' && record.title !== '') {
+      title = record.title
+    }
+    return { ok: true, labels, resolvedRef, title }
   }
   return { ok: false, kind: 'fuzzy-match', resolvedRef }
 }
