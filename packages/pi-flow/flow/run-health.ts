@@ -49,6 +49,17 @@
 // state-vocabulary blocks are removed and the v2 gauges above are the only
 // state vocabulary this module renders. See the header 7.1 note for the new
 // frozen set; the FROZEN-UNTIL-CUTOVER framing above is kept as history.
+// AIDEV-NOTE (PMR-9DZ0 2.1): the run-title block below is an ADDITIVE
+// AMENDMENT to that frozen shape, not a change to it: `pi_flow_run_title_info`
+// is a new family appended AFTER the frozen set and AFTER the v2 state
+// families (block 7), so nothing existing moved, renamed or reordered and the
+// frozen-prefix pins stay byte-for-byte. It is journal-derived only (the LAST
+// run-start carrying a title wins), renders through the existing
+// labelString/escapeLabelValue seam above, and adds NO import — the node-only
+// closure guarded by test/cost-rows-node-only.test.ts is untouched. Dashboards
+// join it as `* on (ref) group_left (title)`; because the gateway MERGES on
+// write (PMR-WBC2), flow/push.ts prunes this family from re-posted group
+// bodies so a stale title can never fan out that join.
 import type { FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
 import { labelString } from './cost-rows.ts'
@@ -94,14 +105,35 @@ function runStartSeconds(events: readonly FlowRunEvent[]): number | undefined {
   return earliest
 }
 
+// AIDEV-NOTE (PMR-9DZ0 2.1): pi_flow_run_title_info is derived from the LAST
+// run-start carrying a title — deliberately the OPPOSITE of runStartSeconds'
+// first-wins rule. A resume re-journals run-start with a fresh ticket title,
+// and the newest title is the one the dashboard should show; a resume whose
+// lookup failed journals no `title` key at all, so title-less run-start events
+// are skipped rather than clearing an earlier title. Sanitized at journal-write
+// time by run-title.ts (single line, capped, control chars stripped), so the
+// render only needs the exposition escaping that labelString already applies.
+// An empty title never reaches the render: the writer omits the key, and an
+// empty-title series would fan out the dashboard group_left(title) join.
+function runTitle(events: readonly FlowRunEvent[]): string | undefined {
+  let title: string | undefined
+  for (const event of events) {
+    if (event.kind !== 'run-start') continue
+    if (event.title === undefined || event.title === '') continue
+    title = event.title
+  }
+  return title
+}
+
 /**
  * Render the Prometheus exposition lines for run health (gate decision counts,
  * retry/blocker counters, worktree-sweep counts, run start epoch seconds,
- * then the v2 state-machine gauges). Pure: same journal events in, same lines
- * out. Metric order is fixed; within a grouped metric lines follow first-seen
- * event order so pushes stay byte-stable for the Pushgateway group. The FROZEN
- * block (gate decisions … run start) never moves; the v2 state gauges are
- * appended after it (see the append site below).
+ * then the v2 state-machine gauges, then the additive run-title tail block).
+ * Pure: same journal events in, same lines out. Metric order is fixed; within a
+ * grouped metric lines follow first-seen event order so pushes stay byte-stable
+ * for the Pushgateway group. The FROZEN block (gate decisions … run start)
+ * never moves; the v2 state gauges are appended after it (see the append site
+ * below), and the title block after those (see the header PMR-9DZ0 note).
  *
  * AIDEV-NOTE (PMR-ZV9Y 7.1): the v1 state-vocabulary lines this used to render
  * (`pi_flow_run_status`, `pi_flow_run_halt_reason`, `pi_flow_human_wait_seconds`,
@@ -190,6 +222,15 @@ export function renderRunHealthLines(
   // 'state-change'), so for those journals it contributes nothing.
   for (const line of renderStateMetricLines(ref, events)) {
     lines.push(line)
+  }
+  // 7 — run title info (PMR-9DZ0). ADDITIVE TAIL BLOCK appended AFTER the v2
+  // state families; the frozen set and the v2 families are untouched — see the
+  // header amendment note. Journal-derived only: LAST run-start with a title wins.
+  // One series per ref; dashboards join `* on (ref) group_left (title)` with an
+  // `or … unless on (ref)` fallback so title-less runs stay visible.
+  const title = runTitle(events)
+  if (title !== undefined) {
+    lines.push(`pi_flow_run_title_info{${labelString({ ref, title })}} 1`)
   }
   return lines
 }

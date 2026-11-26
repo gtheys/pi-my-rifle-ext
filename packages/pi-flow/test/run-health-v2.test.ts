@@ -46,12 +46,24 @@ const V2_PREFIXES = [
   'pi_flow_step_seconds{',
 ]
 
+// AIDEV-NOTE (PMR-9DZ0 2.1): the title block is a third family list next to
+// FROZEN_PREFIXES/V2_PREFIXES — neither the frozen set nor the v2 state
+// vocabulary, and it renders AFTER both. It is deliberately NOT added to
+// FROZEN_PREFIXES: that list is the frozen contract, and `pi_flow_run_title_info`
+// must never be mistaken for a line that may not move.
+const TITLE_PREFIXES = ['pi_flow_run_title_info{']
+
 function shift(seconds: number): string {
   return new Date(Date.parse(T0) + seconds * 1000).toISOString()
 }
 
 function runStart(): FlowRunEvent {
   return { kind: 'run-start', at: T0, ref: REF, mode: 'personal' }
+}
+
+// AIDEV-NOTE (PMR-9DZ0 2.1): the title-carrying variant of the shared fixture.
+function runStartWithTitle(title: string): FlowRunEvent {
+  return { kind: 'run-start', at: T0, ref: REF, mode: 'personal', title }
 }
 
 function loopState(
@@ -97,7 +109,18 @@ function isV2Line(line: string): boolean {
   return V2_PREFIXES.some((prefix) => line.startsWith(prefix))
 }
 
-/** Split a rendered body into the frozen prefix and the appended v2 suffix. */
+function isTitleLine(line: string): boolean {
+  return TITLE_PREFIXES.some((prefix) => line.startsWith(prefix))
+}
+
+/**
+ * Split a rendered body into the frozen prefix and the appended v2 suffix.
+ * AIDEV-NOTE (PMR-9DZ0 2.1): UNCHANGED by the title block — its filter is
+ * "not a v2 family", so for the title-less fixtures every existing assertion
+ * here pins exactly what it pinned before. A title-carrying body puts the tail
+ * line in `frozen` (see the title test below), which is why the byte-for-byte
+ * proof there compares whole bodies instead of trusting this bucket.
+ */
 function splitLines(lines: readonly string[]): {
   frozen: string[]
   v2: string[]
@@ -274,5 +297,87 @@ test('buildPushBody carries the frozen block and the v2 gauges (the shared seam 
   )
   assert.ok(!body.includes('pi_flow_run_status'), body)
   assert.ok(body.endsWith('\n'))
+  assert.ok(!body.endsWith('\n\n'))
+})
+
+// ------------------------------------------------- PMR-9DZ0 title tail block
+// AIDEV-NOTE (PMR-9DZ0 2.1): the title info series is a THIRD bucket — it is
+// neither in FROZEN_PREFIXES nor in V2_PREFIXES, and it appends after both.
+// The proof of "additive tail only" here is the whole body: the same journal
+// without the title renders exactly the same lines, in the same order, and the
+// titled render is that body plus one line on the end.
+
+test('the title tail block leaves the frozen prefix and the v2 suffix byte-for-byte', () => {
+  const rest = [
+    loopState(shift(1), 'running', 'plan'),
+    change('running', '', shift(1)),
+    gateAnswer(shift(5), 'spec-review', 'approve'),
+    change('waiting_human', 'spec_approval_pending', shift(60)),
+    stepStart('plan', 'plan.spec-approval', shift(60)),
+  ]
+  const withoutTitle = renderRunHealthLines(REF, [runStart(), ...rest])
+  const withTitle = renderRunHealthLines(REF, [
+    runStartWithTitle('Fix the parser'),
+    ...rest,
+  ])
+  // nothing existing moved, renamed or reordered
+  assert.deepEqual(withTitle.slice(0, -1), withoutTitle, withTitle.join('\n'))
+  const tail = withTitle[withTitle.length - 1]
+  assert.equal(
+    tail,
+    'pi_flow_run_title_info{ref="PMR-H",title="Fix the parser"} 1',
+  )
+  // bucket style: the tail line belongs to neither existing family list — it
+  // is the third bucket (TITLE_PREFIXES) and it is a title line.
+  assert.ok(isTitleLine(tail), tail)
+  assert.ok(!isV2Line(tail), tail)
+  assert.ok(!FROZEN_PREFIXES.some((prefix) => tail.startsWith(prefix)), tail)
+})
+
+test('a title-carrying journal keeps splitLines().v2 and the frozen block unchanged', () => {
+  // Same fixture as the append-site contract test, only with a title on
+  // run-start: splitLines() filters by the v2 family list, so the tail line
+  // lands at the END of the frozen bucket — the v2 bucket is untouched and the
+  // frozen bucket is exactly the frozen block plus that one tail line.
+  const events = [
+    runStartWithTitle('Show the ticket title'),
+    loopState(shift(1), 'running', 'plan'),
+    change('running', '', shift(1)),
+    gateAnswer(shift(5), 'spec-review', 'approve'),
+    change('waiting_human', 'spec_approval_pending', shift(60)),
+    stepStart('plan', 'plan.spec-approval', shift(60)),
+  ]
+  const lines = renderRunHealthLines(REF, events)
+  assert.deepEqual(splitLines(lines).v2, [
+    `pi_flow_state{ref="PMR-H",state="waiting_human",reason="spec_approval_pending"} 1`,
+    `pi_flow_state_start_seconds{ref="PMR-H",state="waiting_human",reason="spec_approval_pending"} ${Math.floor(Date.parse(shift(60)) / 1000)}`,
+    'pi_flow_phase{ref="PMR-H",phase="plan"} 1',
+    'pi_flow_step{ref="PMR-H",phase="plan",step="plan.spec-approval"} 1',
+  ])
+  assert.deepEqual(splitLines(lines).frozen, [
+    'pi_flow_gate_decisions_total{ref="PMR-H",gate="spec-review",choice="approve"} 1',
+    'pi_flow_retry_attempts{ref="PMR-H"} 0',
+    'pi_flow_blocker_retries{ref="PMR-H"} 0',
+    `pi_flow_run_start_seconds{ref="PMR-H"} ${START_SECONDS}`,
+    'pi_flow_run_title_info{ref="PMR-H",title="Show the ticket title"} 1',
+  ])
+})
+
+test('buildPushBody with a title ends in the title line, and stays newline-terminated', () => {
+  const body = buildPushBody(
+    REF,
+    [],
+    [],
+    [
+      runStartWithTitle('Fix the parser'),
+      loopState(shift(1), 'running', 'plan'),
+    ],
+  )
+  assert.ok(
+    body.endsWith(
+      'pi_flow_run_title_info{ref="PMR-H",title="Fix the parser"} 1\n',
+    ),
+    body,
+  )
   assert.ok(!body.endsWith('\n\n'))
 })

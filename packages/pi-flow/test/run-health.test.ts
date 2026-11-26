@@ -437,3 +437,151 @@ test('the frozen block keeps its order and the v2 gauges are appended last', () 
 // AIDEV-NOTE (PMR-ZV9Y 7.1): the pi_flow_gate_wait_seconds tests that lived
 // here are gone with the metric — see the "human wait" note above for why and
 // for the successor family.
+
+// ------------------------------------------------------------ run title info
+// AIDEV-NOTE (PMR-9DZ0 2.1): pi_flow_run_title_info{ref,title} 1 is the
+// ADDITIVE TAIL BLOCK of renderRunHealthLines — appended after the frozen set
+// and after every v2 state family, so the dashboards can join it with
+// `* on (ref) group_left (title)`. Journal-derived: the LAST run-start
+// carrying a title wins (a resume re-journals run-start, and a resume whose
+// lookup failed carries no title at all, so the earlier title must survive).
+// No title anywhere in the journal means no line: an empty-title series would
+// fan out the group_left join for nothing.
+
+function runStartWithTitle(
+  at: string,
+  title: string | undefined,
+  ref: string = REF,
+): FlowRunEvent {
+  if (title === undefined) {
+    return { kind: 'run-start', at, ref, mode: 'personal' }
+  }
+  return { kind: 'run-start', at, ref, mode: 'personal', title }
+}
+
+test('a title-carrying journal renders pi_flow_run_title_info as the LAST line', () => {
+  const lines = renderRunHealthLines('PMR-T', [
+    runStartWithTitle(T0, 'Fix the parser', 'PMR-T'),
+  ])
+  assert.deepEqual(lines, [
+    'pi_flow_retry_attempts{ref="PMR-T"} 0',
+    'pi_flow_blocker_retries{ref="PMR-T"} 0',
+    `pi_flow_run_start_seconds{ref="PMR-T"} ${START_SECONDS}`,
+    'pi_flow_run_title_info{ref="PMR-T",title="Fix the parser"} 1',
+  ])
+})
+
+test('a journal with no title on any run-start renders no title line', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStart(),
+    loopState(shift(1), 'running'),
+  ])
+  assert.equal(
+    lines.find((line) => line.startsWith('pi_flow_run_title_info')),
+    undefined,
+    lines.join('\n'),
+  )
+})
+
+test('the LAST run-start with a title wins (a resume supersedes it)', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStartWithTitle(T0, 'First title'),
+    loopState(shift(1), 'running'),
+    runStartWithTitle(shift(600), 'Renamed title'),
+  ])
+  assert.equal(
+    lines[lines.length - 1],
+    'pi_flow_run_title_info{ref="PMR-H",title="Renamed title"} 1',
+  )
+  assert.equal(
+    lines.filter((line) => line.startsWith('pi_flow_run_title_info')).length,
+    1,
+    lines.join('\n'),
+  )
+})
+
+test('a resume whose run-start carries no title keeps the earlier title', () => {
+  // The failed re-fetch path: index.ts omits the key entirely, so the scan has
+  // to skip title-less run-start events instead of clearing the winner.
+  const lines = renderRunHealthLines(REF, [
+    runStartWithTitle(T0, 'Kept title'),
+    loopState(shift(1), 'running'),
+    runStartWithTitle(shift(600), undefined),
+  ])
+  assert.equal(
+    lines[lines.length - 1],
+    'pi_flow_run_title_info{ref="PMR-H",title="Kept title"} 1',
+  )
+})
+
+// AIDEV-NOTE (PMR-9DZ0 2.1): the writer can never journal an empty title
+// (sanitizeTitle returns undefined for it), so this pins the render-side
+// belt-and-braces guard: an empty title is treated as NO title, never as an
+// empty-title series on the dashboard's group_left(title) join.
+test('an empty title on a run-start renders no title line', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStartWithTitle(T0, ''),
+    loopState(shift(1), 'running'),
+  ])
+  assert.equal(
+    lines.find((line) => line.startsWith('pi_flow_run_title_info')),
+    undefined,
+    lines.join('\n'),
+  )
+})
+
+test('title label values go through escapeLabelValue', () => {
+  // The same seam as every other label: a backslash doubles and a quote is
+  // escaped, so a title can never break out of its quoted label value.
+  // sanitizeTitle strips control chars at journal-write time, so these are the
+  // reachable shapes; String.raw keeps the expected line readable: it is the
+  // exposition text byte-for-byte, not a JS escape sequence.
+  const lines = renderRunHealthLines(REF, [
+    runStartWithTitle(T0, 'Fix "parser" \\ win'),
+  ])
+  assert.equal(
+    lines[lines.length - 1],
+    String.raw`pi_flow_run_title_info{ref="PMR-H",title="Fix \"parser\" \\ win"} 1`,
+  )
+})
+
+test('the title line sits after every frozen and v2 line', () => {
+  const lines = renderRunHealthLines(REF, [
+    runStartWithTitle(T0, 'Fix the parser'),
+    loopState(shift(1), 'paused'),
+    noteText(shift(2), 'human answered'),
+    gateAnswer(shift(3), 'spec-review', 'approve'),
+  ])
+  const titleIndex = lines.findIndex((line) =>
+    line.startsWith('pi_flow_run_title_info'),
+  )
+  assert.equal(titleIndex, lines.length - 1, lines.join('\n'))
+  // the block really does trail the v2 families, not only the frozen ones
+  const waitIndex = lines.findIndex((line) =>
+    line.startsWith('pi_flow_wait_seconds{'),
+  )
+  assert.ok(waitIndex >= 0, lines.join('\n'))
+  assert.ok(waitIndex < titleIndex, lines.join('\n'))
+})
+
+test('buildPushBody appends the title line as the last metric of the body', () => {
+  const rows = costRows()
+  const body = buildPushBody(
+    REF,
+    rows,
+    [{ phase: 'implement', seconds: 5 }],
+    [runStartWithTitle(T0, 'Fix the parser'), loopState(shift(1), 'running')],
+  )
+  assert.ok(
+    body.endsWith(
+      'pi_flow_run_title_info{ref="PMR-H",title="Fix the parser"} 1\n',
+    ),
+    body,
+  )
+  // the events-less body stays byte-identical (the block renders from events)
+  assert.ok(
+    !buildPushBody(REF, rows, [{ phase: 'implement', seconds: 5 }]).includes(
+      'pi_flow_run_title_info',
+    ),
+  )
+})
