@@ -11,16 +11,16 @@
       "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-orchestrator.json",
       "grafana.app/sourceTimestamp": "1795424851000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-25T13:10:04Z"
+      "grafana.app/updatedTimestamp": "2026-11-26T09:49:52Z"
     },
     "creationTimestamp": "2026-11-15T05:26:02Z",
-    "generation": 11,
+    "generation": 12,
     "labels": {
       "grafana.app/deprecatedInternalID": "641681098149888"
     },
     "name": "piflow-orchestrator",
     "namespace": "default",
-    "resourceVersion": "1795612204485985",
+    "resourceVersion": "1795686592745988",
     "uid": "5b95dc2d-d3c4-45ce-901e-cab841cdd4f7"
   },
   "spec": {
@@ -685,7 +685,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "sum by (ref, phase) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))",
+                        "expr": "label_join( ( sum by (ref, phase) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)) ) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\" ) or label_replace( ( sum by (ref, phase) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)) ) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -706,7 +706,7 @@
                     "options": {
                       "indexByName": {
                         "phase": 1,
-                        "ref": 0
+                        "ticket": 0
                       }
                     }
                   }
@@ -718,7 +718,7 @@
                     "options": {
                       "columnField": "phase",
                       "emptyValue": "zero",
-                      "rowField": "ref",
+                      "rowField": "ticket",
                       "valueField": "Value"
                     }
                   }
@@ -966,7 +966,7 @@
                       "group": "prometheus",
                       "kind": "DataQuery",
                       "spec": {
-                        "expr": "label_replace(label_replace(sum by (ref, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
+                        "expr": "label_replace(label_replace(label_join( ( sum by (ref, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}) ) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\"), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\") or label_replace(label_replace(label_replace( ( sum by (ref, mode) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\"}) ) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\"), \"url\", \"https://salaryhero.atlassian.net/browse/$1\", \"ref\", \"(.*)\"), \"url\", \"\", \"mode\", \"^$|personal\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1040,16 +1040,17 @@
                   "spec": {
                     "options": {
                       "indexByName": {
-                        "Duration": 8,
-                        "Implement": 4,
-                        "Jira": 1,
-                        "Last pushed": 9,
-                        "Orchestrator": 2,
-                        "Plan": 3,
-                        "Subagents": 6,
+                        "Duration": 9,
+                        "Implement": 5,
+                        "Jira": 2,
+                        "Last pushed": 10,
+                        "Orchestrator": 3,
+                        "Plan": 4,
+                        "Ref": 1,
+                        "Subagents": 7,
                         "Ticket": 0,
-                        "Ticket total (orchestrator + subagents)": 7,
-                        "Validate": 5
+                        "Ticket total (orchestrator + subagents)": 8,
+                        "Validate": 6
                       },
                       "renameByName": {
                         "Value #A": "Orchestrator",
@@ -1060,7 +1061,8 @@
                         "Value #F": "Ticket total (orchestrator + subagents)",
                         "Value #G": "Duration",
                         "Value #H": "Last pushed",
-                        "ref": "Ticket",
+                        "ref": "Ref",
+                        "ticket": "Ticket",
                         "url": "Jira"
                       }
                     }
@@ -1074,6 +1076,7 @@
                       "include": {
                         "names": [
                           "Ticket",
+                          "Ref",
                           "Jira",
                           "Orchestrator",
                           "Plan",
@@ -1327,7 +1330,7 @@
                   {
                     "matcher": {
                       "id": "byName",
-                      "options": "Ticket"
+                      "options": "Ref"
                     },
                     "properties": [
                       {
@@ -1350,6 +1353,18 @@
                             "url": "/d/piflow-subagents/pi-flow-subagents?var-ref=${__value.raw}"
                           }
                         ]
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 260
                       }
                     ]
                   }
@@ -1383,7 +1398,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=\"cacheRead\"}) / sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))",
+                        "expr": "label_join( ( sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=\"cacheRead\"}) / sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)) ) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\" ) or label_replace( ( sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=\"cacheRead\"}) / sum by (ref) (pi_flow_tokens_total{mode=~\"${mode:raw}\", ref=~\"$ref\", agent=\"main\", kind=~\"input|cacheRead|cacheWrite\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)) ) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1406,15 +1421,18 @@
                         "Time": true,
                         "instance": true,
                         "job": true,
-                        "mode": true
+                        "mode": true,
+                        "title": true
                       },
                       "indexByName": {
-                        "Value": 1,
-                        "ref": 0
+                        "Value": 2,
+                        "ref": 1,
+                        "ticket": 0
                       },
                       "renameByName": {
                         "Value": "Cache hit ratio",
-                        "ref": "Ticket"
+                        "ref": "Ref",
+                        "ticket": "Ticket"
                       }
                     }
                   }
@@ -1502,7 +1520,7 @@
                   {
                     "matcher": {
                       "id": "byName",
-                      "options": "Ticket"
+                      "options": "Ref"
                     },
                     "properties": [
                       {
@@ -1521,6 +1539,18 @@
                             "url": "/d/piflow-subagents/pi-flow-subagents?var-ref=${__value.raw}"
                           }
                         ]
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 260
                       }
                     ]
                   }
@@ -1652,7 +1682,7 @@
                       "kind": "DataQuery",
                       "spec": {
                         "editorMode": "code",
-                        "expr": "topk(15, sum by (ref, subtask) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", subtask!=\"\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s)))",
+                        "expr": "label_join( ( topk(15, sum by (ref, subtask) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", subtask!=\"\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))) ) * on (ref) group_left (title) topk by (ref) (1, pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}), \"ticket\", \" — \", \"ref\", \"title\" ) or label_replace( ( topk(15, sum by (ref, subtask) (pi_flow_run_cost_usd{mode=~\"${mode:raw}\", ref=~\"$ref\", subtask!=\"\"}) and on (ref) (push_time_seconds{job=\"pi-flow\", mode=~\"${mode:raw}\"} \u003e= (time() - $__range_s))) ) unless on (ref) pi_flow_run_title_info{mode=~\"${mode:raw}\", ref=~\"$ref\"}, \"ticket\", \"$1\", \"ref\", \"(.+)\")",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "__auto",
@@ -1675,17 +1705,20 @@
                         "Time": true,
                         "instance": true,
                         "job": true,
-                        "mode": true
+                        "mode": true,
+                        "title": true
                       },
                       "indexByName": {
-                        "Value": 2,
-                        "ref": 0,
-                        "subtask": 1
+                        "Value": 3,
+                        "ref": 1,
+                        "subtask": 2,
+                        "ticket": 0
                       },
                       "renameByName": {
                         "Value": "Cost",
-                        "ref": "Ticket",
-                        "subtask": "Subtask"
+                        "ref": "Ref",
+                        "subtask": "Subtask",
+                        "ticket": "Ticket"
                       }
                     }
                   }
@@ -1754,7 +1787,7 @@
                   {
                     "matcher": {
                       "id": "byName",
-                      "options": "Ticket"
+                      "options": "Ref"
                     },
                     "properties": [
                       {
@@ -1781,6 +1814,18 @@
                       {
                         "id": "custom.width",
                         "value": 120
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "Ticket"
+                    },
+                    "properties": [
+                      {
+                        "id": "custom.width",
+                        "value": 260
                       }
                     ]
                   }
