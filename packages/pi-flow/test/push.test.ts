@@ -416,3 +416,135 @@ test('fetchGroupBody keeps a parseable dump byte-faithful (P2-5 no regression)',
     /pi_flow_run_cost_usd\{agent="main",job="pi-flow"/,
   )
 })
+
+// ---------------------------------------------------------------------------
+// PMR-9DZ0 2.2: stale title series must never ride a re-POST. The gateway
+// merges on write (PMR-WBC2), so a title_info series left in a re-POSTed body
+// could coexist with a stale one from an older run of the same tracking ref
+// and fan out the dashboards' group_left(title) join. `filterGroupLines`
+// therefore drops the family by EXACT metric name — every other `pi_flow*`
+// line keeps surviving byte-identically (instance pair stripped, mode rule
+// intact), and a similar name like `pi_flow_run_title_info_seconds` is NOT
+// dropped.
+// ---------------------------------------------------------------------------
+
+/** The 2.1 render tail as the live gateway exposes it: `instance=""` injected
+ *  and labels sorted (same fixture shape as DUMP). */
+const TITLE_LINE_PERSONAL =
+  'pi_flow_run_title_info{instance="",job="pi-flow",ref="PMR-C0WG",title="Show the ticket title next to every ref"} 1'
+const TITLE_LINE_WORK =
+  'pi_flow_run_title_info{instance="",job="pi-flow",mode="work",ref="DP-236",title="Show the ticket title"} 1'
+const TITLE_DUMP = `${DUMP}${TITLE_LINE_PERSONAL}\n${TITLE_LINE_WORK}\n`
+
+test('fetchGroupBody drops pi_flow_run_title_info from a re-posted personal body (PMR-9DZ0 2.2)', async () => {
+  const { fetchImpl } = responding(TITLE_DUMP)
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'PMR-C0WG',
+    'personal',
+    undefined,
+    fetchImpl,
+  )
+  // Byte-identical to the pin above "keeps only the ref's lines": the title
+  // line is gone, every other survivor is unchanged.
+  assert.deepEqual(result, {
+    ok: true,
+    body: group(
+      'pi_flow_blocker_retries{job="pi-flow",ref="PMR-C0WG"} 0',
+      'pi_flow_run_cost_usd{agent="main",job="pi-flow",phase="plan",ref="PMR-C0WG",session="main-01a202f3",subtask=""} 0',
+      'pi_flow_run_halt_reason{job="pi-flow",reason="flow halted at plan: phase completed without landing the \\"planned\\" label",ref="PMR-C0WG"} 1',
+      'pi_flow_run_status{job="pi-flow",ref="PMR-C0WG",status="halted"} 1',
+    ),
+  })
+})
+
+test('fetchGroupBody drops pi_flow_run_title_info from a re-posted work body (PMR-9DZ0 2.2)', async () => {
+  const { fetchImpl } = responding(TITLE_DUMP)
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'DP-236',
+    'work',
+    undefined,
+    fetchImpl,
+  )
+  assert.deepEqual(result, {
+    ok: true,
+    body: group(
+      'pi_flow_run_duration_seconds{job="pi-flow",mode="work",phase="implement",ref="DP-236"} 56.587',
+      'pi_flow_run_status{job="pi-flow",mode="work",ref="DP-236",status="halted"} 1',
+    ),
+  })
+})
+
+test('fetchGroupBody never re-posts the exact pi_flow_run_title_info name (PMR-9DZ0 2.2)', async () => {
+  const { fetchImpl } = responding(TITLE_DUMP)
+  for (const [ref, mode] of [
+    ['PMR-C0WG', 'personal'],
+    ['DP-236', 'work'],
+  ] as const) {
+    const result = await fetchGroupBody(
+      'https://gw.example',
+      ref,
+      mode,
+      undefined,
+      fetchImpl,
+    )
+    assert.equal(result.ok, true)
+    const body = result.ok ? result.body : ''
+    for (const line of body.split('\n')) {
+      if (line.length === 0) continue
+      assert.notEqual(
+        line.slice(0, line.indexOf('{')).trim(),
+        'pi_flow_run_title_info',
+        `title series survived the re-post filter: ${line}`,
+      )
+    }
+  }
+})
+
+/** Exact-match discipline: the drop keys on the metric NAME, so a differently
+ *  named series (a hypothetical `_seconds` family next to title_info) must
+ *  survive like any other `pi_flow*` line — only the injected `instance=""`
+ *  pair is stripped. */
+test('fetchGroupBody keeps pi_flow_run_title_info_seconds (exact-match only, PMR-9DZ0 2.2)', async () => {
+  const dump = `${DUMP}pi_flow_run_title_info_seconds{instance="",job="pi-flow",ref="PMR-C0WG"} 1.79e+09\n`
+  const { fetchImpl } = responding(dump)
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'PMR-C0WG',
+    'personal',
+    undefined,
+    fetchImpl,
+  )
+  assert.deepEqual(result, {
+    ok: true,
+    body: group(
+      'pi_flow_blocker_retries{job="pi-flow",ref="PMR-C0WG"} 0',
+      'pi_flow_run_cost_usd{agent="main",job="pi-flow",phase="plan",ref="PMR-C0WG",session="main-01a202f3",subtask=""} 0',
+      'pi_flow_run_halt_reason{job="pi-flow",reason="flow halted at plan: phase completed without landing the \\"planned\\" label",ref="PMR-C0WG"} 1',
+      'pi_flow_run_status{job="pi-flow",ref="PMR-C0WG",status="halted"} 1',
+      'pi_flow_run_title_info_seconds{job="pi-flow",ref="PMR-C0WG"} 1.79e+09',
+    ),
+  })
+})
+
+/** P2-5 stays fail-closed for the new family: an unparseable title_info line
+ *  is still a line this group owns, so it fails the READ rather than being
+ *  silently dropped by the 2.2 prune. (Theoretical for our own titles — they
+ *  are sanitized at journal-write time — but the rule must not narrow.) */
+test('fetchGroupBody still fails the read on an unparseable pi_flow_run_title_info line (P2-5 intact)', async () => {
+  const broken = `${DUMP}pi_flow_run_title_info{instance="",job="pi-flow",ref="PMR-C0WG",title="broken 1\n`
+  const { fetchImpl } = responding(broken)
+  const result = await fetchGroupBody(
+    'https://gw.example',
+    'PMR-C0WG',
+    'personal',
+    undefined,
+    fetchImpl,
+  )
+  assert.equal(result.ok, false)
+  assert.match(
+    (result as { ok: false; error: string }).error,
+    /^unparseable dump line: pi_flow_run_title_info/,
+  )
+})

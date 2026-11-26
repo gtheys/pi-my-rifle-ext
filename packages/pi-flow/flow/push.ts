@@ -351,8 +351,10 @@ function labelMatches(
 }
 
 /** Drop `#` comment lines and foreign lines, keep this group's lines with the
- *  injected `instance=""` pair stripped. A non-comment line that could belong
- *  to this group but cannot be PARSED fails the WHOLE read
+ *  injected `instance=""` pair stripped. Two drops are deliberate: metric
+ *  names outside `pi_flow*` (the gateway's own `push_*` bookkeeping,
+ *  PMR-WBC2) and the stale-title prune below (PMR-9DZ0). A non-comment line
+ *  that could belong to this group but cannot be PARSED fails the WHOLE read
  *  ({@link unparseableLine}) rather than being dropped — see P2-5 in
  *  {@link fetchGroupBody}. */
 function filterGroupLines(
@@ -383,6 +385,22 @@ function filterGroupLines(
     // push_failure_time_seconds) carry the group labels but must never be
     // re-POSTed — see the header note. Only `pi_flow*` metrics are ours.
     if (!line.slice(0, open).trim().startsWith('pi_flow')) continue
+    // AIDEV-NOTE (PMR-9DZ0 2.2): title_info never survives a re-POST. The
+    // gateway merges on write (PMR-WBC2), so a stale title series from an older
+    // run of this trackRef group could coexist with the current one and fan out
+    // group_left(title) joins on the dashboards. Dropping it here is correct
+    // under official replace semantics (the GET-transform-POST round-trip
+    // would otherwise RESURRECT that stale title on every tombstone) and a
+    // harmless no-op on the homelab merge gateway — the same belt-and-braces
+    // shape as the pi_flow_step open-gauge drop in the tombstone path
+    // (flow/reconcile.ts). Accepted residual on that merge gateway: a title
+    // CHANGE across runs of one trackRef keeps the old series served until it
+    // is overwritten or deleted by hand (duplicate join rows on the boards);
+    // `topk by (ref) (1, pi_flow_run_title_info)` is the pre-analyzed
+    // dashboard-side lever if it ever bites. The fresh push re-adds exactly the
+    // current title. Match is the EXACT metric name: a hypothetical
+    // `pi_flow_run_title_info_seconds` family survives like any other line.
+    if (line.slice(0, open).trim() === 'pi_flow_run_title_info') continue
     const survivors = tokens.filter(
       (token) => !(token.key === 'instance' && token.value === ''),
     )
