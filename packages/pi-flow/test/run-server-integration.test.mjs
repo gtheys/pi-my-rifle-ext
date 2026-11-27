@@ -213,8 +213,14 @@ test('real daemon: parked loop-state creates pending record, terminal snapshot c
   }
 })
 
+// AIDEV-NOTE: PMR-7B8M 1.8 — 20s ceiling, was 5s: under the root all-workspaces
+// parallel suite (the flow_land gate command) the real-daemon spawn + first
+// projection can exceed 5s on a loaded machine — reproduced identically on main
+// (cab2428), so a pre-existing load flake, not a feature regression. Same class
+// as the PMR-572Y torn-write note below ("refused a landing"). The 100ms poll
+// is unchanged: green runs finish just as fast, only the failure ceiling moves.
 async function waitFor(predicate, what) {
-  const deadline = Date.now() + 5_000
+  const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
     if (predicate()) {
       return
