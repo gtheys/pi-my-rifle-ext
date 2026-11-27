@@ -1064,18 +1064,28 @@ test('P2a: the loop is never locked out by a future-dated external stamp', async
 // while the human is still the bottleneck. `noteExternalV2State` protected only
 // the reverse direction (a loop wait vs an external observation). The fix is a
 // live-wait flag maintained by the external observer and honoured by
-// emitStateChange for every NON-TERMINAL state.
+// emitStateChange for the TWO COMPETING WAIT states only (`waiting_machine` /
+// `waiting_human`) — the NARROW predicate.
 //
-// AIDEV-NOTE: PMR-422Q — arming is REASON-AWARE, not state-aware. ONLY a
-// `waiting_human` whose reason is in SELF_CLOSING_HUMAN_WAITS (flow/vocabulary.ts:
-// `human_ask_pending`, `code_review_pending` — seams that journal their own
-// `running` close) arms the hold; an absent reason never arms it, it only clears
-// it. Do NOT read "non-terminal" as "any external waiting_human holds the loop":
-// `escalation` and `deviation_gate_rerun` journal no running return, so a hold
-// armed on them could never be released — that latch was PMR-0NRH review blocker
-// 2. The full rule (which reasons arm, why the wide hold is safe, what remains)
-// is the reason-aware note at the skip rule in flow/loop.ts — read it before
-// narrowing or widening this predicate.
+// AIDEV-NOTE: PMR-0NRH fix round 2 (review blocker 3) — the hold is NARROW, not
+// "every NON-TERMINAL state". It suppresses only a settle's `waiting_machine` /
+// `waiting_human` (a settle must not flip the board off the live human wait to a
+// DIFFERENT wait), NEVER `running`. Holding `running` was the wide-predicate
+// mistake that removed the loop's only self-heal and stranded every skip path
+// whose close never landed (a fail-closed ask read, an unclear code_review answer)
+// at waiting_human for the rest of the process. Arming stays REASON-AWARE
+// (PMR-422Q): ONLY a `waiting_human` whose reason is in SELF_CLOSING_HUMAN_WAITS
+// (flow/vocabulary.ts: `human_ask_pending`, `code_review_pending` — seams that
+// journal their own close) arms it; `escalation` / `deviation_gate_rerun` (no
+// running return) and an absent reason never arm, they only clear. PLUS one
+// deliberate, documented exception to "the flag is written only in
+// noteExternalV2State": a `running` emission that actually PROCEEDS in
+// emitStateChange clears the flag itself (the loop's own emission is unambiguous,
+// unlike its recency-skipped echo). That clear-on-running is what makes the
+// self-heal literal — without it an armed flag over a `running` journal would
+// suppress every later genuine wait for the rest of the process. The full rule
+// lives at the skip predicate's note in flow/loop.ts — read it before narrowing
+// or widening this predicate.
 //
 // These tests ride the PRODUCTION path: the loop's `journalV2` seam is wired to
 // a real createEventFanoutWriter (index.ts: journalV2 -> journalSerial -> the
@@ -1432,12 +1442,16 @@ test('PMR-422Q code_review_pending: the other self-closing reason arms the hold'
   )
 })
 
-test('PMR-422Q residual gap closed: an advancing settle cannot journal running over a live self-closing wait', async () => {
-  // The gap option A left open (PMR-422Q's title case): the settle ADVANCES, so
-  // it takes snapshot('running'), which the narrow two-wait predicate let
-  // through — the board showed the run working while the human was blocked.
-  // With reason-aware arming the hold covers EVERY non-terminal emission, so
-  // the running return is held too; the external close releases it.
+test('PMR-422Q residual gap (accepted): an advancing settle journals running, which is the self-heal for an unclosed wait', async () => {
+  // PMR-0NRH fix round 2 (review blocker 3) — the gap PMR-422Q was filed for is
+  // DELIBERATELY REOPENED. The settle ADVANCES, so it takes snapshot('running');
+  // the narrow two-wait hold lets `running` through, the board briefly reports a
+  // blocked run as working, and the journal unsticks itself. The owner accepted
+  // that trade: the residual needs a settle during a blocked turn (a path the
+  // plan could never pin down) whereas the wide hold it replaces stranded every
+  // skip path whose close never lands (a fail-closed ask read, an unclear
+  // code_review answer) at waiting_human for the WHOLE process. This test now
+  // pins the self-heal direction: the advancing settle DOES journal running.
   const h = makeHarness([])
   const loop = createFlowLoop(h.deps)
   const { fanout, written } = wireRealFanout(h, loop)
@@ -1449,41 +1463,139 @@ test('PMR-422Q residual gap closed: an advancing settle cannot journal running o
     state: 'waiting_human',
     reason: 'human_ask_pending',
   })
-  // plan lands -> advanceAfter -> snapshot('running'): held while the ask lives.
+  // plan lands -> advanceAfter -> snapshot('running'): NOT held (running is
+  // outside the narrow two-wait predicate) — the self-heal fires.
   h.labels = ['planned']
   await loop.onSettled()
   await flushFanout()
   assert.equal(
     stateSequence(h.v2).filter((s) => s === 'running').length,
-    1,
-    `advancing settle journaled running over the live ask: ${stateSequence(h.v2).join(' -> ')}`,
+    2,
+    `advancing settle did NOT journal the self-heal running: ${stateSequence(h.v2).join(' -> ')}`,
   )
-  assert.equal(
-    resumeV2StateFromEvents(written),
-    'waiting_human',
-    `journal tail not the live ask: ${stateSequence(written).join(' -> ')}`,
-  )
-  // The human answers -> the emitter's close routes as an external running
-  // observation: it clears the flag AND re-seeds the guard, so the journal
-  // reads running again.
-  await fanout.record({
-    kind: 'state-change',
-    at: atOffset(120),
-    ref: 'TP-1',
-    state: 'running',
-  })
   assert.equal(
     resumeV2StateFromEvents(written),
     'running',
-    `close did not release the journal: ${stateSequence(written).join(' -> ')}`,
+    `journal tail not unstuck by the running self-heal: ${stateSequence(written).join(' -> ')}`,
   )
-  // The loop is free again: the next machine wait emits.
+  // The loop's OWN successful running emission also cleared the live-wait flag
+  // (the documented exception at emitStateChange), so the very next machine
+  // wait emits without waiting for an external close that may never arrive.
   h.inFlight = true
   h.labels = []
   await loop.onSettled()
   await flushFanout()
   assert.ok(
     stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
-    `hold not released after the close: ${stateSequence(h.v2).join(' -> ')}`,
+    `running self-heal did not clear the flag: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+})
+
+test("PMR-0NRH anti-strand: the loop's own running emission clears an armed hold so a LATER machine wait still emits", async () => {
+  // The code_review unclear-answer scenario (tools/code-review.ts returns on an
+  // unclear/aborted answer WITHOUT closeReviewGate, telling the agent to re-ask
+  // with no guarantee the re-call lands): a self-closing wait ARMS the hold and
+  // NO external running close ever routes. With only the narrow revert the flag
+  // would stay armed forever (the loop's own echo is recency-skipped in
+  // noteExternalV2State), suppressing every LATER genuine wait — the original bug
+  // class. Clear-on-running is what makes "every skip path self-heals" literally
+  // true: once the loop journals running, the protection is moot AND the flag
+  // drops, so the next waiting_machine{subagent_in_flight} emits normally.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  h.inFlight = true
+  await loop.start(startInput())
+  // An external self-closing wait arms the hold (newer than the loop's stamp).
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'code_review_pending',
+  })
+  // The hazard still holds: a settle taking the machine branch while the gate
+  // wait is live must NOT clobber it (the narrow predicate DOES hold
+  // waiting_machine) — this is the leg that proves the revert kept the
+  // protection. The running self-heal has not happened yet, so the flag is
+  // still armed and waiting_machine is suppressed.
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.deepEqual(
+    stateSequence(h.v2).filter((s) => s.startsWith('waiting_machine')),
+    [],
+    `narrow hold did not protect the live gate wait: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // The run ADVANCES (the agent re-entered the gate or ignored the unclear
+  // answer): snapshot('running') is NOT a competing wait, it journals AND it
+  // clears the flag — the self-heal.
+  h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'running',
+    `running self-heal missing: ${stateSequence(written).join(' -> ')}`,
+  )
+  // ANTI-STRAND: a fresh self-closing wait would re-arm, but here nothing armed
+  // again, so the next machine settle is free. Without clear-on-running the flag
+  // would still be armed from the code_review_pending wait and this would drop.
+  h.inFlight = true
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `armed hold stranded later waits after a running self-heal: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+})
+
+test('PMR-0NRH strand regression: an armed human_ask_pending wait never externally closed is released by a running emission, so every later wait emits', async () => {
+  // The pure strand regression the blocker named: arm via human_ask_pending,
+  // NEVER deliver the external close (a fail-closed read), then let the loop
+  // emit running. Before the fix round's clear-on-running this pinned the
+  // journal for the rest of the process: the loop's own running emission is
+  // recency-skipped in noteExternalV2State so it could not clear the flag, and
+  // every later genuine wait was suppressed. Now the loop's successful running
+  // emission clears it, so a LATER machine wait and a LATER child-ask human
+  // wait both emit.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  // No external close. The loop self-heals by journaling running on an advance.
+  h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'running',
+    `running self-heal missing (strand): ${stateSequence(written).join(' -> ')}`,
+  )
+  // LEG 1: a later machine wait emits (the flag was cleared by the loop's own
+  // running emission, not by an external close).
+  h.inFlight = true
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `later machine wait dropped after the strand: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // LEG 2: a later loop-owned child-ask human wait emits too.
+  h.pendingAsk = true
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_human/subagent_ask_pending'),
+    `later child-ask wait dropped after the strand: ${stateSequence(h.v2).join(' -> ')}`,
   )
 })
