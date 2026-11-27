@@ -132,11 +132,15 @@ stop and route to `feature-plan-aven`.
 ## Aven data model — what to expect
 
 ```text
+<!-- AIDEV-NOTE: PMR-JVJN — subtasks carry no deps; only phases dep-chain.
+     The old subtask→phase dep deadlocked the first subtask of every phase
+     against the implement prompt's blocked-check. Order is the N.M prefix
+     sort. aven-tree-contract.test.ts pins this. -->
 Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>, plan-state=approved  is_epic=true
   └── Phase task   title="1. Phase: <name>"  labels=[phase,impl]  epic child, plan-path  status: todo|active|done
-        └── Subtask  title="1.1 <title>"     labels=[impl]        epic child, plan-path, depends_on phase  status: todo|active|done
+        └── Subtask  title="1.1 <title>"     labels=[impl]        epic child, plan-path  status: todo|active|done
   └── Phase task   title="2. Phase: <name>"  labels=[phase,impl]  epic child, depends_on phase 1  status: todo|active|done
-        └── Subtask  title="2.1 <title>"     labels=[impl]        epic child, depends_on phase  status: todo|active|done
+        └── Subtask  title="2.1 <title>"     labels=[impl]        epic child, plan-path  status: todo|active|done
 ```
 
 - Grouping: **epic membership** — phases and subtasks are children of the
@@ -146,7 +150,8 @@ Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>, plan-state=appr
   `--ready` exposes exactly one phase at a time. The `N.` prefix remains for
   humans and sorting.
 - Subtask ordering: `N.M` title prefixes. **Aven does not sort by them — you
-  do**, when presenting and when resuming.
+  do**, when presenting and when resuming. Subtasks carry no deps
+  (PMR-JVJN) — only phases dep-chain.
 - Statuses: `todo`, `active`, `done` (read and written via `aven edit`).
 
 ## Step 1 — Pull the execution plan

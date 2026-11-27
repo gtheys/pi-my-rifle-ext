@@ -56,7 +56,7 @@ flowchart TD
   H --> H2["aven epic add PHASE REF"]
   H2 --> H2b["aven dep add PHASE PREV_PHASE<br/>(order guarantee: one phase ready at a time)"]
   H2b --> I["aven add 'N.M title' --label impl<br/>--metadata plan-path=ABS --description 'summary + AC'"]
-  I --> I2["aven epic add SUB REF (+ dep add SUB PHASE for gating)"]
+  I --> I2["aven epic add SUB REF"]
   I2 --> J["aven epic list REF  (verify)"]
   J --> K["implement-plan-aven: sort by N./N.M prefix,<br/>first non-done = resume pointer"]
   K -->|per subtask| L["run tests -> commit (Subtask: trailer)<br/>then aven edit SUB --status done"]
@@ -270,7 +270,7 @@ later, in stage 2. Design points the plan must satisfy:
 - **Phases chain via deps** (`aven dep add <phase N> <phase N-1>`) — aven
   enforces execution order (`--ready` shows exactly one phase at a time); the
   prefix is for humans and sorting.
-- Capture each phase ref from its `aven add` output (`created PMR-XXXX`) — subtasks don't depend on it unless you want `--ready` gating.
+- Capture each phase ref from its `aven add` output (`created PMR-XXXX`) — **subtasks NEVER depend on their phase** (PMR-JVJN: subtask→phase deps made the first subtask of every phase permanently blocked; ordering is the N.M prefix sort).
 - Every phase AND subtask section in plan.md carries a self-contained ticket
   body: 1–3 sentences of implementation detail (what to change, where, how)
   plus an explicit **Acceptance criteria** checklist. Stage 2 copies this
@@ -370,6 +370,12 @@ metadata from JSON output (upgrade to JSON when aven gains
 
 ## Aven output contract
 
+<!-- AIDEV-NOTE: PMR-JVJN — subtasks never dep on their phase. The old
+     subtask→phase dep hid subtasks from --ready but deadlocked any agent
+     honoring the implement prompt's blocked-check. Phases chain via deps;
+     subtask order is the N.M prefix sort. aven-tree-contract.test.ts pins
+     this — update it together with any change here. -->
+
 Byte-identical commands for stage 2 and the fallback. `<REF>` is the
 feature ref; `$PHASE_REF` is captured from each phase's `aven add` output.
 Every task gets its own `plan-path` copy so any ref is self-contained, and
@@ -401,8 +407,9 @@ if [ -n "$PREV_PHASE_REF" ]; then
 fi
 PREV_PHASE_REF=$PHASE_REF
 
-# Subtask — epic child of the feature, gated on its phase (hidden from --ready
-# until the phase is done). Same description rule: verbatim from its plan.md
+# Subtask — epic child of the feature, NO phase dep (PMR-JVJN: subtask→phase
+# deps deadlocked the first subtask of every phase; ordering is the N.M prefix
+# sort). Same description rule: verbatim from its plan.md
 # section, summary + acceptance criteria, self-contained.
 SUBTASK_REF=$(aven add "N.M <title>" --label impl --metadata plan-path=<abs plan.md> \
   --description "$(cat <<'EOF'
@@ -413,7 +420,6 @@ Acceptance criteria:
 EOF
 )" 2>&1 | grep -oP 'created \K\S+')
 aven epic add $SUBTASK_REF <REF>
-aven dep add $SUBTASK_REF $PHASE_REF
 ```
 
 Repeat per phase, incrementing `N` (`1.`, `2.`, ...); subtasks `1.1`, `1.2`,
