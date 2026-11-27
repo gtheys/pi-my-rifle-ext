@@ -14,7 +14,7 @@ not this file.
 | **`plan-path`** | Per-ticket metadata pointing at the absolute plan.md path — the only metadata the tree creation writes. `aven list --has-metadata plan-path --open` finds planned features. |
 | **`plan.md`** | The "how" artifact (design, constraints, acceptance criteria), living on the filesystem — counterpart of the aven tree's "what/order". Its path comes from the `resolve_feature_path` resolver (see the **Flow document paths** contract in the repo `AGENTS.md`). `- [x]` items are done. |
 | **Phase** | Epic child titled `"N. Phase: <name>"`, labels `[phase,impl]`, dep-chained on the previous phase so `aven list --ready` exposes one phase at a time. |
-| **Subtask** | Epic child titled `"N.M <title>"`, label `[impl]`, depends on its phase. Aven does NOT sort by prefix — skills sort client-side; prefixes are for humans. |
+| **Subtask** | Epic child titled `"N.M <title>"`, label `[impl]`, carries no deps — phases dep-chain, subtasks never dep on their phase (PMR-JVJN). Aven does NOT sort by prefix — skills sort client-side; prefixes are for humans. |
 | **Oneshot** | Shortcut for tickets whose description is already a complete spec: worker → tests → commit → done, no plan.md, no tree. |
 | **Jira-synced ticket** | Ticket synced from Jira by `jira-aven-sync` (`jira-key`/`jira-url`/`jira-status` metadata, `jira` label) living in the Jira project's aven project. Never worked on directly — work happens on a **local epic** pulled into the repo's project (`jira-ref` metadata, dep-linked to the synced ticket). |
 | **Pull-in (find-or-create)** | Workspace-wide `jira-key` lookup → repo-project `jira-ref` lookup → create local epic + `aven dep add` if missing. The whole flow then runs on the epic. |

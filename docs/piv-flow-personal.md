@@ -333,8 +333,8 @@ refuse ("run /plan first").
 
 **Routing:** `bug` label → reproduce-first flow (write the failing test
 first, fix, suite green, commit). `plan` label (or epic with open children)
-→ the `implement-plan-aven` skill walks subtasks in dependency order, each
-with its own test run + commit, never starting a blocked subtask. Default →
+→ the `implement-plan-aven` skill walks subtasks in `N.M` prefix order, each
+with its own test run + commit (subtasks carry no deps — PMR-JVJN). Default →
 oneshot: one implement→test→commit cycle.
 
 **Hard rules for every route:**

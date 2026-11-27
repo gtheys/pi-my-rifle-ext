@@ -33,9 +33,9 @@ Data model of a planned feature:
 ```text
 Feature ticket  metadata: plan-path=<abs plan.md>, plan-state=draft|review|approved  is_epic=true
   └── Phase   title="1. Phase: <name>"  labels=[phase,impl]  epic child, plan-path
-        └── Subtask  title="1.1 <title>"  labels=[impl]  epic child, plan-path, depends_on phase
+        └── Subtask  title="1.1 <title>"  labels=[impl]  epic child, plan-path
   └── Phase   title="2. Phase: <name>"  labels=[phase,impl]  epic child, plan-path, depends_on phase 1
-        └── Subtask  title="2.1 <title>"  labels=[impl]  epic child, plan-path, depends_on phase
+        └── Subtask  title="2.1 <title>"  labels=[impl]  epic child, plan-path
 ```
 
 **Plan gate**: the tree exists only after approval. `plan-state` on the
@@ -51,10 +51,10 @@ Three structural rules:
 1. **Grouping = epic membership.** The feature ticket becomes an epic; every
    phase AND subtask is an epic child (`aven epic add <child> <feature>`).
    No extra metadata for grouping — `plan-path` is the only metadata written.
-2. **Ordering = dependency chain.** Phase N depends on phase N−1
-   (`aven dep add`), so `aven list --ready` exposes exactly one phase at a
-   time. Subtasks depend on their phase (hidden from `--ready` until it
-   finishes).
+2. **Ordering = phase dep chain + prefix sort.** Phase N depends on
+   phase N−1 (`aven dep add`), so `aven list --ready` exposes exactly one
+   phase at a time. Subtasks carry NO deps (PMR-JVJN) — ordering within
+   a phase is the `N.M` prefix sort, done client-side.
 3. **Naming = `N.` / `N.M` title prefixes.** Aven does NOT sort by prefix —
    the skills sort client-side for presentation and resume. Prefixes are for
    humans.
@@ -229,10 +229,9 @@ with `unknown-ref`, check routing with `aven doctor`.
    if [ -n "$PREV_PHASE_REF" ]; then aven dep add $PHASE_REF $PREV_PHASE_REF; fi
    PREV_PHASE_REF=$PHASE_REF
 
-   # Subtask (epic child, gated on its phase)
+   # Subtask (epic child, no phase dep — PMR-JVJN)
    SUBTASK_REF=$(aven add "N.M <title>" --label impl --metadata plan-path=<abs> 2>&1 | grep -oP 'created \K\S+')
    aven epic add $SUBTASK_REF <REF>
-   aven dep add $SUBTASK_REF $PHASE_REF
    ```
 
    Planner constraints:
@@ -346,7 +345,7 @@ ASK — never a silent in-place fallback.
 
 | Purpose | Command |
 |---|---|
-| Choose work | `aven list --ready` (excludes blocked + epics) |
+| Choose work | `aven list --ready` (open, unblocked, non-epic — since PMR-JVJN subtasks of open trees appear here too; pick those up via their feature + `implement-plan-aven`) |
 | Bug triage queue | `aven list --ready --label bug` |
 | Inspect before acting | `aven context <REF>` / `aven show <REF> --full` |
 | Find planned features | `aven list --has-metadata plan-path --open` |
