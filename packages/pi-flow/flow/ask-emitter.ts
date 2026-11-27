@@ -18,8 +18,8 @@
 //   does no journal I/O. It runs before ANY tracking, so a nested ask is never
 //   counted here and its close is a Map miss (the owning tool closes its own
 //   wait).
-// - SECONDARY: for a non-nested open, scan the journal tail
-//   (resumeV2StateFromEvents, last state-change wins) and skip if it already
+// - SECONDARY: for a non-nested open, scan the journal tail (lastV2StateRecord,
+//   last state-change wins, FLOW_STATES-validated) and skip if it already
 //   reads waiting_human — covers a loop-owned wait (e.g.
 //   subagent_ask_pending) and a second concurrent ask in this session. A
 //   failed/unreadable journal degrades to "no open wait" (fail-open: a
@@ -54,27 +54,39 @@
 //    while openAsks is still non-empty (other asks still block the human).
 //    Only the finalize that empties the Map may close the wait.
 // 3. REASON-CHECKED CLOSE: even when the Map is empty, re-read the journal
-//    tail with projectRunState(events)?.currentState (CurrentStateRecord
-//    carries the reason; resumeV2StateFromEvents only returns the state, which
-//    is no longer enough here) and journal state-change{running} ONLY when
-//    that tail is waiting_human with reason human_ask_pending, i.e. our wait
-//    is the one still open. Any other reason (notably code_review_pending) or
-//    any non-waiting_human tail means another seam owns the wait or it is
-//    already closed — write nothing. That is what makes the batched
-//    code_review case correct: a plain ask's close must not clear the gate's
-//    still-open wait. The open side deliberately keeps resumeV2StateFromEvents
-//    (state alone is enough to decide "a wait is already open", it scans raw
-//    state-change lines so it works even on a journal whose run-start line is
-//    missing, and it is the already-shipped behaviour for that decision).
+//    tail with lastV2StateRecord(events) and journal state-change{running} ONLY
+//    when that tail is waiting_human with reason human_ask_pending, i.e. our
+//    wait is the one still open. Any other reason (notably code_review_pending)
+//    or any non-waiting_human tail means another seam owns the wait or it is
+//    already closed — write nothing. That is what makes the batched code_review
+//    case correct: a plain ask's close must not clear the gate's still-open wait.
+//    AIDEV-NOTE: PMR-0NRH fix round 2 (finding P2-a) — BOTH sides now derive the
+//    tail from the SAME helper (lastV2StateRecord: a raw FLOW_STATES-validated
+//    state-change scan, no run-start precondition). They previously differed: the
+//    open used resumeV2StateFromEvents (raw scan, works on a journal whose
+//    run-start line is missing) while the close used projectRunState, whose
+//    run-start precondition is STRICTLY STRONGER — so a journal the emitter could
+//    open it could never close (the reviewer's P2-a proof, pinned by the
+//    'P2-a: a journal with NO run-start' test). Deriving both from one scan
+//    removes the asymmetry; it also let this module drop its cross-module import
+//    of resumeV2StateFromEvents from ./loop.ts.
 // 4. FAIL CLOSED AT CLOSE: an unreadable/absent tail (readEvents rejects,
-//    returns null, or a journal from which no currentState can be derived)
-//    means NO running is journaled. This is the opposite of the fail-OPEN rule
-//    on the open side, and the asymmetry is intentional: a false `running` is
-//    the exact bug being fixed (it destroys the human wait — invisible ask,
-//    no page, under-counted seconds) and cannot be undone from here, whereas a
-//    stale `waiting_human` is recoverable — the loop's next
-//    emitStateChange('running') is not a competing wait and still emits, so
-//    the journal unsticks itself.
+//    returns null, or a journal from which no valid state-change can be derived
+//    by lastV2StateRecord) means NO running is journaled. This is the opposite of
+//    the fail-OPEN rule on the open side, and the asymmetry is intentional: a
+//    false `running` is the exact bug being fixed (it destroys the human wait —
+//    invisible ask, no page, under-counted seconds) and cannot be undone from
+//    here, whereas a stale `waiting_human` is recoverable — the loop's next
+//    emitStateChange('running') is NOT a competing wait under the narrow guard
+//    predicate (flow/loop.ts), so it still emits and additionally clears the
+//    loop's live-wait flag, unsticking the journal. AIDEV-NOTE: PMR-0NRH fix
+//    round 2 (review blocker 3) — this self-heal is TRUE AGAIN: bf1d592 briefly
+//    widened the loop hold to every non-terminal state, which suppressed the
+//    loop's own `running` and made a skipped close strand the journal for the
+//    whole process. That widening is reverted to the narrow two-competing-wait
+//    hold (and reason-aware arming was what actually fixed the escalate latch),
+//    so the recovery this asymmetry relies on holds. See the skip-rule note in
+//    flow/loop.ts.
 //
 // MAP-GATED CLOSE: openAsks (toolCallId -> ref) guarantees a close can NEVER
 // fire for a call this emitter did not open (defence in depth for tool-owned
@@ -98,9 +110,9 @@
 // guard in sync (single-writer seam).
 
 import type { FlowRunEvent } from '../run-state.ts'
-import { projectRunState } from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
-import { resumeV2StateFromEvents } from './loop.ts'
+import type { FlowReason, FlowState } from './vocabulary.ts'
+import { FLOW_STATES } from './vocabulary.ts'
 
 export interface AskEmitterDeps {
   /** The session's active flow ref (loop.activeRef()); null = no run bound. */
@@ -124,6 +136,41 @@ export interface AskEmitter {
   onToolFinalized: (event: { toolCallId: string }) => Promise<void>
 }
 
+/**
+ * AIDEV-NOTE: PMR-0NRH fix round 2 (finding P2-a) — the SINGLE journal-tail
+ * derivation both sides of this module use. The open used to scan raw
+ * `state-change` lines via resumeV2StateFromEvents while the close used
+ * projectRunState(events)?.currentState, whose `run-start` precondition is
+ * strictly STRONGER — so the reviewer proved a journal this emitter can OPEN but
+ * never CLOSE (a swallowed run-start write at start(), then a later successful
+ * state-change write). Both sides now read the tail the same, more permissive
+ * way: the LAST `state-change` line wins, validated against the closed
+ * FLOW_STATES vocabulary exactly as resumeV2StateFromEvents does, returning its
+ * {state, reason} or undefined (no events / no valid state-change). `null` input
+ * (unreadable journal) returns undefined, so the close stays fail-CLOSED. The
+ * open decides on `state === 'waiting_human'`; the close on
+ * `state === 'waiting_human' && reason === 'human_ask_pending'`. Local to this
+ * module because the symmetry is its private concern.
+ */
+function lastV2StateRecord(
+  events: readonly FlowRunEvent[] | null,
+): { state: FlowState; reason: FlowReason | '' } | undefined {
+  if (events === null) {
+    return undefined
+  }
+  let last: { state: FlowState; reason: FlowReason | '' } | undefined
+  for (const event of events) {
+    if (event.kind !== 'state-change') {
+      continue
+    }
+    if (!FLOW_STATES.includes(event.state)) {
+      continue
+    }
+    last = { state: event.state, reason: event.reason ?? '' }
+  }
+  return last
+}
+
 export function createAskEmitter(deps: AskEmitterDeps): AskEmitter {
   // In-flight asks this emitter is responsible for: toolCallId -> ref. Doubles
   // as the refcount that keeps a parallel batch's close from firing early.
@@ -137,9 +184,11 @@ export function createAskEmitter(deps: AskEmitterDeps): AskEmitter {
       if (openAsks.size > 0) return
       if (deps.writer === undefined) return
       const events = await deps.readEvents(ref)
-      // FAIL CLOSED: an unreadable tail must not buy a false `running`.
-      if (events === null) return
-      const tail = projectRunState(events)?.currentState
+      // FAIL CLOSED: an unreadable tail (events null) or a journal with no valid
+      // state-change line must not buy a false `running`. lastV2StateRecord folds
+      // both into `undefined` — the SAME tail the open scans, so a journal this
+      // seam opened it can also close (review finding P2-a).
+      const tail = lastV2StateRecord(events)
       if (tail === undefined) return
       // REASON CHECK: only close the wait this seam opened.
       if (tail.state !== 'waiting_human') return
@@ -171,9 +220,10 @@ export function createAskEmitter(deps: AskEmitterDeps): AskEmitter {
         openAsks.set(event.toolCallId, ref)
         // SECONDARY dedupe (journaling only): a non-nested open while a
         // waiting_human is already journaled (loop-owned wait, or ask #2..N of
-        // a parallel batch whose sibling just opened the wait).
+        // a parallel batch whose sibling just opened the wait). Same tail
+        // derivation as the close (lastV2StateRecord, review finding P2-a).
         const events = await deps.readEvents(ref)
-        if (resumeV2StateFromEvents(events) === 'waiting_human') return
+        if (lastV2StateRecord(events)?.state === 'waiting_human') return
         await deps.writer.record({
           kind: 'state-change',
           at: deps.now(),

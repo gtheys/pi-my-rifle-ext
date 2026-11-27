@@ -32,6 +32,14 @@ function harness(
     journal?: readonly FlowRunEvent[]
     /** true = leave deps.writer unset (ISC-A-2 no-op tests). */
     noWriter?: boolean
+    /**
+     * true = seed the fake journal with NO `run-start` line (review finding
+     * P2-a). Production always writes run-start at start(), but a swallowed
+     * run-start write (ISC-A-5) followed by a later successful state-change
+     * write leaves exactly this shape, which projectRunState cannot fold. The
+     * open could always see it; after the fix the close can too.
+     */
+    noRunStart?: boolean
     /** false = the write fails (record resolves false, nothing lands). */
     recordResult?: boolean
     throwOn?: (event: FlowRunEvent) => boolean
@@ -43,16 +51,20 @@ function harness(
   const ref = activeRef ?? 'PMR-X'
   const recorded: FlowRunEvent[] = []
   // The fake journal: the run-start line production always writes first, then
-  // any seeded tail, then only the writes that landed.
-  const journal: FlowRunEvent[] = [
-    {
+  // any seeded tail, then only the writes that landed. `noRunStart` drops the
+  // first line to reproduce the P2-a journal shape (a swallowed run-start write
+  // followed by a later successful state-change write). No ternary per repo
+  // style: build the seed conditionally then spread.
+  const seed: FlowRunEvent[] = []
+  if (opts.noRunStart !== true) {
+    seed.push({
       kind: 'run-start',
       at: '2026-11-25T00:00:00.000Z',
       ref,
       mode: 'personal',
-    },
-    ...(opts.journal ?? []),
-  ]
+    })
+  }
+  const journal: FlowRunEvent[] = [...seed, ...(opts.journal ?? [])]
   let readMode: ReadMode = 'ok'
   if (opts.readMode !== undefined) readMode = opts.readMode
 
@@ -272,6 +284,40 @@ test('fail closed: a null journal read at close time journals no running', async
   await emitter.onToolFinalized({ toolCallId: 'tc-e2' })
   assert.equal(closesOf(recorded).length, 0)
   assert.equal(recorded.length, 1)
+})
+
+test('P2-a: a journal with NO run-start is both openable AND closable', async () => {
+  // The reviewer proved a journal shape the emitter could OPEN but never CLOSE:
+  // the open scanned raw state-change lines (resumeV2StateFromEvents, no
+  // precondition) while the close folded via projectRunState, whose run-start
+  // precondition is strictly stronger — so a swallowed run-start write (ISC-A-5)
+  // followed by a later successful state-change write left the wait un-closable.
+  // After the fix both sides derive the tail from ONE scan (lastV2StateRecord),
+  // so the no-run-start journal opens AND closes.
+  const { recorded, emitter } = harness({
+    activeRef: 'PMR-X',
+    journal: [],
+    noRunStart: true,
+  })
+
+  // OPEN: with no run-start the tail scan still finds no wait -> the open lands.
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-p2a',
+  })
+  assert.equal(recorded.length, 1)
+  const open = recorded[0]
+  if (open?.kind === 'state-change') {
+    assert.equal(open.state, 'waiting_human')
+    assert.equal(open.reason, 'human_ask_pending')
+  } else {
+    assert.fail('expected the ask open event')
+  }
+  // CLOSE: the SAME tail scan now finds our waiting_human{human_ask_pending}
+  // (projectRunState could not — it needs a run-start) and journals running.
+  await emitter.onToolFinalized({ toolCallId: 'tc-p2a' })
+  assert.equal(recorded.length, 2)
+  assert.equal(closesOf(recorded).length, 1)
 })
 
 test('sequential reuse: after a batch fully closes, a later ask opens and closes normally', async () => {
