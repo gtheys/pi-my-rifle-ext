@@ -86,8 +86,8 @@ single source `flow/vocabulary.ts` (zero-import, pure) and mirrored in the Grafa
 | `state` | `running \| waiting_human \| waiting_machine \| halted \| done \| stale` | `flow/vocabulary.ts FlowState` |
 | `phase` | `plan \| implement \| validate \| feedback` | unchanged `FlowPhase` (loop / `PHASE_LABEL` world) |
 | `step` | registered names only (§4): `plan.spec-approval`, `validate.code-review`, `validate.deviation`, `validate.spec-diff`, `validate.aven-notes` | `flow/steps.ts STEP_REGISTRY` |
-| `reason` (closed enum, 11) | `spec_approval_pending \| code_review_pending \| escalation \| retry_budget_exhausted \| blocker_budget_exhausted \| label_miss \| deviation_gate_rerun \| subagent_in_flight \| subagent_ask_pending \| prompt_send_failed \| aven_read_failed` | `flow/vocabulary.ts FlowReason` |
-| `wait_kind` | `human \| machine` — derived from the reason | `reasonWaitKind()` (`spec_approval_pending`, `code_review_pending`, `escalation`, `subagent_ask_pending` → human; all others → machine) |
+| `reason` (closed enum, 12) | `spec_approval_pending \| code_review_pending \| escalation \| retry_budget_exhausted \| blocker_budget_exhausted \| label_miss \| deviation_gate_rerun \| subagent_in_flight \| subagent_ask_pending \| human_ask_pending \| prompt_send_failed \| aven_read_failed` | `flow/vocabulary.ts FlowReason` |
+| `wait_kind` | `human \| machine` — derived from the reason | `reasonWaitKind()` (`spec_approval_pending`, `code_review_pending`, `escalation`, `subagent_ask_pending`, `human_ask_pending` → human; all others → machine) |
 | `gate` | `spec-review \| code-review \| deviation \| answer` | existing gate-answer labels, unchanged |
 
 `LoopRunStatus` (`running | paused | halted | done`) is **NOT** renamed or overwritten — v2 state is **derived** from
@@ -103,8 +103,12 @@ in the board, NOT — see §6 gotcha):
 | `spec_approval_pending` | `/flow answer {ref} approve` |
 | `code_review_pending` | `/flow answer {ref} pass\|fail` |
 | `escalation` | `intervene: /flow {ref} (or fix forward)` |
-| `subagent_ask_pending` | `answer the subagent (its pane or answer_subagent)` — the only human action with **no** `{ref}`: no slash command unblocks it |
+| `subagent_ask_pending` | `answer the subagent (its pane or answer_subagent)` — one of the two human actions with **no** `{ref}`: no slash command unblocks it |
+| `human_ask_pending` | `answer the agent (the ask in this session)` — the second human action with **no** `{ref}`: like the subagent ask it is answered in-session, so no slash command unblocks it |
 | everything else | `—` |
+
+`human_ask_pending` is reserved for the generic ask emitter (PMR-0NRH): it journals this reason around a plain mid-turn
+`ask_user_question` in the main session, and its emission-seam-map row lands with that emitter (§4).
 
 **Journal v2 event kinds (in `run-state.ts`):**
 
