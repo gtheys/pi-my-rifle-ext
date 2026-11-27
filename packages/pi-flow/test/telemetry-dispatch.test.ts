@@ -919,15 +919,21 @@ test('index.ts wraps its ONE session writer in the fan-out dispatcher', () => {
   // the event `at` is threaded through for the P2a monotonic guard. A future
   // reader who "aligns" this to onStateChange loses the ISC-A-5 isolation and
   // the telemetry-off posture — this assertion keeps production honest.
+  // PMR-422Q (PMR-0NRH review blocker 2) adds `reason`: the loop may only arm
+  // its live-wait hold for a waiting_human whose OWNING SEAM journals its own
+  // external close (SELF_CLOSING_HUMAN_WAITS in flow/vocabulary.ts), so without
+  // the reason an escalate/deviation-rerun wait — which never closes — latches
+  // the hold and silently drops every later loop-emitted wait. Destructuring is
+  // load-bearing for this pin: `flowLoopForV2.noteExternalV2State(event.ref,
+  // event.state, event.at, event.reason)` exceeds Biome's 80 columns and gets
+  // wrapped, so the pinned literal is the short one-line form.
   assert.ok(
     index.includes('telemetryHandlers.onV2StateChangeObserved = (event) => {'),
     'index.ts must wire the loop to the observer slot',
   )
   assert.ok(
-    index.includes(
-      'flowLoopForV2.noteExternalV2State(event.ref, event.state, event.at)',
-    ),
-    'index.ts must thread event.at into noteExternalV2State (P2a recency)',
+    index.includes('flowLoopForV2.noteExternalV2State(ref, state, at, reason)'),
+    'index.ts must thread event.at (P2a recency) and event.reason (reason-aware live-wait arming, PMR-422Q) into noteExternalV2State',
   )
 })
 

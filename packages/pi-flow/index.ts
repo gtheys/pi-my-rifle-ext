@@ -530,10 +530,18 @@ export default function (
   // event `at` is threaded through so noteExternalV2State stays monotonic on
   // recency: a tool write bypasses journalSerial and can route after the loop's
   // queued running echo, so without the timestamp the guard could revert to a
-  // stale state (the original P1 symptom in a narrow window).
+  // stale state (the original P1 symptom in a narrow window). PMR-422Q (PMR-0NRH
+  // review blocker 2) threads `event.reason` too: the loop's live-wait hold may
+  // only be armed by a waiting_human whose OWNING SEAM journals its own running
+  // close (SELF_CLOSING_HUMAN_WAITS in flow/vocabulary.ts), because a hold armed
+  // on a wait that never closes — run_attempt escalate, deviation rerun — latches
+  // and silently drops every later loop-emitted wait for the rest of the
+  // process's run. Without the reason the loop cannot tell those apart, so it can
+  // only hold the waits it knows will be released.
   telemetryHandlers.onV2StateChangeObserved = (event) => {
     if (flowLoopForV2 === null) return
-    flowLoopForV2.noteExternalV2State(event.ref, event.state, event.at)
+    const { ref, state, at, reason } = event
+    flowLoopForV2.noteExternalV2State(ref, state, at, reason)
   }
   const writer: EventWriter = createEventFanoutWriter(
     createEventWriter(
