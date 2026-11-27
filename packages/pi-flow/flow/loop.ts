@@ -25,7 +25,8 @@ import {
 } from './attribution.ts'
 import { nextPhase, PHASE_LABEL, type Phase } from './orchestrate.ts'
 import { buildPhasePrompt, type PhasePromptInput } from './phase-prompts.ts'
-import { FLOW_STATES, type FlowReason, type FlowState } from './vocabulary.ts'
+import type { FlowReason, FlowState } from './vocabulary.ts'
+import { FLOW_STATES, reasonOwnsExternalClose } from './vocabulary.ts'
 import { type FlowWorktree, getFlowWorktree } from './worktree-context.ts'
 
 export interface FlowLoopDeps {
@@ -219,8 +220,24 @@ export interface FlowLoop {
    * is set by BOTH this method and the loop's own `emitStateChange`; the loop's
    * own emission is never recency-blocked (it writes the guard unconditionally),
    * so a stale future-dated external write can never lock the loop out.
+   *
+   * AIDEV-NOTE: PMR-422Q (PMR-0NRH review blocker 2) — the OPTIONAL `reason`
+   * parameter makes the live-wait hold REASON-AWARE. `state` alone cannot tell a
+   * wait that closes itself (the ask emitter, the code-review gate — each journals
+   * its own `state-change{running}`) from one that NEVER journals the running
+   * return (`escalation`, `deviation_gate_rerun`), and only the former may arm the
+   * hold: a hold nothing can release is a latch. See SELF_CLOSING_HUMAN_WAITS in
+   * flow/vocabulary.ts (ISC-A-1 — the property lives with the other reason
+   * semantics, not in a second list here). The parameter is optional so the
+   * PMR-ZV9Y call sites keep working unchanged: an ABSENT reason can never arm
+   * the hold, it only clears it. index.ts threads `event.reason`.
    */
-  noteExternalV2State(ref: string, state: FlowState, at: string): void
+  noteExternalV2State(
+    ref: string,
+    state: FlowState,
+    at: string,
+    reason?: FlowReason | '',
+  ): void
 }
 
 class FlowLoopImpl implements FlowLoop {
@@ -242,10 +259,12 @@ class FlowLoopImpl implements FlowLoop {
   // width UTC-`Z` format everywhere, so string compare == chronological compare.
   // null = nothing applied yet (the first external observation always wins).
   private lastV2At: string | null = null
-  // AIDEV-NOTE: PMR-0NRH 3.1 — LIVE-WAIT flag (ISC-4). True ONLY while a
-  // NEWER-THAN-WATERMARK EXTERNAL `state-change` observed `waiting_human`, i.e.
-  // a live tool-journaled human wait (an open mid-turn ask_user_question — the
-  // ask-emitter's open — or a code_review gate). Three semantics, each load-
+  // AIDEV-NOTE: PMR-0NRH 3.1, reason-aware per PMR-422Q (review blocker 2) —
+  // LIVE-WAIT flag (ISC-4). True ONLY while a newer-than-watermark EXTERNAL
+  // `state-change` observed a `waiting_human` whose reason closes itself (see
+  // SELF_CLOSING_HUMAN_WAITS in flow/vocabulary.ts), i.e. a live tool-journaled
+  // human wait with a guaranteed release: an open mid-turn ask_user_question
+  // (the ask emitter) or an open code_review gate. Four semantics, each load-
   // bearing:
   //   * EXTERNAL-ONLY: written in noteExternalV2State, never in emitStateChange.
   //     The loop's own emissions cannot flip it either way — their echo through
@@ -253,13 +272,22 @@ class FlowLoopImpl implements FlowLoop {
   //     watermark BEFORE the write) so the pre-existing P2a recency guard skips
   //     it before this field is touched. Without that ordering the loop would
   //     clear its own hold and the guard would be a no-op.
-  //   * LIVE-ONLY: cleared by the next newer external observation, which is the
-  //     ask's own `state-change{running}` close. While set, emitStateChange
-  //     holds the two COMPETING WAIT states (`waiting_machine`, `waiting_human`)
-  //     so a settle with a subagent in flight cannot flip the board back to
-  //     "machine working" while the human is still the bottleneck. Why only
-  //     those two — and the residual gap that narrowing leaves — is recorded at
-  //     the skip rule itself (see the PMR-0NRH note in emitStateChange).
+  //   * REASON-GATED (PMR-422Q): arming used to key on `state === 'waiting_human'`
+  //     alone, which latched the hold on `escalation` — run_attempt escalates and
+  //     NEVER journals the running return, and the loop's own snapshot('running')
+  //     that unsticks such a journal is recency-skipped by this method, so
+  //     nothing could ever clear the flag until start(). Every later
+  //     loop-emitted waiting_machine / waiting_human / spec-approval pause was
+  //     silently dropped for the rest of the process's run. Only a reason whose
+  //     owning seam journals its own close may arm the hold; an absent reason
+  //     (a three-argument call) never arms, it only clears.
+  //   * LIVE-ONLY: cleared by the next newer external observation — for an armed
+  //     wait that observation IS the ask's own `state-change{running}` close, which
+  //     is why arming only self-closing reasons cannot strand the hold. While set,
+  //     emitStateChange holds every NON-TERMINAL emission so a settle cannot flip
+  //     the board off the live human wait, not even back to `running` (the gap
+  //     PMR-422Q was filed for). Rationale and the terminal carve-out live at the
+  //     skip rule (see the note in emitStateChange).
   //   * RESET-ON-START: in-process state, so a process that died mid-ask loses
   //     it; a stale `waiting_human` journal tail must never pin a restarted run
   //     (ISC-10) — the seeded guard + snapshot('running') unstick the journal
@@ -298,18 +326,32 @@ class FlowLoopImpl implements FlowLoop {
   // queued running event). The loop's own emissions also pass the observer:
   // writing the just-emitted state back is a harmless idempotent no-op — and the
   // echo's `at` equals lastV2At so it is recency-skipped, never a re-pin.
-  noteExternalV2State(ref: string, state: FlowState, at: string): void {
+  noteExternalV2State(
+    ref: string,
+    state: FlowState,
+    at: string,
+    reason?: FlowReason | '',
+  ): void {
     if (this.state === null) return
     if (this.state.ref !== ref) return
     if (!FLOW_STATES.includes(state)) return
     if (this.lastV2At !== null && at <= this.lastV2At) return
     this.lastEmittedV2 = state
     this.lastV2At = at
-    // PMR-0NRH 3.1 — the live-wait flag follows the SAME observations the guard
-    // does, AFTER every existing guard passed (ref, vocabulary, recency): set on
-    // an external waiting_human, cleared by any other newer external state. The
-    // ask's close (an external `running`) releases the hold exactly this way.
-    this.externalHumanWaitOpen = state === 'waiting_human'
+    // PMR-0NRH 3.1, reason-aware per PMR-422Q — the live-wait flag follows the
+    // SAME observations the guard does, AFTER every existing guard passed (ref,
+    // vocabulary, recency) so the loop's own echo can neither arm nor clear it.
+    // It ARMS only for a waiting_human whose reason owns its external close
+    // (ask emitter / code-review gate) and CLEARS on every other newer external
+    // observation, including an absent reason — the ask's `state-change{running}`
+    // close is exactly such an observation, which is why a self-closing reason
+    // cannot strand the hold, while escalation (no running return) must never
+    // arm it.
+    let armsLiveWait = false
+    if (state === 'waiting_human' && reason !== undefined) {
+      armsLiveWait = reasonOwnsExternalClose(reason)
+    }
+    this.externalHumanWaitOpen = armsLiveWait
   }
 
   async start(input: FlowStartInput): Promise<void> {
@@ -737,33 +779,46 @@ class FlowLoopImpl implements FlowLoop {
   private emitStateChange(state: FlowState, reason?: FlowReason): void {
     if (this.state === null) return
     if (this.lastEmittedV2 === state) return
-    // AIDEV-NOTE: PMR-0NRH — while a TOOL-journaled waiting_human is live (an
-    // open mid-turn ask), the loop must not overwrite it with a competing wait:
-    // only the ask's own close (an external running observation, which clears
-    // this flag) or a terminal state (halted/done/stale) may replace it.
-    // SCOPE DECISION (deliberate narrowing): this holds ONLY the two competing
-    // WAIT states, NOT every non-terminal emission. Holding the loop's own
-    // snapshot('running') would re-break the PMR-ZV9Y P1 invariant recorded on
-    // FlowLoop.noteExternalV2State above: `run_attempt` escalate and
-    // `deviation_review` rerun journal a wait but NEVER the running return, so
-    // that running snapshot is the ONLY thing that unsticks such a journal —
-    // suppressing it restores the stuck false waiting-on-human page. Five
-    // tests go red under the literal rule (test/loop-state-change.test.ts):
-    // "P1: a tool-journaled wait un-pins the loop", "P1 observer (real
-    // fan-out)", "P1 observer (b)", "P1 fold: escalate-wait then a running
-    // snapshot", "P2a: a late loop echo cannot revert a newer tool wait".
-    // RESIDUAL GAP (accepted, tracked as PMR-422Q): a settle that ADVANCES
-    // during a live ask still journals `running`, so the board can show the run
-    // working while the human is blocked. PMR-422Q makes the guard reason-aware
-    // — holding only for waits that journal their own close — which closes that
-    // gap without touching the P1 invariant.
+    // AIDEV-NOTE: PMR-0NRH, REASON-AWARE per PMR-422Q (review blocker 2) — while
+    // a SELF-CLOSING tool-journaled waiting_human is live (an open mid-turn ask or
+    // an open code-review gate), the loop must not overwrite it: only that seam's
+    // own close (an external `running` observation, which clears the flag) or a
+    // TERMINAL state (halted/done/stale) may replace it. Arming is restricted to
+    // SELF_CLOSING_HUMAN_WAITS (flow/vocabulary.ts) precisely so the hold can
+    // always be released: `escalation` and `deviation_gate_rerun` journal a wait
+    // but NEVER a running return, so a hold armed on them could only be freed by
+    // start() — that reason-blind latch silently dropped every later
+    // waiting_machine / waiting_human / spec-approval pause for the rest of the
+    // process's run.
+    // WHY THE FULL NON-TERMINAL HOLD IS SAFE NOW (this replaces the earlier
+    // SCOPE DECISION narrowing, which existed only because the flag was
+    // reason-blind): the narrowing held just the two competing WAIT states because
+    // suppressing the loop's own snapshot('running') re-broke the PMR-ZV9Y P1
+    // invariant — for an escalate/deviation-rerun wait that snapshot is the ONLY
+    // thing that unsticks the journal. With reason-aware arming those waits never
+    // arm the flag, so their running snapshot is never held and the five
+    // PMR-ZV9Y tests in test/loop-state-change.test.ts ("P1: a tool-journaled wait
+    // un-pins the loop", "P1 observer (real fan-out)", "P1 observer (b)", "P1
+    // fold: escalate-wait then a running snapshot", "P2a: a late loop echo cannot
+    // revert a newer tool wait") stay green UNMODIFIED — they all drive the
+    // observer without a reason, which clears rather than arms. Meanwhile the
+    // gap PMR-422Q was filed for is closed: a settle that ADVANCES during a live
+    // ask can no longer journal `running` over it, so the board cannot report a
+    // blocked run as working.
+    // WHAT REMAINS: the hold lasts until the owning seam's close arrives. A close
+    // that never lands (a journal write that failed, ISC-A-5 swallows it) keeps
+    // the board on waiting_human until the run terminates or restarts — deliberate:
+    // while a human wait is un-closed the waiting-on-human row is the truthful
+    // reading, and terminal emissions plus start()'s reset always release it.
     // The early return MUST precede every mutation: recording the state or
     // advancing the watermark on the held path would desync the guard (the next
     // real emission wrongly suppressed) and recency-skip the ask's own close,
     // pinning the journal at waiting_human forever.
     if (
       this.externalHumanWaitOpen &&
-      (state === 'waiting_machine' || state === 'waiting_human')
+      state !== 'halted' &&
+      state !== 'done' &&
+      state !== 'stale'
     ) {
       return
     }

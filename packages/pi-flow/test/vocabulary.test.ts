@@ -14,7 +14,9 @@ import {
   FLOW_STATES,
   type FlowReason,
   NO_EXPECTED_ACTION,
+  reasonOwnsExternalClose,
   reasonWaitKind,
+  SELF_CLOSING_HUMAN_WAITS,
   WAIT_KIND,
 } from '../flow/vocabulary.ts'
 
@@ -156,6 +158,48 @@ test('EXPECTED_ACTION only maps reasons the wait-kind derivation calls human', (
     assert.equal(reasonWaitKind(reason), 'human', reason)
   }
   assert.equal(Object.keys(EXPECTED_ACTION).length, 5)
+})
+
+// --- self-closing human waits (PMR-422Q, PMR-0NRH review blocker 2) ---
+
+// AIDEV-NOTE: PMR-0NRH — the closed set of HUMAN waits whose owning seam
+// journals its own `running` close. This is the property flow/loop.ts reads to
+// decide whether an external waiting_human may hold the loop's own emissions:
+// a hold that nothing can release is a latch, so only self-closing waits may
+// arm it. ISC-A-1 puts the semantics HERE, not in a second list in loop.ts.
+test('SELF_CLOSING_HUMAN_WAITS is exactly the two waits that journal their own close', () => {
+  assert.deepEqual(
+    [...SELF_CLOSING_HUMAN_WAITS],
+    ['code_review_pending', 'human_ask_pending'],
+  )
+  assert.equal(new Set(SELF_CLOSING_HUMAN_WAITS).size, 2)
+})
+
+test('every self-closing human wait is a WAIT_KIND human reason', () => {
+  for (const reason of SELF_CLOSING_HUMAN_WAITS) {
+    assert.equal(WAIT_KIND[reason], 'human', reason)
+    assert.equal(reasonWaitKind(reason), 'human', reason)
+  }
+})
+
+test('reasonOwnsExternalClose: escalation, spec_approval_pending and subagent_ask_pending are NOT self-closing', () => {
+  // escalation: run_attempt journals the wait but never the running return —
+  // arming the hold on it latches the guard for the rest of the process.
+  assert.equal(reasonOwnsExternalClose('escalation'), false)
+  // spec_approval_pending: a LOOP-owned pause whose close is the loop's own
+  // snapshot, so holding the loop against it would deadlock the run.
+  assert.equal(reasonOwnsExternalClose('spec_approval_pending'), false)
+  // subagent_ask_pending: emitted by the loop's own settle branch, no
+  // external close exists to release a hold.
+  assert.equal(reasonOwnsExternalClose('subagent_ask_pending'), false)
+})
+
+test('reasonOwnsExternalClose: every machine reason and the empty reason are never self-closing', () => {
+  for (const reason of FLOW_REASONS) {
+    if (SELF_CLOSING_HUMAN_WAITS.includes(reason)) continue
+    assert.equal(reasonOwnsExternalClose(reason), false, reason)
+  }
+  assert.equal(reasonOwnsExternalClose(''), false)
 })
 
 // --- step registry ---

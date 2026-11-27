@@ -16,7 +16,10 @@
 // HUMAN wait for a mid-turn plain ask in the main session — the generic ask
 // emitter journals it, so every current and future prompt-instructed ask
 // becomes visible on the Waiting-on-me board with no per-gate reason and no
-// prompt edit.
+// prompt edit. `SELF_CLOSING_HUMAN_WAITS` was added in the same feature's
+// review round (PMR-422Q): the per-reason "its owning seam journals its own
+// `running` close" property that lets flow/loop.ts hold the board for a live
+// ask without latching on a wait nobody ever closes.
 //
 // v2 state is DERIVED, never a rename: LoopRunStatus ('running' | 'paused' |
 // 'halted' | 'done') stays as-is because resume (flow/resume.ts), the
@@ -142,6 +145,47 @@ export const EXPECTED_ACTION: Readonly<Partial<Record<FlowReason, string>>> = {
 
 /** Rendered when nothing unblocks the run (no human action registered). */
 export const NO_EXPECTED_ACTION = '—'
+
+/**
+ * AIDEV-NOTE: PMR-422Q (PMR-0NRH review blocker 2) — the HUMAN waits whose
+ * OWNING SEAM journals its own `running` close, i.e. the wait is guaranteed to
+ * be released by an external `state-change{running}` observation. flow/loop.ts
+ * arms its live-wait hold ONLY for these reasons: a hold that nothing can
+ * release is a latch, and a latched hold silently drops every later
+ * loop-emitted wait for the rest of the process's run.
+ *
+ * Membership is by EMISSION SITE, not by wait kind:
+ *  * `human_ask_pending` — IN. flow/ask-emitter.ts journals the close on
+ *    tool_result / tool_execution_end for the toolCallId it opened.
+ *  * `code_review_pending` — IN. tools/code-review.ts `closeReviewGate` journals
+ *    step-stop + `state-change{running}` on a pass/fail answer.
+ *  * `escalation` — OUT. `run_attempt` escalates through the shared fan-out
+ *    writer and NEVER journals the running return; the loop's own
+ *    snapshot('running') is the only thing that unsticks that journal (the
+ *    PMR-ZV9Y fix-round P1 invariant), so arming here is exactly the latch.
+ *  * `spec_approval_pending` — OUT. A loop-owned pause (`snapshot('paused', ...)`)
+ *    whose close is the loop's own next snapshot; holding the loop against its
+ *    own pause would deadlock the run.
+ *  * `subagent_ask_pending` — OUT. Emitted by the loop's own settle branch; the
+ *    child's answer is not an external state-change, so no external close ever
+ *    arrives for it.
+ *  * every machine reason — OUT by definition: the hold exists to protect a
+ *    HUMAN wait against a competing loop emission.
+ */
+export const SELF_CLOSING_HUMAN_WAITS: readonly FlowReason[] = [
+  'code_review_pending',
+  'human_ask_pending',
+]
+
+/**
+ * True when a reason's owning seam journals its own `running` close, so a
+ * hold armed on it is guaranteed to be released. The empty reason (a state
+ * that carries none) is never self-closing.
+ */
+export function reasonOwnsExternalClose(reason: FlowReason | ''): boolean {
+  if (reason === '') return false
+  return SELF_CLOSING_HUMAN_WAITS.includes(reason)
+}
 
 /**
  * The wait kind for a reason. Out-of-vocabulary input (a leniently parsed

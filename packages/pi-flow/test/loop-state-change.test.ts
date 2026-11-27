@@ -1063,8 +1063,19 @@ test('P2a: the loop is never locked out by a future-dated external stamp', async
 // ask) OVERWRITES the live human wait: the board flips back to "machine working"
 // while the human is still the bottleneck. `noteExternalV2State` protected only
 // the reverse direction (a loop wait vs an external observation). The fix is a
-// live-wait flag set/cleared by the external observer and honoured by
-// emitStateChange for NON-TERMINAL states.
+// live-wait flag maintained by the external observer and honoured by
+// emitStateChange for every NON-TERMINAL state.
+//
+// AIDEV-NOTE: PMR-422Q — arming is REASON-AWARE, not state-aware. ONLY a
+// `waiting_human` whose reason is in SELF_CLOSING_HUMAN_WAITS (flow/vocabulary.ts:
+// `human_ask_pending`, `code_review_pending` — seams that journal their own
+// `running` close) arms the hold; an absent reason never arms it, it only clears
+// it. Do NOT read "non-terminal" as "any external waiting_human holds the loop":
+// `escalation` and `deviation_gate_rerun` journal no running return, so a hold
+// armed on them could never be released — that latch was PMR-0NRH review blocker
+// 2. The full rule (which reasons arm, why the wide hold is safe, what remains)
+// is the reason-aware note at the skip rule in flow/loop.ts — read it before
+// narrowing or widening this predicate.
 //
 // These tests ride the PRODUCTION path: the loop's `journalV2` seam is wired to
 // a real createEventFanoutWriter (index.ts: journalV2 -> journalSerial -> the
@@ -1090,7 +1101,10 @@ function wireRealFanout(h: Harness, loop: FlowLoop) {
   }
   const fanout = createEventFanoutWriter(baseWriter, {
     onV2StateChangeObserved: (event) => {
-      loop.noteExternalV2State(event.ref, event.state, event.at)
+      // Production parity with index.ts: the observer threads event.reason so
+      // the loop can tell a self-closing wait from one that never journals its
+      // own running close (PMR-422Q).
+      loop.noteExternalV2State(event.ref, event.state, event.at, event.reason)
     },
   })
   h.deps.journalV2 = (event) => {
@@ -1273,6 +1287,64 @@ test('PMR-0NRH subagent ask: the loop-owned waiting_human{subagent_ask_pending} 
   )
 })
 
+test('PMR-0NRH latch: an external waiting_human{escalation} never arms the hold — later loop waits still emit', async () => {
+  // The reviewer's reproduced latch (PMR-422Q). run_attempt escalate journals
+  // waiting_human{escalation} through the shared fan-out writer and NEVER the
+  // running return, so the flag can only be cleared by an external observation
+  // that does not exist. The loop's own snapshot('running') — the PMR-ZV9Y P1
+  // unstick — is recency-skipped inside noteExternalV2State (at <= lastV2At
+  // returns before the flag line), so it cannot release the hold either. The
+  // flag therefore latched for the rest of the process's run and every later
+  // loop-emitted waiting_machine / waiting_human was silently dropped.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'escalation',
+  })
+  // 1. PMR-ZV9Y P1 stays intact: the advance's snapshot('running') emits and
+  //    unsticks the journal (escalate journals no running return of its own).
+  h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  const runnings = h.v2.filter(
+    (e) => e.kind === 'state-change' && e.state === 'running',
+  )
+  assert.equal(
+    runnings.length,
+    2,
+    `P1 unstick broken after the escalate: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // 2. THE LATCH: the next settle, child in flight, must still journal the
+  //    machine wait.
+  h.inFlight = true
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `escalate latched the hold — machine wait dropped: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // 3. And the loop-owned child-ask human wait must still journal too.
+  h.pendingAsk = true
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_human/subagent_ask_pending'),
+    `escalate latched the hold — child-ask wait dropped: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_human',
+    `journal tail not the live human wait: ${stateSequence(written).join(' -> ')}`,
+  )
+})
+
 test('PMR-0NRH terminal override: a halt still journals while the live wait is open', async () => {
   // A real halt ends the run, so the open ask is moot: `halted` (and `done` /
   // `stale`) must still emit even with the flag set, or a blocked run would
@@ -1303,5 +1375,115 @@ test('PMR-0NRH terminal override: a halt still journals while the live wait is o
     resumeV2StateFromEvents(written),
     'halted',
     `journal tail not terminal: ${stateSequence(written).join(' -> ')}`,
+  )
+})
+
+// --- PMR-422Q: reason-aware arming (the rest of the guard's contract) ---
+
+test('PMR-422Q absent reason: a three-argument external waiting_human never arms the hold (PMR-ZV9Y semantics)', async () => {
+  // The arming rule is "waiting_human AND a self-closing reason". With no
+  // reason at all the observation still re-seeds the emission guard (the
+  // PMR-ZV9Y P1 un-pinning) but must NOT hold anything — otherwise every
+  // caller that does not know the reason (and the escalate path that has no
+  // close) would latch the loop. This is what keeps the five protected
+  // PMR-ZV9Y tests green unmodified: their observer wiring passes three args.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  h.inFlight = true
+  await loop.start(startInput())
+  loop.noteExternalV2State('TP-1', 'waiting_human', atOffset(60))
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `an absent reason armed the hold: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+})
+
+test('PMR-422Q code_review_pending: the other self-closing reason arms the hold', async () => {
+  // The code-review gate journals waiting_human{code_review_pending} before it
+  // blocks and closeReviewGate journals the running close, so holding the loop
+  // against it is safe and is what keeps the gate visible on the board.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  h.inFlight = true
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'code_review_pending',
+  })
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.deepEqual(
+    stateSequence(h.v2).filter((s) => s.startsWith('waiting_machine')),
+    [],
+    `code_review_pending did not arm the hold: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_human',
+    `journal tail not the live gate wait: ${stateSequence(written).join(' -> ')}`,
+  )
+})
+
+test('PMR-422Q residual gap closed: an advancing settle cannot journal running over a live self-closing wait', async () => {
+  // The gap option A left open (PMR-422Q's title case): the settle ADVANCES, so
+  // it takes snapshot('running'), which the narrow two-wait predicate let
+  // through — the board showed the run working while the human was blocked.
+  // With reason-aware arming the hold covers EVERY non-terminal emission, so
+  // the running return is held too; the external close releases it.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  // plan lands -> advanceAfter -> snapshot('running'): held while the ask lives.
+  h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    stateSequence(h.v2).filter((s) => s === 'running').length,
+    1,
+    `advancing settle journaled running over the live ask: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_human',
+    `journal tail not the live ask: ${stateSequence(written).join(' -> ')}`,
+  )
+  // The human answers -> the emitter's close routes as an external running
+  // observation: it clears the flag AND re-seeds the guard, so the journal
+  // reads running again.
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(120),
+    ref: 'TP-1',
+    state: 'running',
+  })
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'running',
+    `close did not release the journal: ${stateSequence(written).join(' -> ')}`,
+  )
+  // The loop is free again: the next machine wait emits.
+  h.inFlight = true
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `hold not released after the close: ${stateSequence(h.v2).join(' -> ')}`,
   )
 })
