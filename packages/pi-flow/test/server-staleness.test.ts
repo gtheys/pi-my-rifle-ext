@@ -5,6 +5,11 @@
 // throws. Expected strings are independent literals (never recomputed through
 // the implementation) because the message text is a contract shared with the
 // reconcile and notify surfaces (1.3/1.4).
+// AIDEV-NOTE: PMR-7B8M rev 2 — the deps seam is `mainCheckout` (path + HEAD
+// from ONE `git worktree list --porcelain` call), and the matrix gained the
+// repo-identity guard: a daemon spawned from another repo, and a pidfile whose
+// repo identity is unverifiable, are both SILENT (cross-repo false positives
+// were the rev-1 blocker — the daemon is one global process serving every repo).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ProbeResult } from '../server/lifecycle.ts'
@@ -12,8 +17,9 @@ import {
   checkDaemonStaleness,
   type DaemonStaleness,
   daemonStalenessMessage,
+  type MainCheckout,
   resolveHeadSha,
-  resolveMainHeadSha,
+  resolveMainCheckout,
   type StalenessDeps,
   type StalenessExec,
   sessionStalenessDeps,
@@ -23,6 +29,11 @@ import {
 const PID = 4242
 const DAEMON_SHA = 'a'.repeat(40)
 const HEAD_SHA = 'b'.repeat(40)
+/** The session repo's main worktree — the same literal the porcelain fixture
+ *  below prints, so a fake probe and a fake exec agree about "this repo". */
+const MAIN_PATH = '/repo/main'
+/** Some OTHER repo's main worktree (cross-repo daemon, rev 2). */
+const OTHER_PATH = '/home/user/Code/other-repo'
 /** 40 characters, valid length, NOT lowercase hex. */
 const NOT_HEX_SHA = 'Z'.repeat(40)
 
@@ -35,19 +46,24 @@ interface FakeDepsResult {
   calls: string[]
 }
 
-/** Fake deps with a probe: alive pidfile carrying DAEMON_SHA, main HEAD
- *  HEAD_SHA (so the default verdict is STALE — main differs from the daemon). */
-function fakeDeps(input: {
-  probe?: ProbeResult
-  mainHead?: string | null
-}): FakeDepsResult {
-  let probe: ProbeResult = { alive: true, pid: PID, gitSha: DAEMON_SHA }
+/** Fake deps with a probe: alive pidfile carrying DAEMON_SHA at MAIN_PATH, main
+ *  checkout MAIN_PATH/HEAD_SHA (so the default verdict is STALE — main differs
+ *  from the daemon SHA but the repo identity matches). */
+function fakeDeps(
+  input: { probe?: ProbeResult; mainCheckout?: MainCheckout | null } = {},
+): FakeDepsResult {
+  let probe: ProbeResult = {
+    alive: true,
+    pid: PID,
+    gitSha: DAEMON_SHA,
+    gitRoot: MAIN_PATH,
+  }
   if (input.probe !== undefined) {
     probe = input.probe
   }
-  let mainHead: string | null = HEAD_SHA
-  if (input.mainHead !== undefined) {
-    mainHead = input.mainHead
+  let main: MainCheckout | null = { path: MAIN_PATH, headSha: HEAD_SHA }
+  if (input.mainCheckout !== undefined) {
+    main = input.mainCheckout
   }
   const calls: string[] = []
   return {
@@ -57,9 +73,9 @@ function fakeDeps(input: {
         calls.push('probe')
         return probe
       },
-      mainHeadSha: async () => {
-        calls.push('mainHeadSha')
-        return mainHead
+      mainCheckout: async () => {
+        calls.push('mainCheckout')
+        return main
       },
     },
   }
@@ -103,7 +119,7 @@ function fakeExec(input: {
  *  linked worktree (the realistic case for a session running in a worktree). */
 function porcelain(mainSha: string, linkedSha: string): string {
   return [
-    'worktree /repo/main',
+    `worktree ${MAIN_PATH}`,
     `HEAD ${mainSha}`,
     'branch refs/heads/main',
     '',
@@ -115,26 +131,27 @@ function porcelain(mainSha: string, linkedSha: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// checkDaemonStaleness — decision matrix (rev 1: equality vs main HEAD)
+// checkDaemonStaleness — decision matrix (rev 1: equality vs main HEAD;
+// rev 2: repo identity is checked BEFORE the SHA verdict)
 // ---------------------------------------------------------------------------
 
 test('staleness: pidfile SHA equals main HEAD → fresh, silent', async () => {
   const { deps, calls } = fakeDeps({
-    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA },
-    mainHead: DAEMON_SHA,
+    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, gitRoot: MAIN_PATH },
+    mainCheckout: { path: MAIN_PATH, headSha: DAEMON_SHA },
   })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'fresh' })
-  // Main HEAD is resolved BEFORE the pidfile is read: outside a repo there is
-  // nothing to compare against.
-  assert.deepEqual(calls, ['mainHeadSha', 'probe'])
+  // Main checkout is resolved BEFORE the pidfile is read: outside a repo there
+  // is nothing to compare against.
+  assert.deepEqual(calls, ['mainCheckout', 'probe'])
 })
 
 test('staleness: pidfile SHA differs from main HEAD → stale with pid + both SHAs', async () => {
   // The Nov 26 incident shape: the daemon predates main's forward move, so the
   // daemon SHA is an ANCESTOR of main HEAD — ancestry said "fresh", equality
   // must say stale.
-  const { deps } = fakeDeps({ mainHead: HEAD_SHA })
+  const { deps } = fakeDeps()
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, {
     kind: 'stale',
@@ -150,7 +167,7 @@ test('staleness: alive pidfile without gitSha → unknown/no-gitsha', async () =
   })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unknown', pid: PID, reason: 'no-gitsha' })
-  assert.deepEqual(calls, ['mainHeadSha', 'probe'])
+  assert.deepEqual(calls, ['mainCheckout', 'probe'])
 })
 
 test('staleness: daemon not alive → unchecked/daemon-not-running', async () => {
@@ -164,22 +181,22 @@ test('staleness: daemon not alive → unchecked/daemon-not-running', async () =>
     const { deps, calls } = fakeDeps({ probe })
     const got = await checkDaemonStaleness(deps)
     assert.deepEqual(got, { kind: 'unchecked', reason: 'daemon-not-running' })
-    assert.deepEqual(calls, ['mainHeadSha', 'probe'])
+    assert.deepEqual(calls, ['mainCheckout', 'probe'])
   }
 })
 
-test('staleness: unresolvable main HEAD (outside a repo) → unchecked/no-repo, probe skipped', async () => {
-  const { deps, calls } = fakeDeps({ mainHead: null })
+test('staleness: unresolvable main checkout (outside a repo) → unchecked/no-repo, probe skipped', async () => {
+  const { deps, calls } = fakeDeps({ mainCheckout: null })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unchecked', reason: 'no-repo' })
   // With no main checkout there is nothing to compare, so the pidfile is
   // never read.
-  assert.deepEqual(calls, ['mainHeadSha'])
+  assert.deepEqual(calls, ['mainCheckout'])
 })
 
 test('staleness: no-repo wins over a dead daemon (check order is pinned)', async () => {
   const { deps } = fakeDeps({
-    mainHead: null,
+    mainCheckout: null,
     probe: { alive: false, reason: 'no-pidfile' },
   })
   const got = await checkDaemonStaleness(deps)
@@ -189,11 +206,68 @@ test('staleness: no-repo wins over a dead daemon (check order is pinned)', async
 test('staleness: an empty-string gitSha in the pidfile is treated as no-gitsha', async () => {
   // parsePidfile keeps any string, so staleness must not treat '' as a SHA.
   const { deps, calls } = fakeDeps({
-    probe: { alive: true, pid: PID, gitSha: '' },
+    probe: { alive: true, pid: PID, gitSha: '', gitRoot: MAIN_PATH },
   })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unknown', pid: PID, reason: 'no-gitsha' })
-  assert.deepEqual(calls, ['mainHeadSha', 'probe'])
+  assert.deepEqual(calls, ['mainCheckout', 'probe'])
+})
+
+// --- rev 2: the repo-identity guard (validate review P1, the blocker) ---
+
+test('staleness: pidfile gitRoot differs from the session main worktree → unchecked/other-repo', async () => {
+  // The rev-1 false positive: the global daemon was spawned from another repo,
+  // so its SHA can never equal this repo's main HEAD. Silent, never a warning.
+  const { deps, calls } = fakeDeps({
+    probe: {
+      alive: true,
+      pid: PID,
+      gitSha: DAEMON_SHA,
+      gitRoot: OTHER_PATH,
+    },
+  })
+  const got = await checkDaemonStaleness(deps)
+  assert.deepEqual(got, { kind: 'unchecked', reason: 'other-repo' })
+  assert.deepEqual(calls, ['mainCheckout', 'probe'])
+})
+
+test('staleness: other-repo wins over a differing SHA (identity precedes the SHA verdict)', async () => {
+  // Same SHAs as the STALE row above, only the recorded repo differs — the
+  // guard order is the whole fix, so it is pinned here explicitly.
+  const { deps } = fakeDeps({
+    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, gitRoot: OTHER_PATH },
+    mainCheckout: { path: MAIN_PATH, headSha: HEAD_SHA },
+  })
+  const got = await checkDaemonStaleness(deps)
+  assert.deepEqual(got, { kind: 'unchecked', reason: 'other-repo' })
+})
+
+test('staleness: pidfile gitSha without gitRoot → unchecked/no-gitroot, silent', async () => {
+  // An intermediate build (rev 1) recorded a SHA but no repo identity: that SHA
+  // could belong to ANY repo, so warning would re-create the cross-repo false
+  // positive. Never guess.
+  const { deps, calls } = fakeDeps({
+    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA },
+  })
+  const got = await checkDaemonStaleness(deps)
+  assert.deepEqual(got, { kind: 'unchecked', reason: 'no-gitroot' })
+  assert.deepEqual(calls, ['mainCheckout', 'probe'])
+})
+
+test('staleness: empty-string gitRoot counts as absent → unchecked/no-gitroot', async () => {
+  const { deps } = fakeDeps({
+    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, gitRoot: '' },
+  })
+  const got = await checkDaemonStaleness(deps)
+  assert.deepEqual(got, { kind: 'unchecked', reason: 'no-gitroot' })
+})
+
+test('staleness: no-gitsha wins over no-gitroot (the pre-feature pidfile still warns)', async () => {
+  // Both fields missing = a daemon predating PMR-7B8M entirely: known
+  // same-machine migration case, actionable warning (rev 2 keeps it).
+  const { deps } = fakeDeps({ probe: { alive: true, pid: PID } })
+  const got = await checkDaemonStaleness(deps)
+  assert.deepEqual(got, { kind: 'unknown', pid: PID, reason: 'no-gitsha' })
 })
 
 // ---------------------------------------------------------------------------
@@ -247,6 +321,9 @@ test('message: fresh and unchecked verdicts produce nothing', async () => {
     { kind: 'fresh' },
     { kind: 'unchecked', reason: 'daemon-not-running' },
     { kind: 'unchecked', reason: 'no-repo' },
+    // Rev 2 — the repo-identity verdicts are silent on every surface.
+    { kind: 'unchecked', reason: 'other-repo' },
+    { kind: 'unchecked', reason: 'no-gitroot' },
   ]
   for (const st of silent) {
     assert.equal(daemonStalenessMessage(st), null)
@@ -310,15 +387,19 @@ test('resolveHeadSha: exec throwing (missing git binary) → null, never throws'
 })
 
 // ---------------------------------------------------------------------------
-// resolveMainHeadSha (rev 1: the staleness reference)
+// resolveMainCheckout (rev 1: the staleness reference; rev 2: path + HEAD from
+// ONE porcelain call, so the repo-identity comparison is plumbing-consistent)
 // ---------------------------------------------------------------------------
 
-test('resolveMainHeadSha: first block is the main worktree, linked blocks are ignored', async () => {
+test('resolveMainCheckout: first block is the main worktree, linked blocks are ignored', async () => {
   const { exec, calls } = fakeExec({
     stdout: porcelain(HEAD_SHA, DAEMON_SHA),
     code: 0,
   })
-  assert.equal(await resolveMainHeadSha(exec), HEAD_SHA)
+  assert.deepEqual(await resolveMainCheckout(exec), {
+    path: MAIN_PATH,
+    headSha: HEAD_SHA,
+  })
   assert.deepEqual(calls, [
     {
       command: 'git',
@@ -328,74 +409,109 @@ test('resolveMainHeadSha: first block is the main worktree, linked blocks are ig
   ])
 })
 
-test('resolveMainHeadSha: single-block output (main only) → its HEAD', async () => {
+test('resolveMainCheckout: single-block output (main only) → its path and HEAD', async () => {
   const { exec } = fakeExec({
-    stdout: `worktree /repo/main\nHEAD ${HEAD_SHA}\ndetached\n`,
+    stdout: `worktree ${MAIN_PATH}\nHEAD ${HEAD_SHA}\ndetached\n`,
     code: 0,
   })
-  assert.equal(await resolveMainHeadSha(exec), HEAD_SHA)
+  assert.deepEqual(await resolveMainCheckout(exec), {
+    path: MAIN_PATH,
+    headSha: HEAD_SHA,
+  })
 })
 
-test('resolveMainHeadSha: a linked-worktree cwd still yields the main HEAD', async () => {
+test('resolveMainCheckout: a linked-worktree cwd still yields the main block', async () => {
   // Git resolves the worktree list from the cwd, so a session running in a
-  // worktree gets the main checkout's block first.
+  // worktree gets the main checkout's path AND HEAD first.
   const { exec, calls } = fakeExec({
     stdout: porcelain(HEAD_SHA, DAEMON_SHA),
     code: 0,
   })
-  assert.equal(await resolveMainHeadSha(exec, '/repo/.wt/feature'), HEAD_SHA)
+  assert.deepEqual(await resolveMainCheckout(exec, '/repo/.wt/feature'), {
+    path: MAIN_PATH,
+    headSha: HEAD_SHA,
+  })
   assert.deepEqual(calls[0]?.options, { cwd: '/repo/.wt/feature' })
 })
 
-test('resolveMainHeadSha: non-zero exit (not a repo / broken git) → null', async () => {
+test('resolveMainCheckout: path from a later block is never used', async () => {
+  // Guards the "first block only" rule the rev-2 repo-identity comparison
+  // depends on: a linked worktree must never be mistaken for the main one.
+  const { exec } = fakeExec({
+    stdout: porcelain(HEAD_SHA, DAEMON_SHA),
+    code: 0,
+  })
+  const got = await resolveMainCheckout(exec)
+  assert.deepEqual(got, { path: MAIN_PATH, headSha: HEAD_SHA })
+  // Explicitly: the linked worktree's path never surfaces.
+  assert.notEqual(got?.path, '/repo/.wt/feature')
+})
+
+test('resolveMainCheckout: non-zero exit (not a repo / broken git) → null', async () => {
   const { exec } = fakeExec({
     stdout: 'fatal: not a git repository\n',
     code: 128,
   })
-  assert.equal(await resolveMainHeadSha(exec), null)
+  assert.equal(await resolveMainCheckout(exec), null)
 })
 
-test('resolveMainHeadSha: exec throwing → null, never throws', async () => {
+test('resolveMainCheckout: exec throwing → null, never throws', async () => {
   const { exec } = fakeExec({ throws: 'spawn git EACCES' })
-  assert.equal(await resolveMainHeadSha(exec), null)
+  assert.equal(await resolveMainCheckout(exec), null)
 })
 
-test('resolveMainHeadSha: non-hex / short HEAD → null', async () => {
+test('resolveMainCheckout: non-hex / short HEAD → null', async () => {
   for (const stdout of [
-    `worktree /repo/main\nHEAD ${NOT_HEX_SHA}\n`,
-    'worktree /repo/main\nHEAD abc1234\n',
-    'worktree /repo/main\nHEAD \n',
+    `worktree ${MAIN_PATH}\nHEAD ${NOT_HEX_SHA}\n`,
+    `worktree ${MAIN_PATH}\nHEAD abc1234\n`,
+    `worktree ${MAIN_PATH}\nHEAD \n`,
   ]) {
     const { exec } = fakeExec({ stdout, code: 0 })
-    assert.equal(await resolveMainHeadSha(exec), null)
+    assert.equal(await resolveMainCheckout(exec), null)
   }
 })
 
-test('resolveMainHeadSha: unborn HEAD (no HEAD line in the first block) → null', async () => {
+test('resolveMainCheckout: unborn HEAD (no HEAD line in the first block) → null', async () => {
   // A fresh repo with no commits lists the worktree but has no HEAD yet.
   const { exec } = fakeExec({
-    stdout: 'worktree /repo/main\nbranch refs/heads/master\n\n',
+    stdout: `worktree ${MAIN_PATH}\nbranch refs/heads/master\n\n`,
     code: 0,
   })
-  assert.equal(await resolveMainHeadSha(exec), null)
+  assert.equal(await resolveMainCheckout(exec), null)
 })
 
-test('resolveMainHeadSha: empty output → null', async () => {
+test('resolveMainCheckout: no worktree line → null (path identity is required)', async () => {
+  const { exec } = fakeExec({ stdout: `HEAD ${HEAD_SHA}\n`, code: 0 })
+  assert.equal(await resolveMainCheckout(exec), null)
+})
+
+test('resolveMainCheckout: empty worktree path → null', async () => {
+  const { exec } = fakeExec({
+    stdout: `worktree \nHEAD ${HEAD_SHA}\n`,
+    code: 0,
+  })
+  assert.equal(await resolveMainCheckout(exec), null)
+})
+
+test('resolveMainCheckout: empty output → null', async () => {
   const { exec } = fakeExec({ stdout: '', code: 0 })
-  assert.equal(await resolveMainHeadSha(exec), null)
+  assert.equal(await resolveMainCheckout(exec), null)
 })
 
 // ---------------------------------------------------------------------------
 // sessionStalenessDeps — wiring
 // ---------------------------------------------------------------------------
 
-test('sessionDeps: mainHeadSha runs through the injected exec with cwd', async () => {
+test('sessionDeps: mainCheckout runs through the injected exec with cwd', async () => {
   const { exec, calls } = fakeExec({
     stdout: porcelain(HEAD_SHA, DAEMON_SHA),
     code: 0,
   })
   const deps = sessionStalenessDeps(exec, '/tmp/fake-agent', '/tmp/checkout')
-  assert.equal(await deps.mainHeadSha(), HEAD_SHA)
+  assert.deepEqual(await deps.mainCheckout(), {
+    path: MAIN_PATH,
+    headSha: HEAD_SHA,
+  })
   assert.deepEqual(
     calls.map((c) => c.args),
     [['worktree', 'list', '--porcelain']],
@@ -418,7 +534,7 @@ test('sessionDeps: probe reads the pidfile under the given agent dir (missing �
 // ---------------------------------------------------------------------------
 
 test('warn: stale verdict notifies once with the pi-flow prefix at warning level', async () => {
-  const { deps } = fakeDeps({ mainHead: HEAD_SHA })
+  const { deps } = fakeDeps()
   const notes: Array<{ message: string; level: string }> = []
   await warnDaemonStaleness(deps, (message, level) => {
     notes.push({ message, level })
@@ -448,14 +564,29 @@ test('warn: no-gitsha verdict notifies with the restart-recommended text', async
 
 test('warn: fresh and unchecked verdicts notify nothing', async () => {
   // Every silent shape from the decision matrix — none of them may produce a
-  // notification (ISC-5 fresh, dead daemon / no repo silent).
+  // notification (ISC-5 fresh, dead daemon / no repo silent; rev 2 adds the
+  // cross-repo and unverifiable-identity cases).
   const silent: Array<Parameters<typeof fakeDeps>[0]> = [
-    { mainHead: DAEMON_SHA },
+    {
+      probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, gitRoot: MAIN_PATH },
+      mainCheckout: { path: MAIN_PATH, headSha: DAEMON_SHA },
+    },
     { probe: { alive: false, reason: 'no-pidfile' } },
     { probe: { alive: false, reason: 'version-mismatch', pid: PID } },
     { probe: { alive: false, reason: 'dead-process', pid: PID } },
     { probe: { alive: false, reason: 'malformed-pidfile' } },
-    { mainHead: null },
+    { mainCheckout: null },
+    // Rev 2: a daemon from another repo must never warn, whatever its SHA.
+    {
+      probe: {
+        alive: true,
+        pid: PID,
+        gitSha: DAEMON_SHA,
+        gitRoot: OTHER_PATH,
+      },
+    },
+    // Rev 2: a rev-1 pidfile (SHA, no repo identity) must never warn either.
+    { probe: { alive: true, pid: PID, gitSha: DAEMON_SHA } },
   ]
   for (const input of silent) {
     const { deps } = fakeDeps(input)

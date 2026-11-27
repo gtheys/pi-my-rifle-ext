@@ -190,6 +190,14 @@ export type ProbeResult =
        * warnings, never by the liveness/respawn decision.
        */
       gitSha?: string
+      /**
+       * PMR-7B8M rev 2: main-worktree path of the repo the daemon was spawned
+       * from — repo identity. The daemon is one global process serving every
+       * repo, so a SHA alone cannot say whether it describes this repo; this
+       * path is what lets a session stay silent about another repo's daemon.
+       * Never consulted by the liveness/respawn decision.
+       */
+      gitRoot?: string
     }
   | {
       alive: false
@@ -209,6 +217,10 @@ interface ParsedPidfile {
    *  pidfiles. NEVER affects the malformed verdict — a wrong type degrades to
    *  absent (a bad gitSha must not SIGTERM a healthy daemon). */
   gitSha?: string
+  /** PMR-7B8M rev 2: advisory main-worktree path of the spawner's repo, same
+   *  posture as gitSha — only a string is kept, everything else degrades to
+   *  absent so the probe stays `alive`. */
+  gitRoot?: string
 }
 
 function parsePidfile(raw: string): ParsedPidfile | null {
@@ -219,13 +231,20 @@ function parsePidfile(raw: string): ParsedPidfile | null {
     return null
   }
   if (typeof parsed !== 'object' || parsed === null) return null
-  const rec = parsed as { pid?: unknown; version?: unknown; gitSha?: unknown }
+  const rec = parsed as {
+    pid?: unknown
+    version?: unknown
+    gitSha?: unknown
+    gitRoot?: unknown
+  }
   if (typeof rec.pid !== 'number' || !Number.isInteger(rec.pid)) return null
   if (typeof rec.version !== 'string') return null
   const parsedPidfile: ParsedPidfile = { pid: rec.pid, version: rec.version }
   // PMR-7B8M: advisory — only a string is kept, everything else (number,
   // object, null, bool) is dropped so the probe stays `alive`.
   if (typeof rec.gitSha === 'string') parsedPidfile.gitSha = rec.gitSha
+  // PMR-7B8M rev 2: same advisory treatment for the repo identity.
+  if (typeof rec.gitRoot === 'string') parsedPidfile.gitRoot = rec.gitRoot
   return parsedPidfile
 }
 
@@ -255,8 +274,10 @@ export async function probeDaemon(
   }
   const result: ProbeResult = { alive: true, pid: parsed.pid }
   // PMR-7B8M: assigned conditionally so callers can distinguish "pre-feature
-  // pidfile" (key absent) from a present SHA.
+  // pidfile" (key absent) from a present SHA. PMR-7B8M rev 2 does the same for
+  // the repo identity (gitRoot).
   if (parsed.gitSha !== undefined) result.gitSha = parsed.gitSha
+  if (parsed.gitRoot !== undefined) result.gitRoot = parsed.gitRoot
   return result
 }
 
@@ -460,6 +481,13 @@ export interface EnsureDaemonOptions {
    * a daemon is already running; null/absent outside a git repo.
    */
   gitSha?: string | null
+  /**
+   * PMR-7B8M rev 2: MAIN-worktree path of the spawner's repo, handed to a
+   * fresh daemon via PI_FLOW_DAEMON_GIT_ROOT so it records the repo identity
+   * next to the SHA. Sessions only judge staleness when this matches their own
+   * main checkout (the daemon is global — one process serves every repo).
+   */
+  gitRoot?: string | null
 }
 
 /**
@@ -528,7 +556,9 @@ export async function ensureDaemon(
         // AIDEV-NOTE: PMR-7B8M — the daemon never runs git itself (DEPENDENCY
         // CONTRACT in server/daemon.ts): the session owns the checkout, so the
         // SHA is resolved spawn-side and passed in via the env, mirroring the
-        // PI_FLOW_AGENT_DIR precedent.
+        // PI_FLOW_AGENT_DIR precedent. PMR-7B8M rev 2 adds the repo identity
+        // (PI_FLOW_DAEMON_GIT_ROOT) with the identical delete-guard so a
+        // polluted parent env can never leak either advisory field.
         const env: NodeJS.ProcessEnv = {
           ...process.env,
           PI_FLOW_AGENT_DIR: agentDir,
@@ -541,6 +571,12 @@ export async function ensureDaemon(
           // parent env, and a spawn without a resolvable SHA must not inherit
           // it (the pidfile would claim a provenance it does not have).
           delete env.PI_FLOW_DAEMON_GIT_SHA
+        }
+        if (typeof opts.gitRoot === 'string' && opts.gitRoot.length > 0) {
+          env.PI_FLOW_DAEMON_GIT_ROOT = opts.gitRoot
+        } else {
+          // PMR-7B8M rev 2: same inheritance-leak guard as the SHA above.
+          delete env.PI_FLOW_DAEMON_GIT_ROOT
         }
         child = io.spawn(process.execPath, [daemonEntryPath()], {
           detached: true,

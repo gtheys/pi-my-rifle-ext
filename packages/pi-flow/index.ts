@@ -184,6 +184,7 @@ import { ensureDaemon } from './server/lifecycle.ts'
 import {
   checkDaemonStaleness,
   resolveHeadSha,
+  resolveMainCheckout,
   sessionStalenessDeps,
   warnDaemonStaleness,
 } from './server/staleness.ts'
@@ -1544,15 +1545,20 @@ export default function (
     listTicketStatuses: () => listTicketStatuses(),
     // AIDEV-NOTE: PMR-7B8M — session-side daemon staleness probe for the
     // /flow-reconcile-push report. `pi.exec` is wrapped in an arrow closure
-    // (a bare method reference loses `this`); cwd is NOT passed, so git runs
-    // in the process cwd — the command surface has no ctx here (subtask 4's
-    // session_start / /flow surfaces pass ctx.cwd explicitly).
+    // (a bare method reference loses `this`).
+    // AIDEV-NOTE: PMR-7B8M rev 2 (review P2) — the session cwd MUST be read
+    // inside this arrow, per call: without an explicit cwd, pi.exec falls back
+    // to the extension loader's load-time cwd (fixed when pi starts), which is
+    // a different repo than the session may be in by the time the command runs
+    // — `sessionCwd` is refreshed on every session_start, so it is read live
+    // here like pi-desktop-notify's `cwd: () => sessionCwd`.
     checkDaemonStaleness: () =>
       checkDaemonStaleness(
         sessionStalenessDeps(
           (command: string, args: string[], options?: { cwd?: string }) =>
             pi.exec(command, args, options),
           getAgentDir(),
+          sessionCwd,
         ),
       ),
   }
@@ -2013,14 +2019,28 @@ export default function (
       // a fresh spawn records it in the pidfile (PI_FLOW_DAEMON_GIT_SHA env);
       // an already-running daemon is probed for staleness instead. 'spawned' is
       // fresh by construction (its pidfile carries this session's HEAD).
-      const headSha = await resolveHeadSha(
-        (command: string, args: string[], options?: { cwd?: string }) =>
-          pi.exec(command, args, options),
-        ctx.cwd,
-      )
+      const execStaleness = (
+        command: string,
+        args: string[],
+        options?: { cwd?: string },
+      ) => pi.exec(command, args, options)
+      const headSha = await resolveHeadSha(execStaleness, ctx.cwd)
       if (runServerEnabled) {
+        // AIDEV-NOTE: PMR-7B8M rev 2 — the daemon is ONE GLOBAL process serving
+        // every repo, so the SHA alone cannot tell a later session whether it
+        // describes THEIR repo (review P1: cross-repo false positives). Record
+        // the repo's MAIN-worktree path next to the SHA; the staleness verdict
+        // goes silent when a session's main checkout differs. The recorded SHA
+        // stays the SPAWNING checkout's HEAD (a worktree spawn records the
+        // worktree HEAD — that is the provenance of the code it loaded).
+        const mainCheckout = await resolveMainCheckout(execStaleness, ctx.cwd)
+        let gitRoot: string | null = null
+        if (mainCheckout !== null) {
+          gitRoot = mainCheckout.path
+        }
         const ensured = await ensureDaemon(getAgentDir(), undefined, {
           gitSha: headSha,
+          gitRoot,
         })
         if (
           ensured.status === 'spawn-timeout' ||
@@ -2042,12 +2062,7 @@ export default function (
         // warns, it never blocks the flow.
         if (ensured.status === 'already-running') {
           await warnDaemonStaleness(
-            sessionStalenessDeps(
-              (command: string, args: string[], options?: { cwd?: string }) =>
-                pi.exec(command, args, options),
-              getAgentDir(),
-              ctx.cwd,
-            ),
+            sessionStalenessDeps(execStaleness, getAgentDir(), ctx.cwd),
             (message, level) => ctx.ui.notify(message, level),
           )
         }

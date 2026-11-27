@@ -88,9 +88,11 @@ function makeIo(pidfile: string | null): LifecycleIo & {
         env: opts.env as Record<string, string | undefined>,
       })
       // Fake daemon: immediately write the fresh pidfile like the real one,
-      // including the PMR-7B8M gitSha it was handed via the spawn env.
+      // including the PMR-7B8M gitSha and rev-2 gitRoot it was handed via the
+      // spawn env.
       const pid = 4242
       const gitSha = opts.env.PI_FLOW_DAEMON_GIT_SHA
+      const gitRoot = opts.env.PI_FLOW_DAEMON_GIT_ROOT
       const pidfile: Record<string, unknown> = {
         pid,
         version: '1',
@@ -98,6 +100,7 @@ function makeIo(pidfile: string | null): LifecycleIo & {
         agentDir: AGENT_DIR,
       }
       if (typeof gitSha === 'string') pidfile.gitSha = gitSha
+      if (typeof gitRoot === 'string') pidfile.gitRoot = gitRoot
       io.pidfile = `${JSON.stringify(pidfile)}\n`
       return { pid, unref: () => undefined }
     },
@@ -260,6 +263,48 @@ test('probe: gitSha present but version mismatch → unchanged malformed/mismatc
   if (!res.alive) {
     assert.equal(res.reason, 'version-mismatch')
     assert.equal(res.pid, 123)
+  }
+})
+
+// --- PMR-7B8M rev 2: advisory gitRoot (repo identity) in the pidfile ---
+
+const MAIN_PATH = '/home/user/Code/repo'
+
+test('probe: pidfile with gitRoot → alive result carries it', async () => {
+  const io = makeIo(
+    `{"pid":123,"version":"1","gitSha":"${SHA40}","gitRoot":"${MAIN_PATH}"}`,
+  )
+  const res = await probeDaemon(AGENT_DIR, io)
+  assert.deepEqual(res, {
+    alive: true,
+    pid: 123,
+    gitSha: SHA40,
+    gitRoot: MAIN_PATH,
+  })
+})
+
+test('probe: pidfile WITHOUT gitRoot (rev-1 daemon) → alive, key absent', async () => {
+  const io = makeIo(`{"pid":123,"version":"1","gitSha":"${SHA40}"}`)
+  const res = await probeDaemon(AGENT_DIR, io)
+  assert.equal('gitRoot' in res, false, 'must be absent, not undefined')
+})
+
+// AIDEV-NOTE: PMR-7B8M rev 2 — same advisory posture as gitSha (ISC-8): a
+// wrong-typed gitRoot degrades to absent, it NEVER flips the pidfile to
+// malformed-pidfile (that would SIGTERM a healthy daemon).
+test('probe: wrong-typed gitRoot degrades to absent, still alive (never malformed)', async () => {
+  const shapes = [
+    `{"pid":1,"version":"1","gitRoot":${JSON.stringify(12345)}}`,
+    '{"pid":1,"version":"1","gitRoot":{}}',
+    '{"pid":1,"version":"1","gitRoot":null}',
+    '{"pid":1,"version":"1","gitRoot":["/repo"]}',
+    '{"pid":1,"version":"1","gitRoot":true}',
+  ]
+  for (const raw of shapes) {
+    const io = makeIo(raw)
+    const res = await probeDaemon(AGENT_DIR, io)
+    assert.equal(res.alive, true, `alive expected for ${raw}`)
+    if (res.alive) assert.equal('gitRoot' in res, false)
   }
 })
 
@@ -740,4 +785,86 @@ test('ensure: already-running daemon ignores opts.gitSha (no spawn, no env)', as
   const res = await ensureDaemon(AGENT_DIR, io, { gitSha: SHA40 })
   assert.deepEqual(res, { status: 'already-running', pid: 123 })
   assert.equal(io.spawns.length, 0)
+})
+
+// --- PMR-7B8M rev 2: spawn env carries the repo identity (gitRoot) ---
+
+test('ensure: {gitRoot} → spawn env carries PI_FLOW_DAEMON_GIT_ROOT and the pidfile round-trips it', async () => {
+  const io = makeIo(DEAD_PIDFILE)
+  io.isProcessAlive = deadUntil(999)
+  const res = await ensureDaemon(AGENT_DIR, io, {
+    gitSha: SHA40,
+    gitRoot: MAIN_PATH,
+  })
+  assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+  assert.equal(io.spawns[0].env.PI_FLOW_DAEMON_GIT_ROOT, MAIN_PATH)
+  assert.equal(io.spawns[0].env.PI_FLOW_DAEMON_GIT_SHA, SHA40)
+  // Round-trip: a later session probing this pidfile sees the repo identity.
+  const probed = await probeDaemon(AGENT_DIR, io)
+  assert.deepEqual(probed, {
+    alive: true,
+    pid: 4242,
+    gitSha: SHA40,
+    gitRoot: MAIN_PATH,
+  })
+})
+
+test('ensure: no opts → spawn env has no PI_FLOW_DAEMON_GIT_ROOT', async () => {
+  const io = makeIo(DEAD_PIDFILE)
+  io.isProcessAlive = deadUntil(999)
+  await ensureDaemon(AGENT_DIR, io)
+  assert.equal(
+    'PI_FLOW_DAEMON_GIT_ROOT' in io.spawns[0].env,
+    false,
+    'key must be deleted, not present-with-undefined',
+  )
+})
+
+test('ensure: {gitRoot:null} with polluted parent env → var deleted from spawn env', async () => {
+  // AIDEV-NOTE: PMR-7B8M rev 2 — mirrors the ISC-9 SHA guard: the
+  // ...process.env spread would otherwise hand a leaked PI_FLOW_DAEMON_GIT_ROOT
+  // to a daemon we never resolved a repo for, and its pidfile would claim a
+  // repo identity it does not have.
+  process.env.PI_FLOW_DAEMON_GIT_ROOT = MAIN_PATH
+  try {
+    const io = makeIo(DEAD_PIDFILE)
+    io.isProcessAlive = deadUntil(999)
+    const res = await ensureDaemon(AGENT_DIR, io, { gitRoot: null })
+    assert.deepEqual(res, { status: 'spawned', pid: 4242 })
+    assert.equal(
+      'PI_FLOW_DAEMON_GIT_ROOT' in io.spawns[0].env,
+      false,
+      'leaked parent value must not reach the spawn env',
+    )
+  } finally {
+    delete process.env.PI_FLOW_DAEMON_GIT_ROOT
+  }
+})
+
+test('ensure: empty-string gitRoot is treated as unresolved (deleted, not set)', async () => {
+  process.env.PI_FLOW_DAEMON_GIT_ROOT = MAIN_PATH
+  try {
+    const io = makeIo(DEAD_PIDFILE)
+    io.isProcessAlive = deadUntil(999)
+    await ensureDaemon(AGENT_DIR, io, { gitRoot: '' })
+    assert.equal(
+      'PI_FLOW_DAEMON_GIT_ROOT' in io.spawns[0].env,
+      false,
+      'an empty repo path must not be recorded by the daemon',
+    )
+  } finally {
+    delete process.env.PI_FLOW_DAEMON_GIT_ROOT
+  }
+})
+
+test('ensure: resolved gitRoot wins over a polluted parent env value', async () => {
+  process.env.PI_FLOW_DAEMON_GIT_ROOT = '/other/repo'
+  try {
+    const io = makeIo(DEAD_PIDFILE)
+    io.isProcessAlive = deadUntil(999)
+    await ensureDaemon(AGENT_DIR, io, { gitRoot: MAIN_PATH })
+    assert.equal(io.spawns[0].env.PI_FLOW_DAEMON_GIT_ROOT, MAIN_PATH)
+  } finally {
+    delete process.env.PI_FLOW_DAEMON_GIT_ROOT
+  }
 })

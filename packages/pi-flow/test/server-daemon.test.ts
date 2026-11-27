@@ -21,6 +21,7 @@ import {
   createScanCache,
   createSerialQueue,
   decidePending,
+  gitRootFromEnv,
   gitShaFromEnv,
   isJournalWatchEvent,
   maintainPending,
@@ -429,6 +430,77 @@ test('pidfileLine: omits gitSha entirely when absent (old-shape pidfile)', () =>
   })
   const rec = JSON.parse(line) as Record<string, unknown>
   assert.equal('gitSha' in rec, false, 'key must be absent, not undefined')
+})
+
+// --- PMR-7B8M rev 2: repo identity (gitRoot) in the pidfile ---
+
+test('gitRootFromEnv: absolute path passes through', () => {
+  assert.equal(
+    gitRootFromEnv({ PI_FLOW_DAEMON_GIT_ROOT: '/repo/main' }),
+    '/repo/main',
+  )
+})
+
+test('gitRootFromEnv: relative, empty, and non-string values are dropped', () => {
+  // Advisory field (same posture as gitShaFromEnv): anything unusable
+  // degrades to absent so the pidfile simply omits the key, and a later
+  // session sees an unverifiable repo identity (silent) rather than a
+  // bogus comparison.
+  assert.equal(
+    gitRootFromEnv({ PI_FLOW_DAEMON_GIT_ROOT: 'relative/path' }),
+    undefined,
+  )
+  assert.equal(gitRootFromEnv({ PI_FLOW_DAEMON_GIT_ROOT: '' }), undefined)
+  assert.equal(gitRootFromEnv({ PI_FLOW_DAEMON_GIT_ROOT: '.' }), undefined)
+  assert.equal(
+    gitRootFromEnv({ PI_FLOW_DAEMON_GIT_ROOT: 42 as unknown as string }),
+    undefined,
+  )
+  assert.equal(
+    gitRootFromEnv({ PI_FLOW_DAEMON_GIT_ROOT: null as unknown as string }),
+    undefined,
+  )
+  assert.equal(gitRootFromEnv({}), undefined)
+})
+
+test('pidfileLine: includes gitRoot when present', () => {
+  const line = pidfileLine({
+    pid: 1234,
+    version: SERVER_PROTOCOL_VERSION,
+    startedAt: '2026-11-26T00:00:00.000Z',
+    agentDir: '/tmp/agent',
+    gitSha: SHA40,
+    gitRoot: '/repo/main',
+  })
+  const rec = JSON.parse(line) as Record<string, unknown>
+  assert.equal(rec.gitSha, SHA40)
+  assert.equal(rec.gitRoot, '/repo/main')
+  assert.ok(line.endsWith('\n'))
+  assert.equal(line.match(/\n/g)?.length, 1, 'exactly one trailing newline')
+})
+
+test('pidfileLine: omits gitRoot when absent (rev-1 and pre-feature shapes)', () => {
+  const line = pidfileLine({
+    pid: 1234,
+    version: SERVER_PROTOCOL_VERSION,
+    startedAt: '2026-11-26T00:00:00.000Z',
+    agentDir: '/tmp/agent',
+    gitSha: SHA40,
+  })
+  const rec = JSON.parse(line) as Record<string, unknown>
+  assert.equal('gitRoot' in rec, false, 'key must be absent, not undefined')
+  // A gitRoot explicitly set to undefined must not appear either.
+  const explicit = pidfileLine({
+    pid: 1234,
+    version: SERVER_PROTOCOL_VERSION,
+    startedAt: '2026-11-26T00:00:00.000Z',
+    agentDir: '/tmp/agent',
+    gitRoot: undefined,
+  })
+  assert.equal(
+    'gitRoot' in (JSON.parse(explicit) as Record<string, unknown>),
+    false,
+  )
 })
 
 // --- createSerialQueue (scan scheduling) ---

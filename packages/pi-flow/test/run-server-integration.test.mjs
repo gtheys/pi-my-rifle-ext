@@ -6,10 +6,12 @@
 // exercises pending maintenance: a parked loop-state produces
 // pending/<ref>.json, a terminal snapshot clears it, and a stray
 // <ref>.consumed.json is swept.
-// AIDEV-NOTE: PMR-7B8M — the daemon records its spawner's checkout SHA in
-// server.pid (via PI_FLOW_DAEMON_GIT_SHA) so later sessions can warn about
-// staleness: the first test asserts the SHA lands in the pidfile, the no-runs
-// dir test asserts the key stays absent when the spawn env carried none.
+// AIDEV-NOTE: PMR-7B8M — the daemon records its spawner's checkout SHA and
+// (rev 2) repo identity in server.pid (via PI_FLOW_DAEMON_GIT_SHA /
+// PI_FLOW_DAEMON_GIT_ROOT) so later sessions can warn about staleness — and
+// stay silent for a daemon that belongs to another repo: the first test asserts
+// both land in the pidfile, the no-runs dir test asserts both keys stay absent
+// when the spawn env carried none.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import {
@@ -55,6 +57,8 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
       PI_FLOW_AGENT_DIR: agentDir,
       // PMR-7B8M ISC-1: the spawn-side checkout SHA must land in the pidfile.
       PI_FLOW_DAEMON_GIT_SHA: 'a'.repeat(40),
+      // PMR-7B8M rev 2: so must the repo identity (main-worktree path).
+      PI_FLOW_DAEMON_GIT_ROOT: agentDir,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -77,6 +81,11 @@ test('real daemon: pidfile, projection, journal append pickup, stays alive', asy
       pidInfo?.gitSha,
       'a'.repeat(40),
       'pidfile must record the spawn env git SHA (ISC-1)',
+    )
+    assert.equal(
+      pidInfo?.gitRoot,
+      agentDir,
+      'pidfile must record the spawn env git root (rev 2, repo identity)',
     )
 
     // Seeded journal is reprojected (torn-write tolerant read, PMR-572Y).
@@ -254,9 +263,11 @@ test('real daemon: no runs/ dir at startup → stays alive on poll, picks up lat
     // PMR-7B8M: no PI_FLOW_DAEMON_GIT_SHA in the spawn env → the pidfile keeps
     // the pre-feature shape (no gitSha key at all), and it is stripped from the
     // inherited environment so a polluted parent cannot leak through the spread.
+    // Rev 2 adds the identical treatment for PI_FLOW_DAEMON_GIT_ROOT.
     env: (() => {
       const env = { ...process.env, PI_FLOW_AGENT_DIR: agentDir }
       delete env.PI_FLOW_DAEMON_GIT_SHA
+      delete env.PI_FLOW_DAEMON_GIT_ROOT
       return env
     })(),
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -280,6 +291,16 @@ test('real daemon: no runs/ dir at startup → stays alive on poll, picks up lat
       pidInfo?.gitSha,
       undefined,
       'pidfile must omit gitSha when the spawn env carried none',
+    )
+    assert.equal(
+      pidInfo?.gitRoot,
+      undefined,
+      'pidfile must omit gitRoot when the spawn env carried none',
+    )
+    assert.equal(
+      'gitRoot' in (pidInfo ?? {}),
+      false,
+      'gitRoot key must be absent, not undefined (rev 2)',
     )
 
     // THE BLOCKER: daemon must STILL be alive after 1.5s with no runs/ dir

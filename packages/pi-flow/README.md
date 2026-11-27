@@ -199,8 +199,10 @@ the **main checkout's** HEAD — resolved from any worktree via `git worktree li
 from an unmerged branch) or when the pidfile carries no SHA at all (an older
 daemon): `kill <pid>`, the daemon is re-ensured at the next `/flow` start. A
 worktree's own commits never move main HEAD, so they never trigger this.
-Staleness only ever warns: a protocol-version mismatch remains the only
-condition that kills + respawns.
+The check is silent when the daemon was spawned from a different repository —
+the daemon is global and serves every repo's runs, so its recorded SHA says
+nothing about yours. Staleness only ever warns: a protocol-version mismatch
+remains the only condition that kills + respawns.
 
 What it does: the daemon is the ONLY projection writer while alive — journal
 writers route journal-only through `server/writer.ts` (per-write liveness

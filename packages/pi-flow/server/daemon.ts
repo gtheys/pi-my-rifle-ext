@@ -38,10 +38,13 @@
 // @gtheys/pi-interactive-subagents) or `aven/client.ts` (imports config.ts).
 // The agent dir arrives via PI_FLOW_AGENT_DIR from the spawner
 // (server/lifecycle.ts), never from getAgentDir().
-// The spawn-side git SHA arrives the same way via PI_FLOW_DAEMON_GIT_SHA
-// (PMR-7B8M): validated as 40-hex lowercase in gitShaFromEnv, dropped
-// otherwise, and ADVISORY-ONLY — it is recorded in the pidfile so sessions can
-// judge staleness; it never affects liveness, respawn, or any daemon decision.
+// The spawn-side git provenance arrives the same way via PI_FLOW_DAEMON_GIT_SHA
+// and PI_FLOW_DAEMON_GIT_ROOT (PMR-7B8M): the SHA is validated as 40-hex
+// lowercase and the root as a non-empty absolute path, anything else is
+// dropped, and both are ADVISORY-ONLY — they are recorded in the pidfile so
+// sessions can judge staleness (and stay silent for a daemon spawned from
+// another repo, rev 2); they never affect liveness, respawn, or any daemon
+// decision.
 //
 // KEEPALIVE RULE (PMR-XTQQ review fix): the 1s poll interval is the daemon's
 // LIVENESS BACKSTOP and must NEVER be unref'd — fs.watch(runsDir) can fail at
@@ -160,9 +163,29 @@ export function gitShaFromEnv(env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /**
+ * AIDEV-NOTE: PMR-7B8M rev 2 — repo identity for the staleness verdict. The
+ * daemon is ONE GLOBAL process shared by every repo, so a bare SHA cannot say
+ * whether it describes THIS repo (validate review P1: cross-repo false
+ * positives at every session start). The spawner therefore records the main
+ * worktree path next to the SHA and sessions go silent when it differs. Same
+ * advisory posture as gitShaFromEnv: a non-empty absolute path or nothing — a
+ * relative path, an empty string, or a non-string is dropped rather than
+ * failing the write. Pure, so it is unit-testable without a spawn.
+ */
+export function gitRootFromEnv(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = env.PI_FLOW_DAEMON_GIT_ROOT
+  if (typeof raw !== 'string') return undefined
+  if (raw === '') return undefined
+  if (!path.isAbsolute(raw)) return undefined
+  return raw
+}
+
+/**
  * PMR-7B8M: serialize the pidfile line. gitSha is included only when present
  * so pidfiles written outside a repo keep the pre-feature shape exactly
  * (lifecycle.ts treats an absent gitSha as "predates staleness tracking").
+ * PMR-7B8M rev 2 adds the same optional treatment for gitRoot (the spawning
+ * repo's main-worktree path — absent means "repo identity unverifiable").
  */
 export function pidfileLine(fields: {
   pid: number
@@ -170,6 +193,7 @@ export function pidfileLine(fields: {
   startedAt: string
   agentDir: string
   gitSha?: string
+  gitRoot?: string
 }): string {
   const payload: Record<string, unknown> = {
     pid: fields.pid,
@@ -178,6 +202,7 @@ export function pidfileLine(fields: {
     agentDir: fields.agentDir,
   }
   if (fields.gitSha !== undefined) payload.gitSha = fields.gitSha
+  if (fields.gitRoot !== undefined) payload.gitRoot = fields.gitRoot
   return `${JSON.stringify(payload)}\n`
 }
 
@@ -891,11 +916,15 @@ function main(): void {
   // Pidfile: the extension's lifecycle module (subtask 1.2) uses pid +
   // version + startedAt + agentDir for liveness and version-mismatch respawn.
   // PMR-7B8M adds the ADVISORY gitSha — the spawning checkout's HEAD, dropped
-  // unless it validates as 40-hex — which later sessions compare against their
-  // own HEAD to warn about a daemon running stale code. It never influences
-  // this daemon's behavior.
+  // unless it validates as 40-hex — and (rev 2) the ADVISORY gitRoot — the
+  // spawning repo's main-worktree path, dropped unless it is a non-empty
+  // absolute path. Later sessions compare both against their own repo before
+  // warning about a daemon running stale code; a daemon spawned from another
+  // repo is never judged (the daemon is global). Neither field influences this
+  // daemon's behavior.
   const pidPath = path.join(agentDir, 'pi-flow', PID_FILE_NAME)
   const gitSha = gitShaFromEnv(process.env)
+  const gitRoot = gitRootFromEnv(process.env)
   fsp
     .mkdir(path.dirname(pidPath), { recursive: true })
     .then(() =>
@@ -907,6 +936,7 @@ function main(): void {
           startedAt: new Date().toISOString(),
           agentDir,
           gitSha,
+          gitRoot,
         }),
         'utf8',
       ),
