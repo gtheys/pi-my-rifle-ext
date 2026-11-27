@@ -935,6 +935,15 @@ test('index.ts wraps its ONE session writer in the fan-out dispatcher', () => {
     index.includes('flowLoopForV2.noteExternalV2State(ref, state, at, reason)'),
     'index.ts must thread event.at (P2a recency) and event.reason (reason-aware live-wait arming, PMR-422Q) into noteExternalV2State',
   )
+  // PMR-0NRH fix round 2 (finding P2-b): the call literal above is now bare
+  // identifiers, so this pins the DESTRUCTURE — that ref/state/at/reason really
+  // come from `event`. Without it a rename or a shadowed binding (e.g. a stale
+  // local `at`) would silently thread a wrong value into the loop guard while
+  // both existing pins still passed.
+  assert.ok(
+    index.includes('const { ref, state, at, reason } = event'),
+    'index.ts must destructure ref/state/at/reason FROM event so the values threaded into the loop guard are the event fields, not lookalike locals',
+  )
 })
 
 test('the daemon side never gets the fan-out (Loki is session-side only)', () => {
