@@ -62,6 +62,7 @@ import {
   parseFlowAnswerArgs,
 } from './flow/answer.ts'
 import { FLOW_USAGE, type FlowArgs, parseFlowArgs } from './flow/args.ts'
+import { createAskEmitter } from './flow/ask-emitter.ts'
 import { spawnJournalTarget } from './flow/attribution.ts'
 import {
   type HealResult,
@@ -1213,6 +1214,52 @@ export default function (
     }
     return undefined
   })
+
+  // AIDEV-NOTE: PMR-0NRH 2.2 — generic mid-turn ask visibility wired onto the
+  // tool_call / tool_result(+tool_execution_end) hook pair (flow/ask-emitter.ts).
+  // THE SEAM: Pi AWAITS the `tool_call` handlers before it executes the tool
+  // (agent-session `_beforeToolCall` -> `emitToolCall`), so the journal line
+  // lands BEFORE the ask blocks. That is what makes a mid-turn
+  // ask_user_question visible at all: the turn never settles while the ask
+  // blocks, so the settle-based v2 emission in flow/loop.ts cannot cover it.
+  // The close rides `tool_result` (same turn) and `tool_execution_end`
+  // (REQUIRED: a blocked/aborted call skips tool_result but still emits
+  // tool_execution_end, so without the third registration an orphan
+  // waiting_human would sit on the board forever); first-wins via the
+  // emitter's remembered toolCallId.
+  // SINGLE-WRITER RULE: this must ride THE wrapped fan-out writer (the
+  // `writer` constructed above via createEventFanoutWriter — the same object
+  // registerCodeReviewTool receives), never a raw createEventWriter, because
+  // the fan-out's `onV2StateChangeObserved` handler is what calls
+  // loop.noteExternalV2State to keep the loop's emission guard in sync with
+  // tool-journaled waits (see the PMR-ZV9Y note at the fan-out construction).
+  // NESTED-CALL CONTRACT (two-tier dedupe, doc-cited): a tool-owned ask made
+  // via ctx.executeTool DOES re-fire these hooks — docs/extensions.md
+  // "Calling Other Tools" (line 2794) states nested calls go through the
+  // `tool_call` and `tool_result` handlers like model-issued calls, carry
+  // `parentToolCallId`, and get `toolCallId` assigned by Pi as
+  // `<parent id>/<n>`. PRIMARY tier: the emitter skips any open whose
+  // `parentToolCallId` is set, because a nested ask is owned by a tool that
+  // journals its own wait (tools/code-review.ts does exactly this). SECONDARY
+  // tier: for a non-nested open, the journal-tail `waiting_human` scan
+  // (resumeV2StateFromEvents) skips a double-open when a loop-owned wait is
+  // already journaled. DEFENCE IN DEPTH: correctness would survive even
+  // without the primary check, because the emitter's close is Map-gated on
+  // toolCallId and can never fire for a call it did not open — but the
+  // primary check is the load-bearing mechanism, not a fallback.
+  // This registration is a SEPARATE handler from the bash/landing interceptor
+  // above; it never blocks and never reorders that gate. Handlers registered
+  // here intentionally do not unsubscribe (session lifetime, like the
+  // interceptors above).
+  const askEmitter = createAskEmitter({
+    getActiveRef: () => loop.activeRef(),
+    writer,
+    readEvents: (ref) => readRunEvents(getAgentDir(), ref),
+    now: () => new Date().toISOString(),
+  })
+  pi.on('tool_call', askEmitter.onToolCall)
+  pi.on('tool_result', askEmitter.onToolFinalized)
+  pi.on('tool_execution_end', askEmitter.onToolFinalized)
 
   registerPhaseCompleteTool(pi, undefined, writer)
   // AIDEV-NOTE: PMR-R5VB — merge-main's human-review gate also accepts the
