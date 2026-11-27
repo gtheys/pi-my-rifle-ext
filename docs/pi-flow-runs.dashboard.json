@@ -11,16 +11,16 @@
       "grafana.app/sourcePath": "/etc/grafana/provisioning/dashboards-piflow/piflow-runs.json",
       "grafana.app/sourceTimestamp": "1795532624000",
       "grafana.app/updatedBy": "service-account:cfw0ld9gfssu8e",
-      "grafana.app/updatedTimestamp": "2026-11-26T08:58:08Z"
+      "grafana.app/updatedTimestamp": "2026-11-27T10:25:17Z"
     },
     "creationTimestamp": "2026-11-23T06:41:52Z",
-    "generation": 16,
+    "generation": 17,
     "labels": {
       "grafana.app/deprecatedInternalID": "3559868436422656"
     },
     "name": "piflow-runs",
     "namespace": "default",
-    "resourceVersion": "1795683488748018",
+    "resourceVersion": "1795775117036014",
     "uid": "49c326b0-dd77-43ff-b3a2-8d47c1081b7f"
   },
   "spec": {
@@ -770,6 +770,11 @@
                                 "index": 2,
                                 "text": "intervene: /flow {ref} (or fix forward)"
                               },
+                              "human_ask_pending": {
+                                "color": "light-blue",
+                                "index": 4,
+                                "text": "answer the agent (the ask in this session)"
+                              },
                               "spec_approval_pending": {
                                 "color": "orange",
                                 "index": 0,
@@ -787,7 +792,7 @@
                             "options": {
                               "match": "__other__",
                               "result": {
-                                "index": 4,
+                                "index": 5,
                                 "text": "—"
                               }
                             },
@@ -1856,6 +1861,11 @@
                                 "index": 2,
                                 "text": "escalation"
                               },
+                              "human_ask_pending": {
+                                "color": "light-blue",
+                                "index": 11,
+                                "text": "mid-turn ask"
+                              },
                               "label_miss": {
                                 "color": "orange",
                                 "index": 5,
@@ -1878,7 +1888,7 @@
                               },
                               "subagent_ask_pending": {
                                 "color": "blue",
-                                "index": 3,
+                                "index": 10,
                                 "text": "answer the subagent (its pane or answer_subagent)"
                               },
                               "subagent_in_flight": {
@@ -1893,7 +1903,7 @@
                             "options": {
                               "match": "__other__",
                               "result": {
-                                "index": 10,
+                                "index": 12,
                                 "text": "—"
                               }
                             },
