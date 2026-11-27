@@ -166,8 +166,10 @@ shapes.
 wraps the session's `EventWriter` at its **single** construction site in `index.ts`. Each `record` writes the journal
 first (original best-effort semantics preserved), then routes by kind: `state-change` → Loki pusher **and** the
 desktop-notify sink; `step-start`/`step-stop` → Loki pusher **and** `TelemetryHandle.stepStart`/`stepStop`. Every emit
-site (loop, code-review, deviation, run-attempt) already journals through that writer seam, so one wrap covers all of
-them. **The daemon is never wrapped** — it has no live event stream and pushes no Loki.
+site (loop, code-review, deviation, run-attempt, ask-emitter) already journals through that writer seam, so one wrap
+covers all of them. **The daemon is never wrapped** — it has no live event stream and pushes no Loki. For the hook
+emitter (`flow/ask-emitter.ts`) the single-writer rule is load-bearing: it receives THE wrapped writer, never a raw
+`createEventWriter`, because the fan-out's observation is what keeps the loop's live-wait guard in sync.
 
 **Renderer 3 — Tempo step spans (`TelemetryHandle.stepStart`/`stepStop`).** Uses the live trace context only the
 session has. See §8.
@@ -180,6 +182,7 @@ session has. See §8.
 | `tools/code-review.ts` open/close review gate (`openReviewSteps` idempotent pairing) | ask → `state-change{waiting_human, code_review_pending}` + `step-start{validate.code-review}`; answer (pass OR fail) → `step-stop` + `state-change{running}` | tool's mode-aware `writer.record` (wrapped) |
 | `tools/run-attempt.ts` escalation outcome | `state-change{waiting_human, escalation}` (escalate only) | `deps.journalV2` → writer (wrapped) |
 | `tools/deviation.ts` `journalGateEvent` | pin → `step-start{validate.deviation}`, verdict → `step-stop`, rerun → `state-change{waiting_machine, deviation_gate_rerun}` | `journalGateEvent(event, writer)` → `writer.record` (wrapped) |
+| `flow/ask-emitter.ts` generic ask emitter (wired in `index.ts` on the `tool_call` / `tool_result` / `tool_execution_end` hooks) | any `ask_user_question` while a run is bound → `state-change{waiting_human, human_ask_pending}` **before** the ask blocks; `state-change{running}` (no reason) when the call finalizes | `pi.on(...)` hooks → `writer.record` (wrapped, same seam as the code-review gate) |
 
 Two **audited, deliberately unrouted** fallbacks: `run-attempt.ts`'s direct `recordRunEvent` attempt-ledger fallback
 writes `attempt-record` (not a v2 kind), and `flow-submit.ts`'s fallback writes `step-output` (not a v2 kind); both
@@ -195,6 +198,37 @@ open `ask_owner` record (`hasPendingAskForParent` from `@gtheys/pi-interactive-s
 land on the Waiting-on-me board rather than in the machine-wait rows. Same ISC-7 shape (no `snapshot()`, armed for the
 next settle, which emits the return to `running`); the label falls back to `subagent_in_flight` whenever the probe is
 absent, false, or the ask record is malformed (fail closed).
+
+**Mid-turn plain asks** (`flow/ask-emitter.ts`, PMR-0NRH) are the one wait that cannot ride the loop: an
+`ask_user_question` issued inside an OPEN turn blocks that turn, so it never settles and the settle-based emission
+above is structurally blind to it — `pi_flow_state` keeps serving the last emitted value for the whole wait. The hook
+pair wraps the ask in the SAME open turn instead: `tool_call` journals the `waiting_human{human_ask_pending}` open
+(Pi awaits the `tool_call` handlers before executing the tool, so the line lands BEFORE the ask blocks), and the
+close journals `running` when the call finalizes — on `tool_result` normally, on `tool_execution_end` as a required
+safety net, because a blocked or aborted call skips `tool_result` but still emits `tool_execution_end`; without that
+third hook an orphan `waiting_human` would sit on the board forever.
+
+**Ask dedupe keeps tool-owned asks single-journaled** (the emitter's critical contract). PRIMARY tier: the open is
+skipped outright when `parentToolCallId` is set — a nested call made by another tool via `ctx.executeTool` is owned
+by a tool that journals its own wait (`tools/code-review.ts` does exactly this), and nested calls do re-fire these
+hooks carrying that field (pi `docs/extensions.md`, "Calling Other Tools"). SECONDARY tier: for a non-nested open the
+journal tail is scanned (`resumeV2StateFromEvents`) and the open is skipped when it already reads `waiting_human`,
+which covers a loop-owned wait such as `subagent_ask_pending` and a second concurrent ask in the session (an
+unreadable journal fails open: a duplicate `waiting_human` line is still honest evidence). The close is Map-gated on
+`toolCallId`, so it can never fire for a call this emitter did not open, and delete-on-first-close makes
+`tool_result`-then-`tool_execution_end` emit exactly one `running` record.
+
+**The loop's live-wait flag** (`flow/loop.ts externalHumanWaitOpen`, PMR-0NRH 3.1) stops a later settle from
+clobbering an open ask: `noteExternalV2State` sets it on a newer-than-watermark external `waiting_human` (after the
+existing ref/vocabulary/recency guards, so the loop's own echo never arms it) and clears it on any other newer
+external state — the ask's own `running` close releases the hold exactly this way — and `start()` resets it so a
+stale journal tail from a dead process can never pin it. **The hold is deliberately narrow:** `emitStateChange`
+returns early only for the COMPETING wait states (`waiting_machine`, `waiting_human`), **not** for every non-terminal
+emission. Suppressing the loop's own `snapshot('running')` would re-break the shipped PMR-ZV9Y P1 invariant —
+`run_attempt` escalate and `deviation_review` rerun journal a wait but never the running return, so that snapshot is
+the only thing that unsticks such a journal. **Residual gap (accepted, tracked as PMR-422Q):** a settle that ADVANCES
+during a live ask still journals `running`, so the board can show the run working while the human is blocked; closing
+it needs a reason-aware guard.
 
 ### The v2 Prometheus gauges
 
@@ -483,6 +517,19 @@ Four header **stat tiles** — `Waiting on me` (count of `pi_flow_state{state="w
 5. **Gate decisions** + **Worktree sweep outcomes** (barcharts) — `pi_flow_gate_decisions_total` grouped by
    (gate, choice) and `pi_flow_worktree_sweep_total` by outcome (the kept evidence metrics).
 
+**`human_ask_pending` is mapped in BOTH reason columns (PMR-0NRH 4.1)** — a registered reason still renders as an em
+dash until its value mapping exists. The two panels use **different text on purpose**, because they answer different
+questions: **Waiting on me — act now** shows the `EXPECTED_ACTION` prose (`answer the agent (the ask in this session)`)
+since that column tells the operator what to do, while **Live state — all runs** shows the short label
+`mid-turn ask` to match its ten sibling two-word status labels. Colour is `light-blue` in both: green / yellow / red /
+blue / dark-gray are already bound to state semantics (`running` / machine wait / `halted` / `done` / `stale`) and
+orange, purple, red and blue are taken by sibling reasons, so light-blue stays distinct while grouping visually with
+`subagent_ask_pending` — both mean "a human must answer an ask". The committed backup
+[`docs/pi-flow-runs.dashboard.json`](pi-flow-runs.dashboard.json) was refreshed from the post-update **live** board
+(uid `piflow-runs`, folder `ag3jjknk85xc0b`) so it stays the rebuilt live state. Same pass fixed a pre-existing
+defect found while editing: `subagent_ask_pending` and `retry_budget_exhausted` both carried `index: 3` in the Live
+state panel, which makes Grafana's mapping order nondeterministic — both panels now have unique, contiguous indices.
+
 ### `piflow-health` — run timelines + step detail (PMR-ZV9Y 6.3)
 
 Two new v2 rows plus the kept tool/duration panels:
@@ -518,6 +565,11 @@ firing during the rebuild).
 | `piflow-retry-budget` | `(pi_flow_blocker_retries >= 2) or (pi_flow_retry_attempts >= 2)` | warning — **query unchanged** (kept metrics); annotations point at the rebuilt board |
 | `piflow-worktree-leak` | `increase(pi_flow_worktree_sweep_total{outcome=~"deferred\|kept-all"}[1h]) > 0` | warning — **query unchanged** (kept metric) |
 
+**No rule change was needed for `human_ask_pending` (PMR-0NRH)** — neither v2 rule enumerates reason values:
+`piflow-waiting-on-human` filters on `state="waiting_human"` alone and `piflow-run-halted` on
+`state="halted",reason!=""`, so both pick up a new reason automatically. Checked at landing so the next person does
+not re-investigate it.
+
 **One-push cutover done 2026-11-25.** Because production v2 series could not exist before the code landed, the two v2
 rules armed **NoData-inactive** at the push (the previously-firing `piflow-run-halted` on a pre-v2 ref predates v2, and
 the kept-metrics `piflow-retry-budget` rule proved it was still firing through the push — the push broke nothing).
@@ -544,6 +596,7 @@ the kept-metrics `piflow-retry-budget` rule proved it was still firing through t
 | `run-state.ts` | The v2 journal kinds (`state-change` projected → `FlowRunState.currentState`; `step-start`/`step-stop` journal-only) + the PMR-C998 `isJournalOnlyEvent` note. |
 | `flow/loop.ts` | Guarded `emitStateChange` + `emitStep` v2 seams, seeded from the journal tail on resume, wired into `snapshot()`, the subagent-in-flight branch, every halt site, done, spec-approval pause. |
 | `tools/{code-review,run-attempt,deviation}.ts` | v2 emissions at the gate boundaries through the writer seam (§4). |
+| `flow/ask-emitter.ts` | **Generic mid-turn ask emitter (PMR-0NRH; receives its writer, never constructs one):** `createAskEmitter(deps)` → `{onToolCall, onToolFinalized}`, wired in `index.ts` on the `tool_call` / `tool_result` / `tool_execution_end` hooks. Journals `state-change{waiting_human, human_ask_pending}` **before** a plain `ask_user_question` blocks and `state-change{running}` when the call finalizes — the one wait the settle-based loop emission cannot see (§4). Two-tier dedupe (`parentToolCallId` primary, journal-tail secondary) + Map-gated close. |
 | `flow/step-output.ts` | `flow_submit` advisory registry hint (`isRegisteredStep`), never rejects. |
 | `telemetry/dispatch.ts` | **`createEventFanoutWriter`** (the one session-side fan-out) + `createTelemetryHandlers` + the **notify sink** (`shouldNotifyState`/`notifySummary`/`notifyBody`/`createNotifySink`, dynamic import of `@gtheys/pi-desktop-notify/notify`). |
 | `telemetry/loki.ts` | **fail-silent Loki pusher** (§6) — `buildLokiStream`/`buildEventLokiLabels`/`pushLokiEvent`. |
@@ -553,9 +606,9 @@ the kept-metrics `piflow-retry-budget` rule proved it was still firing through t
 | `flow/push.ts` | Node-only Pushgateway plumbing: `pushToGateway`, `fetchGroupBody`, `filterGroupLines` (the `#`-line drop behind the TYPE-line rule). |
 | `config.ts` / `config.schema.json` | The config boundary: `telemetry.loki` + `notify.desktop` blocks (TypeBox + checked-in schema mirror). |
 | `packages/pi-desktop-notify/notify.ts` | **`./notify` subpath** — node-only `dispatchNotification(config, summary, body)` + re-exported `loadConfig`, consumed dynamically by the fan-out. |
-| `index.ts` | Wiring: the one `createEventFanoutWriter` wrap at the session `EventWriter`, late-bound `lokiSettings` / `notifyDesktop` / `telemetryHandle`. |
+| `index.ts` | Wiring: the one `createEventFanoutWriter` wrap at the session `EventWriter`, late-bound `lokiSettings` / `notifyDesktop` / `telemetryHandle`, and the three `ask-emitter` hook registrations (PMR-0NRH) which must receive that same wrapped writer. |
 | `packages/pi-interactive-subagents/.../flow-env.ts` | `applyFlowEnv`: copies the `PI_FLOW_*` stamp + `PI_SUBAGENT_NAME` into every spawned worker's env. |
-| tests | `test/vocabulary.test.ts`, `run-state-v2.test.ts`, `state-metrics.test.ts`, `run-health-v2.test.ts`, `reconcile-tombstone-v2.test.ts`, `run-liveness-pattern-v2.test.ts`, `telemetry-step-spans.test.ts`, `loki-pusher.test.ts`, `telemetry-dispatch.test.ts`, `notify-hook.test.ts`, `config-*.test.ts`. Run `bun test packages/pi-flow`; also `bunx @biomejs/biome check packages/pi-flow`, `bunx tsc -p tsconfig.json --noEmit`. |
+| tests | `test/vocabulary.test.ts`, `ask-emitter.test.ts`, `run-state-v2.test.ts`, `state-metrics.test.ts`, `run-health-v2.test.ts`, `reconcile-tombstone-v2.test.ts`, `run-liveness-pattern-v2.test.ts`, `telemetry-step-spans.test.ts`, `loki-pusher.test.ts`, `telemetry-dispatch.test.ts`, `notify-hook.test.ts`, `config-*.test.ts`. Run `bun test packages/pi-flow`; also `bunx @biomejs/biome check packages/pi-flow`, `bunx tsc -p tsconfig.json --noEmit`. |
 
 Repo rules: no ternaries in TS, explicit `.ts` import suffixes, explicit `files` allowlist in
 `packages/pi-flow/package.json` (a new module must be added there or the published package breaks), never edit
@@ -586,6 +639,14 @@ gcx dashboards snapshot piflow-runs --since 7d --output-dir /tmp/x              
 gcx alert groups list | jq '.[] | select(.name=="pi-flow-runs") | .rules[].query'  # the four rules' live expressions
 journalctl -u tempo -u caddy -u grafana-image-renderer --no-pager -n 50
 ```
+
+**Landing step for PMR-0NRH — restart the pi-flow daemon (PMR-7B8M).** Kill the running daemon (pid in
+`<agentDir>/pi-flow/server.pid`, i.e. `~/.pi/agent/pi-flow/server.pid`; it respawns automatically at the next session
+start via `ensureDaemon`). Required, not cosmetic: the liveness re-push re-folds the journal against the vocabulary
+**loaded in the daemon process**, and `flow/state-metrics.ts` skips any `state-change` whose `reason` is outside that
+set — so a daemon still running the old code drops the whole `human_ask_pending` line and the ref keeps rendering as
+whatever state preceded the ask. Related and intended: `waiting_human` transitions page the desktop by default (§7),
+so a mid-turn plain ask now pages the operator — that is the point of the fix.
 
 **Verify v2 end-to-end after a code change:** restart pi → run `/flow <ref>` through at least one `waiting_human`
 transition (spec approval or code review) → `grep -c '"kind":"state-change"'
