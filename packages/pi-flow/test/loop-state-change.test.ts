@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   createFlowLoop,
+  type FlowLoop,
   type FlowLoopDeps,
   resumeV2StateFromEvents,
 } from '../flow/loop.ts'
@@ -1050,5 +1051,257 @@ test('P2a: the loop is never locked out by a future-dated external stamp', async
     runnings.length,
     2,
     'loop emit advances the guard regardless of a future-dated lastV2At',
+  )
+})
+
+// ===========================================================================
+// PMR-0NRH 3.1 — the LIVE-WAIT GUARD (ISC-4). A tool-journaled `waiting_human`
+// (an open mid-turn ask_user_question, subtask 2.2) is the truth the board must
+// show until the ask closes. But `emitStateChange` only same-state-suppresses
+// and advances `lastV2At` unconditionally, so a settle taking the
+// `waiting_machine{subagent_in_flight}` branch (onSettled, in-flight + no child
+// ask) OVERWRITES the live human wait: the board flips back to "machine working"
+// while the human is still the bottleneck. `noteExternalV2State` protected only
+// the reverse direction (a loop wait vs an external observation). The fix is a
+// live-wait flag set/cleared by the external observer and honoured by
+// emitStateChange for NON-TERMINAL states.
+//
+// These tests ride the PRODUCTION path: the loop's `journalV2` seam is wired to
+// a real createEventFanoutWriter (index.ts: journalV2 -> journalSerial -> the
+// one wrapped writer), and a tool write goes through the same dispatcher, so
+// `onV2StateChangeObserved` -> `noteExternalV2State` runs exactly as in the
+// extension. Assertions are on EMITTED/JOURNALED EVENTS, never the private flag.
+// ===========================================================================
+
+/** Wire a loop's v2 seam to a real fan-out over a capturing writer (index.ts
+ * posture: the loop's events route through the SAME observer a tool write does,
+ * asynchronously — a queued echo). Returns the dispatcher (for tool-side
+ * writes) and the durable journal mirror (for tail assertions). */
+function wireRealFanout(h: Harness, loop: FlowLoop) {
+  const written: FlowRunEvent[] = []
+  const baseWriter: EventWriter = {
+    record: async (event) => {
+      written.push(event)
+      return true
+    },
+    recordJournalOnly: async (event) => {
+      written.push(event)
+    },
+  }
+  const fanout = createEventFanoutWriter(baseWriter, {
+    onV2StateChangeObserved: (event) => {
+      loop.noteExternalV2State(event.ref, event.state, event.at)
+    },
+  })
+  h.deps.journalV2 = (event) => {
+    h.v2.push(event)
+    void fanout.record(event)
+  }
+  return { fanout, written }
+}
+
+/** Let queued fire-and-forget fan-out writes route, so a loop's OWN echo
+ * reaches the observer before the test asserts (the P2a narrow window). */
+async function flushFanout(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/** The v2 state-change states in emission order (readable failure output). */
+function stateSequence(events: readonly FlowRunEvent[]): string[] {
+  return events
+    .filter((e) => e.kind === 'state-change')
+    .map((e) => {
+      if (e.kind !== 'state-change') return e.kind
+      if (e.reason === undefined) return e.state
+      return `${e.state}/${e.reason}`
+    })
+}
+
+test('PMR-0NRH hazard: a settle with a subagent in flight must NOT clobber a live tool-journaled waiting_human', async () => {
+  // The interview's required ordering: waiting_human -> settle -> still
+  // waiting_human. A steer/interrupt can end the open turn while the ask
+  // blocks, so onSettled fires with the human wait LIVE.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  h.inFlight = true
+  await loop.start(startInput()) // state-change{running}, lastV2At = now()
+  // The mid-turn ask journals its wait through the TOOL seam (ask-emitter),
+  // strictly NEWER than the loop's own stamp -> the P2a recency guard accepts
+  // it, so the loop knows a human wait is open.
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  // The hazard: label missing + in-flight subagent + NO child ask -> the
+  // waiting_machine{subagent_in_flight} settle branch.
+  h.labels = []
+  await loop.onSettled()
+  // Flush so the loop's queued echoes route too: a guard placed BEFORE the
+  // recency check would let the loop clear its own hold here and turn this
+  // test green for the wrong reason.
+  await flushFanout()
+  assert.deepEqual(
+    stateSequence(h.v2).filter((s) => s.startsWith('waiting_machine')),
+    [],
+    `settle clobbered the live human wait: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // ISC-4: the durable journal tail (what the board / Grafana fold reads) still
+  // reads waiting_human.
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_human',
+    `journal tail is not the live human wait: ${stateSequence(written).join(' -> ')}`,
+  )
+})
+
+test('PMR-0NRH close-and-resume: the ask close (external running) releases the hold and the machine wait emits', async () => {
+  // The other half of the guard: it must be LIVE-only. The ask-emitter journals
+  // state-change{running} on tool_result, which routes as an external
+  // observation, clears the flag, and the very next settle is free to journal
+  // the machine wait again (the run really is waiting on the child now).
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  h.inFlight = true
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    stateSequence(h.v2).filter((s) => s.startsWith('waiting_machine')).length,
+    0,
+    `pre-close hold missing: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // The human answers -> the emitter journals the close through the SAME seam.
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(120),
+    ref: 'TP-1',
+    state: 'running',
+  })
+  // The next settle (still armed, still in flight, no child ask) now emits the
+  // machine wait: the guard was `running` after the close, so it DIFFERS.
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `hold not released by the close: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_machine',
+    `journal tail not released: ${stateSequence(written).join(' -> ')}`,
+  )
+})
+
+test('PMR-0NRH start reset: a stale waiting_human journal tail never pins a restarted run (ISC-10)', async () => {
+  // A process that died mid-ask leaves waiting_human as the journal tail. The
+  // live-wait flag is in-process, so start() must drop it: the seeded guard
+  // plus snapshot('running') unstick the journal EXACTLY as today, and a
+  // settle's machine branch emits normally.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  h.inFlight = true
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  // Restart with the stale tail seeded as the guard (index.ts resume path).
+  await loop.start({ ...startInput(), resumeState: 'waiting_human' })
+  await flushFanout()
+  // The stale tail is unstuck by the running snapshot (today's behaviour).
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'running',
+    `restart did not unstick the stale tail: ${stateSequence(written).join(' -> ')}`,
+  )
+  // And the flag went with it: the machine branch is free to emit.
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `start() left the live-wait flag set: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+})
+
+test('PMR-0NRH subagent ask: the loop-owned waiting_human{subagent_ask_pending} branch is unchanged and never self-holds (ISC-A-7)', async () => {
+  // No external wait is open, so the child-ask settle must still emit its human
+  // wait exactly as before. It also PROVES the loop-owned-echo claim the plan
+  // asserts: this emission's own echo through the observer must NOT set the
+  // live-wait flag, or the loop would hold its own next machine wait and the fix
+  // would be a no-op in the reverse direction.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  wireRealFanout(h, loop)
+  h.inFlight = true
+  h.pendingAsk = true
+  await loop.start(startInput())
+  h.labels = []
+  await loop.onSettled()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_human/subagent_ask_pending'),
+    `child-ask branch changed: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // Let the loop's OWN waiting_human echo route, then flip the probe: the next
+  // settle takes the machine branch. If the echo had set the flag (a guard
+  // ordered before the recency check, or an emit path that wrote the flag), the
+  // machine wait would be held here and this assertion would go red.
+  await flushFanout()
+  h.pendingAsk = false
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `the loop's own echo self-held the guard: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+})
+
+test('PMR-0NRH terminal override: a halt still journals while the live wait is open', async () => {
+  // A real halt ends the run, so the open ask is moot: `halted` (and `done` /
+  // `stale`) must still emit even with the flag set, or a blocked run would
+  // never leave waiting_human on the board.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  h.inFlight = true
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  // Label miss with no in-flight subagent and plan-state != review -> the
+  // generic label_miss halt.
+  h.inFlight = false
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('halted/label_miss'),
+    `terminal emission was held: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'halted',
+    `journal tail not terminal: ${stateSequence(written).join(' -> ')}`,
   )
 })

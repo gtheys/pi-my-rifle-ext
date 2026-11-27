@@ -242,6 +242,29 @@ class FlowLoopImpl implements FlowLoop {
   // width UTC-`Z` format everywhere, so string compare == chronological compare.
   // null = nothing applied yet (the first external observation always wins).
   private lastV2At: string | null = null
+  // AIDEV-NOTE: PMR-0NRH 3.1 — LIVE-WAIT flag (ISC-4). True ONLY while a
+  // NEWER-THAN-WATERMARK EXTERNAL `state-change` observed `waiting_human`, i.e.
+  // a live tool-journaled human wait (an open mid-turn ask_user_question — the
+  // ask-emitter's open — or a code_review gate). Three semantics, each load-
+  // bearing:
+  //   * EXTERNAL-ONLY: written in noteExternalV2State, never in emitStateChange.
+  //     The loop's own emissions cannot flip it either way — their echo through
+  //     the observer carries `at === lastV2At` (emitStateChange stamps the
+  //     watermark BEFORE the write) so the pre-existing P2a recency guard skips
+  //     it before this field is touched. Without that ordering the loop would
+  //     clear its own hold and the guard would be a no-op.
+  //   * LIVE-ONLY: cleared by the next newer external observation, which is the
+  //     ask's own `state-change{running}` close. While set, emitStateChange
+  //     holds the two COMPETING WAIT states (`waiting_machine`, `waiting_human`)
+  //     so a settle with a subagent in flight cannot flip the board back to
+  //     "machine working" while the human is still the bottleneck. Why only
+  //     those two — and the residual gap that narrowing leaves — is recorded at
+  //     the skip rule itself (see the PMR-0NRH note in emitStateChange).
+  //   * RESET-ON-START: in-process state, so a process that died mid-ask loses
+  //     it; a stale `waiting_human` journal tail must never pin a restarted run
+  //     (ISC-10) — the seeded guard + snapshot('running') unstick the journal
+  //     exactly as today.
+  private externalHumanWaitOpen = false
   // AIDEV-NOTE: PMR-ZV9Y 2.1 — pairing guard for plan.spec-approval. The
   // spec-approval pause journals step-start; the step-stop is emitted where
   // the plan phase completes (advanceAfter). This flag keeps them paired so an
@@ -282,6 +305,11 @@ class FlowLoopImpl implements FlowLoop {
     if (this.lastV2At !== null && at <= this.lastV2At) return
     this.lastEmittedV2 = state
     this.lastV2At = at
+    // PMR-0NRH 3.1 — the live-wait flag follows the SAME observations the guard
+    // does, AFTER every existing guard passed (ref, vocabulary, recency): set on
+    // an external waiting_human, cleared by any other newer external state. The
+    // ask's close (an external `running`) releases the hold exactly this way.
+    this.externalHumanWaitOpen = state === 'waiting_human'
   }
 
   async start(input: FlowStartInput): Promise<void> {
@@ -351,6 +379,11 @@ class FlowLoopImpl implements FlowLoop {
     // (only the state is threaded through resumeState), so null = the first
     // observation (the loop's own emit below or a tool write) always applies.
     this.lastV2At = null
+    // PMR-0NRH 3.1 (ISC-10): likewise drop the live-wait flag. It is in-process
+    // state, so a run restarted after a mid-ask process death must not stay
+    // pinned by a stale `waiting_human` journal tail — the seeded guard plus the
+    // snapshot('running') below unstick the journal exactly as today.
+    this.externalHumanWaitOpen = false
     if (input.resumePlanApprovalOpen !== undefined) {
       this.specApprovalStepOpen = input.resumePlanApprovalOpen
     }
@@ -704,6 +737,36 @@ class FlowLoopImpl implements FlowLoop {
   private emitStateChange(state: FlowState, reason?: FlowReason): void {
     if (this.state === null) return
     if (this.lastEmittedV2 === state) return
+    // AIDEV-NOTE: PMR-0NRH — while a TOOL-journaled waiting_human is live (an
+    // open mid-turn ask), the loop must not overwrite it with a competing wait:
+    // only the ask's own close (an external running observation, which clears
+    // this flag) or a terminal state (halted/done/stale) may replace it.
+    // SCOPE DECISION (deliberate narrowing): this holds ONLY the two competing
+    // WAIT states, NOT every non-terminal emission. Holding the loop's own
+    // snapshot('running') would re-break the PMR-ZV9Y P1 invariant recorded on
+    // FlowLoop.noteExternalV2State above: `run_attempt` escalate and
+    // `deviation_review` rerun journal a wait but NEVER the running return, so
+    // that running snapshot is the ONLY thing that unsticks such a journal —
+    // suppressing it restores the stuck false waiting-on-human page. Five
+    // tests go red under the literal rule (test/loop-state-change.test.ts):
+    // "P1: a tool-journaled wait un-pins the loop", "P1 observer (real
+    // fan-out)", "P1 observer (b)", "P1 fold: escalate-wait then a running
+    // snapshot", "P2a: a late loop echo cannot revert a newer tool wait".
+    // RESIDUAL GAP (accepted, tracked as PMR-422Q): a settle that ADVANCES
+    // during a live ask still journals `running`, so the board can show the run
+    // working while the human is blocked. PMR-422Q makes the guard reason-aware
+    // — holding only for waits that journal their own close — which closes that
+    // gap without touching the P1 invariant.
+    // The early return MUST precede every mutation: recording the state or
+    // advancing the watermark on the held path would desync the guard (the next
+    // real emission wrongly suppressed) and recency-skip the ask's own close,
+    // pinning the journal at waiting_human forever.
+    if (
+      this.externalHumanWaitOpen &&
+      (state === 'waiting_machine' || state === 'waiting_human')
+    ) {
+      return
+    }
     this.lastEmittedV2 = state
     const event: FlowRunEvent = {
       kind: 'state-change',
