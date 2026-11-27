@@ -6,64 +6,306 @@
 // state-change{running} after the answer. These tests mock only the injected
 // boundaries (writer, readEvents, getActiveRef, now) and assert on the
 // RECORDED event objects — never on internal state.
+//
+// AIDEV-NOTE: PMR-0NRH fix round (review blocker 1) — the fake now mirrors
+// production journal semantics, which the refcount/reason-checked close
+// depends on: `recorded` is every write the emitter ATTEMPTED (what the tests
+// assert), while the journal the emitter re-reads holds only the writes that
+// LANDED (record returning true), and every journal is seeded with the
+// `run-start` line production always writes first (index.ts:2218) because
+// projectRunState can only derive currentState from a foldable run. The
+// parallel-batch cases below reproduce pi's default parallel tool execution:
+// every tool_call handler runs before any tool executes, so asks #2..N see
+// the open wait that ask #1 just journaled and then serialize on the UI lock.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createAskEmitter } from '../flow/ask-emitter.ts'
 import type { FlowRunEvent } from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
 
-/** Capturing fake writer: records every event, returns `recordResult`. */
-function fakeWriter(
-  opts: { recordResult?: boolean; throwOn?: (e: FlowRunEvent) => boolean } = {},
+type ReadMode = 'ok' | 'throws' | 'null'
+
+function harness(
+  opts: {
+    activeRef?: string | null
+    /** Events already in the journal when the emitter reads its tail. */
+    journal?: readonly FlowRunEvent[]
+    /** true = leave deps.writer unset (ISC-A-2 no-op tests). */
+    noWriter?: boolean
+    /** false = the write fails (record resolves false, nothing lands). */
+    recordResult?: boolean
+    throwOn?: (event: FlowRunEvent) => boolean
+    readMode?: ReadMode
+  } = {},
 ) {
+  let activeRef: string | null = 'PMR-X'
+  if (opts.activeRef !== undefined) activeRef = opts.activeRef
+  const ref = activeRef ?? 'PMR-X'
   const recorded: FlowRunEvent[] = []
+  // The fake journal: the run-start line production always writes first, then
+  // any seeded tail, then only the writes that landed.
+  const journal: FlowRunEvent[] = [
+    {
+      kind: 'run-start',
+      at: '2026-11-25T00:00:00.000Z',
+      ref,
+      mode: 'personal',
+    },
+    ...(opts.journal ?? []),
+  ]
+  let readMode: ReadMode = 'ok'
+  if (opts.readMode !== undefined) readMode = opts.readMode
+
   const writer: EventWriter = {
     record: async (event) => {
       if (opts.throwOn?.(event)) {
         throw new Error('journal exploded')
       }
       recorded.push(event)
-      if (opts.recordResult === undefined) return true
+      if (opts.recordResult === undefined) {
+        journal.push(event)
+        return true
+      }
+      if (opts.recordResult) journal.push(event)
       return opts.recordResult
     },
     recordJournalOnly: async (event) => {
       recorded.push(event)
+      journal.push(event)
     },
   }
-  return { recorded, writer }
-}
+  let writerRef: EventWriter | undefined = writer
+  if (opts.noWriter) writerRef = undefined
 
-function harness(
-  opts: {
-    activeRef?: string | null
-    journal?: readonly FlowRunEvent[] | null
-    /** true = leave deps.writer unset (ISC-A-2 no-op tests). */
-    noWriter?: boolean
-    recordResult?: boolean
-    throwOn?: (e: FlowRunEvent) => boolean
-  } = {},
-) {
-  let activeRef: string | null = 'PMR-X'
-  if (opts.activeRef !== undefined) activeRef = opts.activeRef
-  const capture = fakeWriter({
-    recordResult: opts.recordResult,
-    throwOn: opts.throwOn,
-  })
-  let writer: EventWriter | undefined = capture.writer
-  if (opts.noWriter) writer = undefined
   const emitter = createAskEmitter({
     getActiveRef: () => activeRef,
-    writer,
-    readEvents: async () => opts.journal ?? [],
+    writer: writerRef,
+    readEvents: async () => {
+      if (readMode === 'throws') throw new Error('journal unreadable')
+      if (readMode === 'null') return null
+      return [...journal]
+    },
     now: () => '2026-11-27T00:00:00.000Z',
   })
-  return { recorded: capture.recorded, emitter }
+  return {
+    recorded,
+    emitter,
+    /** Simulate another seam journalling onto the same run's journal. */
+    pushJournal: (event: FlowRunEvent) => {
+      journal.push(event)
+    },
+    /** Simulate the journal tail becoming unreadable from here on. */
+    breakReads: (mode: ReadMode) => {
+      readMode = mode
+    },
+  }
 }
+
+/** Convenience: a journaled state-change line (as another seam would write). */
+function waitEvent(
+  state: 'waiting_human',
+  reason: 'human_ask_pending' | 'code_review_pending' | 'subagent_ask_pending',
+): FlowRunEvent {
+  return {
+    kind: 'state-change',
+    at: '2026-11-26T00:00:00.000Z',
+    ref: 'PMR-X',
+    state,
+    reason,
+  }
+}
+
+function closesOf(recorded: readonly FlowRunEvent[]) {
+  return recorded.filter(
+    (event) => event.kind === 'state-change' && event.state === 'running',
+  )
+}
+
+function opensOf(recorded: readonly FlowRunEvent[]) {
+  return recorded.filter(
+    (event) => event.kind === 'state-change' && event.state === 'waiting_human',
+  )
+}
+
+// --- PARALLEL BATCH (review blocker 1: the close must be reference-counted) ---
+
+test('parallel batch of two: one open, nothing on the first close, one running on the last', async () => {
+  // Reviewer's reproduction. pi runs tool calls from one assistant message in
+  // parallel (docs/extensions.md), so BOTH tool_call handlers run before
+  // either ask blocks: ask #1 journals the open, ask #2 sees the waiting_human
+  // tail and skips journaling — but it is still blocking the human, so its
+  // close must not be allowed to clear the batch.
+  const { recorded, emitter } = harness({ activeRef: 'PMR-X', journal: [] })
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-a1',
+  })
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-a2',
+  })
+  assert.equal(opensOf(recorded).length, 1)
+  assert.equal(closesOf(recorded).length, 0)
+  const open = recorded[0]
+  if (open?.kind === 'state-change') {
+    assert.equal(open.state, 'waiting_human')
+    assert.equal(open.reason, 'human_ask_pending')
+  } else {
+    assert.fail('expected the batch open event')
+  }
+
+  // Ask #1 answered while ask #2 STILL blocks the human: journal nothing, or
+  // the board would show running and the Waiting-on-me row would vanish.
+  await emitter.onToolFinalized({ toolCallId: 'tc-a1' })
+  assert.equal(recorded.length, 1)
+
+  // Ask #2 answered: the last in-flight ask closes the wait with ONE running.
+  await emitter.onToolFinalized({ toolCallId: 'tc-a2' })
+  assert.equal(recorded.length, 2)
+  const close = recorded[1]
+  if (close?.kind === 'state-change') {
+    assert.equal(close.state, 'running')
+    assert.equal(close.ref, 'PMR-X')
+  } else {
+    assert.fail('expected the batch close event')
+  }
+  assert.equal(closesOf(recorded).length, 1)
+})
+
+test('parallel batch of three: one open and exactly one running only after the third close', async () => {
+  const { recorded, emitter } = harness({ activeRef: 'PMR-X', journal: [] })
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-b1',
+  })
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-b2',
+  })
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-b3',
+  })
+  assert.equal(opensOf(recorded).length, 1)
+
+  await emitter.onToolFinalized({ toolCallId: 'tc-b1' })
+  assert.equal(recorded.length, 1)
+  await emitter.onToolFinalized({ toolCallId: 'tc-b2' })
+  assert.equal(recorded.length, 1)
+  await emitter.onToolFinalized({ toolCallId: 'tc-b3' })
+  assert.equal(recorded.length, 2)
+  assert.equal(closesOf(recorded).length, 1)
+})
+
+test('batched with a tool-owned wait: a code_review_pending tail suppresses our open and our close writes nothing', async () => {
+  // ask_user_question batched with code_review: the gate journaled its own
+  // waiting_human{code_review_pending} first, so we must journal neither an
+  // open (it is already a human wait) nor a running close (that wait belongs
+  // to code_review, which is still open).
+  const { recorded, emitter } = harness({
+    activeRef: 'PMR-X',
+    journal: [waitEvent('waiting_human', 'code_review_pending')],
+  })
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-c1',
+  })
+  assert.deepEqual(recorded, [])
+
+  await emitter.onToolFinalized({ toolCallId: 'tc-c1' })
+  assert.deepEqual(recorded, [])
+})
+
+test('reason-checked close: another seam opens code_review_pending during our wait, our close journals nothing', async () => {
+  const { recorded, emitter, pushJournal } = harness({
+    activeRef: 'PMR-X',
+    journal: [],
+  })
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-d1',
+  })
+  assert.equal(recorded.length, 1)
+
+  // A competing wait is now the open one — its owner closes it, not us.
+  pushJournal(waitEvent('waiting_human', 'code_review_pending'))
+  await emitter.onToolFinalized({ toolCallId: 'tc-d1' })
+  assert.equal(recorded.length, 1)
+  assert.equal(closesOf(recorded).length, 0)
+})
+
+test('fail closed: readEvents throwing at close time journals no running and does not throw', async () => {
+  const { recorded, emitter, breakReads } = harness({
+    activeRef: 'PMR-X',
+    journal: [],
+  })
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-e1',
+  })
+  assert.equal(recorded.length, 1)
+
+  breakReads('throws')
+  await emitter.onToolFinalized({ toolCallId: 'tc-e1' })
+  assert.equal(closesOf(recorded).length, 0)
+  assert.equal(recorded.length, 1)
+})
+
+test('fail closed: a null journal read at close time journals no running', async () => {
+  const { recorded, emitter, breakReads } = harness({
+    activeRef: 'PMR-X',
+    journal: [],
+  })
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-e2',
+  })
+  assert.equal(recorded.length, 1)
+
+  breakReads('null')
+  await emitter.onToolFinalized({ toolCallId: 'tc-e2' })
+  assert.equal(closesOf(recorded).length, 0)
+  assert.equal(recorded.length, 1)
+})
+
+test('sequential reuse: after a batch fully closes, a later ask opens and closes normally', async () => {
+  const { recorded, emitter } = harness({ activeRef: 'PMR-X', journal: [] })
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-f1',
+  })
+  await emitter.onToolFinalized({ toolCallId: 'tc-f1' })
+  assert.equal(recorded.length, 2)
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-f2',
+  })
+  assert.equal(recorded.length, 3)
+  const secondOpen = recorded[2]
+  if (secondOpen?.kind === 'state-change') {
+    assert.equal(secondOpen.state, 'waiting_human')
+    assert.equal(secondOpen.reason, 'human_ask_pending')
+  } else {
+    assert.fail('expected the second ask open event')
+  }
+
+  await emitter.onToolFinalized({ toolCallId: 'tc-f2' })
+  assert.equal(recorded.length, 4)
+  assert.equal(closesOf(recorded).length, 2)
+})
 
 // --- 2. PRIMARY dedupe: nested call (parentToolCallId) is skipped outright ---
 
 test('primary dedupe: nested ask (parentToolCallId set) journals nothing and closing it is a no-op', async () => {
-  // Empty journal proves the skip is the parentToolCallId check, not the
+  // An empty journal proves the skip is the parentToolCallId check, not the
   // journal-tail scan.
   const { recorded, emitter } = harness({ activeRef: 'PMR-X', journal: [] })
 
@@ -74,7 +316,7 @@ test('primary dedupe: nested ask (parentToolCallId set) journals nothing and clo
   })
   assert.deepEqual(recorded, [])
 
-  // The Map never saw the id, so the close is a no-op (defence in depth:
+  // The id was never tracked, so the close is a no-op (defence in depth:
   // the owning tool, e.g. code_review, journals its own close).
   await emitter.onToolFinalized({ toolCallId: 'tc-parent/1' })
   assert.deepEqual(recorded, [])
@@ -83,21 +325,16 @@ test('primary dedupe: nested ask (parentToolCallId set) journals nothing and clo
 // --- 3. SECONDARY dedupe: journal tail already reads waiting_human ---
 
 test('secondary dedupe: non-nested open while journal tail is waiting_human journals nothing', async () => {
-  const journal: FlowRunEvent[] = [
-    {
-      kind: 'state-change',
-      at: '2026-11-26T00:00:00.000Z',
-      ref: 'PMR-X',
-      state: 'waiting_human',
-      reason: 'subagent_ask_pending',
-    },
-  ]
-  const { recorded, emitter } = harness({ activeRef: 'PMR-X', journal })
+  const { recorded, emitter } = harness({
+    activeRef: 'PMR-X',
+    journal: [waitEvent('waiting_human', 'subagent_ask_pending')],
+  })
 
   await emitter.onToolCall({ toolName: 'ask_user_question', toolCallId: 'tc2' })
   assert.deepEqual(recorded, [])
 
-  // Map stayed empty (no open remembered) → the finalize journals nothing.
+  // The ask is tracked (it blocks the human), but the close journals nothing:
+  // the tail still reads the loop-owned wait, not ours.
   await emitter.onToolFinalized({ toolCallId: 'tc2' })
   assert.deepEqual(recorded, [])
 })
@@ -169,15 +406,16 @@ test('double finalize (tool_result then tool_execution_end): exactly one running
   await emitter.onToolCall({ toolName: 'ask_user_question', toolCallId: 'tc9' })
   await emitter.onToolFinalized({ toolCallId: 'tc9' }) // tool_result
   await emitter.onToolFinalized({ toolCallId: 'tc9' }) // tool_execution_end
-  const closes = recorded.filter(
-    (e) => e.kind === 'state-change' && e.state === 'running',
-  )
-  assert.equal(closes.length, 1)
+  assert.equal(closesOf(recorded).length, 1)
 })
 
-// --- 10. failed open (record resolves false) → no Map entry → no close ---
+// --- 10. failed open (record resolves false) → close journals nothing ---
 
-test('failed open: record returning false is not remembered, finalize journals nothing', async () => {
+test('failed open: record returning false lands nothing, so the reason-checked close journals no running', async () => {
+  // The id IS tracked (an in-flight ask is tracked whether or not its open
+  // landed — the refcount is what keeps a batch honest), but the failed write
+  // never reached the journal, so at close time the tail is not our wait and
+  // the close correctly writes nothing.
   const { recorded, emitter } = harness({
     activeRef: 'PMR-X',
     journal: [],
@@ -189,8 +427,8 @@ test('failed open: record returning false is not remembered, finalize journals n
     toolCallId: 'tc10',
   })
   await emitter.onToolFinalized({ toolCallId: 'tc10' })
-  // The fake captured the (failed) open attempt but the emitter remembered
-  // nothing, so no running close was ever attempted.
+  // The fake captured the (failed) open attempt and no running close was ever
+  // attempted.
   assert.equal(recorded.length, 1)
   const open = recorded[0]
   if (open?.kind === 'state-change') {
