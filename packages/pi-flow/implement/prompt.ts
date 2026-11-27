@@ -56,14 +56,20 @@ The Subtask: <subtask-ref> trailer rule is unchanged and still required.`
 export function buildImplementPrompt(input: ImplementPromptInput): string {
   const header = `Implement phase (PIV flow). Mode: ${input.mode}. Ref: ${input.ref}. Route: ${input.route}.`
 
+  // AIDEV-NOTE: PMR-JVJN — the plan route used to forbid starting a
+  // dep-blocked subtask while feature-plan-aven's contract dep-linked every
+  // subtask on its own phase: the first subtask of every phase could never
+  // legally start. One rule now: subtasks carry no deps (the N./N.M prefix
+  // sort is the execution order); phases chain via deps.
+  // aven-tree-contract.test.ts pins this across prompt + skills + docs.
   if (input.route === 'plan') {
     return `${header}
 Invoke the user's implement-plan-aven skill (engineering:implement-plan-aven)
 for ${input.ref} and follow its workflow exactly.
 ${BRANCH_RULES}${commonRules(input.ref)}
-- Walk the epic's subtasks IN ORDER (aven epic list), but NEVER start a
-  subtask that is blocked by an open dependency (check each subtask's
-  blocked state before starting it) — finish its blockers first.
+- Walk the epic's subtasks IN ORDER (aven epic list) — subtasks carry no
+  dependencies (PMR-JVJN); execution order is the N./N.M title prefix
+  sort, and only phases chain via aven deps.
 - EACH subtask gets its own test run + commit; mark it done only then.
 - When spawning a subagent to implement a subtask, pass the subtask's ref as the spawn's \`subtask\` parameter (subagent tool) so cost attribution follows the work (PI_FLOW_SUBTASK env stamp + journal note). Omit it for scouts and general-purpose workers.
 - EVERY commit message ends with a \`Subtask: <subtask-ref>\` trailer naming

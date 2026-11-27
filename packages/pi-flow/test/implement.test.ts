@@ -126,13 +126,16 @@ describe('buildImplementPrompt', () => {
     assert.match(p, /ALL subtasks are done/)
     assert.match(p, /"active" label/)
   })
-  it('plan prompt skips dep-blocked subtasks', () => {
+  it('plan prompt orders subtasks by prefix, never by deps', () => {
     const p = buildImplementPrompt({
       mode: 'personal',
       ref: 'PMR-56NR',
       route: 'plan',
     })
-    assert.match(p, /never start a\s+subtask that is blocked/i)
+    assert.match(p, /subtasks carry no\s+dependencies/i)
+    assert.match(p, /N\.\/N\.M title prefix/)
+    assert.doesNotMatch(p, /never start a\s+subtask that is blocked/i)
+    assert.doesNotMatch(p, /blocked by an open dependency/i)
   })
   it('bug prompt requires reproduce-first', () => {
     const p = buildImplementPrompt({ mode: 'work', ref: 'DP-72', route: 'bug' })
