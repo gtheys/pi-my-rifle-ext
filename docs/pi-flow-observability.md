@@ -110,6 +110,12 @@ in the board, NOT — see §6 gotcha):
 `human_ask_pending` is reserved for the generic ask emitter (PMR-0NRH): it journals this reason around a plain mid-turn
 `ask_user_question` in the main session, and its emission-seam-map row lands with that emitter (§4).
 
+**Derived sub-set of the reason enum:** `SELF_CLOSING_HUMAN_WAITS` + `reasonOwnsExternalClose()` (PMR-422Q) —
+`code_review_pending` and `human_ask_pending`, the two reasons whose owning seam journals its own `running` close. It is
+not a label dimension and no dashboard or metric reads it (`flow/loop.ts` is the only consumer); it is the set that
+arms the loop's live-wait hold, so the full membership rationale lives with the `SELF_CLOSING_HUMAN_WAITS`
+AIDEV-NOTE in `flow/vocabulary.ts` and the hold itself in §4.
+
 **Journal v2 event kinds (in `run-state.ts`):**
 
 - `state-change` — `{kind, at, ref, state, reason?}` — **projected** last-wins into `FlowRunState.currentState`.
@@ -214,21 +220,60 @@ by a tool that journals its own wait (`tools/code-review.ts` does exactly this),
 hooks carrying that field (pi `docs/extensions.md`, "Calling Other Tools"). SECONDARY tier: for a non-nested open the
 journal tail is scanned (`resumeV2StateFromEvents`) and the open is skipped when it already reads `waiting_human`,
 which covers a loop-owned wait such as `subagent_ask_pending` and a second concurrent ask in the session (an
-unreadable journal fails open: a duplicate `waiting_human` line is still honest evidence). The close is Map-gated on
-`toolCallId`, so it can never fire for a call this emitter did not open, and delete-on-first-close makes
-`tool_result`-then-`tool_execution_end` emit exactly one `running` record.
+unreadable journal fails open: a duplicate `waiting_human` line is still honest evidence).
 
-**The loop's live-wait flag** (`flow/loop.ts externalHumanWaitOpen`, PMR-0NRH 3.1) stops a later settle from
-clobbering an open ask: `noteExternalV2State` sets it on a newer-than-watermark external `waiting_human` (after the
-existing ref/vocabulary/recency guards, so the loop's own echo never arms it) and clears it on any other newer
-external state — the ask's own `running` close releases the hold exactly this way — and `start()` resets it so a
-stale journal tail from a dead process can never pin it. **The hold is deliberately narrow:** `emitStateChange`
-returns early only for the COMPETING wait states (`waiting_machine`, `waiting_human`), **not** for every non-terminal
-emission. Suppressing the loop's own `snapshot('running')` would re-break the shipped PMR-ZV9Y P1 invariant —
-`run_attempt` escalate and `deviation_review` rerun journal a wait but never the running return, so that snapshot is
-the only thing that unsticks such a journal. **Residual gap (accepted, tracked as PMR-422Q):** a settle that ADVANCES
-during a live ask still journals `running`, so the board can show the run working while the human is blocked; closing
-it needs a reason-aware guard.
+**The dedupe gates JOURNALING, never TRACKING** (PMR-0NRH review round). Pi runs the tool calls of one assistant
+message in parallel by default and every `tool_call` handler runs before any tool executes — sibling calls are
+"preflighted sequentially, then executed concurrently" (pi `docs/extensions.md`) — so a batch of N asks fires all N
+handlers up front: ask #1 journals the open, asks #2..N hit the SECONDARY tier and journal nothing, then the asks
+serialize on the shared UI lock. The emitter therefore records every non-nested ask in `openAsks`
+(`toolCallId -> ref`) whether or not its open was journaled, and the close is **reference-counted**: a finalize writes
+nothing while any ask is still open, so only the finalize that empties the Map may close the wait. Ungated, ask #1's
+finalize would journal `running` while ask #2 still blocked the human. This matters because `ask_user_question`'s own
+promptGuidelines tell the model to "make multiple separate ask_user_question tool calls instead of combining them",
+so batching is the encouraged shape, not a corner case. Even the last finalize is **reason-checked**: it re-reads the
+journal tail (`projectRunState`) and writes `running` only when that tail is `waiting_human` with reason
+`human_ask_pending`, so a plain ask's close can never clear a batched `code_review` gate's still-open wait — any other
+tail writes nothing. The close stays Map-gated on `toolCallId` (it can never fire for a call this emitter did not
+track) and delete-on-first-close makes `tool_result`-then-`tool_execution_end` emit at most one `running` record.
+
+**The two sides fail in opposite directions on purpose.** The open side fails OPEN: an unreadable journal reads as "no
+open wait", so a possibly-duplicate `waiting_human` line gets journaled — still honest evidence. The close side fails
+CLOSED: an unreadable or absent tail journals no `running`. The asymmetry is deliberate because the two errors are not
+symmetric — a false `running` destroys the human wait (invisible ask, no desktop page, under-counted wait-seconds) and
+cannot be undone from here, whereas a stale `waiting_human` self-heals: the loop's next non-competing `running`
+emission still passes the guard, so the journal unsticks itself.
+
+**The loop's live-wait flag** (`flow/loop.ts externalHumanWaitOpen`, PMR-0NRH 3.1, reason-aware per PMR-422Q) stops a
+later settle from clobbering an open ask: `noteExternalV2State(ref, state, at, reason?)` arms it only on a
+newer-than-watermark external `waiting_human` **whose reason is in `SELF_CLOSING_HUMAN_WAITS`** (`human_ask_pending`,
+`code_review_pending` — the waits whose owning seam journals its own `running` close; after the existing
+ref/vocabulary/recency guards, so the loop's own echo never arms it), and clears it on every other newer external
+observation — the ask's own `state-change{running}` close is exactly such an observation, which is why arming only
+self-closing reasons cannot strand the hold. `start()` resets it so a stale journal tail from a dead process can never
+pin a restarted run. Once armed, `emitStateChange` returns early for **every NON-TERMINAL** emission — the loop cannot
+flip the board off a live human wait, not even back to `running` — while the **terminal** states (`halted`, `done`,
+`stale`) still emit, because a halt or a finish must never hide behind a wait nobody will answer. The `reason`
+parameter is **optional**, and that cuts both ways: an absent reason (a three-argument call) can never arm the hold,
+it only clears it — which is why the PMR-ZV9Y observer tests in `test/loop-state-change.test.ts`, which drive this seam
+without a reason, stayed green unmodified.
+
+**Why reason-awareness replaced the earlier narrowing** (this supersedes the "deliberately narrow" wording and closes
+PMR-422Q). The flag used to arm on `state === 'waiting_human'` alone while holding only the two competing wait states
+(`waiting_machine`, `waiting_human`). That narrowing existed *because* the flag was reason-blind: suppressing the
+loop's own `snapshot('running')` re-breaks the shipped PMR-ZV9Y P1 invariant, since `tools/run-attempt.ts` escalate
+(`waiting_human{escalation}`) and `tools/deviation.ts` rerun (`waiting_machine{deviation_gate_rerun}`) journal a wait
+but never the running return — that snapshot is the only thing that unsticks such a journal. Worse, an `escalation`
+wait armed the flag and nothing could ever clear it: the latch silently dropped every later loop-emitted wait for the
+rest of the process's run. Restricting arming to self-closing waits removes the latch **and** makes the wider
+non-terminal hold safe, because those waits' `running` snapshots are never held; both PMR-422Q findings — the latch and
+its accepted residual gap (a settle that ADVANCES during a live ask still journalling `running`, so the board reported
+a blocked run as working) — are closed. The remaining exclusions (`spec_approval_pending`, a loop-owned pause whose
+close *is* the loop's next snapshot, so holding it would deadlock the run; `subagent_ask_pending`, emitted by the loop
+itself with no external close coming) are itemised in the `SELF_CLOSING_HUMAN_WAITS` AIDEV-NOTE. What remains of the
+gap: the hold lasts until the owning seam's close arrives, so a journal write that failed (ISC-A-5 swallows it) keeps
+the board on `waiting_human` until the run terminates or restarts — deliberate, since terminal emissions and `start()`
+always release it.
 
 ### The v2 Prometheus gauges
 
@@ -521,10 +566,14 @@ Four header **stat tiles** — `Waiting on me` (count of `pi_flow_state{state="w
 dash until its value mapping exists. The two panels use **different text on purpose**, because they answer different
 questions: **Waiting on me — act now** shows the `EXPECTED_ACTION` prose (`answer the agent (the ask in this session)`)
 since that column tells the operator what to do, while **Live state — all runs** shows the short label
-`mid-turn ask` to match its ten sibling two-word status labels. Colour is `light-blue` in both: green / yellow / red /
-blue / dark-gray are already bound to state semantics (`running` / machine wait / `halted` / `done` / `stale`) and
-orange, purple, red and blue are taken by sibling reasons, so light-blue stays distinct while grouping visually with
-`subagent_ask_pending` — both mean "a human must answer an ask". The committed backup
+`mid-turn ask`. That panel's Reason mapping has twelve entries: `mid-turn ask` plus eleven siblings, of which TEN are
+short labels (`spec approval`, `code review`, `escalation`, `retry budget`, `blocker budget`, `label miss`, `gate rerun`,
+`subagent in flight`, `prompt send failed`, `aven read failed`) and ONE is the existing prose exception —
+`subagent_ask_pending` carries the long `answer the subagent (its pane or answer_subagent)` text, so the next person
+editing that panel should not "normalize" it to a short label by mistake. Colour is `light-blue` in both: green /
+yellow / red / blue / dark-gray are already bound to state semantics (`running` / machine wait / `halted` / `done` /
+`stale`) and orange, purple, red and blue are taken by sibling reasons, so light-blue stays distinct while grouping
+visually with `subagent_ask_pending` — both mean "a human must answer an ask". The committed backup
 [`docs/pi-flow-runs.dashboard.json`](pi-flow-runs.dashboard.json) was refreshed from the post-update **live** board
 (uid `piflow-runs`, folder `ag3jjknk85xc0b`) so it stays the rebuilt live state. Same pass fixed a pre-existing
 defect found while editing: `subagent_ask_pending` and `retry_budget_exhausted` both carried `index: 3` in the Live
@@ -588,15 +637,15 @@ the kept-metrics `piflow-retry-budget` rule proved it was still firing through t
 
 | File | Role |
 | --- | --- |
-| `flow/vocabulary.ts` | **v2 vocabulary (pure, zero imports):** `FlowState`/`FlowReason`/`WaitKind` unions, `FLOW_STATES`/`FLOW_REASONS` guard sets, `WAIT_KIND` map + `reasonWaitKind()`, `EXPECTED_ACTION` map + `expectedAction()`. The single source every consumer reads. |
+| `flow/vocabulary.ts` | **v2 vocabulary (pure, zero imports):** `FlowState`/`FlowReason`/`WaitKind` unions, `FLOW_STATES`/`FLOW_REASONS` guard sets, `WAIT_KIND` map + `reasonWaitKind()`, `EXPECTED_ACTION` map + `expectedAction()`, `SELF_CLOSING_HUMAN_WAITS` + `reasonOwnsExternalClose()` (the reasons whose seam journals its own `running` close — what arms the loop's live-wait hold, §4). The single source every consumer reads. |
 | `flow/steps.ts` | **step registry (pure):** `STEP_REGISTRY` + `isRegisteredStep(phase, step)`. The closed set of named step boundaries (§5). |
 | `flow/state-metrics.ts` | **v2 Prometheus derivation (node-only, daemon-reachable, pure):** `deriveV2State` (projection + ISC-6 legacy fallback), `scanStateWindows` (cumulative waits), `scanStepWindows` (step boundaries), `renderStateMetricLines` (the six gauges, bare lines — TYPE-line rule §4). |
 | `flow/run-health.ts` | Appends `renderStateMetricLines` output after the kept frozen block, then the additive `pi_flow_run_title_info` tail (PMR-9DZ0); header AIDEV notes the frozen set + the 7.1 retirement history and the 2.1 tail amendment. |
 | `flow/reconcile.ts` | `tombstoneBody` — v2 state-line `state="stale"` label-value surgery (§4); candidacy journal-keyed. |
 | `run-state.ts` | The v2 journal kinds (`state-change` projected → `FlowRunState.currentState`; `step-start`/`step-stop` journal-only) + the PMR-C998 `isJournalOnlyEvent` note. |
-| `flow/loop.ts` | Guarded `emitStateChange` + `emitStep` v2 seams, seeded from the journal tail on resume, wired into `snapshot()`, the subagent-in-flight branch, every halt site, done, spec-approval pause. |
+| `flow/loop.ts` | Guarded `emitStateChange` + `emitStep` v2 seams, seeded from the journal tail on resume, wired into `snapshot()`, the subagent-in-flight branch, every halt site, done, spec-approval pause; `noteExternalV2State(ref, state, at, reason?)` arms/clears the reason-aware live-wait hold (self-closing waits only, every non-terminal emission held) (§4). |
 | `tools/{code-review,run-attempt,deviation}.ts` | v2 emissions at the gate boundaries through the writer seam (§4). |
-| `flow/ask-emitter.ts` | **Generic mid-turn ask emitter (PMR-0NRH; receives its writer, never constructs one):** `createAskEmitter(deps)` → `{onToolCall, onToolFinalized}`, wired in `index.ts` on the `tool_call` / `tool_result` / `tool_execution_end` hooks. Journals `state-change{waiting_human, human_ask_pending}` **before** a plain `ask_user_question` blocks and `state-change{running}` when the call finalizes — the one wait the settle-based loop emission cannot see (§4). Two-tier dedupe (`parentToolCallId` primary, journal-tail secondary) + Map-gated close. |
+| `flow/ask-emitter.ts` | **Generic mid-turn ask emitter (PMR-0NRH; receives its writer, never constructs one):** `createAskEmitter(deps)` → `{onToolCall, onToolFinalized}`, wired in `index.ts` on the `tool_call` / `tool_result` / `tool_execution_end` hooks. Journals `state-change{waiting_human, human_ask_pending}` **before** a plain `ask_user_question` blocks and `state-change{running}` when the call finalizes — the one wait the settle-based loop emission cannot see (§4). Two-tier dedupe (`parentToolCallId` primary, journal-tail secondary) on the open; refcounted + reason-checked, Map-gated close (fail-open at open, fail-closed at close). |
 | `flow/step-output.ts` | `flow_submit` advisory registry hint (`isRegisteredStep`), never rejects. |
 | `telemetry/dispatch.ts` | **`createEventFanoutWriter`** (the one session-side fan-out) + `createTelemetryHandlers` + the **notify sink** (`shouldNotifyState`/`notifySummary`/`notifyBody`/`createNotifySink`, dynamic import of `@gtheys/pi-desktop-notify/notify`). |
 | `telemetry/loki.ts` | **fail-silent Loki pusher** (§6) — `buildLokiStream`/`buildEventLokiLabels`/`pushLokiEvent`. |
