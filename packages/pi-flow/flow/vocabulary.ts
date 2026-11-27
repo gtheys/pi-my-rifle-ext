@@ -12,6 +12,12 @@
 // extend the run-state tests — the deepEqual pins in test/vocabulary.test.ts
 // are the drift alarm.
 //
+// Vocabulary history (PMR-0NRH): `human_ask_pending` was added here as the
+// HUMAN wait for a mid-turn plain ask in the main session — the generic ask
+// emitter journals it, so every current and future prompt-instructed ask
+// becomes visible on the Waiting-on-me board with no per-gate reason and no
+// prompt edit.
+//
 // v2 state is DERIVED, never a rename: LoopRunStatus ('running' | 'paused' |
 // 'halted' | 'done') stays as-is because resume (flow/resume.ts), the
 // phase-3 pending protocol and old journals depend on it (ISC-A-2).
@@ -31,7 +37,11 @@ export type FlowState =
  * and `aven_read_failed` were added (real halt paths in flow/loop.ts the
  * brainstorm missed); `subagent_ask_pending` was added by the worker-ask-wait
  * fix (an in-flight child parked on ask_owner is a HUMAN wait — flow/loop.ts
- * emits it instead of `subagent_in_flight` when a pending ask exists).
+ * emits it instead of `subagent_in_flight` when a pending ask exists);
+ * `human_ask_pending` was added by the mid-turn-ask fix PMR-0NRH (a mid-turn
+ * plain ask in the MAIN session is a HUMAN wait — the generic ask emitter
+ * journals it, so a prompt-instructed `ask_user_question` becomes visible on
+ * the Waiting-on-me board without any per-gate reason or prompt edit).
  */
 export type FlowReason =
   | 'spec_approval_pending'
@@ -43,6 +53,7 @@ export type FlowReason =
   | 'deviation_gate_rerun'
   | 'subagent_in_flight'
   | 'subagent_ask_pending'
+  | 'human_ask_pending'
   | 'prompt_send_failed'
   | 'aven_read_failed'
 
@@ -70,12 +81,13 @@ export const FLOW_REASONS: readonly FlowReason[] = [
   'deviation_gate_rerun',
   'subagent_in_flight',
   'subagent_ask_pending',
+  'human_ask_pending',
   'prompt_send_failed',
   'aven_read_failed',
 ]
 
 /**
- * reason -> wait_kind. The four human reasons are the ones an operator can
+ * reason -> wait_kind. The human reasons are the ones an operator can
  * resolve; everything else clears itself (or needs a code/label fix, which is
  * still not an interactive wait).
  *
@@ -84,6 +96,12 @@ export const FLOW_REASONS: readonly FlowReason[] = [
  * machine half (`subagent_in_flight`, the child still working) is a different
  * wait. Before this reason existed, that case was labelled machine and the
  * "Waiting on me — act now" board missed it.
+ *
+ * AIDEV-NOTE (PMR-0NRH): `human_ask_pending` is human for the same reason one
+ * level up — the blocker is the OPERATOR answering an `ask_user_question` in the
+ * main session. Before it existed, a mid-turn ask in the main session was
+ * invisible: only child asks (subagent_ask_pending) and registered gate waits
+ * showed up on the board.
  */
 export const WAIT_KIND: Readonly<Record<FlowReason, WaitKind>> = {
   spec_approval_pending: 'human',
@@ -95,6 +113,7 @@ export const WAIT_KIND: Readonly<Record<FlowReason, WaitKind>> = {
   deviation_gate_rerun: 'machine',
   subagent_in_flight: 'machine',
   subagent_ask_pending: 'human',
+  human_ask_pending: 'human',
   prompt_send_failed: 'machine',
   aven_read_failed: 'machine',
 }
@@ -108,12 +127,17 @@ export const WAIT_KIND: Readonly<Record<FlowReason, WaitKind>> = {
  * with NO slash command — the operator answers the child in its pane (or tells
  * the parent to run `answer_subagent`), so its action is plain prose and
  * deliberately carries no `{ref}` placeholder.
+ *
+ * AIDEV-NOTE (PMR-0NRH): `human_ask_pending` is the second human wait with no
+ * slash command — the operator answers the ask in the session it was asked in,
+ * so its action is prose with no `{ref}` placeholder either.
  */
 export const EXPECTED_ACTION: Readonly<Partial<Record<FlowReason, string>>> = {
   spec_approval_pending: '/flow answer {ref} approve',
   code_review_pending: '/flow answer {ref} pass|fail',
   escalation: 'intervene: /flow {ref} (or fix forward)',
   subagent_ask_pending: 'answer the subagent (its pane or answer_subagent)',
+  human_ask_pending: 'answer the agent (the ask in this session)',
 }
 
 /** Rendered when nothing unblocks the run (no human action registered). */
