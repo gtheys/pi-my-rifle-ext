@@ -666,21 +666,19 @@ pause autopush landed at 14:37:05. The daemon now periodically re-pushes each
 run that is in flight, so the v2 `pi_flow_state{state="running"}` gauge has a
 producer and the board's running/needs-attention mappings actually light up.
 
-**What it pushes.** Not a status-only patch — the FULL group body: cost,
-token, tool-call and duration lines plus the run-health lines, rendered
-through the SAME path the terminal autopush uses
-(`buildPushBody(trackRef, rows, durations, events)`). That is a requirement,
-not a style choice: on official Pushgateway semantics a POST replaces the
-entire group, so a partial body would drop the cost series the terminal push
-owns. (The homelab gateway was verified to MERGE on write instead — PMR-WBC2,
-2026-11-24 — but the full-body rule stays: it is correct under either
-semantics and does not depend on which build answers.) It also means the two
-pushes of one run differ only in the state-vocabulary lines (the v2
-`pi_flow_state` / `pi_flow_state_start_seconds` / step and wait gauges that the
-journal fold re-renders). Reading the stored group
-back with
-`fetchGroupBody` is deliberately NOT used here — that round-trip stays
-reserved for the tombstone reconcile above.
+**What it pushes.** Not a status-only patch — the FULL group body: cost, token,
+tool-call and duration lines plus the run-health lines, rendered through the
+SAME path the terminal autopush uses (`buildPushBody(trackRef, rows, durations,
+events)`). That is a requirement, not a style choice: on official Pushgateway
+semantics a POST replaces the entire group, so a partial body would drop the
+cost series the terminal push owns. (The homelab gateway was verified to MERGE
+on write instead — PMR-WBC2, 2026-11-24 — but the full-body rule stays: it is
+correct under either semantics and does not depend on which build answers.) It
+also means the two pushes of one run differ only in the state-vocabulary lines
+(the v2 `pi_flow_state` / `pi_flow_state_start_seconds` / step and wait gauges
+that the journal fold re-renders). Reading the stored group back with
+`fetchGroupBody` is deliberately NOT used here — that round-trip stays reserved
+for the tombstone reconcile above.
 
 **Terminal push stays the last writer.** The pass re-reads and re-gates the
 journal immediately before the POST, so a run that went terminal while the
