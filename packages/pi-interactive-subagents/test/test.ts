@@ -7508,6 +7508,17 @@ describe('rolePrefixWithoutAgent guardrail (PMR-J2V5)', () => {
     assert.equal(rolePrefixWithoutAgent('peon: dig', undefined), null)
   })
 
+  // AIDEV-NOTE (PMR-SBJC): regression — matching must be case-insensitive;
+  // 'Worker: X' previously bypassed the PMR-C0WG hard refusal.
+  it('matches role prefixes regardless of letter case', () => {
+    assert.equal(rolePrefixWithoutAgent('Worker: X', undefined), 'worker')
+    assert.equal(rolePrefixWithoutAgent('SCOUT — map repo', undefined), 'scout')
+  })
+
+  it('returns null for a capitalized role name when agent is set', () => {
+    assert.equal(rolePrefixWithoutAgent('Worker: X', 'worker'), null)
+  })
+
   it('returns null for undefined name', () => {
     assert.equal(rolePrefixWithoutAgent(undefined, undefined), null)
   })
@@ -7570,6 +7581,58 @@ describe('launchSubagent role-prefix refusal (PMR-C0WG)', () => {
       } finally {
         // launchSubagent stashes ctx in the module-global latestCtx; reset it
         // so later widget tests never see this minimal mock.
+        subagentsModule.__test__.updateWidgetForTest(undefined)
+      }
+    })
+  })
+
+  // AIDEV-NOTE (PMR-SBJC): the capitalized form 'Worker: X' is used as an
+  // example in the orchestration skill and must hit the same fail-closed
+  // refusal as lowercase — case must not bypass the guardrail.
+  it('rejects a capitalized role-prefixed name without agent before any spawn side effect', async () => {
+    await withIsolatedAgentEnv(async () => {
+      const notifications: Array<{ message: string; level?: string }> = []
+      const ctx = {
+        cwd: process.cwd(),
+        ui: {
+          notify(message: string, level?: string) {
+            notifications.push({ message, level })
+          },
+        },
+        sessionManager: {
+          getSessionFile: () => '/tmp/pmr-sbjc/session.jsonl',
+          getSessionId: () => 'pmr-sbjc-parent-session',
+          getSessionDir: () => '/tmp/pmr-sbjc',
+        },
+      }
+
+      try {
+        await assert.rejects(
+          (subagentsModule as any).launchSubagent(
+            {
+              name: 'Worker: X',
+              task: 'X',
+              worktree: true,
+              cwd: '/tmp/pmr-sbjc-elsewhere',
+            },
+            ctx,
+          ),
+          (err: unknown) => {
+            let message = String(err)
+            if (err instanceof Error) {
+              message = err.message
+            }
+            // The refusal names the canonical lowercase role and both fixes.
+            assert.match(message, /worker/)
+            assert.match(message, /agent: "worker"/)
+            assert.match(message, /rename/i)
+            return true
+          },
+        )
+
+        assert.equal(notifications.length, 0)
+        assert.deepEqual(listAssignments(), [])
+      } finally {
         subagentsModule.__test__.updateWidgetForTest(undefined)
       }
     })

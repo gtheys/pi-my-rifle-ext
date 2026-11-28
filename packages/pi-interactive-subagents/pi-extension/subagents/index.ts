@@ -2546,9 +2546,14 @@ export function rolePrefixWithoutAgent(
   agent: string | undefined,
 ): string | null {
   if (agent != null || name == null) return null
+  // AIDEV-NOTE (PMR-SBJC): match case-insensitively — 'Worker: X' (the form
+  // the orchestration skill uses as an example) must hit the same hard
+  // refusal as 'worker: X'. The returned role stays canonical lowercase so
+  // the refusal message can suggest agent: "<role>".
+  const loweredName = name.toLowerCase()
   for (const role of KNOWN_ROLE_PREFIXES) {
     for (const separator of ROLE_NAME_SEPARATORS) {
-      if (name.startsWith(`${role}${separator}`)) return role
+      if (loweredName.startsWith(`${role}${separator}`)) return role
     }
   }
   return null
