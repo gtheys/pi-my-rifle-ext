@@ -2216,6 +2216,13 @@ export default function (
           jiraKey = epicJiraRef
         }
       }
+      // AIDEV-NOTE: PMR-RMWX — the run-start timestamp is captured BEFORE the
+      // title lookup, not at the event literal. resolveRunTitle shells out to
+      // acli with a 15 s timeout (plan-tools/jira-issue.ts), so stamping `at`
+      // after that await pushed pi_flow_run_start_seconds (the "Started" column
+      // on piflow-runs) up to 15 s late on a slow or unreachable Jira. Personal
+      // mode never shell-outs, so only work mode was affected.
+      const startedAt = new Date().toISOString()
       const titleResult = await resolveRunTitle(pi, {
         mode,
         avenTitle: snapshot.title,
@@ -2226,7 +2233,7 @@ export default function (
       }
       const runStartEvent: FlowRunEvent = {
         kind: 'run-start',
-        at: new Date().toISOString(),
+        at: startedAt,
         ref,
         mode,
         trackRef,

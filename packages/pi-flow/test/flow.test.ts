@@ -1568,3 +1568,105 @@ test('flow handler: owner-session carries the session_start main session file (P
     assert.equal(first.pid, process.pid)
   })
 })
+
+// AIDEV-NOTE: PMR-RMWX — work-mode run-start must NOT inherit the acli title
+// lookup latency. resolveRunTitle shells out to acli with a 15 s timeout
+// (plan-tools/jira-issue.ts), so stamping run-start `at` AFTER that await
+// shifted pi_flow_run_start_seconds (the "Started" column on piflow-runs) by
+// the lookup time whenever Jira was slow or unreachable. The pin drives the
+// REAL /flow handler in work mode (personal mode reads the title off the aven
+// snapshot and never shells out, so it cannot show the shift) with a pi.exec
+// that answers the acli call only after a delay, and asserts the journaled
+// run-start.at predates the call.
+test('flow handler: work-mode run-start timestamp predates the acli title lookup (PMR-RMWX)', async () => {
+  const ref = 'PMR-TITLELAT'
+  const ws = mkdtempSync(path.join(os.tmpdir(), 'pi-flow-handler-work-'))
+  mkdirSync(path.join(ws, '.pi', 'pi-flow'), { recursive: true })
+  // workRoots = the session toplevel the git stub reports, so resolveMode
+  // returns 'work'; runServer stays off so no daemon is spawned by the run.
+  writeFileSync(
+    path.join(ws, '.pi', 'pi-flow', 'config.json'),
+    JSON.stringify({ workRoots: [ws], runServer: { enabled: false } }),
+  )
+  // Work mode derives the Jira key from the epic's jira-ref metadata, read
+  // through `aven show <ref> --full` — the fake aven script appends this file.
+  writeFileSync(
+    HANDLER_WORKTREE,
+    'metadata field_id=F1 key=jira-ref\nvalue<<EOF\nDP-71\nEOF\n',
+  )
+  writeDoneLabels(ref, ['planned'])
+  const lookup: { enteredAt: number; exitedAt: number; calls: number } = {
+    enteredAt: 0,
+    exitedAt: 0,
+    calls: 0,
+  }
+  const delayMs = 400
+  const exec: FlowExec = async (command, args) => {
+    const argv = args.join(' ')
+    if (command === 'git' && argv === 'rev-parse --show-toplevel') {
+      return { code: 0, stdout: `${ws}\n`, stderr: '' }
+    }
+    if (command === 'acli') {
+      if (lookup.calls === 0) {
+        lookup.enteredAt = Date.now()
+      }
+      lookup.calls += 1
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      if (lookup.calls === 1) {
+        lookup.exitedAt = Date.now()
+      }
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          fields: {
+            summary: 'Title latency pin',
+            issuetype: { name: 'Story' },
+          },
+        }),
+        stderr: '',
+      }
+    }
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  try {
+    await withHandlerEnv(async () => {
+      setAvenSessionCwd(ws)
+      const { handler, sent } = captureFlowCommand(exec)
+      const notifications: Array<{ message: string; level: string }> = []
+      await handler(ref, {
+        cwd: ws,
+        hasUI: true,
+        ui: {
+          notify: (message: string, level: string) =>
+            notifications.push({ message, level }),
+        },
+      })
+      assert.ok(sent.length > 0, 'expected sendUserMessage on the run path')
+      assert.ok(lookup.calls >= 1, 'work mode must look the Jira title up')
+      const runStart = journalEvents(ref).find(
+        (event) => event.kind === 'run-start',
+      )
+      if (runStart === undefined) {
+        throw new Error('run-start was not journaled')
+      }
+      assert.equal(runStart.mode, 'work', 'the pin must exercise work mode')
+      const stampedAt =
+        typeof runStart.at === 'string' ? Date.parse(runStart.at) : Number.NaN
+      // Strictly BEFORE the lookup resolved: the delay (400ms) dwarfs any
+      // millisecond-boundary rounding, so a stamp taken at the event literal
+      // (after the await) is always >= exitedAt and this fails.
+      assert.ok(
+        stampedAt < lookup.exitedAt,
+        `run-start.at must be stamped before the title lookup resolves (enteredAt=${lookup.enteredAt}, exitedAt=${lookup.exitedAt}, at=${String(runStart.at)})`,
+      )
+      assert.ok(
+        stampedAt <= lookup.enteredAt,
+        `run-start.at must predate the acli call entirely (enteredAt=${lookup.enteredAt}, at=${String(runStart.at)})`,
+      )
+    })
+  } finally {
+    writeFileSync(HANDLER_WORKTREE, '')
+    writeFileSync(HANDLER_LABELS, '')
+    rmSync(ws, { recursive: true, force: true })
+  }
+})
