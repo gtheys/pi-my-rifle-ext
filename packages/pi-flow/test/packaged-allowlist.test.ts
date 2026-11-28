@@ -11,8 +11,11 @@ import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { checkImportReachability } from '../../../scripts/lib/package-reachability.mjs'
 import { mkTmpDir } from './tmpdir.ts'
+
+const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 interface FixturePkg {
   files?: string[]
@@ -54,4 +57,16 @@ test('files allowlist gate: listed reachable module yields no findings (fixture)
   const { pkgDir, pkg } = writeFixture(['index.ts', 'helper.ts'])
   const findings = checkImportReachability(pkgDir, pkg.files ?? [], pkg)
   assert.deepEqual(findings, [])
+})
+
+test('files allowlist gate: every reachable pi-flow module is in the files allowlist (real tree)', () => {
+  const pkg = JSON.parse(
+    readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'),
+  ) as FixturePkg
+  const findings = checkImportReachability(pkgRoot, pkg.files ?? [], pkg)
+  assert.deepEqual(
+    findings,
+    [],
+    `reachable module(s) missing from the files allowlist — add them to packages/pi-flow/package.json "files" (audit:pack release gate, PMR-0SWR): ${findings.join('; ')}`,
+  )
 })
