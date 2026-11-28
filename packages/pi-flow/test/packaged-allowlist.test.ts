@@ -12,7 +12,10 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { checkImportReachability } from '../../../scripts/lib/package-reachability.mjs'
+import {
+  checkImportReachability,
+  entryPoints,
+} from '../../../scripts/lib/package-reachability.mjs'
 import { mkTmpDir } from './tmpdir.ts'
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -63,6 +66,14 @@ test('files allowlist gate: every reachable pi-flow module is in the files allow
   const pkg = JSON.parse(
     readFileSync(path.join(pkgRoot, 'package.json'), 'utf8'),
   ) as FixturePkg
+  // AIDEV-NOTE (PMR-HXC2): guard the guard — checkImportReachability's BFS
+  // starts from entryPoints(pkg). If pi.extensions/exports ever drift to
+  // empty or unrecognized fields the walker visits nothing and the gate
+  // passes without enforcing the files allowlist; fail loudly instead.
+  assert.ok(
+    entryPoints(pkg).length > 0,
+    'pi-flow package.json yields zero entrypoints (pi.extensions/exports empty or unrecognized) — checkImportReachability would walk nothing and pass without enforcing the files allowlist',
+  )
   const findings = checkImportReachability(pkgRoot, pkg.files ?? [], pkg)
   assert.deepEqual(
     findings,
