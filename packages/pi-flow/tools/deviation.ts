@@ -621,17 +621,11 @@ export function registerDeviationReviewTool(
               { isError: true },
             )
           }
-          await journalGateEvent(
-            {
-              kind: 'gate-decision',
-              at: new Date().toISOString(),
-              ref: params.ref,
-              gate: 'deviation',
-              targetId: gateTargetId(target),
-              status: 'pass',
-            },
-            writer,
-          )
+          // AIDEV-NOTE: PMR-SPND — integrity acceptance alone journals NO
+          // gate-decision: pass/fail is the VERDICT (0 vs >0 deviations) and
+          // is emitted only after the artifact parses strictly (below). The
+          // old premature 'pass' here made every run with deviations read as
+          // a clean pass in the journal.
         }
         if (diffPath !== undefined) {
           const check = checkDiffLinesRead(resolved.value.diff, result.summary)
@@ -656,6 +650,35 @@ export function registerDeviationReviewTool(
         if (mapped.isError === true) {
           await journalGateRerun(params.ref)
         } else {
+          // AIDEV-NOTE: PMR-SPND — gate-decision verdict semantics (human-
+          // chosen, closed pass/fail vocabulary, ISC-A-1 — no new status):
+          //   pass = the gate ran, the artifact parsed strictly, 0 deviations
+          //   fail = the gate ran, the artifact parsed strictly, >0 deviations
+          // The event's PRESENCE on this path records successful execution +
+          // parsing; a parse failure journals NO gate-decision (only the
+          // rerun wait), so a parse error can never read as pass. Integrity
+          // rejections above keep their own closed statuses (echo-missing /
+          // target-mismatch / stale, or fail-closed 'fail' when HEAD cannot
+          // be re-resolved) — never pass. Consumers reading events alone can
+          // therefore tell "ran clean" from "found deviations" without a new
+          // field.
+          if (target !== null) {
+            let status: 'pass' | 'fail' = 'fail'
+            if (mapped.details.ok && mapped.details.deviationsCount === 0) {
+              status = 'pass'
+            }
+            await journalGateEvent(
+              {
+                kind: 'gate-decision',
+                at: new Date().toISOString(),
+                ref: params.ref,
+                gate: 'deviation',
+                targetId: gateTargetId(target),
+                status,
+              },
+              writer,
+            )
+          }
           await closeDeviationStep(params.ref)
         }
         const first = mapped.content[0]

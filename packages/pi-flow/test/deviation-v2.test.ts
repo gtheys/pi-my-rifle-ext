@@ -186,6 +186,13 @@ function v2View(events: FlowRunEvent[]) {
   return view
 }
 
+function gateDecisions(events: FlowRunEvent[]) {
+  return events.filter(
+    (event): event is Extract<FlowRunEvent, { kind: 'gate-decision' }> =>
+      event.kind === 'gate-decision',
+  )
+}
+
 const PINNED = {
   kind: 'step-start',
   phase: 'validate',
@@ -221,6 +228,47 @@ test('artifact parse failure journals the rerun wait, not a step-stop', async ()
   const result = await h.run()
   assert.equal(result.isError, true)
   assert.deepEqual(v2View(h.events), [PINNED, RERUN])
+})
+
+// AIDEV-NOTE: PMR-SPND — verdict semantics of the journaled gate-decision:
+// pass = the gate ran, parsed strictly, found 0 deviations; fail = ran,
+// parsed, found >0; event presence records successful execution/parsing, so
+// a parse failure must journal NO gate-decision (never a pass).
+test('deviations found journal a fail gate-decision, never a pass', async () => {
+  const h = harness({
+    review: async () =>
+      artifact(
+        ECHO,
+        'deviations_count: 2\n' +
+          '- deviation: skipped retry budget | why: spec demands it (inferred: no retry in diff) | src/retry.ts:12\n' +
+          '- deviation: missing audit note | why: D5 requires it (inferred: absent from the log) | src/audit.ts:40\n',
+      ),
+  })
+  const result = await h.run()
+  assert.notEqual(result.isError, true)
+  const decisions = gateDecisions(h.events)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.status, 'fail')
+})
+
+test('a clean zero-deviation verdict journals a pass gate-decision', async () => {
+  const h = harness({
+    review: async () => artifact(ECHO, 'deviations_count: 0\n'),
+  })
+  const result = await h.run()
+  assert.notEqual(result.isError, true)
+  const decisions = gateDecisions(h.events)
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0]?.status, 'pass')
+})
+
+test('a parse failure journals no gate-decision at all', async () => {
+  const h = harness({
+    review: async () => artifact(ECHO, 'no count line at all\n'),
+  })
+  const result = await h.run()
+  assert.equal(result.isError, true)
+  assert.deepEqual(gateDecisions(h.events), [])
 })
 
 test('reviewer that echoed the wrong range journals the rerun wait', async () => {

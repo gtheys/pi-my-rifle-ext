@@ -661,6 +661,22 @@ Four header **stat tiles** — `Waiting on me` (count of `pi_flow_state{state="w
 5. **Gate decisions** + **Worktree sweep outcomes** (barcharts) — `pi_flow_gate_decisions_total` grouped by
    (gate, choice) and `pi_flow_worktree_sweep_total` by outcome (the kept evidence metrics).
 
+**Deviation `gate-decision` verdict semantics (PMR-SPND).** Only the deviation gate journals `gate-decision`
+(`tools/deviation.ts`); the spec-review / code-review / answer gates record the human's choice verbatim as
+`gate-answer` events, so they have no equivalent conflation. For `gate="deviation"` the status is the VERDICT,
+derived from the strictly parsed artifact: `pass` = the gate ran, the artifact parsed strictly, and it found **0
+deviations**; `fail` = ran, parsed, **>0 deviations**. The event's presence records successful execution + parsing —
+a parse failure journals NO `gate-decision` (only the `deviation_gate_rerun` machine wait), and an integrity
+rejection keeps its own closed statuses (`echo-missing` / `target-mismatch` / `stale`, or a fail-closed `fail` when
+HEAD cannot be re-resolved) — never `pass`. So events alone distinguish "ran clean" from "found deviations"; the
+closed `GateDecisionStatus` vocabulary is unchanged (ISC-A-1, no new status/field/label). Before PMR-SPND the tool
+journaled `pass` at integrity-acceptance time — BEFORE parsing — so every run with deviations read as a clean pass.
+**Board impact:** `pi_flow_gate_decisions_total` is built from `gate-answer` events only (`flow/run-health.ts`), and
+deviation verdicts are `gate-decision` events, so the piflow-runs "Gate decisions by gate and choice" panel never
+renders a deviation verdict at all — it cannot show deviations as an unqualified pass, and the existing `fail`
+series/mapping is sufficient (no value-mapping change needed). The surfaces that DO render `gate-decision` (the flow
+diagram's `gate deviation: <status>` line, `flow-diagram/translate.ts`) now show `fail` for a non-clean verdict.
+
 **`human_ask_pending` is mapped in BOTH reason columns (PMR-0NRH 4.1)** — a registered reason still renders as an em
 dash until its value mapping exists. The two panels use **different text on purpose**, because they answer different
 questions: **Waiting on me — act now** shows the `EXPECTED_ACTION` prose (`answer the agent (the ask in this session)`)
