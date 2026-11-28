@@ -75,6 +75,13 @@ function makeHarness(labels: string[] | null = []): Harness {
     epicHasOpenChildren: async () => false,
     hasInFlightSubagent: () => h.inFlight ?? false,
     hasPendingSubagentAsk: () => h.pendingAsk ?? false,
+    // AIDEV-NOTE: PMR-B033 — default-successful gate-reset dep so the
+    // existing blocker tests keep their happy-path v2 sequence; the
+    // failed-reset pin below overrides it.
+    removeAvenLabel: async (_ref, label) => {
+      h.labels = (h.labels ?? []).filter((l) => l !== label)
+      return true
+    },
     sendPrompt: (prompt) => {
       h.sent.push(prompt)
     },
@@ -165,6 +172,25 @@ test('blocker-budget halt: emits state-change{halted, blocker_budget_exhausted}'
       state: 'halted',
       reason: 'blocker_budget_exhausted',
     },
+  ])
+})
+
+test('label-reset halt: emits state-change{halted, label_reset_failed}', async () => {
+  // PMR-B033: the blocker route-back could not reset the stale implement
+  // completion label — fail-closed halt with its own v2 reason.
+  const h = makeHarness(['planned', 'active'])
+  h.deps.hasFreshBlockers = async () => true
+  h.deps.removeAvenLabel = async () => false
+  const loop = createFlowLoop(h.deps)
+  await loop.start({
+    ref: 'TP-1',
+    phase: 'validate',
+    promptInput: { ...PROMPT_INPUT },
+  })
+  await loop.onSettled() // blockers -> route-back -> reset fails -> halt
+  assert.deepEqual(v2View(h), [
+    { kind: 'state-change', state: 'running', reason: undefined },
+    { kind: 'state-change', state: 'halted', reason: 'label_reset_failed' },
   ])
 })
 
