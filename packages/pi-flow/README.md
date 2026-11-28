@@ -696,13 +696,14 @@ never touched by liveness.
 **Where it runs.** The daemon timer only: first pass ~60 s after the daemon
 starts, then every `liveness.intervalMinutes` (default 5). A run too fresh to
 have any cost rows yet still gets a body pushed (the run-health and duration
-lines, no cost lines), so it appears on the board at the first tick instead
-of waiting for its first cost-bearing push — for personal runs only: a
-work-mode fresh run's trackRef is the shared Jira key, and a zero-cost body
-there would erase the previous run's cost series, so such refs wait for
-their first cost-bearing pass. One summary line lands in
-`<agentDir>/pi-flow/server.log` per pass; a broken journal or a failed POST
-costs one warning and a `failed` count, never the pass.
+lines, no cost lines), so it appears on the board at the first tick instead of
+waiting for its first cost-bearing push — but only for runs whose trackRef is
+the journal ref (personal runs, and work runs with no Jira key): a work-mode
+fresh run tracked by the shared Jira key would erase the previous run's cost
+series with a zero-cost body, so such refs wait for their first cost-bearing
+pass. One summary line lands in `<agentDir>/pi-flow/server.log` per pass; a
+broken journal or a failed POST costs one warning and a `failed` count, never
+the pass.
 
 ```
 liveness pass: scanned=42 pushed=2 skipped=40 failed=0
