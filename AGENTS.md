@@ -51,6 +51,19 @@ When working in this repository, read the OpenWiki quickstart first, then follow
   the transition text; and `<br/>` / raw `<placeholder>` are unsupported there, so
   write placeholders in words (#docs-diagrams).
 
+## Commit discipline #mechanism-vocabulary
+
+- **Replaced a mechanism in a commit?** Re-grep the branch's own comments and docs
+  for the vocabulary of the mechanism it replaced (old names, flags, env vars,
+  states) and update every stale reference the sweep finds.
+- **Before writing a NEW mechanism claim into a comment or doc**, verify the
+  mechanism in the code and cite the seam — the function/file that implements it
+  (e.g. `packages/pi-flow/plan-tools/helpers.ts`) — rather than restating an
+  upstream narrative.
+- This is a **manual** checklist, not an automated grep gate: past-tense
+  historical prose describing what a mechanism *used to* do stays allowed; only
+  current-tense mechanism claims must match the code.
+
 ## Flow document paths #paths
 
 Every flow document — `plan.md`, Jira specs, brainstorm research, scout findings, review artifacts, generic notes, PR descriptions — follows the env-var standard. This section is the **single source of truth** for the layout; OpenWiki and `docs/piv-flow*.md` reference it instead of restating the full shape.
