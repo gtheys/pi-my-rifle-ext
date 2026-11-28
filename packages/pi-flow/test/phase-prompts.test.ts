@@ -214,7 +214,9 @@ test('yolo: the prompt input carries the yolo bit (PMR yolo plan 2.1)', async ()
 })
 
 // AIDEV-NOTE: yolo plan 4.1 — byte-pin the non-yolo personal plan prompt so
-// the yolo branch can never leak into it.
+// the yolo branch can never leak into it. The golden text is POST-S7FQ: it
+// now carries the plan.route-confirmed prose added by PMR-GXFR, so this pin
+// asserts "unchanged since post-S7FQ", not the original pre-yolo invariant.
 const NON_YOLO_PERSONAL_PLAN_PROMPT = `Plan phase (PIV flow). Mode: personal. Ref: TP-1.
 Personal aven flow. Steps:
 
@@ -228,6 +230,10 @@ Personal aven flow. Steps:
 3. Use ask_user_question to present the verdict with its reasons and let the
    human CONFIRM the route. Never proceed past this gate without explicit
    confirmation.
+   Advisory: journal this route gate with the flow_submit tool using
+   step="plan.route-confirmed" and output.phase="plan" — the registered
+   evidence-only name; advisory only, it never replaces this confirmation or
+   the phase-completion label.
 4. If confirmed as oneshot:
    - set the type label "oneshot" on the ticket (no epic),
    - enrich the description with any useful aven-note context,
@@ -287,7 +293,7 @@ approve during this phase, leave the ticket at plan-state "review" WITHOUT
 the "planned" label and end the phase — the flow pauses at plan and
 resumes via /flow once the tree exists.`
 
-test('plan: non-yolo personal prompt is byte-identical to the pre-yolo text (yolo 4.1)', async () => {
+test('plan: non-yolo personal prompt is byte-identical to the post-S7FQ text (yolo 4.1)', async () => {
   const result = await buildPhasePrompt('plan', BASE)
   assert.equal(result.kind, 'send')
   if (result.kind !== 'send') return
@@ -313,7 +319,10 @@ test('yolo plan: prompt auto-applies classifySize and self-approves (yolo 4.1)',
 })
 
 // AIDEV-NOTE: yolo 4.2 — byte-pin the non-yolo personal validate prompt so
-// the yolo branch can never leak into it.
+// the yolo branch can never leak into it. The golden text is POST-S7FQ: it
+// now carries the validate.review-tool / validate.land prose added by
+// PMR-GXFR, so this pin asserts "unchanged since post-S7FQ", not the
+// original pre-yolo invariant.
 const NON_YOLO_PERSONAL_VALIDATE_PROMPT = `Validate phase (PIV flow). Mode: personal. Ref: TP-1.
 Personal-mode validation: there is no cluster — the human is the test
 environment. Do NOT run the work-mode gate (no cluster tools, no devctl, no acli).
@@ -394,7 +403,11 @@ fully passed:
    flow loop re-runs implement automatically (retry budget applies); do not
    run implement yourself. When
    blockers_count is 0, the deviation gate below runs next, THEN the human
-   code-review gate at the end of this prompt.
+   code-review gate at the end of this prompt. Journal the verdict with the
+   flow_submit tool using step="validate.review-tool" and
+   output.phase="validate" (registered evidence-only name for the review
+   tool's blockers_count; advisory only, it never replaces the gates or the
+   phase-completion label).
 
 Deviation gate — run ONLY after the review gate returned blockers_count: 0,
 and BEFORE the code_review call named in review-gate
@@ -454,12 +467,15 @@ Human code-review gate — run ONLY after the deviation gate returned
    force, reset or rebase. After the merge succeeds, the flow loop advances
    TP-1 into its personal feedback phase (wrap-up: outcome summary,
    review-feedback tickets, done — PMR-81SX); do not do that close-out here.
+   Journal the landing with the flow_submit tool using step="validate.land"
+   and output.phase="validate" (registered evidence-only name for the
+   flow_land authorization plus the local ff-only merge; advisory only).
 10. On fail: the code_review tool already recorded the tuicr findings as an
    aven note on TP-1. Add your own note on TP-1 containing
    "reviewed-at: <git rev-parse HEAD>" and STOP — do not land. The flow loop
    re-runs implement automatically (retry budget applies).`
 
-test('validate: non-yolo personal prompt is byte-identical to the pre-yolo text (yolo 4.2)', async () => {
+test('validate: non-yolo personal prompt is byte-identical to the post-S7FQ text (yolo 4.2)', async () => {
   const result = await buildPhasePrompt('validate', BASE)
   assert.equal(result.kind, 'send')
   if (result.kind !== 'send') return

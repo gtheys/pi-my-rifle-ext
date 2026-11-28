@@ -317,6 +317,9 @@ test('parseValidateArgs: kind prefixes force the kind (PMR-PCVK)', () => {
 })
 
 // --- PMR-C6AK: personal code-review gate in the validate prompt ---
+// AIDEV-NOTE: PMR-GXFR — the work-mode golden below is byte-pinned POST-S7FQ:
+// it now carries the validate.review-tool / validate.land prose, so the pin
+// asserts "unchanged since post-S7FQ", not the original PMR-C6AK invariant.
 
 test('buildValidatePrompt: personal step 9 routes through the code_review tool', () => {
   const p = buildValidatePrompt({
@@ -356,7 +359,7 @@ test('buildValidatePrompt: personal fail route names the tool-noted findings and
   assert.ok(!p.includes('/implement'))
 })
 
-test('buildValidatePrompt: work-mode output is byte-identical (pin, PMR-C6AK)', () => {
+test('buildValidatePrompt: work-mode output is byte-identical to the post-S7FQ text (pin, PMR-C6AK)', () => {
   const p = buildValidatePrompt({
     mode: 'work',
     ref: 'DP-71',
@@ -425,6 +428,10 @@ Review gate — run ONLY after validation has fully passed:
    sha is missing or unresolvable, or the diff is empty, run the full review.
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
    malformed artifact means call the review tool again, not silent landing.
+   Journal the verdict with the flow_submit tool using
+   step="validate.review-tool" and output.phase="validate" (registered
+   evidence-only name for the review tool's blockers_count; advisory only,
+   it never replaces the gates or the phase-completion label).
 9. If blockers_count is 0: call the flow_phase_complete tool with ref=DP-71
    and phase="validate" — it applies the "review-passed" label after
    re-checking the gates, and its result confirms the label landed; without
@@ -435,6 +442,9 @@ Review gate — run ONLY after validation has fully passed:
    push the branch and create a PR via
    the gh CLI, then post a Jira comment on
    DP-71 linking the PR URL.
+   Journal the landing with the flow_submit tool using step="validate.land"
+   and output.phase="validate" (registered evidence-only name for the
+   flow_land authorization plus the landing command; advisory only).
 10. If blockers_count > 0: record each blocker as an aven note on DP-71
    (append "reviewed-at: <git rev-parse HEAD>" to the note) and STOP — do
    not land. The flow loop re-runs implement automatically (retry budget

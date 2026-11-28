@@ -145,7 +145,11 @@ ${buildDeltaReviewStep(ref)}
    flow loop re-runs implement automatically (retry budget applies); do not
    run implement yourself. When
    blockers_count is 0, the deviation gate below runs next, THEN the human
-   code-review gate at the end of this prompt.`
+   code-review gate at the end of this prompt. Journal the verdict with the
+   flow_submit tool using step="validate.review-tool" and
+   output.phase="validate" (registered evidence-only name for the review
+   tool's blockers_count; advisory only, it never replaces the gates or the
+   phase-completion label).`
   }
   let landing: string
   if (mode === 'work') {
@@ -172,6 +176,10 @@ ${REVIEW_CONTRACT_PROMPT}
 ${buildDeltaReviewStep(ref)}
 8. Read the count. NEVER treat a missing or malformed count as 0 — a
    malformed artifact means call the review tool again, not silent landing.
+   Journal the verdict with the flow_submit tool using
+   step="validate.review-tool" and output.phase="validate" (registered
+   evidence-only name for the review tool's blockers_count; advisory only,
+   it never replaces the gates or the phase-completion label).
 9. If blockers_count is 0: call the flow_phase_complete tool with ref=${ref}
    and phase="validate" — it applies the "review-passed" label after
    re-checking the gates, and its result confirms the label landed; without
@@ -180,6 +188,9 @@ ${buildDeltaReviewStep(ref)}
    while the flow is active, direct git push / gh pr create are BLOCKED
    until flow_land returns ok. On ok, run the landing step:
    ${landing}
+   Journal the landing with the flow_submit tool using step="validate.land"
+   and output.phase="validate" (registered evidence-only name for the
+   flow_land authorization plus the landing command; advisory only).
 10. If blockers_count > 0: record each blocker as an aven note on ${ref}
    (append "reviewed-at: <git rev-parse HEAD>" to the note) and STOP — do
    not land. The flow loop re-runs implement automatically (retry budget
@@ -221,6 +232,9 @@ Human code-review gate — run ONLY after the deviation gate returned
    force, reset or rebase. After the merge succeeds, the flow loop advances
    ${ref} into its personal feedback phase (wrap-up: outcome summary,
    review-feedback tickets, done — PMR-81SX); do not do that close-out here.
+   Journal the landing with the flow_submit tool using step="validate.land"
+   and output.phase="validate" (registered evidence-only name for the
+   flow_land authorization plus the local ff-only merge; advisory only).
 10. On fail: the code_review tool already recorded the tuicr findings as an
    aven note on ${ref}. Add your own note on ${ref} containing
    "reviewed-at: <git rev-parse HEAD>" and STOP — do not land. The flow loop
@@ -414,7 +428,9 @@ ${buildDeltaReviewStep(ref)}
    (append "reviewed-at: <git rev-parse HEAD>" to the note) and STOP — the
    flow loop re-runs implement automatically (retry budget applies); do not
    run implement yourself. When blockers_count is 0, the deviation gate
-   below runs next.
+   below runs next. Journal the verdict with the flow_submit tool using
+   step="validate.review-tool" and output.phase="validate" (registered
+   evidence-only name for the review tool's blockers_count; advisory only).
 
 Deviation gate — run ONLY after the review gate returned blockers_count: 0.
 Steps, in order:

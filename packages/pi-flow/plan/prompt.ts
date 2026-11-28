@@ -121,6 +121,10 @@ Personal aven flow. Steps:
 3. Use ask_user_question to present the verdict with its reasons and let the
    human CONFIRM the route. Never proceed past this gate without explicit
    confirmation.
+   Advisory: journal this route gate with the flow_submit tool using
+   step="plan.route-confirmed" and output.phase="plan" — the registered
+   evidence-only name; advisory only, it never replaces this confirmation or
+   the phase-completion label.
 4. If confirmed as oneshot:
    - set the type label "oneshot" on the ticket (no epic),
    - enrich the description with any useful aven-note context,
@@ -173,6 +177,9 @@ Personal aven flow (yolo variant). Steps:
    confirmation. Immediately append an aven note recording the verdict and
    the reasons (or "no signals" for oneshot), e.g.
    "aven note ${ref} "size-check: <verdict> — <reasons>"".
+   Journal the same route boundary with the flow_submit tool using
+   step="plan.route-confirmed" and output.phase="plan" (registered
+   evidence-only name; advisory only, it never replaces flow_phase_complete).
 3. If the verdict is oneshot:
    - set the type label "oneshot" on the ticket (no epic),
    - enrich the description with any useful aven-note context,
