@@ -15,9 +15,10 @@
 //   Nested calls re-fire the tool_call/tool_result handlers and carry
 //   parentToolCallId with toolCallId assigned by Pi as `<parent id>/<n>` —
 //   docs/extensions.md "Calling Other Tools". This check is deterministic and
-//   does no journal I/O. It runs before ANY tracking, so a nested ask is never
-//   counted here and its close is a Map miss (the owning tool closes its own
-//   wait).
+//   does no journal I/O. It runs before any CLOSE tracking — heartbeat tracking
+//   deliberately covers nested asks (PMR-422Q): a nested ask still blocks the
+//   human so it must keep the live-wait lease alive, while its close/journal
+//   stays a Map miss on openAsks (the owning tool closes its own wait).
 // - SECONDARY: for a non-nested open, scan the journal tail (lastV2StateRecord,
 //   last state-change wins, FLOW_STATES-validated) and skip if it already
 //   reads waiting_human — covers a loop-owned wait (e.g.
@@ -87,6 +88,13 @@
 //    hold (and reason-aware arming was what actually fixed the escalate latch),
 //    so the recovery this asymmetry relies on holds. See the skip-rule note in
 //    flow/loop.ts.
+//    AIDEV-NOTE: PMR-422Q 2.1 — the stale-`waiting_human` recovery now has a
+//    SECOND, stronger guarantee: the heartbeat stops at finalize. A skipped
+//    close still deletes the id from heartbeatAsks (first statement of closeAsk
+//    for EVERY finalize, nested or plain), so beats stop, the lease expires
+//    within LIVE_WAIT_LEASE_SECONDS, and the loop's next running emission after
+//    expiry self-heals the journal — a stale waiting_human is bounded, not
+//    permanent.
 //
 // AIDEV-NOTE: PMR-0NRH fix round — MAP-GATED CLOSE, stated ONCE (the older
 // pre-refcount paragraph that sat here next to its own SUPERSEDED correction is
@@ -111,9 +119,25 @@
 // emitter never imports or constructs a writer itself — index.ts passes THE
 // single wrapped fan-out writer so onV2StateChangeObserved keeps the loop
 // guard in sync (single-writer seam).
+//
+// AIDEV-NOTE: PMR-422Q 2.1 — HEARTBEAT ORACLE. This emitter is the single
+// source of live-wait heartbeats for the renewing lease in flow/loop.ts. While
+// ANY tracked ask_user_question is in-flight it calls deps.renewLease(ref) on a
+// fixed interval so the loop's externalHumanWait hold stays alive for as long
+// as a human is genuinely being asked; when the LAST tracked ask finalizes the
+// interval stops and the lease is left to expire within LIVE_WAIT_LEASE_SECONDS.
+// A SEPARATE heartbeatAsks map (toolCallId -> ref) tracks BOTH plain and nested
+// asks — a nested ask (e.g. the code-review gate's ask) still blocks the human,
+// so it must keep the lease alive; the journaling/close refcount (openAsks)
+// stays plain-only and untouched. The beat is a direct in-process call, never a
+// journal write (ISC-A-2). The interval is unref'd so it can never hold the
+// process open, and is cleared on the 1->0 transition so it cannot leak. With
+// renewLease unwired (no deps.renewLease) no timer is ever started and this
+// module behaves exactly as before PMR-422Q.
 
 import type { FlowRunEvent } from '../run-state.ts'
 import type { EventWriter } from '../server/writer.ts'
+import { LIVE_WAIT_HEARTBEAT_MS } from './live-wait.ts'
 import type { FlowReason, FlowState } from './vocabulary.ts'
 import { FLOW_STATES } from './vocabulary.ts'
 
@@ -125,6 +149,15 @@ export interface AskEmitterDeps {
   /** Journal read for the dedupe scan: readRunEvents(getAgentDir(), ref). */
   readEvents: (ref: string) => Promise<readonly FlowRunEvent[] | null>
   now: () => string
+  /**
+   * PMR-422Q — in-process lease-renewal ping (loop.renewLiveWaitLease). When
+   * wired, this emitter is the heartbeat oracle: while ANY tracked ask
+   * (plain OR nested) is in-flight it renews each distinct tracked ref on
+   * `heartbeatMs`. Optional — absent means no timer, identical to pre-422Q.
+   */
+  renewLease?: (ref: string) => void
+  /** Beat interval, ms. Defaults to LIVE_WAIT_HEARTBEAT_MS. */
+  heartbeatMs?: number
 }
 
 export interface AskEmitter {
@@ -174,12 +207,61 @@ function lastV2StateRecord(
   return last
 }
 
+/**
+ * AIDEV-NOTE: PMR-422Q 2.1 — the heartbeat lifecycle, extracted so createAskEmitter
+ * stays readable. Owns the SEPARATE heartbeatAsks map (toolCallId -> ref over
+ * ALL tracked asks, plain AND nested) plus its interval. track() starts the
+ * unref'd timer only on the 0->1 transition AND only when renewLease is wired;
+ * stop() clears it on the 1->0 transition so it never leaks or holds the
+ * process open. Each beat renews every DISTINCT tracked ref (Set over values)
+ * and never throws (ISC-A-5).
+ */
+function createHeartbeat(deps: AskEmitterDeps) {
+  const heartbeatAsks = new Map<string, string>()
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  const beat = (): void => {
+    try {
+      for (const ref of new Set(heartbeatAsks.values())) {
+        deps.renewLease?.(ref)
+      }
+    } catch {
+      // never-throw (ISC-A-5)
+    }
+  }
+  const track = (id: string, ref: string): void => {
+    heartbeatAsks.set(id, ref)
+    if (heartbeatTimer === null && deps.renewLease !== undefined) {
+      heartbeatTimer = setInterval(
+        beat,
+        deps.heartbeatMs ?? LIVE_WAIT_HEARTBEAT_MS,
+      )
+      heartbeatTimer.unref?.()
+    }
+  }
+  const stop = (id: string): void => {
+    heartbeatAsks.delete(id)
+    if (heartbeatAsks.size === 0 && heartbeatTimer !== null) {
+      clearInterval(heartbeatTimer)
+      heartbeatTimer = null
+    }
+  }
+  return { track, stop }
+}
+
 export function createAskEmitter(deps: AskEmitterDeps): AskEmitter {
   // In-flight asks this emitter is responsible for: toolCallId -> ref. Doubles
   // as the refcount that keeps a parallel batch's close from firing early.
   const openAsks = new Map<string, string>()
+  // PMR-422Q — SEPARATE heartbeat oracle over ALL tracked asks (plain AND
+  // nested); a nested ask still blocks the human so it keeps the lease alive
+  // even though openAsks stays plain-only.
+  const heartbeat = createHeartbeat(deps)
   const closeAsk = async (event: { toolCallId: string }): Promise<void> => {
     try {
+      // PMR-422Q — first statement for EVERY finalize, nested or plain: stop
+      // heartbeating this ask. This is the 1->0 transition that tears the timer
+      // down once the LAST tracked ask closes.
+      heartbeat.stop(event.toolCallId)
       const ref = openAsks.get(event.toolCallId)
       if (ref === undefined) return // never close a call this emitter did not track
       openAsks.delete(event.toolCallId)
@@ -210,12 +292,18 @@ export function createAskEmitter(deps: AskEmitterDeps): AskEmitter {
     onToolCall: async (event) => {
       try {
         if (event.toolName !== 'ask_user_question') return
-        // PRIMARY dedupe: a nested ask is owned by a tool that journals its
-        // own wait (code_review does) — deterministic, no journal I/O, and it
-        // must happen before tracking so such an ask is never counted here.
-        if (event.parentToolCallId !== undefined) return
         const ref = deps.getActiveRef()
         if (ref === null) return
+        // PMR-422Q — heartbeat tracking BEFORE the nested check: a nested ask
+        // (e.g. the code-review gate's ask) still blocks the human, so it must
+        // keep the lease alive even though its open/close journal stays
+        // plain-only. renewLease gates the timer — absent, no timer starts.
+        heartbeat.track(event.toolCallId, ref)
+        // PRIMARY dedupe: a nested ask is owned by a tool that journals its
+        // own wait (code_review does) — deterministic, no journal I/O, and it
+        // must happen before CLOSE tracking so such an ask is never counted in
+        // openAsks.
+        if (event.parentToolCallId !== undefined) return
         if (deps.writer === undefined) return
         // Track every in-flight ask this emitter is responsible for, whether
         // or not the open below is journaled (parallel batches ask #2..N are

@@ -50,6 +50,21 @@ function harness(
     recordResult?: boolean
     throwOn?: (event: FlowRunEvent) => boolean
     readMode?: ReadMode
+    /**
+     * PMR-422Q — when set, the harness wires deps.renewLease (recording every
+     * beat's ref into `beats`) and deps.heartbeatMs at this tiny interval so a
+     * test can observe beats with a bounded poll instead of a fixed sleep.
+     */
+    heartbeatMs?: number
+    /** PMR-422Q — make the renewLease callback throw (beat never-throw test). */
+    renewLeaseThrows?: boolean
+    /**
+     * PMR-422Q — wire deps.renewLease (default false). When false, NO renewLease
+     * dep is passed and the emitter must start no timer (behavior identical to
+     * pre-422Q). Combine with heartbeatMs to prove renewLease alone, not the
+     * interval value, gates the timer.
+     */
+    renewLease?: boolean
   } = {},
 ) {
   let activeRef: string | null = 'PMR-X'
@@ -95,6 +110,17 @@ function harness(
   let writerRef: EventWriter | undefined = writer
   if (opts.noWriter) writerRef = undefined
 
+  // PMR-422Q — every renewLease call pushes its ref here; the tests poll this
+  // array. beats.length is the beat count; beats[beats.length-1] the last ref.
+  const beats: string[] = []
+  let renewLeaseFn: ((ref: string) => void) | undefined
+  if (opts.renewLease === true) {
+    renewLeaseFn = (renewedRef: string) => {
+      beats.push(renewedRef)
+      if (opts.renewLeaseThrows) throw new Error('renewLease exploded')
+    }
+  }
+
   const emitter = createAskEmitter({
     getActiveRef: () => activeRef,
     writer: writerRef,
@@ -104,9 +130,12 @@ function harness(
       return [...journal]
     },
     now: () => '2026-11-27T00:00:00.000Z',
+    renewLease: renewLeaseFn,
+    heartbeatMs: opts.heartbeatMs,
   })
   return {
     recorded,
+    beats,
     emitter,
     /** Simulate another seam journalling onto the same run's journal. */
     pushJournal: (event: FlowRunEvent) => {
@@ -137,6 +166,22 @@ function closesOf(recorded: readonly FlowRunEvent[]) {
   return recorded.filter(
     (event) => event.kind === 'state-change' && event.state === 'running',
   )
+}
+
+// PMR-422Q — bounded poll instead of fixed sleeps: wait up to `deadlineMs` for
+// `predicate` (e.g. beats.length >= 1) to become true, resolving early. The
+// heartbeat interval in the tests is tiny (2ms) so this returns in a few ms;
+// a 500ms cap keeps a real-time timer test from ever hanging.
+async function waitUntil(
+  predicate: () => boolean,
+  deadlineMs = 500,
+): Promise<boolean> {
+  const start = Date.now()
+  while (Date.now() - start < deadlineMs) {
+    if (predicate()) return true
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+  return predicate()
 }
 
 function opensOf(recorded: readonly FlowRunEvent[]) {
@@ -553,4 +598,129 @@ test('open/close pair: non-nested ask journals waiting_human{human_ask_pending} 
     assert.equal(close.ref, 'PMR-X')
     assert.equal(close.reason, undefined)
   }
+})
+
+// --- PMR-422Q 2.1: heartbeat oracle (renewLease wiring + timer lifecycle) ---
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+test('heartbeat #1: starts on open with the active ref and stops after finalize', async () => {
+  const { beats, emitter } = harness({
+    renewLease: true,
+    heartbeatMs: 2,
+    journal: [],
+  })
+
+  await emitter.onToolCall({ toolName: 'ask_user_question', toolCallId: 'tc1' })
+  // Bounded poll: a beat with the active ref must land within a few intervals.
+  const started = await waitUntil(() => beats.length >= 1)
+  assert.ok(
+    started,
+    'expected at least one heartbeat beat while the ask is open',
+  )
+  assert.equal(beats[0], 'PMR-X')
+
+  await emitter.onToolFinalized({ toolCallId: 'tc1' })
+  const frozen = beats.length
+  await sleep(20) // several intervals
+  assert.equal(beats.length, frozen, 'beats must stop after the last finalize')
+})
+
+test('heartbeat #2: a nested ask is tracked for heartbeat but journals nothing and closes nothing', async () => {
+  const { recorded, beats, emitter } = harness({
+    renewLease: true,
+    heartbeatMs: 2,
+    journal: [],
+  })
+
+  await emitter.onToolCall({
+    toolName: 'ask_user_question',
+    toolCallId: 'tc-parent/1',
+    parentToolCallId: 'tc-parent',
+  })
+  // The nested ask still blocks the human -> renewLease must fire.
+  const started = await waitUntil(() => beats.length >= 1)
+  assert.ok(started, 'nested ask must keep the lease alive')
+  assert.equal(beats[0], 'PMR-X')
+  // ...yet it stays out of the journaling path entirely.
+  assert.deepEqual(recorded, [], 'a nested ask must journal no open')
+
+  await emitter.onToolFinalized({ toolCallId: 'tc-parent/1' })
+  assert.deepEqual(recorded, [], 'a nested ask close must journal no running')
+  const frozen = beats.length
+  await sleep(20)
+  assert.equal(beats.length, frozen, 'nested close stops the heartbeat')
+})
+
+test('heartbeat #3: no renewLease dep -> no timer, behavior identical to pre-422Q', async () => {
+  // renewLease deliberately NOT wired even though heartbeatMs is tiny: the
+  // emitter must not start a timer and must journal exactly as today.
+  const { recorded, beats, emitter } = harness({ heartbeatMs: 2, journal: [] })
+
+  await emitter.onToolCall({ toolName: 'ask_user_question', toolCallId: 'tc1' })
+  assert.equal(recorded.length, 1)
+  const open = recorded[0]
+  if (open?.kind === 'state-change') {
+    assert.equal(open.state, 'waiting_human')
+    assert.equal(open.reason, 'human_ask_pending')
+  }
+  await sleep(20)
+  assert.equal(beats.length, 0, 'no renewLease dep -> no beats')
+
+  await emitter.onToolFinalized({ toolCallId: 'tc1' })
+  assert.equal(recorded.length, 2)
+  const close = recorded[1]
+  if (close?.kind === 'state-change') {
+    assert.equal(close.state, 'running')
+  }
+})
+
+test('heartbeat #4: parallel batch beats while ANY ask is open, stop only after the LAST', async () => {
+  const { beats, emitter } = harness({
+    renewLease: true,
+    heartbeatMs: 2,
+    journal: [],
+  })
+
+  await emitter.onToolCall({ toolName: 'ask_user_question', toolCallId: 'tc1' })
+  await emitter.onToolCall({ toolName: 'ask_user_question', toolCallId: 'tc2' })
+  const started = await waitUntil(() => beats.length >= 2)
+  assert.ok(started, 'expected beats while the batch is open')
+
+  // Finalize the FIRST ask: the second still blocks the human -> beats continue.
+  await emitter.onToolFinalized({ toolCallId: 'tc1' })
+  const afterFirst = beats.length
+  await waitUntil(() => beats.length > afterFirst)
+  assert.ok(
+    beats.length > afterFirst,
+    'beats must continue while a sibling ask is still open',
+  )
+
+  // Finalize the LAST ask -> the 1->0 transition stops the timer.
+  await emitter.onToolFinalized({ toolCallId: 'tc2' })
+  const frozen = beats.length
+  await sleep(20)
+  assert.equal(
+    beats.length,
+    frozen,
+    'beats must stop only after the last finalize',
+  )
+})
+
+test('heartbeat #5: a throwing renewLease never breaks the emitter (ISC-A-5)', async () => {
+  const { recorded, emitter } = harness({
+    renewLease: true,
+    renewLeaseThrows: true,
+    heartbeatMs: 2,
+    journal: [],
+  })
+
+  await emitter.onToolCall({ toolName: 'ask_user_question', toolCallId: 'tc1' })
+  // Beat body throws internally but must be swallowed; the open still journals.
+  await waitUntil(() => recorded.length >= 1)
+  assert.equal(recorded.length, 1)
+  await emitter.onToolFinalized({ toolCallId: 'tc1' })
+  assert.equal(recorded.length, 2)
 })
