@@ -177,8 +177,14 @@ test('re-injection loop: park → consume once → idempotent → stale dropped 
   }
 })
 
+// AIDEV-NOTE: PMR-0M90 — 20s ceiling, was 5s, mirroring the PMR-DY8W precedent
+// (subtask 1.8 of PMR-7B8M, landed in e8e0b16) in run-server-integration.test.mjs:
+// this helper wraps the same real-daemon spawn, so under the root all-workspaces
+// parallel suite (the flow_land gate command) the spawn + first projection can
+// exceed 5s on a loaded machine. The 100ms poll is unchanged: green runs finish
+// just as fast, only the failure ceiling moves and no assertion is weakened.
 async function waitFor(predicate: () => boolean, what: string): Promise<void> {
-  const deadline = Date.now() + 5_000
+  const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
     if (predicate()) return
     await new Promise((resolve) => setTimeout(resolve, 100))

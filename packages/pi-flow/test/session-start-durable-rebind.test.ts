@@ -159,6 +159,14 @@ function captureExtension(durable: DurableRebindDeps): Harness {
   }
 }
 
+// AIDEV-NOTE: PMR-0M90 — deliberately keeps the 5s budget, unlike the 20s ceiling
+// in run-server-integration.test.mjs and run-server-reinject.integration.test.ts
+// (PMR-DY8W, subtask 1.8 of PMR-7B8M): those wrap a real daemon spawn whose first
+// projection write can exceed 5s on a loaded machine, while this drain only waits on
+// in-process promise chains against in-memory fakes (10ms poll, no subprocess), which
+// cannot plausibly stall for seconds. Raising it would also multiply the failure mode:
+// every test calls drainUntil repeatedly, so a regression that never satisfies a
+// predicate would burn 20s per call instead of failing fast.
 async function drainUntil(check: () => boolean): Promise<void> {
   const deadline = Date.now() + 5_000
   while (Date.now() < deadline) {
