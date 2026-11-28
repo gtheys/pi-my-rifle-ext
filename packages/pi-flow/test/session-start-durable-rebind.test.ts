@@ -619,6 +619,61 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
     assert.ok(text.includes('recover with /flow PMR-H2'), text)
   })
 
+  // AIDEV-NOTE: PMR-YG18 — in print/json modes (ctx.hasUI === false) pi
+  // binds the no-op uiContext, so the notify-only fallback vanishes. The
+  // SAME recovery lines must additionally reach stderr through the injected
+  // writeStderr seam on DurableRebindDeps (no process.stderr monkeypatch).
+  it('(c) headless fallback reaches stderr: every recovery line, including /flow <ref>, is written (PMR-YG18)', async () => {
+    setActiveFlowRef(null)
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    const stderrLines: string[] = []
+    const harness = captureExtension({
+      deriveCandidates: async () => [
+        parkedCandidate('PMR-ERR1'),
+        parkedCandidate('PMR-ERR2', { hasWorktree: false }),
+      ],
+      heal: noHeal(),
+      writeStderr: (line) => {
+        stderrLines.push(line)
+      },
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: false }),
+    )
+    await drainUntil(() => stderrLines.length >= 2)
+    assert.deepEqual(gate.calls, [], 'no select without UI')
+    assert.equal(getActiveFlowRef(), null)
+    assert.deepEqual(harness.sent, [])
+    assert.equal(stderrLines.length, 2, 'exactly one stderr line per candidate')
+    const text = stderrLines.join('\n')
+    assert.ok(text.includes('recover with /flow PMR-ERR1'), text)
+    assert.ok(text.includes('recover with /flow PMR-ERR2'), text)
+  })
+
+  it('(c) a throwing select in an interactive session stays notify-only: nothing hits stderr (PMR-YG18)', async () => {
+    setActiveFlowRef(null)
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    const stderrLines: string[] = []
+    const harness = captureExtension({
+      deriveCandidates: async () => [parkedCandidate('PMR-NOERR')],
+      heal: noHeal(),
+      writeStderr: (line) => {
+        stderrLines.push(line)
+      },
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => gate.calls.length > 0)
+    gate.reject(new Error('no dialog implementation in this mode'))
+    await drainUntil(() => rebindNotifications(notifications).length > 0)
+    await settleMs(50)
+    assert.equal(getActiveFlowRef(), null)
+    assert.deepEqual(stderrLines, [], 'interactive fallback stays notify-only')
+  })
+
   it('(c) a throwing select fails CLOSED: recovery lines only, session stays clean', async () => {
     setActiveFlowRef(null)
     const gate = selectGate()
@@ -916,8 +971,9 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
   // AIDEV-NOTE: PMR-BCP7 — the startup headless 'fallback' branch must pin the
   // once-per-process ask latch. It never reaches a menu, so askResumeThenArm
   // used to return with the latch still 'idle' and the first agent_settled
-  // re-ran the gate, re-printing the SAME recovery lines. Headless notify is a
-  // no-op today (PMR-YG18), so this pin guards the moment that is fixed.
+  // re-ran the gate, re-printing the SAME recovery lines. Since PMR-YG18 the
+  // headless fallback also reaches stderr, so this pin guards an
+  // operator-visible channel, not just the no-op headless notify.
   it('(f) a headless STARTUP fallback pins the latch: the first settle does not re-emit the lines', async () => {
     setActiveFlowRef(null)
     const ref = 'PMR-LATCHSTART'

@@ -302,6 +302,13 @@ export interface DurableRebindDeps {
   // injectable so tests advance the window without sleeps. Defaults to
   // Date.now.
   now?: () => number
+  // AIDEV-NOTE: PMR-YG18 — stderr sink for the headless resume-picker
+  // fallback lines. In print/json modes ctx.hasUI is false and pi binds the
+  // no-op uiContext, so ctx.ui.notify drops the recovery lines entirely;
+  // stderr is the only channel those modes surface. Injectable so tests
+  // observe the channel without monkeypatching process.stderr. Defaults to
+  // process.stderr.write.
+  writeStderr?: (line: string) => void
 }
 
 // AIDEV-NOTE: PMR-T9ZQ — one-line decline notice for the resume picker: the
@@ -493,6 +500,13 @@ export default function (
   // production) owns its window; tests inject `now` to advance it without
   // sleeps.
   const settleScanNow = durableRebind.now ?? (() => Date.now())
+  // AIDEV-NOTE: PMR-YG18 — late-bound like `now` so a partially injected
+  // test seam still gets the production stderr default.
+  const resumeFallbackStderr =
+    durableRebind.writeStderr ??
+    ((line: string) => {
+      process.stderr.write(`${line}\n`)
+    })
   let lastEmptySettleScanAt: number | null = null
   // AIDEV-NOTE: PMR-ZV9Y 4.3 — THE v2 fan-out wrap point. `telemetry/dispatch.ts`
   // carries the seam map; the short version is that every v2 emitter in the
@@ -706,11 +720,21 @@ export default function (
     await resumeParkedRun(resumeConsumerDeps(ref))
   }
 
-  // The notify-only degradation shared by the headless plan and every
-  // fail-closed path: one info line per candidate, nothing else.
+  // The notify degradation shared by the headless plan and every fail-closed
+  // path: one info line per candidate, nothing else.
+  // AIDEV-NOTE: PMR-YG18 — when ctx.hasUI is false, notify is pi's no-op
+  // uiContext (print/json modes), so the same lines are ALSO written to
+  // stderr — the only channel a headless operator can see. Interactive
+  // sessions (including the select-throw fail-closed path, where the real
+  // ctx.hasUI is true) stay notify-only: no duplicate output next to a
+  // working UI. Notify is kept in the headless branch too so the seam's
+  // notify-based pins stay valid; a no-op notify shows nothing twice.
   function notifyResumeFallback(ctx: ResumeAskCtx, lines: string[]): void {
     for (const line of lines) {
       ctx.ui.notify(line, 'info')
+      if (!ctx.hasUI) {
+        resumeFallbackStderr(line)
+      }
     }
   }
 
@@ -787,7 +811,9 @@ export default function (
   // once-per-process ask, so the latch is pinned here. The startup site used to
   // skip this pinning: a headless fallback returned with the latch still 'idle'
   // and the first agent_settled re-ran the gate, re-printing the same recovery
-  // lines (invisible today only because headless notify is a no-op, PMR-YG18).
+  // lines (invisible back then only because headless notify is a no-op; since
+  // PMR-YG18 the fallback also reaches stderr, so an unpinned latch would
+  // re-print on an operator-visible channel).
   async function runResumeGateOnce(
     ctx: ResumeAskCtx,
     candidates: ParkedCandidate[],
