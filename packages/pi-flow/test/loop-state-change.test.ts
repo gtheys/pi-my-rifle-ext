@@ -1077,9 +1077,10 @@ test('P2a: the loop is never locked out by a future-dated external stamp', async
 // (PMR-422Q): ONLY a `waiting_human` whose reason is in SELF_CLOSING_HUMAN_WAITS
 // (flow/vocabulary.ts: `human_ask_pending`, `code_review_pending` — seams that
 // journal their own close) arms it; `escalation` (a `waiting_human` with no
-// running return), `deviation_gate_rerun` (a `waiting_machine`, so outside the
-// arming key altogether — the reverted WIDE hold is what suppressed its
-// emission) and an absent reason never arm, they only clear. PLUS one
+// running return), `deviation_gate_rerun` (a `waiting_machine` the gate writes
+// STRAIGHT to the fan-out writer, so it never reaches this hold at all — the
+// PMR-ZV9Y P1 invalidation case, not a WIDTH case) and an absent reason never
+// arm, they only clear. PLUS one
 // deliberate, documented exception to "the flag is written only in
 // noteExternalV2State": a `running` emission that actually PROCEEDS in
 // emitStateChange clears the flag itself (the loop's own emission is unambiguous,

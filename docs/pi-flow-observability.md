@@ -289,9 +289,12 @@ the widening was safe and that both PMR-422Q findings were closed; neither claim
   never a `running` return, and the loop's own `snapshot('running')` that would unstick such a journal is recency-skipped
   in `noteExternalV2State`, so nothing cleared the flag until `start()` — every later loop-emitted wait was silently
   dropped for the rest of the process's run. Only a reason whose owning seam journals its own close may arm the hold.
-  `deviation_gate_rerun` is not an arming case and never was: it journals `waiting_machine` (`tools/deviation.ts`,
-  WAIT_KIND machine in `flow/vocabulary.ts`), so a flag keyed on `waiting_human` could not latch on it. It belongs to the
-  independent WIDTH dimension — its emission was one of the waits the reverted wide hold suppressed (next bullet).
+  `deviation_gate_rerun` is neither an arming case nor a WIDTH case: the gate journals `waiting_machine`
+  (`tools/deviation.ts`, WAIT_KIND machine in `flow/vocabulary.ts`) STRAIGHT to the fan-out writer (`index.ts`:
+  `registerDeviationReviewTool(pi, writer)`), so it never passes through `emitStateChange` where the hold lives — no
+  predicate, wide or narrow, could suppress it. It is the PMR-ZV9Y P1 invalidation case documented on
+  `noteExternalV2State`: a tool journals a wait with no `running` return, so the observer must un-pin the loop's guard.
+  Its observation also CLEARS the live-wait flag, being a newer external state whose reason is not self-closing.
 - **The wider non-terminal hold that rode along with that fix was REVERTED (blocker 3).** It removed the loop's only
   in-run escape for a wait whose close never lands, and the paths that skip the close are ordinary ones: a fail-closed
   ask read in `flow/ask-emitter.ts` (unreadable journal, or a tail from which no valid `state-change` can be derived)

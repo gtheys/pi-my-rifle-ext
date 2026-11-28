@@ -231,10 +231,14 @@ export interface FlowLoop {
    * with the other reason semantics, not in a second list here). The parameter is
    * optional so the PMR-ZV9Y call sites keep working unchanged: an ABSENT reason
    * can never arm the hold, it only clears it. index.ts threads `event.reason`.
-   * `deviation_gate_rerun` is NOT an arming case: it journals `waiting_machine`
-   * (tools/deviation.ts, WAIT_KIND machine), so a flag keyed on `waiting_human`
-   * could never latch on it — it belongs to the WIDTH dimension, whose reverted
-   * wide hold suppressed that emission. See the skip-rule note in
+   * `deviation_gate_rerun` is NEITHER an arming case NOR a WIDTH case: the gate
+   * journals `waiting_machine` (tools/deviation.ts, WAIT_KIND machine) STRAIGHT
+   * to the fan-out writer (index.ts: registerDeviationReviewTool), so it never
+   * reaches emitStateChange where the hold lives — no predicate, wide or narrow,
+   * could suppress it. It is the PMR-ZV9Y P1 invalidation case documented just
+   * above (a tool journals a wait with no running return, so the observer must
+   * un-pin lastEmittedV2), and being a newer external state whose reason is not
+   * self-closing, its observation CLEARS the flag. See the skip-rule note in
    * emitStateChange.
    */
   noteExternalV2State(
@@ -805,10 +809,14 @@ class FlowLoopImpl implements FlowLoop {
     //   journal is recency-skipped in noteExternalV2State, so nothing could ever
     //   clear the flag until start(); every later loop-emitted wait was then
     //   silently dropped for the rest of the process's run (that latch was review
-    //   blocker 2). `deviation_gate_rerun` is NOT an arming case and never was: it
-    //   journals `waiting_machine` (tools/deviation.ts, WAIT_KIND machine), so a
-    //   flag keyed on `waiting_human` could not latch on it — it belongs to the
-    //   WIDTH dimension below, whose reverted wide hold suppressed its emission.
+    //   blocker 2). `deviation_gate_rerun` is NEITHER an arming case NOR a WIDTH
+    //   case: the gate journals `waiting_machine` (tools/deviation.ts, WAIT_KIND
+    //   machine) STRAIGHT to the fan-out writer (index.ts:
+    //   registerDeviationReviewTool), so it never reaches this emitStateChange
+    //   hold at all — neither the narrow predicate nor the reverted wide one
+    //   could suppress it. It is the PMR-ZV9Y P1 invalidation case noted on
+    //   noteExternalV2State above, and as a newer external state whose reason is
+    //   not self-closing, its observation CLEARS the flag.
     //   Absent reason (a three-argument call) never arms, it only clears — which
     //   keeps the five protected PMR-ZV9Y tests green UNMODIFIED (they drive the
     //   observer without a reason).

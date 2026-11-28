@@ -91,8 +91,10 @@
 // AIDEV-NOTE: PMR-0NRH fix round — MAP-GATED CLOSE, stated ONCE (the older
 // pre-refcount paragraph that sat here next to its own SUPERSEDED correction is
 // folded into this one accurate contract). openAsks (toolCallId -> ref)
-// guarantees a close can NEVER fire for a call this emitter did not open
-// (defence in depth for tool-owned nested asks). TRACKING IS UNCONDITIONAL: an
+// guarantees a close can NEVER fire for a call this emitter did not TRACK — the
+// Map key is set on tracking, not on a journaled open, which is the wording
+// docs/pi-flow-observability.md uses too (defence in depth for tool-owned
+// nested asks). TRACKING IS UNCONDITIONAL: an
 // id is remembered for every tracked non-nested ask whether or not its open
 // write landed, so the record() boolean does not decide tracking. The close is
 // refcounted (rule 2) and reason-checked (rule 3), so it may write nothing:
