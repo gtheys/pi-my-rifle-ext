@@ -298,6 +298,10 @@ function notifyDashboardOutcome(
 export interface DurableRebindDeps {
   deriveCandidates: () => Promise<ParkedCandidate[]>
   heal: (ref: string, cwd: string) => Promise<HealResult>
+  // AIDEV-NOTE: PMR-1KXH — wall clock (ms) for the settle-scan cooldown,
+  // injectable so tests advance the window without sleeps. Defaults to
+  // Date.now.
+  now?: () => number
 }
 
 // AIDEV-NOTE: PMR-T9ZQ — one-line decline notice for the resume picker: the
@@ -339,6 +343,21 @@ type ResumeAskCtx = {
 // braces path (subtask 3.2) must gate on 'idle'.
 type ResumeAskState = 'idle' | 'asking' | 'done'
 let resumeAskState: ResumeAskState = 'idle'
+
+// AIDEV-NOTE: PMR-1KXH — cooldown for the agent_settled belt-and-braces
+// candidate scan. The ask-once latch is only spent when candidates are
+// FOUND, so every clean-session settle used to re-run deriveCandidates (an
+// uncached `git rev-parse` plus a read+parse+projection of EVERY pending
+// record) just to find nothing. An EMPTY settle scan now arms this window:
+// further settles inside it skip the scan entirely. Deliberately NOT
+// touched: session_start (always scans), the ask-once latch (an empty scan
+// still leaves it 'idle'), and non-empty scans (the latch pins those). Worst
+// case a run parked mid-window is discovered one cooldown later — bounded,
+// and the prompt-once contract is unchanged. 60s because settles fire once
+// per turn: quick tool-heavy turns are where the wasted scans stack up,
+// while a minute of deferred discovery is invisible next to a parked run's
+// lifetime.
+export const EMPTY_SETTLE_SCAN_COOLDOWN_MS = 60_000
 
 // AIDEV-NOTE: PMR-DRKH — injectable IO seam for the session_start durable
 // rebind (plan 3.1). Production defaults resolve the session gitRoot and
@@ -469,6 +488,12 @@ export default function (
     deriveCandidates: makeDeriveCandidates(),
     heal: (ref, cwd) => healFlowBinding(ref, productionReviewDeps(pi, cwd)),
   }
+  // AIDEV-NOTE: PMR-1KXH — cooldown state + clock for the settle-scan
+  // throttle. Closure-scoped, so each extension instance (one per process in
+  // production) owns its window; tests inject `now` to advance it without
+  // sleeps.
+  const settleScanNow = durableRebind.now ?? (() => Date.now())
+  let lastEmptySettleScanAt: number | null = null
   // AIDEV-NOTE: PMR-ZV9Y 4.3 — THE v2 fan-out wrap point. `telemetry/dispatch.ts`
   // carries the seam map; the short version is that every v2 emitter in the
   // session (loop journal/journalV2 via journalSerial -> journal, the
@@ -1612,6 +1637,16 @@ export default function (
       return
     }
     void (async () => {
+      // AIDEV-NOTE: PMR-1KXH — while the last EMPTY settle scan's cooldown
+      // runs, a settle costs one comparison instead of a git subprocess plus
+      // a full pending-dir projection. Only empty scans arm the window, so
+      // this never delays a candidate that was already visible.
+      if (
+        lastEmptySettleScanAt !== null &&
+        settleScanNow() - lastEmptySettleScanAt < EMPTY_SETTLE_SCAN_COOLDOWN_MS
+      ) {
+        return
+      }
       let candidates: ParkedCandidate[]
       try {
         candidates = await durableRebind.deriveCandidates()
@@ -1619,7 +1654,10 @@ export default function (
         return
       }
       if (candidates.length === 0) {
-        // nothing parked (yet): leave the latch armed for a later settle
+        // nothing parked (yet): leave the latch armed for a later settle,
+        // and arm the cooldown so back-to-back settles stop paying for the
+        // scan (PMR-1KXH)
+        lastEmptySettleScanAt = settleScanNow()
         return
       }
       // the scan is async — a startup ask may have opened (or finished)
