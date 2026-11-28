@@ -479,7 +479,7 @@ export interface ReconcileReport {
   scanned: number
   /** Journals projecting a halted/paused loop status. */
   candidates: number
-  /** Refs judged stale (ticket no longer active). In dry-run this is the
+  /** Refs judged stale (ticket not live: neither active nor todo). In dry-run this is the
    *  whole answer — `tombstoned` stays empty. */
   stale: ReconcileStaleEntry[]
   /** Refs whose group was replaced with the tombstoned body. */

@@ -123,11 +123,11 @@
     },
     "reconcile": {
       "type": "object",
-      "description": "Pushgateway liveness reconcile (PMR-V36Y). Tombstones the v2 pi_flow_state / pi_flow_state_start_seconds series (state halted/waiting_human/waiting_machine -> stale) whose aven ticket is no longer active, so the alerts stop firing on closed runs.",
+      "description": "Pushgateway liveness reconcile (PMR-V36Y). Tombstones the v2 pi_flow_state / pi_flow_state_start_seconds series (state halted/waiting_human/waiting_machine -> stale) whose aven ticket is not live (neither active nor todo), so the alerts stop firing on closed runs.",
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Reconcile stale run-liveness metrics (tombstone the v2 pi_flow_state series whose aven ticket is no longer active: state halted/waiting_human/waiting_machine becomes stale). Default true"
+          "description": "Reconcile stale run-liveness metrics (tombstone the v2 pi_flow_state series whose aven ticket is not live (neither active nor todo): state halted/waiting_human/waiting_machine becomes stale). Default true"
         },
         "intervalMinutes": {
           "type": "integer",
