@@ -40,9 +40,15 @@ export interface PlanPromptInput {
 // AIDEV-NOTE: PMR-ZV9Y 1.2 step registry — the spec-approval wait below is
 // the registered plan step, bound 1:1: approval wait = plan.spec-approval
 // (flow/steps.ts STEP_REGISTRY.plan). The loop's spec-approval pause journals
-// step-start{plan.spec-approval} and the /flow answer approve path journals
-// step-stop{plan.spec-approval}, so this prompt wait and those events name the
-// same step; rename in flow/steps.ts must be reflected here.
+// step-start{plan.spec-approval} (flow/loop.ts emitStep in the pause branch),
+// and the matching step-stop{plan.spec-approval} is journaled by the LOOP
+// RESTART path in flow/loop.ts — at the earliest faithful restart site in
+// start(), before the running snapshot, with an idempotent fallback in
+// advanceAfter (PMR-ZV9Y 2.1, fix round d4c8111). The /flow answer command
+// itself does not journal it; it writes the approval receipt and restarts the
+// loop, and that restart emits the stop. So this prompt wait and those events
+// name the same step; rename in flow/steps.ts must be reflected here, and the
+// start()/advanceAfter emission sites must keep the pairing.
 const APPROVAL_SUFFIX = `
 Approval is recorded by the HUMAN, not the agent: the human runs
 "/flow answer <ticket ref> approve" (a human-only slash command — it starts
