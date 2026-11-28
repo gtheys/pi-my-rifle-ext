@@ -68,7 +68,10 @@ function makeHarness(labels: string[] | null = []): Harness {
       if (h.removeLabelResult === 'throw') {
         throw new Error('label removal exploded')
       }
-      const ok = h.removeLabelResult ?? true
+      let ok = true
+      if (h.removeLabelResult === false) {
+        ok = false
+      }
       if (ok) {
         h.removedLabels.push({ ref, label })
         h.labels = (h.labels ?? []).filter((l) => l !== label)
@@ -801,4 +804,65 @@ test('hasBlockersNoteSince: error text and pasted note ids in bodies do not brea
     'EOF',
   ].join('\n')
   assert.equal(hasBlockersNoteSince(out, '2025-12-31T00:00:00Z'), true)
+})
+
+// --- PMR-B033: gate-reset matrix. ISC-3 (genuine re-completion advances),
+// ISC-4/ISC-5 (a failed reset halts fail-closed and consumes no retry),
+// ISC-8 (the fix-round suffix tells the agent to re-call the gate tool). ---
+
+test('PMR-B033 ISC-3: re-completed fix round lands phase-complete(implement) and re-enters validate', async () => {
+  const h = blockersHarness([true, false])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled() // route-back: gate reset, implement prompt sent
+  assert.deepEqual(h.labels, ['planned'])
+  h.labels = ['planned', 'active'] // agent re-called flow_phase_complete
+  await loop.onSettled() // implement settled -> phase-complete + validate
+  const done = h.events.filter(
+    (e) => e.kind === 'phase-complete' && e.phase === 'implement',
+  )
+  assert.equal(done.length, 1, 'exactly one genuine implement completion')
+  assert.equal(h.sent.length, 3)
+  assert.match(h.sent[2], /Validate phase/)
+  assert.equal(loop.isActive(), true)
+})
+
+// Fail-closed matrix: dep returns false, dep throws, dep absent — each must
+// halt with the stale-label note, send no implement prompt, and leave the
+// blocker budget untouched (no retry note, no increment).
+const RESET_FAILURES: (boolean | 'throw' | 'absent')[] = [
+  false,
+  'throw',
+  'absent',
+]
+for (const mode of RESET_FAILURES) {
+  test(`PMR-B033 ISC-4/ISC-5: failed gate reset (${String(mode)}) halts fail-closed and consumes no retry`, async () => {
+    const h = blockersHarness([true])
+    if (mode === 'absent') {
+      h.deps.removeAvenLabel = undefined
+    } else {
+      h.removeLabelResult = mode
+    }
+    const loop = createFlowLoop(h.deps)
+    await loop.start({ ...startInput(), phase: 'validate' })
+    await loop.onSettled() // route-back attempt -> reset fails -> halt
+    assert.equal(h.sent.length, 1, 'implement prompt must NOT be re-injected')
+    assert.equal(loop.isActive(), false)
+    assert.equal(h.removedLabels.length, 0)
+    assert.match(h.notes[0].text, /stale "active" label/)
+    assert.match(h.notes[0].text, /rerun \/flow TP-1/)
+    const retryNotes = h.events.filter(
+      (e) => e.kind === 'note' && /re-running implement/.test(e.text),
+    )
+    assert.equal(retryNotes.length, 0, 'a failed reset consumes no retry')
+  })
+}
+
+test('PMR-B033 ISC-8: fix-round suffix tells the agent to re-call flow_phase_complete', async () => {
+  const h = blockersHarness([true])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled()
+  assert.match(h.sent[1], /RESETS the phase-completion gate/)
+  assert.match(h.sent[1], /flow_phase_complete/)
 })
