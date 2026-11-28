@@ -2528,9 +2528,10 @@ function settleAssignment(childId: string, verified: boolean): void {
 
 // AIDEV-NOTE (PMR-J2V5): guardrail against silent agent-definition drift — a
 // caller naming its child 'worker: X' (or 'worker — X') but omitting agent:
-// gets settings.json defaults in the child, NOT the role's frontmatter
+// would get settings.json defaults in the child, NOT the role's frontmatter
 // (model/skills/thinking). Keep this role list in sync with agents/*.md in
-// the package root. Pure advisory: we surface the mismatch, never infer.
+// the package root. Fail-closed (PMR-C0WG): launchSubagent refuses the spawn
+// with a caller-visible error — we surface the mismatch, never infer.
 const KNOWN_ROLE_PREFIXES = [
   'worker',
   'scout',
@@ -2585,13 +2586,10 @@ async function launchSubagent(
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null
   const driftRole = rolePrefixWithoutAgent(params.name, params.agent)
-  if (driftRole && latestCtx) {
-    try {
-      latestCtx.ui.notify(
-        `Name suggests role "${driftRole}" but no agent: passed — agent frontmatter (model, skills, thinking) will NOT apply. Pass agent: "${driftRole}" or rename.`,
-        'warning',
-      )
-    } catch {}
+  if (driftRole) {
+    throw new Error(
+      `Refusing to spawn "${params.name}": name suggests role "${driftRole}" but no agent was passed — agent frontmatter (model, skills, thinking) would NOT apply. Pass agent: "${driftRole}" or rename without the role prefix.`,
+    )
   }
   const effectiveModel = params.model ?? agentDefs?.model
   const effectiveTools = params.tools ?? agentDefs?.tools

@@ -7513,6 +7513,69 @@ describe('rolePrefixWithoutAgent guardrail (PMR-J2V5)', () => {
   })
 })
 
+describe('launchSubagent role-prefix refusal (PMR-C0WG)', () => {
+  // AIDEV-NOTE (PMR-C0WG): fail-closed regression — a role-prefixed name
+  // ('scout: …') without agent: must reject at the launch boundary BEFORE
+  // any tab or assignment record exists. Drives the real public
+  // launchSubagent export with a mock ctx; the deliberate worktree+cwd
+  // conflict is a spawn backstop — both the refusal site and that input
+  // validation sit after role-prefix detection but before writeAssignment
+  // and tab create, so even against the old advisory code the red run can
+  // never spawn a real child.
+  it('rejects a role-prefixed name without agent before any spawn side effect', async () => {
+    await withIsolatedAgentEnv(async () => {
+      const notifications: Array<{ message: string; level?: string }> = []
+      const ctx = {
+        cwd: process.cwd(),
+        ui: {
+          notify(message: string, level?: string) {
+            notifications.push({ message, level })
+          },
+        },
+        sessionManager: {
+          getSessionFile: () => '/tmp/pmr-c0wg/session.jsonl',
+          getSessionId: () => 'pmr-c0wg-parent-session',
+          getSessionDir: () => '/tmp/pmr-c0wg',
+        },
+      }
+
+      try {
+        await assert.rejects(
+          (subagentsModule as any).launchSubagent(
+            {
+              name: 'scout: map the repo',
+              task: 'map the repo',
+              worktree: true,
+              cwd: '/tmp/pmr-c0wg-elsewhere',
+            },
+            ctx,
+          ),
+          (err: unknown) => {
+            let message = String(err)
+            if (err instanceof Error) {
+              message = err.message
+            }
+            // The refusal names the role and both fixes.
+            assert.match(message, /scout/)
+            assert.match(message, /agent: "scout"/)
+            assert.match(message, /rename/i)
+            return true
+          },
+        )
+
+        // Fail-closed replaces the advisory: no warning notify fires.
+        assert.equal(notifications.length, 0)
+        // Nothing spawned: no assignment record was written.
+        assert.deepEqual(listAssignments(), [])
+      } finally {
+        // launchSubagent stashes ctx in the module-global latestCtx; reset it
+        // so later widget tests never see this minimal mock.
+        subagentsModule.__test__.updateWidgetForTest(undefined)
+      }
+    })
+  })
+})
+
 describe('delivered.ts exactly-once dedup (PMR-KY0E)', () => {
   let root: string
 
