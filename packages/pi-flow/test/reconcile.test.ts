@@ -167,9 +167,14 @@ test('computeStaleRefs: output keeps the journal map iteration order', () => {
 // (decoys, escaping, idempotence, running/done) are owned by
 // test/reconcile-tombstone-v2.test.ts; what stays here is the proof that the
 // surgery works on the REAL filtered gateway dump this file's fixtures come
-// from, and that no line is dropped any more.
+// from. The tombstone contract is: flip the v2 state pair to `stale`, drop any
+// transient `pi_flow_step{…}` line (a retired run has no step in flight — see
+// flow/reconcile.ts tombstoneBody), and leave `pi_flow_step_seconds` and every
+// other line byte-identical. HALTED_LINES carries no `pi_flow_step{…}` line, so
+// on this fixture nothing happens to be dropped — that is incidental, not the
+// general contract.
 
-test('tombstoneBody: rewrites the halted v2 state pair and drops no line', () => {
+test('tombstoneBody: rewrites the halted v2 state pair (no step line on this fixture to drop)', () => {
   const got = tombstoneBody(`${HALTED_BODY}\n`)
   assert.notEqual(got, null)
   const expected = HALTED_LINES.map((line) =>
@@ -178,7 +183,8 @@ test('tombstoneBody: rewrites the halted v2 state pair and drops no line', () =>
       : line,
   )
   assert.equal(got, `${expected.join('\n')}\n`)
-  // both state families moved, and nothing left the body
+  // both state families moved; this fixture has no pi_flow_step{…} line, so
+  // no line leaves the body here (the drop is exercised in tombstone-v2 tests)
   assert.equal(String(got).match(/state="stale"/g)?.length, 2)
   assert.equal(
     String(got)
@@ -668,9 +674,11 @@ test('runReconcilePass: tombstone body round-trips the full group (never rebuilt
   // the re-POSTed body — pinning the bug that made every tombstone push 400.
   assert.ok(!pushed.includes('push_time_seconds'))
   // AIDEV-NOTE (PMR-ZV9Y 7.1): the group is re-pushed COMPLETE — the cost rows
-  // that only the stored body carries survive, and no line is dropped. That is
-  // the whole point of the GET-transform-POST round trip and it is unchanged by
-  // the retirement; only which lines get value surgery changed.
+  // that only the stored body carries survive. The tombstone flips the state
+  // pair to `stale` and would drop a transient `pi_flow_step{…}` line, but this
+  // stored dump carries none, so every line here round-trips. That is the whole
+  // point of the GET-transform-POST round trip and it is unchanged by the
+  // retirement; only which lines get value/line surgery changed.
   assert.ok(pushed.includes('pi_flow_run_duration_seconds'))
   assert.ok(pushed.includes('pi_flow_tool_calls_total'))
   assert.ok(pushed.includes('state="stale"'))
