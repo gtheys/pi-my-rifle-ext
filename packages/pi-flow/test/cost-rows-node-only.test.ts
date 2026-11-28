@@ -207,6 +207,17 @@ test('the v2 closure guards reject the pi runtime and the session-side graph', (
   assert.ok(isAllowedIn('./orchestrate.ts', 'flow/steps.ts'))
   assert.ok(!isAllowedIn('@earendil-works/pi-coding-agent', 'flow/steps.ts'))
   assert.ok(!isAllowedIn('./loop.ts', 'flow/steps.ts'))
+  // PMR-FJ99: the comments above claim steps.ts's './orchestrate.ts' edge is
+  // TYPE-ONLY and so is stripped from the runtime transitive closure — i.e. the
+  // daemon never loads orchestrate.ts. Prove that claim directly instead of
+  // relying on the walk to imply it: with only a type-only import, steps.ts has
+  // ZERO runtime import specifiers, so it contributes no edge to the closure.
+  assert.deepEqual(
+    runtimeImportSpecifiers(
+      readFileSync(join(packageDir, 'flow/steps.ts'), 'utf8'),
+    ),
+    [],
+  )
 })
 
 test('cost.ts keeps re-exporting the moved rollup so importers are unchanged', () => {
