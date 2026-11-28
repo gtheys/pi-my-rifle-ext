@@ -69,10 +69,18 @@ const PiFlowConfigSchema = Type.Object({
           description:
             'Master switch — telemetry subscribes to nothing when false/absent (PMR-R8AG)',
         }),
-        otlpEndpoint: Type.String({
-          description:
-            'OTLP/HTTP base URL (e.g. https://host:4478); spans POST to <endpoint>/v1/traces',
-        }),
+        // AIDEV-NOTE: PMR-VSST — `otlpEndpoint` is schema-OPTIONAL so a
+        // loki-only config (telemetry.enabled false + telemetry.loki.enabled
+        // true) parses without an OTLP base. The surviving coupling —
+        // enabled true REQUIRES the endpoint — is an explicit check at the
+        // readConfigFile boundary below (a TypeBox union could express it
+        // but wrecks the error messages and the checked-in JSON mirror).
+        otlpEndpoint: Type.Optional(
+          Type.String({
+            description:
+              'OTLP/HTTP base URL (e.g. https://host:4478); spans POST to <endpoint>/v1/traces. Required when telemetry.enabled is true (PMR-VSST); omit for a loki-only setup',
+          }),
+        ),
         headers: Type.Optional(
           Type.Record(Type.String(), Type.String(), {
             description:
@@ -333,6 +341,19 @@ export async function readConfigFile(
       })
       .join('; ')
     throw new Error(`pi-flow config ${file} is invalid: ${errors}`)
+  }
+  // AIDEV-NOTE: PMR-VSST — the surviving OTLP coupling, enforced at the same
+  // strict boundary as the schema check above (never silent defaults):
+  // telemetry.enabled true without otlpEndpoint is invalid. Kept out of the
+  // schema so a loki-only config (enabled false + telemetry.loki) parses —
+  // see the AIDEV-NOTE on the otlpEndpoint property.
+  if (
+    parsed.telemetry?.enabled === true &&
+    parsed.telemetry.otlpEndpoint === undefined
+  ) {
+    throw new Error(
+      `pi-flow config ${file} is invalid: telemetry.otlpEndpoint is required when telemetry.enabled is true`,
+    )
   }
   return parsed
 }

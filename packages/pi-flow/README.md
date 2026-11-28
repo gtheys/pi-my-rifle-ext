@@ -128,7 +128,7 @@ checkout) instead of machine-wide.
 | `yolo` | `boolean` | `false` | Run `/flow` phases without confirmation gates. Only applies when the `--yolo` flag is absent on the invocation — an explicit flag wins over config |
 | `landTestCommand` | `string[]` | detected, else `["bun","run","test"]` | Argv of the test command `flow_land` runs itself before authorizing a landing — the gate never trusts a claimed-green suite. When unset, the command is detected from repo signals in a fixed order: `bun.lock`/`bunfig.toml` → `bun run test`, `Cargo.toml` → `cargo test`, `package-lock.json` → `npm test`, `pnpm-lock.yaml` → `pnpm test`. The summary of every run names the command and its source (config / detection / default) |
 | `telemetry.enabled` | `boolean` | `false` | Master switch for OTLP telemetry. `false` or a missing `telemetry` block = the session probe subscribes to nothing, allocates nothing, makes no network calls |
-| `telemetry.otlpEndpoint` | `string` | unset (required with `telemetry`) | OTLP/HTTP base URL (e.g. `https://host:4478`); spans POST to `<endpoint>/v1/traces` |
+| `telemetry.otlpEndpoint` | `string` | unset (required when `telemetry.enabled` is `true`) | OTLP/HTTP base URL (e.g. `https://host:4478`); spans POST to `<endpoint>/v1/traces`. May be omitted when OTLP export is off — a Loki-only setup (`telemetry.enabled: false` + `telemetry.loki.enabled: true`) needs no OTLP base |
 | `telemetry.headers` | `record<string, string>` | `{}` | Static extra headers for OTLP export. Secrets belong in env (`PI_FLOW_OTLP_TOKEN`), not config |
 | `telemetry.captureContent` | `"off" \| "text" \| "tools" \| "all"` | `"off"` | Content layers added to spans (cumulative): `off` metadata only, `text` assistant text, `tools` + tool calls and tool input/output, `all` + model reasoning. See [Capturing content](#capturing-content-in-spans) |
 | `telemetry.jiraBaseUrl` | `string` | unset | Base URL for Jira issue links, e.g. `https://example.atlassian.net/browse/`. Work-mode spans then carry `flow.url` = base + Jira key, so dashboards can link tickets to Jira. Unset = no links |
@@ -379,6 +379,24 @@ You expose the Loki endpoint yourself (PMR-ZV9Y D2 — no bundled collector);
 `http://loki.example.com:3100/loki/api/v1/push`. A Bearer token in front of a
 reverse proxy belongs in `telemetry.loki.headers` (or better, env), not baked
 into a committed config.
+
+Loki does not need OTLP (PMR-VSST): with `telemetry.enabled: false` the
+`otlpEndpoint` may be omitted entirely, so a Loki-only config is just
+
+```json
+{
+  "telemetry": {
+    "enabled": false,
+    "loki": {
+      "enabled": true,
+      "endpoint": "http://loki.example.com:3100"
+    }
+  }
+}
+```
+
+The one surviving coupling: `telemetry.enabled: true` still **requires**
+`otlpEndpoint` — the config is rejected at load otherwise.
 
 Semantics (test-gated, see `telemetry/loki.ts`):
 

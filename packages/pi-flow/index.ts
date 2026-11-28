@@ -1857,13 +1857,19 @@ export default function (
       syncNotifySettings(config, cwd)
       const telemetry = config.telemetry
       if (telemetry === undefined || !telemetry.enabled) return null
+      const endpoint = telemetry.otlpEndpoint
+      // AIDEV-NOTE: PMR-VSST — unreachable in practice: readConfigFile
+      // rejects telemetry.enabled=true without otlpEndpoint at the config
+      // boundary, and loadConfig above runs that same check. The guard only
+      // narrows the now-optional type for TelemetrySettings — no cast.
+      if (endpoint === undefined) return null
       const headers: Record<string, string> = { ...(telemetry.headers ?? {}) }
       const token = process.env.PI_FLOW_OTLP_TOKEN
       if (token !== undefined && token.length > 0) {
         headers.authorization = `Bearer ${token}`
       }
       return {
-        endpoint: telemetry.otlpEndpoint,
+        endpoint,
         headers,
         captureContent: telemetry.captureContent,
         jiraBaseUrl: telemetry.jiraBaseUrl,
