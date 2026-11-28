@@ -44,7 +44,11 @@ export type FlowState =
  * `human_ask_pending` was added by the mid-turn-ask fix PMR-0NRH (a mid-turn
  * plain ask in the MAIN session is a HUMAN wait — the generic ask emitter
  * journals it, so a prompt-instructed `ask_user_question` becomes visible on
- * the Waiting-on-me board without any per-gate reason or prompt edit).
+ * the Waiting-on-me board without any per-gate reason or prompt edit);
+ * `label_reset_failed` was added by PMR-B033 (the blocker route-back's gate
+ * reset — removing the stale implement completion label before re-injecting
+ * implement — failed, so the run halts fail-closed instead of auto-advancing
+ * on the stale label).
  */
 export type FlowReason =
   | 'spec_approval_pending'

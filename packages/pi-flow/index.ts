@@ -78,8 +78,9 @@ import {
 } from './flow/cost-command.ts'
 import {
   type DurableRefDeps,
-  deriveFlowRefs,
+  deriveFlowRefsDetailed,
   deriveParkedCandidates,
+  type FlowRefDerivation,
   type ParkedCandidate,
 } from './flow/durable-refs.ts'
 import { mergeIntercept } from './flow/effect-gate.ts'
@@ -297,6 +298,17 @@ function notifyDashboardOutcome(
 export interface DurableRebindDeps {
   deriveCandidates: () => Promise<ParkedCandidate[]>
   heal: (ref: string, cwd: string) => Promise<HealResult>
+  // AIDEV-NOTE: PMR-1KXH — wall clock (ms) for the settle-scan cooldown,
+  // injectable so tests advance the window without sleeps. Defaults to
+  // Date.now.
+  now?: () => number
+  // AIDEV-NOTE: PMR-YG18 — stderr sink for the headless resume-picker
+  // fallback lines. In print/json modes ctx.hasUI is false and pi binds the
+  // no-op uiContext, so ctx.ui.notify drops the recovery lines entirely;
+  // stderr is the only channel those modes surface. Injectable so tests
+  // observe the channel without monkeypatching process.stderr. Defaults to
+  // process.stderr.write.
+  writeStderr?: (line: string) => void
 }
 
 // AIDEV-NOTE: PMR-T9ZQ — one-line decline notice for the resume picker: the
@@ -338,6 +350,21 @@ type ResumeAskCtx = {
 // braces path (subtask 3.2) must gate on 'idle'.
 type ResumeAskState = 'idle' | 'asking' | 'done'
 let resumeAskState: ResumeAskState = 'idle'
+
+// AIDEV-NOTE: PMR-1KXH — cooldown for the agent_settled belt-and-braces
+// candidate scan. The ask-once latch is only spent when candidates are
+// FOUND, so every clean-session settle used to re-run deriveCandidates (an
+// uncached `git rev-parse` plus a read+parse+projection of EVERY pending
+// record) just to find nothing. An EMPTY settle scan now arms this window:
+// further settles inside it skip the scan entirely. Deliberately NOT
+// touched: session_start (always scans), the ask-once latch (an empty scan
+// still leaves it 'idle'), and non-empty scans (the latch pins those). Worst
+// case a run parked mid-window is discovered one cooldown later — bounded,
+// and the prompt-once contract is unchanged. 60s because settles fire once
+// per turn: quick tool-heavy turns are where the wasted scans stack up,
+// while a minute of deferred discovery is invisible next to a parked run's
+// lifetime.
+export const EMPTY_SETTLE_SCAN_COOLDOWN_MS = 60_000
 
 // AIDEV-NOTE: PMR-DRKH — injectable IO seam for the session_start durable
 // rebind (plan 3.1). Production defaults resolve the session gitRoot and
@@ -413,11 +440,11 @@ export default function (
       gitRoot,
     }
   }
-  const makeDeriveRefs = (): (() => Promise<string[]>) => {
+  const makeDeriveRefsDetailed = (): (() => Promise<FlowRefDerivation>) => {
     return async () => {
       const deps = await durableScanDeps()
       if (deps === null) {
-        return []
+        return { refs: [], foreignSkipped: [] }
       }
       // AIDEV-NOTE: PMR-RRW9 — ONLY the bind-adoption seam gets the
       // owner-scoped filter inputs: the calling session's main session
@@ -425,11 +452,25 @@ export default function (
       // ownerPidAlive probe from flow/resume-picker.ts. deriveParkedCandidates
       // (the resume picker) keeps the wide scan — the human arbitrates
       // there via the owner-liveness hint.
-      return deriveFlowRefs({
+      // AIDEV-NOTE: PMR-3N9N — callerPid is injected HERE (the only place
+      // process.pid is read) so a live self-owned headless run (null
+      // sessionFile, same pid after a reload) stays adoptable.
+      return deriveFlowRefsDetailed({
         ...deps,
         callerSessionFile: mainSessionFile,
+        callerPid: process.pid,
         pidAlive: ownerPidAlive,
       })
+    }
+  }
+  const makeDeriveRefs = (): (() => Promise<string[]>) => {
+    // AIDEV-NOTE: PMR-YN61 — the plain string[] seam is a projection of the
+    // detailed one so the two owner-scoped wirings can never drift (same
+    // single-construction rule as durableScanDeps above).
+    const detailed = makeDeriveRefsDetailed()
+    return async () => {
+      const derivation = await detailed()
+      return derivation.refs
     }
   }
   // AIDEV-NOTE: PMR-T9ZQ 3.1 — production rich-candidate scanner for the
@@ -454,6 +495,19 @@ export default function (
     deriveCandidates: makeDeriveCandidates(),
     heal: (ref, cwd) => healFlowBinding(ref, productionReviewDeps(pi, cwd)),
   }
+  // AIDEV-NOTE: PMR-1KXH — cooldown state + clock for the settle-scan
+  // throttle. Closure-scoped, so each extension instance (one per process in
+  // production) owns its window; tests inject `now` to advance it without
+  // sleeps.
+  const settleScanNow = durableRebind.now ?? (() => Date.now())
+  // AIDEV-NOTE: PMR-YG18 — late-bound like `now` so a partially injected
+  // test seam still gets the production stderr default.
+  const resumeFallbackStderr =
+    durableRebind.writeStderr ??
+    ((line: string) => {
+      process.stderr.write(`${line}\n`)
+    })
+  let lastEmptySettleScanAt: number | null = null
   // AIDEV-NOTE: PMR-ZV9Y 4.3 — THE v2 fan-out wrap point. `telemetry/dispatch.ts`
   // carries the seam map; the short version is that every v2 emitter in the
   // session (loop journal/journalV2 via journalSerial -> journal, the
@@ -666,11 +720,21 @@ export default function (
     await resumeParkedRun(resumeConsumerDeps(ref))
   }
 
-  // The notify-only degradation shared by the headless plan and every
-  // fail-closed path: one info line per candidate, nothing else.
+  // The notify degradation shared by the headless plan and every fail-closed
+  // path: one info line per candidate, nothing else.
+  // AIDEV-NOTE: PMR-YG18 — when ctx.hasUI is false, notify is pi's no-op
+  // uiContext (print/json modes), so the same lines are ALSO written to
+  // stderr — the only channel a headless operator can see. Interactive
+  // sessions (including the select-throw fail-closed path, where the real
+  // ctx.hasUI is true) stay notify-only: no duplicate output next to a
+  // working UI. Notify is kept in the headless branch too so the seam's
+  // notify-based pins stay valid; a no-op notify shows nothing twice.
   function notifyResumeFallback(ctx: ResumeAskCtx, lines: string[]): void {
     for (const line of lines) {
       ctx.ui.notify(line, 'info')
+      if (!ctx.hasUI) {
+        resumeFallbackStderr(line)
+      }
     }
   }
 
@@ -747,7 +811,9 @@ export default function (
   // once-per-process ask, so the latch is pinned here. The startup site used to
   // skip this pinning: a headless fallback returned with the latch still 'idle'
   // and the first agent_settled re-ran the gate, re-printing the same recovery
-  // lines (invisible today only because headless notify is a no-op, PMR-YG18).
+  // lines (invisible back then only because headless notify is a no-op; since
+  // PMR-YG18 the fallback also reaches stderr, so an unpinned latch would
+  // re-print on an operator-visible channel).
   async function runResumeGateOnce(
     ctx: ResumeAskCtx,
     candidates: ParkedCandidate[],
@@ -1445,9 +1511,14 @@ export default function (
   const worktreeEffects = createEffectJournal(getAgentDir())
   // AIDEV-NOTE: PMR-DRKH — worktree bind self-heal seam; the scanner is
   // the shared makeDeriveRefs() above (PMR-86NN).
+  // AIDEV-NOTE: PMR-YN61 — the detailed seam is wired alongside so the bind
+  // refusal can name foreign-live filtered refs and their `/flow <ref>`
+  // recovery commands; both seams share makeDeriveRefsDetailed's
+  // owner-scoped construction (callerSessionFile/callerPid/pidAlive).
   worktreeExtension(pi, {
     effects: worktreeEffects,
     deriveFlowRefs: makeDeriveRefs(),
+    deriveFlowRefsDetailed: makeDeriveRefsDetailed(),
   })
 
   // AIDEV-NOTE: PMR-YG2N 4.1 — background worktree sweep, latched fire-and-
@@ -1592,6 +1663,16 @@ export default function (
       return
     }
     void (async () => {
+      // AIDEV-NOTE: PMR-1KXH — while the last EMPTY settle scan's cooldown
+      // runs, a settle costs one comparison instead of a git subprocess plus
+      // a full pending-dir projection. Only empty scans arm the window, so
+      // this never delays a candidate that was already visible.
+      if (
+        lastEmptySettleScanAt !== null &&
+        settleScanNow() - lastEmptySettleScanAt < EMPTY_SETTLE_SCAN_COOLDOWN_MS
+      ) {
+        return
+      }
       let candidates: ParkedCandidate[]
       try {
         candidates = await durableRebind.deriveCandidates()
@@ -1599,7 +1680,10 @@ export default function (
         return
       }
       if (candidates.length === 0) {
-        // nothing parked (yet): leave the latch armed for a later settle
+        // nothing parked (yet): leave the latch armed for a later settle,
+        // and arm the cooldown so back-to-back settles stop paying for the
+        // scan (PMR-1KXH)
+        lastEmptySettleScanAt = settleScanNow()
         return
       }
       // the scan is async — a startup ask may have opened (or finished)
@@ -1837,13 +1921,19 @@ export default function (
       syncNotifySettings(config, cwd)
       const telemetry = config.telemetry
       if (telemetry === undefined || !telemetry.enabled) return null
+      const endpoint = telemetry.otlpEndpoint
+      // AIDEV-NOTE: PMR-VSST — unreachable in practice: readConfigFile
+      // rejects telemetry.enabled=true without otlpEndpoint at the config
+      // boundary, and loadConfig above runs that same check. The guard only
+      // narrows the now-optional type for TelemetrySettings — no cast.
+      if (endpoint === undefined) return null
       const headers: Record<string, string> = { ...(telemetry.headers ?? {}) }
       const token = process.env.PI_FLOW_OTLP_TOKEN
       if (token !== undefined && token.length > 0) {
         headers.authorization = `Bearer ${token}`
       }
       return {
-        endpoint: telemetry.otlpEndpoint,
+        endpoint,
         headers,
         captureContent: telemetry.captureContent,
         jiraBaseUrl: telemetry.jiraBaseUrl,

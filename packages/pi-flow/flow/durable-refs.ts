@@ -62,8 +62,22 @@ export interface DurableRefDeps {
    * (production injects ownerPidAlive from flow/resume-picker.ts). Both
    * optional: when `pidAlive` is absent the scan keeps the legacy
    * owner-agnostic behavior (tests and pre-PMR-RRW9 callers).
+   * AIDEV-NOTE: PMR-3N9N — `callerPid` is the calling process's own pid,
+   * injected at the production seam (this module never reads process.pid
+   * itself) so a live owner with a null sessionFile can still be proven
+   * to be the caller (headless flows journal no session file). Absent =>
+   * fail closed, exactly as before.
+   * AIDEV-NOTE: PMR-MG9S — omitting `callerSessionFile` while injecting
+   * `pidAlive` fails CLOSED for every live-owned record: no owner
+   * sessionFile can be compared, so even a record owned by the caller is
+   * classified as foreign and skipped by deriveFlowRefs. The single
+   * exception is PMR-3N9N above: a live null-sessionFile owner whose pid
+   * exactly matches an injected `callerPid` stays adoptable. Production
+   * injects `callerSessionFile`, `callerPid`, and `pidAlive`, so this is
+   * a wiring sharp edge for alternate callers, not a current behavior bug.
    */
   callerSessionFile?: string | null
+  callerPid?: number
   pidAlive?: (pid: number) => boolean
 }
 
@@ -87,8 +101,12 @@ function keepRef(state: FlowRunState, gitRoot: string): boolean {
  * resume PMR-DRKH/PMR-T9ZQ were built for), and records whose owner
  * sessionFile matches the caller. FAIL-CLOSED: a live owner with no
  * sessionFile (or a caller with none to compare) cannot be proven to be
- * the caller, so it is treated as foreign. When no liveness probe is
- * injected the legacy owner-agnostic behavior is preserved.
+ * the caller, so it is treated as foreign — with ONE exemption
+ * (PMR-3N9N): a live owner whose pid exactly matches the injected
+ * `callerPid` IS the caller (headless flows journal no session file, so
+ * after a reload in the same process the pid is the only identity left).
+ * When no liveness probe is injected the legacy owner-agnostic behavior
+ * is preserved.
  */
 function isForeignLiveOwner(
   state: FlowRunState,
@@ -98,7 +116,15 @@ function isForeignLiveOwner(
   const owner = state.owner
   if (owner === undefined) return false
   if (!deps.pidAlive(owner.pid)) return false
-  if (owner.sessionFile === null) return true
+  if (owner.sessionFile === null) {
+    // AIDEV-NOTE: PMR-3N9N — self-owned headless run: only an EXACT
+    // live self-PID match exempts; absent callerPid or any other pid
+    // stays fail-closed foreign.
+    if (deps.callerPid !== undefined && owner.pid === deps.callerPid) {
+      return false
+    }
+    return true
+  }
   return owner.sessionFile !== deps.callerSessionFile
 }
 
@@ -195,14 +221,39 @@ async function scanRunStates(deps: DurableRefDeps): Promise<ScannedRun[]> {
  * silently skipped; readdir failure yields an empty list — this function
  * never throws.
  */
-export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
+/**
+ * AIDEV-NOTE: PMR-YN61 — detailed bind-adoption derivation: the same scan
+ * and the same owner-scoped filter as deriveFlowRefs, but the refs dropped
+ * by the foreign-live-owner filter are returned alongside instead of
+ * vanishing. The worktree bind refusal uses `foreignSkipped` to name each
+ * filtered live foreign run and its `/flow <ref>` recovery command — it
+ * NEVER adopts them (they are not in `refs`). `deriveFlowRefs` keeps its
+ * plain string[] contract for its other callers by projecting `refs`.
+ */
+export interface FlowRefDerivation {
+  refs: string[]
+  foreignSkipped: string[]
+}
+
+export async function deriveFlowRefsDetailed(
+  deps: DurableRefDeps,
+): Promise<FlowRefDerivation> {
   const entries = await scanRunStates(deps)
   const refs: string[] = []
+  const foreignSkipped: string[] = []
   for (const entry of entries) {
-    if (isForeignLiveOwner(entry.state, deps)) continue
+    if (isForeignLiveOwner(entry.state, deps)) {
+      foreignSkipped.push(entry.ref)
+      continue
+    }
     refs.push(entry.ref)
   }
-  return refs
+  return { refs, foreignSkipped }
+}
+
+export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
+  const derivation = await deriveFlowRefsDetailed(deps)
+  return derivation.refs
 }
 
 /**

@@ -34,8 +34,18 @@ export const LIVE_WAIT_LEASE_SECONDS = 180
  * stays a valid chronology test.
  *
  * An unparseable `at` yields an Invalid Date and `toISOString()` throws
- * RangeError — deliberate and fail-loud: a silently-garbage deadline either
- * expires a live wait early or never expires at all.
+ * RangeError. That throw only surfaces on DIRECT calls (tests): both
+ * production call sites are wrapped in never-throw catches per ISC-A-5, so
+ * in production the RangeError is silently swallowed —
+ * `noteExternalV2State` runs inside the fan-out observer's try/catch
+ * (telemetry/dispatch.ts), and `renewLiveWaitLease` runs inside the ask
+ * emitter's heartbeat beat try/catch (flow/ask-emitter.ts). Worse, on the
+ * noteExternalV2State path the throw lands MID-MUTATION: lastEmittedV2,
+ * lastV2At and externalHumanWaitOpen are already updated while
+ * leaseExpiresAt is left stale/null — a partially-applied observation.
+ * Reachable only via journal corruption (every real `at` is a fixed-width
+ * UTC ISO stamp), so the impact is negligible — but do not rely on the
+ * throw being loud in production; it is loud only when called directly.
  */
 export function addSecondsIso(at: string, seconds: number): string {
   return new Date(Date.parse(at) + seconds * 1000).toISOString()

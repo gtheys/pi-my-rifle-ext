@@ -32,7 +32,10 @@ import {
   setActiveFlowRef,
   setFlowWorktree,
 } from '../flow/worktree-context.ts'
-import flowExtension, { type DurableRebindDeps } from '../index.ts'
+import flowExtension, {
+  type DurableRebindDeps,
+  EMPTY_SETTLE_SCAN_COOLDOWN_MS,
+} from '../index.ts'
 import { PENDING_SCHEMA } from '../server/pending.ts'
 
 const NONE_LABEL = 'None — leave this session clean'
@@ -616,6 +619,61 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
     assert.ok(text.includes('recover with /flow PMR-H2'), text)
   })
 
+  // AIDEV-NOTE: PMR-YG18 — in print/json modes (ctx.hasUI === false) pi
+  // binds the no-op uiContext, so the notify-only fallback vanishes. The
+  // SAME recovery lines must additionally reach stderr through the injected
+  // writeStderr seam on DurableRebindDeps (no process.stderr monkeypatch).
+  it('(c) headless fallback reaches stderr: every recovery line, including /flow <ref>, is written (PMR-YG18)', async () => {
+    setActiveFlowRef(null)
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    const stderrLines: string[] = []
+    const harness = captureExtension({
+      deriveCandidates: async () => [
+        parkedCandidate('PMR-ERR1'),
+        parkedCandidate('PMR-ERR2', { hasWorktree: false }),
+      ],
+      heal: noHeal(),
+      writeStderr: (line) => {
+        stderrLines.push(line)
+      },
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: false }),
+    )
+    await drainUntil(() => stderrLines.length >= 2)
+    assert.deepEqual(gate.calls, [], 'no select without UI')
+    assert.equal(getActiveFlowRef(), null)
+    assert.deepEqual(harness.sent, [])
+    assert.equal(stderrLines.length, 2, 'exactly one stderr line per candidate')
+    const text = stderrLines.join('\n')
+    assert.ok(text.includes('recover with /flow PMR-ERR1'), text)
+    assert.ok(text.includes('recover with /flow PMR-ERR2'), text)
+  })
+
+  it('(c) a throwing select in an interactive session stays notify-only: nothing hits stderr (PMR-YG18)', async () => {
+    setActiveFlowRef(null)
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    const stderrLines: string[] = []
+    const harness = captureExtension({
+      deriveCandidates: async () => [parkedCandidate('PMR-NOERR')],
+      heal: noHeal(),
+      writeStderr: (line) => {
+        stderrLines.push(line)
+      },
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => gate.calls.length > 0)
+    gate.reject(new Error('no dialog implementation in this mode'))
+    await drainUntil(() => rebindNotifications(notifications).length > 0)
+    await settleMs(50)
+    assert.equal(getActiveFlowRef(), null)
+    assert.deepEqual(stderrLines, [], 'interactive fallback stays notify-only')
+  })
+
   it('(c) a throwing select fails CLOSED: recovery lines only, session stays clean', async () => {
     setActiveFlowRef(null)
     const gate = selectGate()
@@ -913,8 +971,9 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
   // AIDEV-NOTE: PMR-BCP7 — the startup headless 'fallback' branch must pin the
   // once-per-process ask latch. It never reaches a menu, so askResumeThenArm
   // used to return with the latch still 'idle' and the first agent_settled
-  // re-ran the gate, re-printing the SAME recovery lines. Headless notify is a
-  // no-op today (PMR-YG18), so this pin guards the moment that is fixed.
+  // re-ran the gate, re-printing the SAME recovery lines. Since PMR-YG18 the
+  // headless fallback also reaches stderr, so this pin guards an
+  // operator-visible channel, not just the no-op headless notify.
   it('(f) a headless STARTUP fallback pins the latch: the first settle does not re-emit the lines', async () => {
     setActiveFlowRef(null)
     const ref = 'PMR-LATCHSTART'
@@ -1040,9 +1099,14 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
     const gate = selectGate()
     const notifications: Notify[] = []
     let candidates: ParkedCandidate[] = []
+    // PMR-1KXH: the empty settle below arms the scan cooldown, so the clock
+    // is injected to step past the window before the late candidate lands —
+    // the throttle delays discovery, it never spends the latch.
+    let nowMs = 1_000_000
     const harness = captureExtension({
       deriveCandidates: async () => candidates,
       heal: noHeal(),
+      now: () => nowMs,
     })
     // A settle with NOTHING parked stays silent and must NOT spend the
     // once-per-process ask: the latch only flips around a real menu, so a
@@ -1057,6 +1121,7 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
     )
     await settleMs(150)
     assert.deepEqual(gate.calls, [])
+    nowMs += EMPTY_SETTLE_SCAN_COOLDOWN_MS
     candidates = [parkedCandidate('PMR-AFTER')]
     harness.fireAgentSettled(
       sessionStartCtx(root, notifications, gate, { hasUI: true }),
@@ -1064,6 +1129,149 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
     await drainUntil(() => gate.calls.length > 0)
     gate.answer(NONE_LABEL)
     await drainUntil(() => rebindNotifications(notifications).length > 0)
+    assert.equal(getActiveFlowRef(), null)
+  })
+
+  // AIDEV-NOTE: PMR-1KXH — the settle-scan cooldown pins. Every CLEAN-session
+  // settle used to re-run deriveCandidates (an uncached git subprocess plus a
+  // full read+parse+projection of every pending record) just to find nothing.
+  // The throttle arms ONLY on an EMPTY settle scan — never session_start,
+  // never the ask-once latch — so a late candidate still prompts exactly
+  // once, at the first settle past the window. The injected `now` clock
+  // advances time without sleeps.
+  it('(h) repeated empty settles inside the cooldown window derive candidates once (PMR-1KXH)', async () => {
+    setActiveFlowRef(null)
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    let deriveCalls = 0
+    let nowMs = 1_000_000
+    const harness = captureExtension({
+      deriveCandidates: async () => {
+        deriveCalls += 1
+        return []
+      },
+      heal: noHeal(),
+      now: () => nowMs,
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => deriveCalls === 1)
+    // the first settle scans (and finds nothing) — that scan arms the window
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => deriveCalls === 2)
+    await settleMs(50)
+    // back-to-back settles inside the window: no more derivations
+    nowMs += 1_000
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await settleMs(150)
+    nowMs += 1_000
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await settleMs(150)
+    assert.equal(
+      deriveCalls,
+      2,
+      'settles inside the cooldown window must not re-scan',
+    )
+    assert.deepEqual(gate.calls, [])
+    assert.deepEqual(rebindNotifications(notifications), [])
+    assert.equal(getActiveFlowRef(), null)
+  })
+
+  it('(h) a settle past the cooldown rescans and a late candidate still prompts exactly once', async () => {
+    setActiveFlowRef(null)
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    let candidates: ParkedCandidate[] = []
+    let deriveCalls = 0
+    let nowMs = 1_000_000
+    const harness = captureExtension({
+      deriveCandidates: async () => {
+        deriveCalls += 1
+        return candidates
+      },
+      heal: noHeal(),
+      now: () => nowMs,
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => deriveCalls === 1)
+    // an empty settle arms the cooldown
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => deriveCalls === 2)
+    await settleMs(50)
+    // the daemon parks the run DURING the window: settles skip the scan, so
+    // discovery is deferred (the accepted cost of the throttle), never lost
+    candidates = [parkedCandidate('PMR-COOL')]
+    nowMs += 1_000
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await settleMs(150)
+    assert.equal(deriveCalls, 2, 'inside the window even a parked run waits')
+    assert.deepEqual(gate.calls, [])
+    // the first settle past the window scans again and surfaces the candidate
+    nowMs += EMPTY_SETTLE_SCAN_COOLDOWN_MS
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => gate.calls.length > 0)
+    assert.equal(deriveCalls, 3)
+    gate.answer(NONE_LABEL)
+    await drainUntil(() => rebindNotifications(notifications).length > 0)
+    // prompt-once is preserved: later settles never re-ask, never re-scan
+    nowMs += EMPTY_SETTLE_SCAN_COOLDOWN_MS
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await settleMs(150)
+    assert.equal(gate.calls.length, 1)
+    assert.equal(deriveCalls, 3, 'the answered gate leaves nothing to scan for')
+    assert.equal(rebindNotifications(notifications).length, 1)
+    assert.equal(getActiveFlowRef(), null)
+    assert.deepEqual(harness.sent, [])
+  })
+
+  it('(h) the cooldown never throttles session_start scans', async () => {
+    setActiveFlowRef(null)
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    let deriveCalls = 0
+    const nowMs = 1_000_000
+    const harness = captureExtension({
+      deriveCandidates: async () => {
+        deriveCalls += 1
+        return []
+      },
+      heal: noHeal(),
+      now: () => nowMs,
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => deriveCalls === 1)
+    // an empty settle arms the window…
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => deriveCalls === 2)
+    await settleMs(50)
+    // …but a NEW session in the same process scans immediately regardless
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => deriveCalls === 3)
+    assert.equal(deriveCalls, 3, 'session_start always scans, cooldown or not')
+    assert.deepEqual(gate.calls, [])
     assert.equal(getActiveFlowRef(), null)
   })
 
