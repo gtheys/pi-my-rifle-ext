@@ -425,9 +425,13 @@ export default function (
       // ownerPidAlive probe from flow/resume-picker.ts. deriveParkedCandidates
       // (the resume picker) keeps the wide scan — the human arbitrates
       // there via the owner-liveness hint.
+      // AIDEV-NOTE: PMR-3N9N — callerPid is injected HERE (the only place
+      // process.pid is read) so a live self-owned headless run (null
+      // sessionFile, same pid after a reload) stays adoptable.
       return deriveFlowRefs({
         ...deps,
         callerSessionFile: mainSessionFile,
+        callerPid: process.pid,
         pidAlive: ownerPidAlive,
       })
     }

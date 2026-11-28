@@ -265,3 +265,123 @@ test('bind heal: a foreign live-owner record is not adopted; refusal is the zero
   assert.equal(getActiveFlowRef(), null, 'foreign live flow never adopted')
   assert.equal(getFlowWorktree(), null)
 })
+
+// AIDEV-NOTE: PMR-3N9N — end-to-end bind seam for the self-owned headless
+// exemption: the seam below is the REAL deriveFlowRefs over a fake pending
+// record whose journaled owner is a LIVE headless run (sessionFile null).
+// Same pid as the caller (a reload in the same process) must be adopted;
+// a different live pid must hit the unchanged zero-candidate refusal.
+function headlessOwnerDeps(
+  ref: string,
+  ownerPid: number,
+  callerPid: number,
+): DurableRefDeps {
+  const events = [
+    {
+      kind: 'run-start',
+      at: '2026-11-28T00:00:00Z',
+      ref,
+      mode: 'work',
+    },
+    {
+      kind: 'run-input',
+      at: '2026-11-28T00:01:00Z',
+      ref,
+      input: { mode: 'work', gitRoot: '/repo', workRoots: [] },
+    },
+    {
+      kind: 'phase-start',
+      at: '2026-11-28T00:02:00Z',
+      ref,
+      phase: 'validate',
+    },
+    {
+      kind: 'loop-state',
+      at: '2026-11-28T00:03:00Z',
+      ref,
+      loop: {
+        phase: 'validate',
+        awaitingOutcome: true,
+        blockerRetries: 0,
+        validateStartedAt: '2026-11-28T00:00:00Z',
+        status: 'running',
+      },
+    },
+    {
+      kind: 'owner-session',
+      at: '2026-11-28T00:04:00Z',
+      ref,
+      sessionFile: null,
+      pid: ownerPid,
+    },
+  ]
+  return {
+    pendingDir: '/agent/pi-flow/pending',
+    agentDir: '/agent',
+    gitRoot: '/repo',
+    callerSessionFile: null,
+    callerPid,
+    pidAlive: () => true,
+    io: {
+      readdir: async () => [`${ref}.json`],
+      readFile: async (p) => {
+        if (!p.endsWith(`/${ref}.journal.jsonl`)) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        return `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
+      },
+    },
+    readRunEvents,
+  }
+}
+
+test('bind heal: a live self-owned headless run (same pid, null sessionFile) is adopted', async () => {
+  const dir = mkTmpDir('wt-heal-')
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }], {
+    deps: {
+      deriveFlowRefs: () =>
+        deriveFlowRefs(headlessOwnerDeps('PMR-3N9A', 4242, 4242)),
+    },
+  })
+  setActiveFlowRef(null)
+  const result = await execute(
+    'heal-7',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  const text = result.content[0]?.text ?? ''
+  assert.match(text, /Bound worktree/)
+  assert.match(text, /PMR-3N9A/)
+  assert.match(text, /adopt/i)
+  assert.equal(getActiveFlowRef(), 'PMR-3N9A')
+  assert.deepEqual(getFlowWorktree(), {
+    ref: 'PMR-3N9A',
+    path: dir,
+    branch: 'fix/x',
+  })
+})
+
+test('bind heal: a live headless run owned by a different pid stays refused', async () => {
+  const dir = mkTmpDir('wt-heal-')
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }], {
+    deps: {
+      deriveFlowRefs: () =>
+        deriveFlowRefs(headlessOwnerDeps('PMR-3N9B', 9999, 4242)),
+    },
+  })
+  setActiveFlowRef(null)
+  const result = await execute(
+    'heal-8',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  const text = result.content[0]?.text ?? ''
+  assert.ok(text.startsWith('No active flow ref'), text)
+  assert.ok(!text.includes('PMR-3N9B'), text)
+  assert.equal(getActiveFlowRef(), null, 'foreign live flow never adopted')
+  assert.equal(getFlowWorktree(), null)
+})

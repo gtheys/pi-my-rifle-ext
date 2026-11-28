@@ -106,6 +106,7 @@ function makeDeps(
   options?: {
     readdirThrows?: boolean
     callerSessionFile?: string | null
+    callerPid?: number
     pidAlive?: (pid: number) => boolean
   },
 ) {
@@ -114,6 +115,7 @@ function makeDeps(
     agentDir: AGENT_DIR,
     gitRoot: GIT_ROOT,
     callerSessionFile: options?.callerSessionFile,
+    callerPid: options?.callerPid,
     pidAlive: options?.pidAlive,
     io: {
       readdir: async () => {
@@ -421,6 +423,81 @@ describe('deriveFlowRefs owner-scoped adoption', () => {
         },
         {
           callerSessionFile: '/agent/sessions/main.jsonl',
+          pidAlive: () => true,
+        },
+      ),
+    )
+    assert.deepEqual(refs, [])
+  })
+
+  // AIDEV-NOTE: PMR-3N9N — self-owned headless exemption: a headless flow
+  // journals owner.sessionFile null, so after a reload in the SAME process
+  // the fail-closed rule above would refuse the caller's own live run. An
+  // exact live self-PID match is the caller's identity proof; any other
+  // live pid stays foreign.
+  test('adopts a live self-owned headless run: null sessionFile, same pid as caller', async () => {
+    const refs = await deriveFlowRefs(
+      makeDeps(
+        {
+          'PMR-SELFHEADLESS': [
+            runStartEvent('PMR-SELFHEADLESS'),
+            inputEvent('PMR-SELFHEADLESS', GIT_ROOT),
+            phaseStartEvent('PMR-SELFHEADLESS', 'implement'),
+            loopEvent('PMR-SELFHEADLESS', 'running', false),
+            ownerSessionEventFor('PMR-SELFHEADLESS', null, 4242),
+          ],
+        },
+        {
+          callerSessionFile: null,
+          callerPid: 4242,
+          pidAlive: () => true,
+        },
+      ),
+    )
+    assert.deepEqual(refs, ['PMR-SELFHEADLESS'])
+  })
+
+  test('fail-closed: a live headless owner with a different pid is skipped', async () => {
+    const refs = await deriveFlowRefs(
+      makeDeps(
+        {
+          'PMR-FOREIGNHEADLESS': [
+            runStartEvent('PMR-FOREIGNHEADLESS'),
+            inputEvent('PMR-FOREIGNHEADLESS', GIT_ROOT),
+            phaseStartEvent('PMR-FOREIGNHEADLESS', 'implement'),
+            loopEvent('PMR-FOREIGNHEADLESS', 'running', false),
+            ownerSessionEventFor('PMR-FOREIGNHEADLESS', null, 9999),
+          ],
+        },
+        {
+          callerSessionFile: null,
+          callerPid: 4242,
+          pidAlive: () => true,
+        },
+      ),
+    )
+    assert.deepEqual(refs, [])
+  })
+
+  test('fail-closed: callerPid does not exempt a live owner with a foreign sessionFile', async () => {
+    const refs = await deriveFlowRefs(
+      makeDeps(
+        {
+          'PMR-FOREIGNFILE': [
+            runStartEvent('PMR-FOREIGNFILE'),
+            inputEvent('PMR-FOREIGNFILE', GIT_ROOT),
+            phaseStartEvent('PMR-FOREIGNFILE', 'implement'),
+            loopEvent('PMR-FOREIGNFILE', 'running', false),
+            ownerSessionEventFor(
+              'PMR-FOREIGNFILE',
+              '/agent/sessions/other.jsonl',
+              4242,
+            ),
+          ],
+        },
+        {
+          callerSessionFile: '/agent/sessions/main.jsonl',
+          callerPid: 4242,
           pidAlive: () => true,
         },
       ),
