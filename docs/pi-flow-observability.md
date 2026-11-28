@@ -113,7 +113,10 @@ in the board, NOT — see §6 gotcha):
 **Derived sub-set of the reason enum:** `SELF_CLOSING_HUMAN_WAITS` + `reasonOwnsExternalClose()` (PMR-422Q) —
 `code_review_pending` and `human_ask_pending`, the two reasons whose owning seam journals its own `running` close. It is
 not a label dimension and no dashboard or metric reads it (`flow/loop.ts` is the only consumer); it is the set that
-arms the loop's live-wait hold, so the full membership rationale lives with the `SELF_CLOSING_HUMAN_WAITS`
+arms the loop's live-wait hold, and since PMR-422Q that hold is a **renewing lease** (`flow/live-wait.ts`: arming
+stamps a `LIVE_WAIT_LEASE_SECONDS` deadline, the owning seam heartbeats it through `loop.renewLiveWaitLease`, and a
+wait that stops beating releases itself within the window) — so "guaranteed release" means the owning seam's close OR
+lease expiry. The full membership rationale lives with the `SELF_CLOSING_HUMAN_WAITS`
 AIDEV-NOTE in `flow/vocabulary.ts` and the hold itself in §4.
 
 **Journal v2 event kinds (in `run-state.ts`):**
@@ -250,39 +253,57 @@ Map-gated on `toolCallId` (it can never fire for a call this emitter did not tra
 open wait", so a possibly-duplicate `waiting_human` line gets journaled — still honest evidence. The close side fails
 CLOSED: an unreadable or absent tail journals no `running`. The asymmetry is deliberate because the two errors are not
 symmetric — a false `running` destroys the human wait (invisible ask, no desktop page, under-counted wait-seconds) and
-cannot be undone from here, whereas a stale `waiting_human` self-heals: `running` sits outside the loop's hold
-predicate, so the loop's next `running` emission still passes the guard, journals `running`, and clears the live-wait
-flag while it does (the next two paragraphs).
+cannot be undone from here, whereas a stale `waiting_human` self-heals within a BOUNDED window: the ask's finalize
+always stops its heartbeat, so the live-wait lease lapses within `LIVE_WAIT_LEASE_SECONDS` and the loop's next
+`running` emission after that passes the guard, journals `running`, and clears the flag and the lease while it does
+(the next three paragraphs). While the lease is still alive that same `running` is HELD — the recovery is the expiry,
+not an escape hatch in the predicate.
 
 **The loop's live-wait flag** (`flow/loop.ts externalHumanWaitOpen`, PMR-0NRH 3.1, reason-aware per PMR-422Q) stops a
 later settle from clobbering an open ask: `noteExternalV2State(ref, state, at, reason?)` arms it only on a
 newer-than-watermark external `waiting_human` **whose reason is in `SELF_CLOSING_HUMAN_WAITS`** (`human_ask_pending`,
 `code_review_pending` — the waits whose owning seam journals its own `running` close; after the existing
 ref/vocabulary/recency guards, so the loop's own echo — whose `at` equals the watermark — never arms it), and clears it
-on every other newer external observation — the ask's own `state-change{running}` close is exactly such an observation,
-which is why arming only self-closing reasons cannot strand the hold. `start()` resets it so a stale journal tail from
-a dead process can never pin a restarted run. Once armed, `emitStateChange` returns early for the **TWO COMPETING WAIT
-STATES ONLY** (`waiting_machine`, `waiting_human`): a settle must not flip the board off a live human wait to a
-*different* wait. `running`, `halted` and `done` are outside that predicate, so the hold never suppresses them — a halt
-or a finish must not hide behind a wait nobody will answer, and the `running` path is precisely the journal's escape
-hatch (see the next paragraph). The `reason` parameter is **optional**, and that cuts both ways: an absent reason (a
-three-argument call) can never arm the hold, it only clears it — which is why the PMR-ZV9Y observer tests in
-`test/loop-state-change.test.ts`, which drive this seam without a reason, stayed green unmodified.
+on every other newer external observation — the ask's own `state-change{running}` close is exactly such an observation.
+`start()` resets it so a stale journal tail from a dead process can never pin a restarted run. Once armed, and only
+while its lease is alive, `emitStateChange` returns early for **EVERY NON-TERMINAL EMISSION** (`waiting_machine`,
+`waiting_human` **and `running`**): a settle must not flip the board off a live human wait — neither to a *different*
+wait nor to `running`, because a settle that ADVANCES during a live ask would otherwise mask a blocked run as working.
+Only the terminal trio (`halted`, `done`, `stale`) passes the predicate: a halt or a finish must not hide behind a wait
+nobody will answer, and the run is over, so the open wait is moot. The `reason` parameter is **optional**, and that
+cuts both ways: an absent reason (a three-argument call) can never arm the hold, it only clears it — which is why the
+PMR-ZV9Y observer tests in `test/loop-state-change.test.ts`, which drive this seam without a reason, stayed green
+unmodified.
+
+**The lease is what makes that width safe** (`flow/live-wait.ts`, PMR-422Q): an armed flag alone is an unbounded
+strand, so the hold is a DEAD-MAN'S SWITCH with a deadline instead. Arming stamps
+`leaseExpiresAt = at + LIVE_WAIT_LEASE_SECONDS` from the observation's own `at`, so the hold is live BEFORE the first
+beat. While the wait is genuinely open the owning seam renews it: `flow/ask-emitter.ts` is the heartbeat oracle and
+calls `loop.renewLiveWaitLease(ref)` every `LIVE_WAIT_HEARTBEAT_MS` for every in-flight ask it tracks, PLAIN AND
+NESTED alike (a nested ask — the code-review gate's — blocks the human too, which is why `tools/code-review.ts` needs
+no heartbeat of its own). Renewal is monotonic (a `max`, so a beat can never shorten a granted window) and is a no-op
+for a foreign ref, an idle loop, or an unarmed hold. The tunables are a 60 s beat and a 180 s window: the window is
+deliberately wide enough to tolerate two or three missed beats, so a merely-late heartbeat (an event loop under load,
+an unref'd timer firing after a long turn) can never expire a live wait — `test/live-wait.test.ts` pins the interval,
+the window, and that ratio. A beat is an IN-PROCESS ping that writes NO journal record: flag and deadline live only in
+memory and `start()` clears them, so journal visibility would buy nothing while adding a write per beat (~480 records
+on an overnight wait) and a second source of truth for the wait state.
 
 **…and the one documented exception to "the flag is written only in `noteExternalV2State`"**: a `running` emission that
-actually PROCEEDS inside `emitStateChange` additionally clears the flag. The assignment sits after the early return, so
-a *held* `running` clears nothing — only a run that journalled `running` may. The external-only rule exists because the
-loop's own echo through the observer is indistinguishable from a tool write (recency-skipped, so it can neither arm nor
-clear); this is not that path, it is the loop's own emission completing, which is unambiguous. Rationale: once
-`running` is journaled the human wait is gone from the journal, so holding it is moot — and a flag that stayed armed
-over a `running` journal would suppress every later genuine wait (`waiting_machine{subagent_in_flight}`,
-`waiting_human{subagent_ask_pending}`) for the rest of the process, the original bug class this feature removes. It does
-not weaken the hazard protection: a settle with a subagent in flight emits `waiting_machine`, not `running`, so the live
-wait is still held there.
+actually PROCEEDS inside `emitStateChange` additionally clears the flag AND the lease. Since PMR-422Q that proceeding
+is itself conditional — while the lease is alive the emission is held — so this release is the POST-EXPIRY self-heal,
+not an always-available escape hatch. The assignment sits after the early return, so a *held* `running` clears nothing
+— only a run that journalled `running` may. The external-only rule exists because the loop's own echo through the
+observer is indistinguishable from a tool write (recency-skipped, so it can neither arm nor clear); this is not that
+path, it is the loop's own emission completing, which is unambiguous. Rationale: once `running` is journaled the human
+wait is gone from the journal, so holding it is moot — and a flag that stayed armed over a `running` journal would
+suppress every later genuine wait (`waiting_machine{subagent_in_flight}`, `waiting_human{subagent_ask_pending}`) for
+the rest of the process, the original bug class this feature removes. It does not weaken the hazard protection: a
+settle with a subagent in flight emits `waiting_machine`, which the hold covers, so the live wait is still held there.
 
-**Why the hold is narrow again, and why reason-aware arming stayed** (fix round 2, review blockers 2 and 3 — two
-independent properties, changed in sequence, only one of which survived). The earlier version of this paragraph claimed
-the widening was safe and that both PMR-422Q findings were closed; neither claim survived the code.
+**Why the hold is a renewing lease** (the width this section once warned against is back — with the release that
+warning was missing). The earlier version of this paragraph claimed the widening was safe and that both PMR-422Q
+findings were closed; neither claim survived the code.
 
 - **Reason-aware arming is what fixed the escalate latch (PMR-422Q blocker 2) and it is UNCHANGED.** A flag armed on
   `state === 'waiting_human'` alone latched on `escalation` (`tools/run-attempt.ts`): that seam journals a human wait but
@@ -294,32 +315,47 @@ the widening was safe and that both PMR-422Q findings were closed; neither claim
   `registerDeviationReviewTool(pi, writer)`), so it never passes through `emitStateChange` where the hold lives — no
   predicate, wide or narrow, could suppress it. It is the PMR-ZV9Y P1 invalidation case documented on
   `noteExternalV2State`: a tool journals a wait with no `running` return, so the observer must un-pin the loop's guard.
-  Its observation also CLEARS the live-wait flag, and that clear is decided on the **state** dimension: the observed
-  state is `waiting_machine`, not `waiting_human`, so the `state === 'waiting_human'` guard in `noteExternalV2State`
-  short-circuits and the reason is never consulted (PMR-FM0F — the non-self-closing reason is a secondary property,
-  not the operative mechanism; `SELF_CLOSING_HUMAN_WAITS` is human-only by construction anyway).
-- **The wider non-terminal hold that rode along with that fix was REVERTED (blocker 3).** It removed the loop's only
-  in-run escape for a wait whose close never lands, and the paths that skip the close are ordinary ones: a fail-closed
-  ask read in `flow/ask-emitter.ts` (unreadable journal, or a tail from which no valid `state-change` can be derived)
-  and an unclear `code_review` answer, which returns before `closeReviewGate` and routes the agent back through a
-  re-ask (`tools/code-review.ts`). Each of those pinned the journal at `waiting_human` for the rest of the process.
-  The narrow two-wait predicate is back, but for a DIFFERENT reason than the original narrowing: the original existed
-  because the flag was reason-blind (holding `running` re-broke the shipped PMR-ZV9Y P1 invariant); the current one
-  exists because holding `running` removes the only escape from an unclosed wait.
-- **Cost, stated plainly: PMR-422Q's residual gap is open again and the ticket is reopened for it.** A settle that
-  ADVANCES during a live ask once more journals `running` over it, so the board can briefly report a blocked run as
-  working. The owner accepted that trade deliberately: the gap needs a settle to fire during a blocked turn — a
-  trigger the original plan could never pin down — while the strand it replaced was reachable through a normal
-  `code_review` answer path and lasted the whole process. It is pinned by the inverted case `PMR-422Q residual gap
-  (accepted)` in `test/loop-state-change.test.ts`. Re-widening the predicate requires first proving that every arming
-  path has a guaranteed release.
+  Its observation also CLEARS the live-wait flag and its lease, and that clear is decided on the **state** dimension:
+  the observed state is `waiting_machine`, not `waiting_human`, so the `state === 'waiting_human'` guard in
+  `noteExternalV2State` short-circuits and the reason is never consulted (PMR-FM0F — the non-self-closing reason is a
+  secondary property, not the operative mechanism; `SELF_CLOSING_HUMAN_WAITS` is human-only by construction anyway).
+- **The wider non-terminal hold that rode along with that fix was REVERTED (blocker 3), and the revert was right at
+  the time.** It removed the loop's only in-run escape for a wait whose close never lands, and the paths that skip the
+  close are ordinary ones: a fail-closed ask read in `flow/ask-emitter.ts` (unreadable journal, or a tail from which no
+  valid `state-change` can be derived) and an unclear `code_review` answer, which returns before `closeReviewGate` and
+  routes the agent back through a re-ask (`tools/code-review.ts`). Each of those pinned the journal at
+  `waiting_human` for the rest of the process, because an unbounded flag has nothing that releases it. The narrow
+  two-wait predicate came back — but for a DIFFERENT reason than the original narrowing: the original existed because
+  the flag was reason-blind (holding `running` re-broke the shipped PMR-ZV9Y P1 invariant); the current one existed
+  because holding `running` removes the only escape from an unclosed wait.
+- **PMR-422Q restores the width by bounding the release rather than narrowing the predicate.** What the wide hold ever
+  lacked was not its width, it was a guaranteed release. The lease supplies one: every arming reason now has TWO
+  releases, the owning seam's close (unchanged) and the deadline. So the hold is wide again — every non-terminal
+  emission, `running` included — and the strand that forced the revert cannot come back, because in each skip path
+  above the ask has already finalized, its heartbeat has stopped, and the hold lapses within
+  `LIVE_WAIT_LEASE_SECONDS` of the last beat. An unclear `code_review` answer that re-asks through a plain ask
+  restarts the beats and re-extends the still-armed lease, which is correct — the human still owes an answer. A
+  process that died mid-ask loses the flag and the lease outright (both are in-process state and `start()` resets
+  them), so a restarted run is never pinned.
+- **The product promise, stated plainly: the board is either right, or wrong for at most the lease window — never
+  wrong forever.** A LIVE wait (beats arriving) holds indefinitely, overnight and across every advancing settle. A
+  BROKEN wait (close never landed, beats stopped) stops holding within `LIVE_WAIT_LEASE_SECONDS` (180 s) of its last
+  heartbeat, and the journal then self-heals at the loop's NEXT EMISSION OPPORTUNITY — the first `running` that
+  proceeds clears flag and lease as it journals. Honest bound: wrongness after a broken wait is the lease window
+  PLUS the wait for the current phase turn to emit; bounded, never open-ended. A loop-side expiry timer that emits at
+  the deadline (a hard wall-clock bound) is the parked v2 refinement — the shipped contract is this lazy self-heal.
+  Pinned in `test/loop-state-change.test.ts` by `PMR-422Q live-ask hold` (the advancing settle held while renewing),
+  `PMR-422Q lease expiry`, `PMR-422Q lease renewal`, `PMR-422Q overnight`, and `PMR-422Q renewal guards`, plus the
+  updated `PMR-0NRH anti-strand` / `PMR-0NRH strand regression` cases, whose post-expiry legs now carry the
+  no-unbounded-strand proof.
 
 The remaining exclusions from `SELF_CLOSING_HUMAN_WAITS` (`spec_approval_pending`, a loop-owned pause whose close *is*
 the loop's next snapshot, so holding it would deadlock the run; `subagent_ask_pending`, emitted by the loop itself with
 no external close coming) are itemised in the `SELF_CLOSING_HUMAN_WAITS` AIDEV-NOTE. What is left of the hazard: the
-hold lasts until the owning seam's close lands or the loop journals `running` (which clears the flag), so a journal
-write that failed (ISC-A-5 swallows it) keeps the board on `waiting_human` until one of those happens — terminal
-emissions are outside the predicate and `start()` clears the flag.
+hold lasts until one of its releases lands — the owning seam's close, the loop's own `running` emission once the lease
+is dead, or plain lease expiry — so a journal write that failed (ISC-A-5 swallows it) keeps the board on
+`waiting_human` for at most `LIVE_WAIT_LEASE_SECONDS` past the last heartbeat plus the wait for the loop's next
+emission; terminal emissions are never held and `start()` clears both the flag and the lease.
 
 ### The v2 Prometheus gauges
 
@@ -700,15 +736,16 @@ the kept-metrics `piflow-retry-budget` rule proved it was still firing through t
 
 | File | Role |
 | --- | --- |
-| `flow/vocabulary.ts` | **v2 vocabulary (pure, zero imports):** `FlowState`/`FlowReason`/`WaitKind` unions, `FLOW_STATES`/`FLOW_REASONS` guard sets, `WAIT_KIND` map + `reasonWaitKind()`, `EXPECTED_ACTION` map + `expectedAction()`, `SELF_CLOSING_HUMAN_WAITS` + `reasonOwnsExternalClose()` (the reasons whose seam journals its own `running` close — what arms the loop's live-wait hold, §4). The single source every consumer reads. |
+| `flow/vocabulary.ts` | **v2 vocabulary (pure, zero imports):** `FlowState`/`FlowReason`/`WaitKind` unions, `FLOW_STATES`/`FLOW_REASONS` guard sets, `WAIT_KIND` map + `reasonWaitKind()`, `EXPECTED_ACTION` map + `expectedAction()`, `SELF_CLOSING_HUMAN_WAITS` + `reasonOwnsExternalClose()` (the reasons whose seam journals its own `running` close — what arms the loop's live-wait hold and its renewing lease, §4). The single source every consumer reads. |
 | `flow/steps.ts` | **step registry (pure):** `STEP_REGISTRY` + `isRegisteredStep(phase, step)`. The closed set of named step boundaries (§5). |
 | `flow/state-metrics.ts` | **v2 Prometheus derivation (node-only, daemon-reachable, pure):** `deriveV2State` (projection + ISC-6 legacy fallback), `scanStateWindows` (cumulative waits), `scanStepWindows` (step boundaries), `renderStateMetricLines` (the six gauges, bare lines — TYPE-line rule §4). |
 | `flow/run-health.ts` | Appends `renderStateMetricLines` output after the kept frozen block, then the additive `pi_flow_run_title_info` tail (PMR-9DZ0); header AIDEV notes the frozen set + the 7.1 retirement history and the 2.1 tail amendment. |
 | `flow/reconcile.ts` | `tombstoneBody` — v2 state-line `state="stale"` label-value surgery (§4); candidacy journal-keyed. |
 | `run-state.ts` | The v2 journal kinds (`state-change` projected → `FlowRunState.currentState`; `step-start`/`step-stop` journal-only) + the PMR-C998 `isJournalOnlyEvent` note. |
-| `flow/loop.ts` | Guarded `emitStateChange` + `emitStep` v2 seams, seeded from the journal tail on resume, wired into `snapshot()`, the subagent-in-flight branch, every halt site, done, spec-approval pause; `noteExternalV2State(ref, state, at, reason?)` arms/clears the reason-aware live-wait hold (self-closing waits only), `emitStateChange` holds the two competing wait states `waiting_machine`/`waiting_human` only, and a `running` emission that proceeds clears the flag as the in-run self-heal (§4). |
+| `flow/loop.ts` | Guarded `emitStateChange` + `emitStep` v2 seams, seeded from the journal tail on resume, wired into `snapshot()`, the subagent-in-flight branch, every halt site, done, spec-approval pause; `noteExternalV2State(ref, state, at, reason?)` arms/clears the reason-aware live-wait hold and stamps its lease (self-closing waits only), `renewLiveWaitLease(ref)` extends that lease monotonically, `emitStateChange` holds every non-terminal emission (`waiting_machine`/`waiting_human`/`running`) while the lease is alive and releases the terminal trio, and a `running` emission that proceeds after expiry clears flag + lease as the self-heal (§4). |
+| `flow/live-wait.ts` | **Live-wait lease tunables (pure, PMR-422Q):** `LIVE_WAIT_HEARTBEAT_MS` (60 s), `LIVE_WAIT_LEASE_SECONDS` (180 s), `addSecondsIso()`. The dead-man's-switch bounds for the loop's hold; header AIDEV-NOTE carries the window/beat invariant and the rule that beats are IN-PROCESS pings, never journaled (§4). |
 | `tools/{code-review,run-attempt,deviation}.ts` | v2 emissions at the gate boundaries through the writer seam (§4). |
-| `flow/ask-emitter.ts` | **Generic mid-turn ask emitter (PMR-0NRH; receives its writer, never constructs one):** `createAskEmitter(deps)` → `{onToolCall, onToolFinalized}`, wired in `index.ts` on the `tool_call` / `tool_result` / `tool_execution_end` hooks. Journals `state-change{waiting_human, human_ask_pending}` **before** a plain `ask_user_question` blocks and `state-change{running}` when the call finalizes — the one wait the settle-based loop emission cannot see (§4). Two-tier dedupe (`parentToolCallId` primary, journal-tail secondary) on the open; refcounted + reason-checked, Map-gated close (fail-open at open, fail-closed at close) — the secondary dedupe and the close read the tail through ONE module-local helper, `lastV2StateRecord`, so the close never demands more of the journal than the open did (finding P2-a). |
+| `flow/ask-emitter.ts` | **Generic mid-turn ask emitter (PMR-0NRH; receives its writer, never constructs one):** `createAskEmitter(deps)` → `{onToolCall, onToolFinalized}`, wired in `index.ts` on the `tool_call` / `tool_result` / `tool_execution_end` hooks. Journals `state-change{waiting_human, human_ask_pending}` **before** a plain `ask_user_question` blocks and `state-change{running}` when the call finalizes — the one wait the settle-based loop emission cannot see (§4). Two-tier dedupe (`parentToolCallId` primary, journal-tail secondary) on the open; refcounted + reason-checked, Map-gated close (fail-open at open, fail-closed at close) — the secondary dedupe and the close read the tail through ONE module-local helper, `lastV2StateRecord`, so the close never demands more of the journal than the open did (finding P2-a). Heartbeat oracle for the loop's live-wait lease (PMR-422Q): while ANY tracked ask is in-flight — plain or nested — it pings `loop.renewLiveWaitLease(ref)` on an unref'd interval, in-process only, zero journal records (§4). |
 | `flow/step-output.ts` | `flow_submit` advisory registry hint (`isRegisteredStep`), never rejects. |
 | `telemetry/dispatch.ts` | **`createEventFanoutWriter`** (the one session-side fan-out) + `createTelemetryHandlers` + the **notify sink** (`shouldNotifyState`/`notifySummary`/`notifyBody`/`createNotifySink`, dynamic import of `@gtheys/pi-desktop-notify/notify`). |
 | `telemetry/loki.ts` | **fail-silent Loki pusher** (§6) — `buildLokiStream`/`buildEventLokiLabels`/`pushLokiEvent`. |
