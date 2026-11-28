@@ -1150,16 +1150,21 @@ test('P2a: the loop is never locked out by a future-dated external stamp', async
 // while the human is still the bottleneck. `noteExternalV2State` protected only
 // the reverse direction (a loop wait vs an external observation). The fix is a
 // live-wait flag maintained by the external observer and honoured by
-// emitStateChange for the TWO COMPETING WAIT states only (`waiting_machine` /
-// `waiting_human`) — the NARROW predicate.
+// emitStateChange.
 //
-// AIDEV-NOTE: PMR-0NRH fix round 2 (review blocker 3) — the hold is NARROW, not
-// "every NON-TERMINAL state". It suppresses only a settle's `waiting_machine` /
-// `waiting_human` (a settle must not flip the board off the live human wait to a
-// DIFFERENT wait), NEVER `running`. Holding `running` was the wide-predicate
-// mistake that removed the loop's only self-heal and stranded every skip path
-// whose close never landed (a fail-closed ask read, an unclear code_review answer)
-// at waiting_human for the rest of the process. Arming stays REASON-AWARE
+// AIDEV-NOTE: PMR-0NRH fix round 2 (review blocker 3) → PMR-422Q — the WIDTH of
+// this hold has changed twice. Fix round 2 made it NARROW (only a settle's
+// `waiting_machine` / `waiting_human`, NEVER `running`) because the earlier wide
+// non-terminal hold bf1d592 introduced had no release: every skip path whose
+// close never landed (a fail-closed ask read, an unclear code_review answer)
+// stranded the journal at waiting_human for the rest of the process. PMR-422Q
+// restored the WIDE hold — non-terminal states INCLUDING `running`, so an
+// advancing settle can no longer mask a blocked run as working — behind a
+// RENEWING LEASE (flow/live-wait.ts): arming stamps the deadline, the owning
+// seam heartbeats it via `loop.renewLiveWaitLease`, and a wait that stops
+// beating releases itself within `LIVE_WAIT_LEASE_SECONDS`, so the loop's next
+// non-terminal emission self-heals the journal. Terminal `halted` / `done` /
+// `stale` are NEVER held, lease or not. Arming stays REASON-AWARE
 // (PMR-422Q): ONLY a `waiting_human` whose reason is in SELF_CLOSING_HUMAN_WAITS
 // (flow/vocabulary.ts: `human_ask_pending`, `code_review_pending` — seams that
 // journal their own close) arms it; `escalation` (a `waiting_human` with no
@@ -1169,12 +1174,12 @@ test('P2a: the loop is never locked out by a future-dated external stamp', async
 // arm, they only clear. PLUS one
 // deliberate, documented exception to "the flag is written only in
 // noteExternalV2State": a `running` emission that actually PROCEEDS in
-// emitStateChange clears the flag itself (the loop's own emission is unambiguous,
+// emitStateChange clears flag + lease (the loop's own emission is unambiguous,
 // unlike its recency-skipped echo). That clear-on-running is what makes the
-// self-heal literal — without it an armed flag over a `running` journal would
-// suppress every later genuine wait for the rest of the process. The full rule
-// lives at the skip predicate's note in flow/loop.ts — read it before narrowing
-// or widening this predicate.
+// post-expiry self-heal literal — without it an armed flag over a `running`
+// journal would suppress every later genuine wait for the rest of the process.
+// The full rule lives at the skip predicate's note in flow/loop.ts — read it
+// before narrowing or widening this predicate.
 //
 // These tests ride the PRODUCTION path: the loop's `journalV2` seam is wired to
 // a real createEventFanoutWriter (index.ts: journalV2 -> journalSerial -> the
@@ -1531,20 +1536,20 @@ test('PMR-422Q code_review_pending: the other self-closing reason arms the hold'
   )
 })
 
-test('PMR-422Q residual gap (accepted): an advancing settle journals running, which is the self-heal for an unclosed wait', async () => {
-  // PMR-0NRH fix round 2 (review blocker 3) — the gap PMR-422Q was filed for is
-  // DELIBERATELY REOPENED. The settle ADVANCES, so it takes snapshot('running');
-  // the narrow two-wait hold lets `running` through, the board briefly reports a
-  // blocked run as working, and the journal unsticks itself. The owner accepted
-  // that trade: the residual needs a settle during a blocked turn (a path the
-  // plan could never pin down) whereas the wide hold it replaces stranded every
-  // skip path whose close never lands (a fail-closed ask read, an unclear
-  // code_review answer) at waiting_human for the WHOLE process. This test now
-  // pins the self-heal direction: the advancing settle DOES journal running.
+test('PMR-422Q live-ask hold: an advancing settle during a LIVE (renewing) wait is HELD — the journal tail stays waiting_human', async () => {
+  // PMR-422Q INVERTS the old "residual gap (accepted)" pin. Under the narrow
+  // two-wait predicate an advancing settle journaled `running` OVER a live ask
+  // — the board reported a blocked run as working until the ask closed. The
+  // renewing lease makes the wide hold safe: while the owning seam heartbeats
+  // the wait is genuinely live, so EVERY non-terminal emission, running
+  // included, is held and the tail stays waiting_human. The renewal leg pins
+  // that the hold survives past the ORIGINAL deadline on a heartbeat beat.
   const h = makeHarness([])
   const loop = createFlowLoop(h.deps)
   const { fanout, written } = wireRealFanout(h, loop)
   await loop.start(startInput())
+  // Arm from the ask seam: flag + initial lease = atOffset(60) + 180s = +240s
+  // (ISC-3 — the hold is live from arming, before the first heartbeat).
   await fanout.record({
     kind: 'state-change',
     at: atOffset(60),
@@ -1552,50 +1557,64 @@ test('PMR-422Q residual gap (accepted): an advancing settle journals running, wh
     state: 'waiting_human',
     reason: 'human_ask_pending',
   })
-  // plan lands -> advanceAfter -> snapshot('running'): NOT held (running is
-  // outside the narrow two-wait predicate) — the self-heal fires.
+  // plan lands -> advanceAfter -> snapshot('running'): HELD while the lease is
+  // alive (the real clock sits at ~+0s, far inside the +240s window).
   h.labels = ['planned']
   await loop.onSettled()
   await flushFanout()
   assert.equal(
     stateSequence(h.v2).filter((s) => s === 'running').length,
-    2,
-    `advancing settle did NOT journal the self-heal running: ${stateSequence(h.v2).join(' -> ')}`,
+    1,
+    `advancing settle was NOT held against a live wait: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.deepEqual(
+    stateSequence(h.v2).filter((s) => s.startsWith('waiting_machine')),
+    [],
+    `competing wait leaked while the lease is alive: ${stateSequence(h.v2).join(' -> ')}`,
   )
   assert.equal(
     resumeV2StateFromEvents(written),
-    'running',
-    `journal tail not unstuck by the running self-heal: ${stateSequence(written).join(' -> ')}`,
+    'waiting_human',
+    `journal tail not the live human wait: ${stateSequence(written).join(' -> ')}`,
   )
-  // The loop's OWN successful running emission also cleared the live-wait flag
-  // (the documented exception at emitStateChange), so the very next machine
-  // wait emits without waiting for an external close that may never arrive.
+  // RENEWAL BEAT past the original deadline: move the lease clock to +300s
+  // (the armed window closed at +240s), beat, then settle. The beat pushed the
+  // deadline to +480s, so the machine wait stays held (ISC-1/ISC-4).
+  h.deps.now = () => atOffset(300)
+  loop.renewLiveWaitLease('TP-1')
   h.inFlight = true
   h.labels = []
   await loop.onSettled()
   await flushFanout()
-  assert.ok(
-    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
-    `running self-heal did not clear the flag: ${stateSequence(h.v2).join(' -> ')}`,
+  assert.deepEqual(
+    stateSequence(h.v2).filter((s) => s.startsWith('waiting_machine')),
+    [],
+    `renewed lease did not keep holding: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_human',
+    `journal tail moved off the live wait after a beat: ${stateSequence(written).join(' -> ')}`,
   )
 })
 
-test("PMR-0NRH anti-strand: the loop's own running emission clears an armed hold so a LATER machine wait still emits", async () => {
+test('PMR-0NRH anti-strand: a lease-expired running emission clears an armed hold so a LATER machine wait still emits', async () => {
   // The code_review unclear-answer scenario (tools/code-review.ts returns on an
   // unclear/aborted answer WITHOUT closeReviewGate, telling the agent to re-ask
   // with no guarantee the re-call lands): a self-closing wait ARMS the hold and
-  // NO external running close ever routes. With only the narrow revert the flag
-  // would stay armed forever (the loop's own echo is recency-skipped in
-  // noteExternalV2State), suppressing every LATER genuine wait — the original bug
-  // class. Clear-on-running is what makes "every skip path self-heals" literally
-  // true: once the loop journals running, the protection is moot AND the flag
-  // drops, so the next waiting_machine{subagent_in_flight} emits normally.
+  // NO external running close ever routes. PMR-422Q makes the release LEASE-
+  // BOUNDED: while the lease is alive the wide hold suppresses everything non-
+  // terminal INCLUDING the advance's running; once the lease expires (no beats
+  // arrived) the next running emission journals AND clears flag + lease, so the
+  // later waiting_machine{subagent_in_flight} emits. No unbounded strand, no
+  // unbounded wrongness either.
   const h = makeHarness([])
   const loop = createFlowLoop(h.deps)
   const { fanout, written } = wireRealFanout(h, loop)
   h.inFlight = true
   await loop.start(startInput())
-  // An external self-closing wait arms the hold (newer than the loop's stamp).
+  // An external self-closing wait arms the hold (newer than the loop's stamp);
+  // lease deadline = atOffset(60) + 180s = atOffset(240).
   await fanout.record({
     kind: 'state-change',
     at: atOffset(60),
@@ -1604,32 +1623,49 @@ test("PMR-0NRH anti-strand: the loop's own running emission clears an armed hold
     reason: 'code_review_pending',
   })
   // The hazard still holds: a settle taking the machine branch while the gate
-  // wait is live must NOT clobber it (the narrow predicate DOES hold
-  // waiting_machine) — this is the leg that proves the revert kept the
-  // protection. The running self-heal has not happened yet, so the flag is
-  // still armed and waiting_machine is suppressed.
+  // wait is live must NOT clobber it — this leg is UNCHANGED in spirit (the
+  // lease-alive hold covers waiting_machine exactly as the narrow one did).
   h.labels = []
   await loop.onSettled()
   await flushFanout()
   assert.deepEqual(
     stateSequence(h.v2).filter((s) => s.startsWith('waiting_machine')),
     [],
-    `narrow hold did not protect the live gate wait: ${stateSequence(h.v2).join(' -> ')}`,
+    `lease-alive hold did not protect the live gate wait: ${stateSequence(h.v2).join(' -> ')}`,
   )
-  // The run ADVANCES (the agent re-entered the gate or ignored the unclear
-  // answer): snapshot('running') is NOT a competing wait, it journals AND it
-  // clears the flag — the self-heal.
+  // PMR-422Q WIDTH LEG: the run ADVANCES while the lease is still alive (real
+  // clock ~+0s, deadline +240s) -> snapshot('running') is HELD, the tail stays
+  // waiting_human. This is the behaviour the old narrow predicate pinned as the
+  // accepted gap; the lease is what makes holding it safe.
   h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    stateSequence(h.v2).filter((s) => s === 'running').length,
+    1,
+    `advance leaked running inside the lease window: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_human',
+    `journal tail moved off the live wait inside the lease window: ${stateSequence(written).join(' -> ')}`,
+  )
+  // EXPIRY: nothing heartbeated, so move the lease clock PAST the deadline and
+  // let the run advance again (implement -> validate). The running emission
+  // self-heals the journal AND clears flag + lease (clear-on-running).
+  h.deps.now = () => atOffset(600)
+  h.labels = ['planned', 'active']
   await loop.onSettled()
   await flushFanout()
   assert.equal(
     resumeV2StateFromEvents(written),
     'running',
-    `running self-heal missing: ${stateSequence(written).join(' -> ')}`,
+    `post-expiry running self-heal missing: ${stateSequence(written).join(' -> ')}`,
   )
   // ANTI-STRAND: a fresh self-closing wait would re-arm, but here nothing armed
-  // again, so the next machine settle is free. Without clear-on-running the flag
-  // would still be armed from the code_review_pending wait and this would drop.
+  // again, so the next machine settle is free. Without the post-expiry release
+  // the flag would still be armed from the code_review_pending wait and this
+  // would drop.
   h.inFlight = true
   h.labels = []
   await loop.onSettled()
@@ -1640,15 +1676,14 @@ test("PMR-0NRH anti-strand: the loop's own running emission clears an armed hold
   )
 })
 
-test('PMR-0NRH strand regression: an armed human_ask_pending wait never externally closed is released by a running emission, so every later wait emits', async () => {
+test('PMR-0NRH strand regression: an armed human_ask_pending wait never externally closed is released once its lease expires, so every later wait emits', async () => {
   // The pure strand regression the blocker named: arm via human_ask_pending,
-  // NEVER deliver the external close (a fail-closed read), then let the loop
-  // emit running. Before the fix round's clear-on-running this pinned the
-  // journal for the rest of the process: the loop's own running emission is
-  // recency-skipped in noteExternalV2State so it could not clear the flag, and
-  // every later genuine wait was suppressed. Now the loop's successful running
-  // emission clears it, so a LATER machine wait and a LATER child-ask human
-  // wait both emit.
+  // NEVER deliver the external close (a fail-closed read). Under PMR-422Q the
+  // hold is wide but LEASE-BOUND: while the lease lives the advance's running is
+  // held (the live-ask guarantee); once it expires with no beats, the next
+  // running emission journals and clears flag + lease (clear-on-running), so a
+  // LATER machine wait and a LATER child-ask human wait both emit. Bounded
+  // wrongness, never a permanent strand.
   const h = makeHarness([])
   const loop = createFlowLoop(h.deps)
   const { fanout, written } = wireRealFanout(h, loop)
@@ -1660,17 +1695,34 @@ test('PMR-0NRH strand regression: an armed human_ask_pending wait never external
     state: 'waiting_human',
     reason: 'human_ask_pending',
   })
-  // No external close. The loop self-heals by journaling running on an advance.
+  // WIDTH LEG (lease alive, real clock ~+0s vs the +240s deadline): the
+  // advance's running is HELD — a live ask is not masked as working.
   h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    stateSequence(h.v2).filter((s) => s === 'running').length,
+    1,
+    `advance leaked running inside the lease window: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_human',
+    `journal tail moved off the live wait inside the lease window: ${stateSequence(written).join(' -> ')}`,
+  )
+  // EXPIRY LEG: no beats arrived, push the lease clock past the deadline; the
+  // next advance journals running — the self-heal that keeps the strand bounded.
+  h.deps.now = () => atOffset(600)
+  h.labels = ['planned', 'active']
   await loop.onSettled()
   await flushFanout()
   assert.equal(
     resumeV2StateFromEvents(written),
     'running',
-    `running self-heal missing (strand): ${stateSequence(written).join(' -> ')}`,
+    `post-expiry running self-heal missing (strand): ${stateSequence(written).join(' -> ')}`,
   )
-  // LEG 1: a later machine wait emits (the flag was cleared by the loop's own
-  // running emission, not by an external close).
+  // LEG 1: a later machine wait emits (the flag + lease were cleared by the
+  // loop's own post-expiry running emission, not by an external close).
   h.inFlight = true
   h.labels = []
   await loop.onSettled()
@@ -1687,4 +1739,221 @@ test('PMR-0NRH strand regression: an armed human_ask_pending wait never external
     stateSequence(h.v2).includes('waiting_human/subagent_ask_pending'),
     `later child-ask wait dropped after the strand: ${stateSequence(h.v2).join(' -> ')}`,
   )
+})
+
+// --- PMR-422Q: the renewing lease (ISC-1..ISC-4, ISC-6) -------------------
+//
+// AIDEV-NOTE: two clocks exist in these tests and they MUST stay separate.
+// External observations are dated with `atOffset(n)` against the REAL clock (the
+// recency watermark compares against the loop's real `now()` stamps), while the
+// LEASE is checked against `deps.now` — the loop's lease-arithmetic clock, which
+// these tests inject (`h.deps.now = () => atOffset(600)`) to expire or renew a
+// lease without sleeping. An armed hold therefore starts with deadline
+// `atOffset(60) + 180s = atOffset(240)`; with no injected clock the real clock
+// (~+0s) keeps the lease alive for the whole millisecond-scale test run, which is
+// exactly what the hold-leg assertions of the pre-existing PMR-0NRH tests rely on.
+// Do not switch event stamps to `deps.now` — it would silently re-base every
+// recency test in this file.
+
+test('PMR-422Q lease expiry: a broken wait stops holding once the lease expires — the next running emission self-heals and clears the flag', async () => {
+  // ISC-2 in its purest shape: arm a self-closing wait, the owning seam dies
+  // WITHOUT a close and WITHOUT a single heartbeat. The hold must lapse within
+  // the lease window (lazy check — no loop-side timer), the next non-terminal
+  // emission must journal, and the clear-on-running release must make every
+  // LATER wait free. This is the anti-bf1d592 pin for the widened predicate.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  // Lease deadline = atOffset(240). Nothing renewed, so push the lease clock
+  // past it and let the run advance: running journals (the self-heal) and the
+  // flag + lease go with it.
+  h.deps.now = () => atOffset(300)
+  h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    stateSequence(h.v2).filter((s) => s === 'running').length,
+    2,
+    `post-expiry running did not self-heal: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'running',
+    `journal tail not unstuck after expiry: ${stateSequence(written).join(' -> ')}`,
+  )
+  // The release was COMPLETE (flag AND lease): a later machine wait emits with
+  // no external close ever arriving.
+  h.inFlight = true
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `expired hold still suppressed later waits: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+})
+
+test('PMR-422Q lease renewal: a heartbeat extends the lease past the original deadline — the advancing settle stays held', async () => {
+  // ISC-4 (monotonic renewal) + ISC-1 together. Arm at atOffset(60) -> deadline
+  // atOffset(240). Move the lease clock to atOffset(300), PAST the armed window,
+  // then beat: the deadline moves to atOffset(300+180)=atOffset(480), so the
+  // advance stays held. A beat can never SHORTEN a lease (max), and without the
+  // renewal the very same settle would self-heal (previous test).
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  h.deps.now = () => atOffset(300)
+  loop.renewLiveWaitLease('TP-1')
+  h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    stateSequence(h.v2).filter((s) => s === 'running').length,
+    1,
+    `renewal did not keep the advance held: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'waiting_human',
+    `journal tail moved off the renewed live wait: ${stateSequence(written).join(' -> ')}`,
+  )
+  // And the RENEWED window bounds the hold too: push past atOffset(480) with no
+  // further beat and the next advance self-heals.
+  h.deps.now = () => atOffset(600)
+  h.labels = ['planned', 'active']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'running',
+    `renewed lease never expired: ${stateSequence(written).join(' -> ')}`,
+  )
+})
+
+test('PMR-422Q overnight: repeated renewal keeps the hold alive across many lease windows', async () => {
+  // The product promise: a live ask stays waiting_human NO MATTER how long the
+  // human takes. Model an overnight wait as alternating beat/clock-steps over
+  // several full windows (each +60s, 12 cycles = 12 minutes past the initial
+  // deadline), asserting the advance stays held at every step, then a final
+  // no-beat expiry self-heals.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout, written } = wireRealFanout(h, loop)
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  for (let cycle = 0; cycle < 12; cycle += 1) {
+    // Beat at now = 300 + cycle*60: deadline -> now + 180, strictly later each
+    // cycle (monotonic max). The machine-branch settle must stay held.
+    h.deps.now = () => atOffset(300 + cycle * 60)
+    loop.renewLiveWaitLease('TP-1')
+    h.inFlight = true
+    h.labels = []
+    await loop.onSettled()
+    await flushFanout()
+    assert.deepEqual(
+      stateSequence(h.v2).filter((s) => s.startsWith('waiting_machine')),
+      [],
+      `overnight cycle ${cycle} leaked a competing wait: ${stateSequence(h.v2).join(' -> ')}`,
+    )
+    assert.equal(
+      resumeV2StateFromEvents(written),
+      'waiting_human',
+      `overnight cycle ${cycle} moved the journal tail: ${stateSequence(written).join(' -> ')}`,
+    )
+  }
+  // Beats stop -> the last deadline (+960s) lapses -> the next advance heals.
+  h.deps.now = () => atOffset(1200)
+  h.inFlight = false
+  h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    resumeV2StateFromEvents(written),
+    'running',
+    `overnight hold never released after the beats stopped: ${stateSequence(written).join(' -> ')}`,
+  )
+})
+
+test('PMR-422Q renewal guards: a foreign ref, an unarmed hold, and an idle loop are all no-ops (ISC-4)', async () => {
+  // renewLiveWaitLease must not be able to arm, re-arm, or cross-contaminate:
+  //   * FOREIGN REF: the beat is dropped, so the original +240s deadline still
+  //     governs and the post-expiry advance self-heals.
+  //   * UNARMED: a beat after the hold was released (here by the post-expiry
+  //     running self-heal) must NOT resurrect it.
+  //   * IDLE: a beat after a terminal transition (state null) must not throw.
+  const h = makeHarness([])
+  const loop = createFlowLoop(h.deps)
+  const { fanout } = wireRealFanout(h, loop)
+  await loop.start(startInput())
+  await fanout.record({
+    kind: 'state-change',
+    at: atOffset(60),
+    ref: 'TP-1',
+    state: 'waiting_human',
+    reason: 'human_ask_pending',
+  })
+  // Foreign ref (a sibling flow's ask beating the wrong loop) is a no-op: the
+  // deadline stays at +240s, so the advance at now=+300s self-heals — proof the
+  // beat never extended this run's lease.
+  h.deps.now = () => atOffset(300)
+  loop.renewLiveWaitLease('OTHER-1')
+  h.labels = ['planned']
+  await loop.onSettled()
+  await flushFanout()
+  assert.equal(
+    stateSequence(h.v2).filter((s) => s === 'running').length,
+    2,
+    `a foreign-ref renewal extended this run's lease: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // UNARMED: the post-expiry running release above cleared flag + lease; a late
+  // beat must not re-arm (the armed-guard). Prove it: the next machine wait
+  // emits.
+  h.inFlight = true
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_machine/subagent_in_flight'),
+    `a late beat re-armed a released hold: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  loop.renewLiveWaitLease('TP-1')
+  // If a beat could resurrect a released hold, this next DIFFERING wait would
+  // be held and the assertion would go red.
+  h.pendingAsk = true
+  await loop.onSettled()
+  await flushFanout()
+  assert.ok(
+    stateSequence(h.v2).includes('waiting_human/subagent_ask_pending'),
+    `a late beat re-armed the hold: ${stateSequence(h.v2).join(' -> ')}`,
+  )
+  // IDLE: after a terminal halt the loop has no run state — the beat is inert.
+  h.inFlight = false
+  h.labels = []
+  await loop.onSettled()
+  await flushFanout()
+  loop.renewLiveWaitLease('TP-1')
+  const idle = createFlowLoop(h.deps)
+  idle.renewLiveWaitLease('TP-1')
 })

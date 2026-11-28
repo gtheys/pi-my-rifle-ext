@@ -155,11 +155,18 @@ export const NO_EXPECTED_ACTION = '—'
 
 /**
  * AIDEV-NOTE: PMR-422Q (PMR-0NRH review blocker 2) — the HUMAN waits whose
- * OWNING SEAM journals its own `running` close, i.e. the wait is guaranteed to
- * be released by an external `state-change{running}` observation. flow/loop.ts
- * arms its live-wait hold ONLY for these reasons: a hold that nothing can
- * release is a latch, and a latched hold silently drops every later
- * loop-emitted wait for the rest of the process's run.
+ * OWNING SEAM journals its own `running` close, i.e. the wait is guaranteed a
+ * release by EITHER route: the owning seam's external `state-change{running}`
+ * close, OR the flow/loop.ts live-wait LEASE expiring (flow/live-wait.ts —
+ * arming stamps it, the owning seam heartbeats it via
+ * `loop.renewLiveWaitLease`, and a wait that stops beating releases itself
+ * within `LIVE_WAIT_LEASE_SECONDS`). PMR-422Q made the second route real: the
+ * hold went wide (non-terminal states INCLUDING `running`) precisely because
+ * the lease bounds it, so "guaranteed release" no longer means "a close record
+ * will arrive" alone. flow/loop.ts arms its live-wait hold ONLY for these
+ * reasons: a hold that nothing can release is a latch, and a latched hold
+ * silently drops every later loop-emitted wait for the rest of the process's
+ * run.
  *
  * Membership is by EMISSION SITE, not by wait kind:
  *  * `human_ask_pending` — IN. flow/ask-emitter.ts journals the close on

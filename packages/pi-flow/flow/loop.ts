@@ -23,6 +23,7 @@ import {
   stampFlowPhase,
   stampFlowStart,
 } from './attribution.ts'
+import { addSecondsIso, LIVE_WAIT_LEASE_SECONDS } from './live-wait.ts'
 import { nextPhase, PHASE_LABEL, type Phase } from './orchestrate.ts'
 import { buildPhasePrompt, type PhasePromptInput } from './phase-prompts.ts'
 import type { FlowReason, FlowState } from './vocabulary.ts'
@@ -140,6 +141,16 @@ export interface FlowLoopDeps {
   // humanReviewPassed) on every start so stale authorization from a
   // superseded/prior flow cannot authorize a later landing.
   resetLandingState?(): void
+  /**
+   * AIDEV-NOTE: PMR-422Q — LEASE-ARITHMETIC CLOCK ONLY (live-wait lease: see
+   * flow/live-wait.ts). `renewLiveWaitLease` and the hold's expiry check read
+   * this; it defaults to the module-local `now()` so production needs no
+   * wiring. It MUST NOT be used for event stamps: every journal `at` keeps the
+   * module `now()`, so the existing recency tests (which date external
+   * observations via `atOffset` against the REAL clock) stay real-clock-based.
+   * Tests inject a fake clock here to expire or renew a lease deterministically.
+   */
+  now?: () => string
 }
 
 export interface FlowStartInput {
@@ -246,13 +257,13 @@ export interface FlowLoop {
    * reaches emitStateChange where the hold lives — no predicate, wide or narrow,
    * could suppress it. It is the PMR-ZV9Y P1 invalidation case documented just
    * above (a tool journals a wait with no running return, so the observer must
-   * un-pin lastEmittedV2). Its observation also CLEARS the flag, and the
-   * clearing mechanism is the STATE dimension: the observed state is
-   * `waiting_machine`, not `waiting_human`, so the `state === 'waiting_human'`
-   * guard in the body short-circuits and the reason is never consulted
-   * (PMR-FM0F — a not-self-closing reason is a secondary property here, not the
-   * operative mechanism, since SELF_CLOSING_HUMAN_WAITS is human-only anyway).
-   * See the skip-rule note in emitStateChange.
+   * un-pin lastEmittedV2). Its observation also CLEARS the flag (and the lease
+   * with it, PMR-422Q), and the clearing mechanism is the STATE dimension: the
+   * observed state is `waiting_machine`, not `waiting_human`, so the
+   * `state === 'waiting_human'` guard in the body short-circuits and the reason
+   * is never consulted (PMR-FM0F — a not-self-closing reason is a secondary
+   * property here, not the operative mechanism, since SELF_CLOSING_HUMAN_WAITS
+   * is human-only anyway). See the skip-rule note in emitStateChange.
    */
   noteExternalV2State(
     ref: string,
@@ -260,6 +271,21 @@ export interface FlowLoop {
     at: string,
     reason?: FlowReason | '',
   ): void
+  /**
+   * AIDEV-NOTE: PMR-422Q — renew the live-wait lease for an ARMED self-closing
+   * wait (the ask emitter's heartbeat; tunables in flow/live-wait.ts). An
+   * IN-PROCESS ping only — never a journal write (the lease is in-memory, and
+   * a 60s beat would spam the journal with ~480 records per overnight wait).
+   * Guards, each load-bearing: IDLE (state null — nothing is armed for a run
+   * that is not in flight), REF (a foreign ref must never extend this run's
+   * hold; same rule as noteExternalV2State), and ARMED (a beat racing the
+   * external `running` close is a no-op — it must NOT resurrect a released
+   * hold, or a cleared wait would silently re-arm). The deadline moves as
+   * `max(deadline, leaseNow + window)`: MONOTONIC, so a beat can never shorten
+   * a lease an earlier beat (or the arming stamp) already granted, and the
+   * observation-`at` clock and the lease clock may differ without corruption.
+   */
+  renewLiveWaitLease(ref: string): void
 }
 
 class FlowLoopImpl implements FlowLoop {
@@ -286,15 +312,16 @@ class FlowLoopImpl implements FlowLoop {
   // `state-change` observed a `waiting_human` whose reason closes itself (see
   // SELF_CLOSING_HUMAN_WAITS in flow/vocabulary.ts), i.e. a live tool-journaled
   // human wait with a guaranteed release: an open mid-turn ask_user_question
-  // (the ask emitter) or an open code_review gate. Four semantics, each load-
-  // bearing:
+  // (the ask emitter) or an open code_review gate — and since PMR-422Q that
+  // guarantee is DELIVERED BY THE LEASE, not only by the seam's own close. Four
+  // semantics, each load-bearing:
   //   * EXTERNAL-ONLY (ONE EXCEPTION): written in noteExternalV2State and,
   //     as a release, cleared by the loop's OWN successful `running` emission
-  //     in emitStateChange (the narrow-width self-heal the wide predicate had
-  //     removed — see the skip rule's note for why this single exception is
-  //     unambiguous). Apart from that release it is never written in
-  //     emitStateChange: the loop's own emissions cannot ARM it either way,
-  //     because their echo through the observer carries `at === lastV2At`
+  //     in emitStateChange (the post-expiry self-heal — see the skip rule's note
+  //     for why this single exception is unambiguous). Apart from that release it
+  //     is never written in emitStateChange: the loop's own emissions cannot ARM
+  //     it either way, because their echo through the observer carries
+  //     `at === lastV2At`
   //     (emitStateChange stamps the watermark BEFORE the write) so the
   //     pre-existing P2a recency guard skips it before this field is touched.
   //     Without that ordering the loop would clear its own hold and the guard
@@ -308,22 +335,37 @@ class FlowLoopImpl implements FlowLoop {
   //     silently dropped for the rest of the process's run. Only a reason whose
   //     owning seam journals its own close may arm the hold; an absent reason
   //     (a three-argument call) never arms, it only clears.
-  //   * LIVE-ONLY: cleared by the next newer external observation — for an armed
-  //     wait that observation IS the ask's own `state-change{running}` close, which
-  //     is why arming only self-closing reasons cannot strand the hold; and, as
-  //     the exception above, by the loop's own successful `running` emission.
-  //     While set, emitStateChange holds the two COMPETING WAIT states only
-  //     (`waiting_machine` / `waiting_human`) so a settle cannot flip the board
-  //     off the live human wait to a DIFFERENT wait — but it does NOT hold
-  //     `running` (the wide predicate that did was review blocker 3: it removed
-  //     the self-heal and stranded the journal). Width rationale and the
-  //     clear-on-running release live at the skip rule (see the note in
-  //     emitStateChange).
-  //   * RESET-ON-START: in-process state, so a process that died mid-ask loses
-  //     it; a stale `waiting_human` journal tail must never pin a restarted run
-  //     (ISC-10) — the seeded guard + snapshot('running') unstick the journal
-  //     exactly as today.
+  //   * LEASE-BOUND + RENEWED-BY-HEARTBEAT (PMR-422Q): while armed, the hold is
+  //     only live while `leaseNow() < leaseExpiresAt` — a DEAD-MAN'S SWITCH, not
+  //     an unbounded flag. Arming stamps the initial lease from the observation
+  //     `at` (so the hold is live BEFORE the first heartbeat, ISC-3); the owning
+  //     seam heartbeats it through renewLiveWaitLease while the wait is
+  //     genuinely open, and a wait nothing renews expires after
+  //     LIVE_WAIT_LEASE_SECONDS (flow/live-wait.ts) so a broken close can never
+  //     strand the journal. Release legs, any of: the next newer external
+  //     observation — for an armed wait that observation IS the ask's own
+  //     `state-change{running}` close — the loop's own successful `running`
+  //     emission (the exception above), or plain lease expiry. While the lease
+  //     is alive emitStateChange holds EVERY non-terminal emission (`running`
+  //     included, PMR-422Q: a settle that advances during a live ask must not
+  //     mask a blocked run as working) and releases terminal ones (`halted` /
+  //     `done` / `stale`) always. Width and release rationale live at the skip
+  //     rule (see the note in emitStateChange).
+  //   * RESET-ON-START: in-process state (flag AND lease), so a process that
+  //     died mid-ask loses both; a stale `waiting_human` journal tail must
+  //     never pin a restarted run (ISC-10) — the seeded guard +
+  //     snapshot('running') unstick the journal exactly as today.
   private externalHumanWaitOpen = false
+  // AIDEV-NOTE: PMR-422Q — the live-wait LEASE DEADLINE (fixed-width UTC ISO,
+  // so a plain string compare against leaseNow() is chronological), sitting
+  // beside the flag it bounds. Non-null ONLY while externalHumanWaitOpen is
+  // armed: noteExternalV2State stamps it on arming and nulls it on every
+  // non-arming apply; the clear-on-running release and the start() reset null
+  // it with the flag. renewLiveWaitLease extends it monotonically (max) — a
+  // beat can never shorten an already-granted window. Tunables and the
+  // window/beat invariant live in flow/live-wait.ts; the lease is NEVER
+  // journaled (in-process ping only).
+  private leaseExpiresAt: string | null = null
   // AIDEV-NOTE: PMR-ZV9Y 2.1 — pairing guard for plan.spec-approval. The
   // spec-approval pause journals step-start; the step-stop is emitted where
   // the plan phase completes (advanceAfter). This flag keeps them paired so an
@@ -383,6 +425,43 @@ class FlowLoopImpl implements FlowLoop {
       armsLiveWait = reasonOwnsExternalClose(reason)
     }
     this.externalHumanWaitOpen = armsLiveWait
+    // PMR-422Q: the lease rides the flag — arming stamps the initial window
+    // from the observation `at` (the wait's open time, so the hold is live
+    // before the first heartbeat), and EVERY non-arming apply nulls it. The
+    // ask's `state-change{running}` close is exactly such an apply, so the
+    // normal release clears both fields in one step.
+    if (armsLiveWait) {
+      this.leaseExpiresAt = addSecondsIso(at, LIVE_WAIT_LEASE_SECONDS)
+    } else {
+      this.leaseExpiresAt = null
+    }
+  }
+
+  // AIDEV-NOTE: PMR-422Q — heartbeat entry point (see the FlowLoop method
+  // note for the guards). Callers: the ask emitter's in-process beat timer
+  // (index.ts wiring). Nothing else may touch the lease.
+  renewLiveWaitLease(ref: string): void {
+    if (this.state === null) return
+    if (this.state.ref !== ref) return
+    if (!this.externalHumanWaitOpen) return
+    const renewed = addSecondsIso(this.leaseNow(), LIVE_WAIT_LEASE_SECONDS)
+    if (this.leaseExpiresAt === null || renewed > this.leaseExpiresAt) {
+      this.leaseExpiresAt = renewed
+    }
+  }
+
+  // AIDEV-NOTE: PMR-422Q — the LEASE clock: deps.now when injected (tests),
+  // otherwise the module now(). Lease arithmetic ONLY — event stamps keep the
+  // module now() so the existing real-clock recency tests stay untouched.
+  private leaseNow(): string {
+    if (this.deps.now !== undefined) return this.deps.now()
+    return now()
+  }
+
+  /** True while an armed hold still has lease left (dead-man's switch). */
+  private leaseAlive(): boolean {
+    if (this.leaseExpiresAt === null) return false
+    return this.leaseNow() < this.leaseExpiresAt
   }
 
   async start(input: FlowStartInput): Promise<void> {
@@ -456,7 +535,10 @@ class FlowLoopImpl implements FlowLoop {
     // state, so a run restarted after a mid-ask process death must not stay
     // pinned by a stale `waiting_human` journal tail — the seeded guard plus the
     // snapshot('running') below unstick the journal exactly as today.
+    // PMR-422Q: the LEASE goes with the flag — a restarted run is never pinned
+    // and never silently protected by a deadline from the dead process.
     this.externalHumanWaitOpen = false
+    this.leaseExpiresAt = null
     if (input.resumePlanApprovalOpen !== undefined) {
       this.specApprovalStepOpen = input.resumePlanApprovalOpen
     }
@@ -841,9 +923,9 @@ class FlowLoopImpl implements FlowLoop {
   private emitStateChange(state: FlowState, reason?: FlowReason): void {
     if (this.state === null) return
     if (this.lastEmittedV2 === state) return
-    // AIDEV-NOTE: PMR-0NRH, REASON-AWARE per PMR-422Q (review blocker 2) and
-    // NARROW WIDTH per review blocker 3 (fix round 2) — the live-wait guard has
-    // two INDEPENDENT dimensions, both load-bearing; do not collapse them.
+    // AIDEV-NOTE: PMR-0NRH, REASON-AWARE + LEASE-BOUND WIDTH per PMR-422Q — the
+    // live-wait guard has two INDEPENDENT dimensions, both load-bearing; do not
+    // collapse them.
     //   ARMING is REASON-RESTRICTED: the externalHumanWaitOpen flag is set ONLY
     //   for a `waiting_human` whose reason is in SELF_CLOSING_HUMAN_WAITS
     //   (flow/vocabulary.ts: human_ask_pending, code_review_pending — seams that
@@ -859,45 +941,54 @@ class FlowLoopImpl implements FlowLoop {
     //   registerDeviationReviewTool), so it never reaches this emitStateChange
     //   hold at all — neither the narrow predicate nor the reverted wide one
     //   could suppress it. It is the PMR-ZV9Y P1 invalidation case noted on
-    //   noteExternalV2State above. Its observation CLEARS the flag, decided on
-    //   the STATE dimension: the observed state is `waiting_machine`, so the
-    //   `state === 'waiting_human'` guard short-circuits and the reason is never
-    //   consulted (PMR-FM0F — the non-self-closing reason is a secondary note,
-    //   not the operative mechanism).
+    //   noteExternalV2State above. Its observation CLEARS the flag (and the
+    //   lease with it, PMR-422Q), decided on the STATE dimension: the observed
+    //   state is `waiting_machine`, so the `state === 'waiting_human'` guard
+    //   short-circuits and the reason is never consulted (PMR-FM0F — the
+    //   non-self-closing reason is a secondary note, not the operative
+    //   mechanism).
     //   Absent reason (a three-argument call) never arms, it only clears — which
     //   keeps the five protected PMR-ZV9Y tests green UNMODIFIED (they drive the
     //   observer without a reason).
-    //   WIDTH is the TWO COMPETING WAIT STATES ONLY: while the flag is armed,
-    //   emitStateChange holds `waiting_machine` and `waiting_human` (a settle must
-    //   not flip the board off the live human wait to a DIFFERENT wait) but NOT
-    //   `running`. WHY: the wide NON-TERMINAL hold bf1d592 introduced removed the
-    //   loop's only in-run escape for a wait whose close never lands — a fail-
-    //   closed ask read (flow/ask-emitter.ts) or an unclear/aborted code_review
-    //   answer that skips closeReviewGate (tools/code-review.ts) then pinned the
-    //   journal at waiting_human for the rest of the process (review blocker 3).
-    //   Reverting to the narrow width restores the self-heal. Reason-aware arming
-    //   — not the width — is what fixed blocker 2, so both goals now hold together.
-    // RELEASE (clear-on-running, below): the loop's own SUCCESSFUL `running`
-    //   emission additionally clears the flag. This is a deliberate, documented
-    //   EXCEPTION to "the flag is written only in noteExternalV2State": that rule
-    //   exists because the loop's own ECHO is indistinguishable from an external
+    //   WIDTH is NON-TERMINAL-while-lease-alive (PMR-422Q): while the flag is
+    //   armed AND its lease is alive, emitStateChange holds EVERY non-terminal
+    //   emission — `waiting_machine`, `waiting_human` AND `running` — and only
+    //   releases the terminal trio (`halted` / `done` / `stale`, which end the
+    //   run and make the open wait moot). WHY THE RUNNING INCLUSION IS SAFE NOW:
+    //   the ORIGINAL wide non-terminal hold (bf1d592) stranded every skip path
+    //   whose close never landed — a fail-closed ask read (flow/ask-emitter.ts)
+    //   or an unclear code_review answer that skips closeReviewGate
+    //   (tools/code-review.ts) — at waiting_human for the REST OF THE PROCESS,
+    //   because nothing could ever release an unbounded flag. The lease is what
+    //   makes the width safe: a wait nothing heartbeats stops holding after
+    //   LIVE_WAIT_LEASE_SECONDS (flow/live-wait.ts), and the loop's next
+    //   non-terminal emission then self-heals the journal.
+    // RELEASE has THREE legs, any of which suffices: (1) the next newer external
+    //   observation — for an armed wait that is the ask's own
+    //   `state-change{running}` close, which is why arming only self-closing
+    //   reasons cannot strand the hold; (2) LEASE EXPIRY — a broken wait stops
+    //   renewing, the deadline passes, and the next emission proceeds (and a
+    //   proceeding `running` clears flag + lease via leg 3); (3) clear-on-running
+    //   below: the loop's own SUCCESSFUL `running` emission additionally clears
+    //   the flag and the lease. Leg 3 is a deliberate, documented EXCEPTION to
+    //   "the flag is written only in noteExternalV2State": that rule exists
+    //   because the loop's own ECHO is indistinguishable from an external
     //   observation (recency-skipped, so it can neither arm nor clear the flag);
-    //   this is NOT the echo path, it is the loop's own emission completing, which
-    //   is unambiguous. Once the loop journals `running` the journal no longer
-    //   shows the human wait, so holding it is moot — and an armed flag with a
-    //   `running` journal would otherwise suppress every later genuine wait
+    //   this is NOT the echo path, it is the loop's own emission completing,
+    //   which is unambiguous. Once the loop journals `running` the journal no
+    //   longer shows the human wait, so holding is moot — and an armed flag over
+    //   a `running` journal would otherwise suppress every later genuine wait
     //   (waiting_machine{subagent_in_flight}, waiting_human{subagent_ask_pending})
     //   for the rest of the process, the original bug class this feature removes.
-    //   It does NOT weaken the hazard protection: a settle with a subagent in
-    //   flight emits waiting_machine, not running, so the live wait is still held.
-    // WHAT REMAINS (accepted, PMR-422Q): with the narrow width a settle that
-    //   ADVANCES during a live ask journals `running` over it, so the board can
-    //   briefly report a blocked run as working. The owner accepted this trade
-    //   deliberately: the residual needs a settle during a blocked turn (a path
-    //   the plan could never pin down), while the strand it replaces was reachable
-    //   through a NORMAL code_review answer path and persisted for the WHOLE
-    //   process. This test is pinned in the inverted "PMR-422Q residual gap
-    //   (accepted)" case in test/loop-state-change.test.ts.
+    // WHAT REMAINS (bounded, PMR-422Q): the board is either right or wrong for
+    //   at most the lease window — never wrong forever. A LIVE wait (heartbeats
+    //   arriving) holds indefinitely, no matter how long the human takes; a
+    //   BROKEN wait (close never landed, beats stopped) holds at most
+    //   LIVE_WAIT_LEASE_SECONDS past the last beat, and the journal self-heals
+    //   at the loop's NEXT emission opportunity after that — bounded by the
+    //   current phase turn, never open-ended. Pinned in test/loop-state-change.
+    //   test.ts by the inverted live-ask hold plus the lease expiry/renewal
+    //   cases.
     // The early return MUST precede every mutation: recording the state or
     // advancing the watermark on the held path would desync the guard (the next
     // real emission wrongly suppressed) and recency-skip the ask's own close,
@@ -906,17 +997,22 @@ class FlowLoopImpl implements FlowLoop {
     // clear the flag, only a run that actually journalled running may.
     if (
       this.externalHumanWaitOpen &&
-      (state === 'waiting_machine' || state === 'waiting_human')
+      this.leaseAlive() &&
+      state !== 'halted' &&
+      state !== 'done' &&
+      state !== 'stale'
     ) {
       return
     }
     this.lastEmittedV2 = state
-    // PMR-0NRH review blocker 3: the loop's own successful `running` emission is
-    // the in-run self-heal for a wait whose external close never landed. See the
-    // RELEASE paragraph above for why this single exception is safe and where it
-    // sits relative to the held path.
+    // PMR-0NRH review blocker 3 + PMR-422Q: the loop's own successful `running`
+    // emission is the post-expiry self-heal for a wait whose external close
+    // never landed — it clears the flag AND the lease. See the RELEASE
+    // paragraph above for why this single exception is safe and where it sits
+    // relative to the held path.
     if (state === 'running') {
       this.externalHumanWaitOpen = false
+      this.leaseExpiresAt = null
     }
     const event: FlowRunEvent = {
       kind: 'state-change',
