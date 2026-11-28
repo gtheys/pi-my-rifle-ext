@@ -910,6 +910,46 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
     assert.equal(rebindNotifications(notifications).length, 1)
   })
 
+  // AIDEV-NOTE: PMR-BCP7 — the startup headless 'fallback' branch must pin the
+  // once-per-process ask latch. It never reaches a menu, so askResumeThenArm
+  // used to return with the latch still 'idle' and the first agent_settled
+  // re-ran the gate, re-printing the SAME recovery lines. Headless notify is a
+  // no-op today (PMR-YG18), so this pin guards the moment that is fixed.
+  it('(f) a headless STARTUP fallback pins the latch: the first settle does not re-emit the lines', async () => {
+    setActiveFlowRef(null)
+    const ref = 'PMR-LATCHSTART'
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    let deriveCalls = 0
+    const harness = captureExtension({
+      deriveCandidates: async () => {
+        deriveCalls += 1
+        return [parkedCandidate(ref)]
+      },
+      heal: noHeal(),
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: false }),
+    )
+    await drainUntil(() => rebindNotifications(notifications).length > 0)
+    const afterStartup = rebindNotifications(notifications).length
+    // The recovery lines are notify-only: no menu, no binding, no injection.
+    assert.deepEqual(gate.calls, [], 'no select without UI')
+    assert.equal(getActiveFlowRef(), null)
+    assert.deepEqual(harness.sent, [])
+    harness.fireAgentSettled(
+      sessionStartCtx(root, notifications, gate, { hasUI: false }),
+    )
+    await settleMs(200)
+    assert.equal(
+      rebindNotifications(notifications).length,
+      afterStartup,
+      'a startup fallback counts as the once-per-process ask: the settle must not re-print the recovery lines',
+    )
+    assert.equal(deriveCalls, 1, 'the settled gate must not even re-scan')
+    assert.deepEqual(gate.calls, [], 'still no menu in a headless process')
+  })
+
   it('(f) a session already driving a flow is never prompted on settle', async () => {
     // A /flow started IN this session sets the live binding but not boundRef
     // (which only tracks the session_start restore), and a halted run keeps

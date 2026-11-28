@@ -708,6 +708,28 @@ export default function (
     }
   }
 
+  // AIDEV-NOTE: PMR-BCP7 — shared runner for BOTH ask sites (session_start's
+  // durable-rebind gate and the agent_settled belt-and-braces gate), so the two
+  // cannot drift again. A zero-candidate scan is 'silent' and deliberately
+  // leaves the latch 'idle' so a later settle can still ask. Every REAL ask —
+  // menu, decline, or the headless notify-only fallback — counts as the
+  // once-per-process ask, so the latch is pinned here. The startup site used to
+  // skip this pinning: a headless fallback returned with the latch still 'idle'
+  // and the first agent_settled re-ran the gate, re-printing the same recovery
+  // lines (invisible today only because headless notify is a no-op, PMR-YG18).
+  async function runResumeGateOnce(
+    ctx: ResumeAskCtx,
+    candidates: ParkedCandidate[],
+  ): Promise<void> {
+    if (candidates.length === 0) {
+      return
+    }
+    await askResumeThenArm(ctx, candidates)
+    if (resumeAskState === 'idle') {
+      resumeAskState = 'done'
+    }
+  }
+
   // AIDEV-NOTE: production wiring for the /flow answer dispatch (PMR-R5VB) —
   // the only place where human answers reach aven. `ctx` is the command
   // handler's context, structurally narrowed. Lives inside the extension
@@ -1124,7 +1146,7 @@ export default function (
         } catch {
           return
         }
-        await askResumeThenArm(ctx, candidates)
+        await runResumeGateOnce(ctx, candidates)
       })()
     }
     setBindingChangeListener((snapshot) => {
@@ -1521,10 +1543,9 @@ export default function (
       if (resumeAskState !== 'idle') {
         return
       }
-      await askResumeThenArm(ctx, candidates)
-      if (resumeAskState === 'idle') {
-        resumeAskState = 'done'
-      }
+      // PMR-BCP7: the shared runner owns the post-ask latch pinning, so this
+      // site and the startup site cannot drift apart again.
+      await runResumeGateOnce(ctx, candidates)
     })()
   })
 
