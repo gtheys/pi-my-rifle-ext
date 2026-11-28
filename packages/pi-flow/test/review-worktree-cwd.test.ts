@@ -10,7 +10,10 @@ import path from 'node:path'
 import test from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { setActiveFlowRef, setFlowWorktree } from '../flow/worktree-context.ts'
-import reviewExtension, { resolveCommitReviewCwd } from '../review/review.ts'
+import reviewExtension, {
+  resolveCommitReviewCwd,
+  resolveReviewCwdForTarget,
+} from '../review/review.ts'
 import { mkTmpDir } from './tmpdir.ts'
 
 const SESSION_CWD = '/tmp/main-checkout'
@@ -352,4 +355,87 @@ test('/review commit with the sha off the flow branch keeps the session checkout
   }
   assert.equal(sentUserMessages.length, 1)
   assert.equal(/WORKTREE-GUIDELINES-MARKER/.test(sentUserMessages[0]), false)
+})
+
+// --- PMR-TDJC: custom/folder review targets resolve the bound flow worktree ---
+
+// AIDEV-NOTE: PMR-TDJC — pins the per-target cwd dispatch through the exported
+// resolveReviewCwdForTarget seam (the tool consumes reviewCwd only behind
+// canSpawnReviewSubagent(), so it cannot be observed via execute() in a no-mux
+// unit test). A `custom` (or `folder`) review of flow work used to keep
+// ctx.cwd — the SESSION checkout — so it diffed the wrong tree (PMR-3QMY /
+// PMR-0NRH validate). With an active flow + verified bound worktree it must
+// resolve to the worktree, exactly like branch/uncommitted (PMR-1CCT).
+test('resolveReviewCwdForTarget: custom target with active flow + bound worktree → worktree cwd', async () => {
+  const { mockPi } = makeGitMockPi()
+  setActiveFlowRef('PMR-T')
+  setFlowWorktree(WORKTREE, BRANCH)
+  try {
+    const resolution = await resolveReviewCwdForTarget(mockPi, SESSION_CWD, {
+      type: 'custom',
+      instructions: 'review the delta',
+    })
+    assert.deepEqual(resolution, { ok: true, cwd: WORKTREE })
+  } finally {
+    setActiveFlowRef(null)
+  }
+})
+
+test('resolveReviewCwdForTarget: folder target with active flow + bound worktree → worktree cwd', async () => {
+  const { mockPi } = makeGitMockPi()
+  setActiveFlowRef('PMR-T')
+  setFlowWorktree(WORKTREE, BRANCH)
+  try {
+    const resolution = await resolveReviewCwdForTarget(mockPi, SESSION_CWD, {
+      type: 'folder',
+      paths: ['src/'],
+    })
+    assert.deepEqual(resolution, { ok: true, cwd: WORKTREE })
+  } finally {
+    setActiveFlowRef(null)
+  }
+})
+
+test('resolveReviewCwdForTarget: branch/uncommitted keep the worktree routing (PMR-1CCT)', async () => {
+  const { mockPi } = makeGitMockPi()
+  setActiveFlowRef('PMR-T')
+  setFlowWorktree(WORKTREE, BRANCH)
+  try {
+    const branch = await resolveReviewCwdForTarget(mockPi, SESSION_CWD, {
+      type: 'branch',
+      branch: BRANCH,
+    })
+    assert.deepEqual(branch, { ok: true, cwd: WORKTREE })
+    const uncommitted = await resolveReviewCwdForTarget(mockPi, SESSION_CWD, {
+      type: 'uncommitted',
+    })
+    assert.deepEqual(uncommitted, { ok: true, cwd: WORKTREE })
+  } finally {
+    setActiveFlowRef(null)
+  }
+})
+
+test('resolveReviewCwdForTarget: custom target with NO active flow keeps the session checkout', async () => {
+  const { mockPi } = makeGitMockPi()
+  setActiveFlowRef(null)
+  const resolution = await resolveReviewCwdForTarget(mockPi, SESSION_CWD, {
+    type: 'custom',
+    instructions: 'review the delta',
+  })
+  assert.deepEqual(resolution, { ok: true, cwd: SESSION_CWD })
+})
+
+test('resolveReviewCwdForTarget: pr target keeps the session checkout (its own worktree seam)', async () => {
+  const { mockPi } = makeGitMockPi()
+  setActiveFlowRef('PMR-T')
+  setFlowWorktree(WORKTREE, BRANCH)
+  try {
+    const resolution = await resolveReviewCwdForTarget(mockPi, SESSION_CWD, {
+      type: 'pr',
+      ref: '42',
+    })
+    assert.deepEqual(resolution, { ok: true, cwd: SESSION_CWD })
+  } finally {
+    setActiveFlowRef(null)
+  }
 })

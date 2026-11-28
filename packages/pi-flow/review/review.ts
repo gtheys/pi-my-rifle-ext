@@ -614,6 +614,54 @@ export async function resolveCommitReviewCwd(
   return { ok: true, cwd: wt.path, source: 'worktree' }
 }
 
+// The review tool's discriminated target shape (mirrors the inline union on
+// registerTool(...).execute) so the exported cwd seam below stays type-safe.
+export type ReviewToolTarget =
+  | { type: 'uncommitted' }
+  | { type: 'branch'; branch: string }
+  | { type: 'commit'; sha: string; title?: string }
+  | { type: 'pr'; ref: string }
+  | { type: 'folder'; paths: string[] }
+  | { type: 'custom'; instructions: string }
+
+export type ReviewTargetCwd =
+  | { ok: true; cwd: string }
+  | { ok: false; reason: string; sha: string }
+
+// AIDEV-NOTE: PMR-TDJC — the review tool's per-target cwd dispatch, extracted
+// into an EXPORTED mux-free seam (same testing rationale as
+// resolveCommitReviewCwd / resolveDeviationCwd): the tool consumes `reviewCwd`
+// only AFTER canSpawnReviewSubagent() gates the spawn path, so a deterministic
+// unit test cannot observe the resolved cwd through execute() in a no-mux
+// environment. Routing lives entirely here: branch/uncommitted/custom/folder
+// resolve through the bound flow worktree (resolveFlowReviewCwd already returns
+// the session fallback when no flow is live, so this stays correct outside a
+// flow); commit resolves the VERIFIED bound worktree (PMR-0KMQ) or refuses.
+export async function resolveReviewCwdForTarget(
+  pi: ExtensionAPI,
+  sessionCwd: string,
+  p: ReviewToolTarget,
+): Promise<ReviewTargetCwd> {
+  if (
+    p.type === 'branch' ||
+    p.type === 'uncommitted' ||
+    p.type === 'custom' ||
+    p.type === 'folder'
+  ) {
+    return { ok: true, cwd: await resolveFlowReviewCwd(pi, sessionCwd) }
+  }
+  if (p.type === 'commit' && getActiveFlowRef() !== null) {
+    const commitCwd = await resolveCommitReviewCwd(pi, sessionCwd, p.sha)
+    if (!commitCwd.ok) {
+      return { ok: false, reason: commitCwd.reason, sha: p.sha }
+    }
+    return { ok: true, cwd: commitCwd.cwd }
+  }
+  // pr, and commit with no active flow: session checkout. (folder/custom are
+  // handled above via resolveFlowReviewCwd — PMR-TDJC.)
+  return { ok: true, cwd: sessionCwd }
+}
+
 /**
  * AIDEV-NOTE: PMR-1CCT — empty-range guard. A baseBranch review whose merge
  * base equals HEAD diffs nothing; flow work lives in an isolated worktree, so
@@ -2594,33 +2642,25 @@ ${result.summary}`
       // guard BEFORE the mux check: a branch review whose merge base equals
       // HEAD diffs nothing (flow work lives in a worktree, the session
       // checkout sits on main), and must fail loudly instead of returning a
-      // skipped/clean-looking artifact.
-      let reviewCwd = ctx.cwd
-      if (p.type === 'branch' || p.type === 'uncommitted') {
-        reviewCwd = await resolveFlowReviewCwd(pi, ctx.cwd)
-      } else if (p.type === 'commit' && getActiveFlowRef() !== null) {
-        // AIDEV-NOTE: PMR-0KMQ — a commit review of flow work must pin and
-        // re-check HEAD in the VERIFIED bound worktree; from the session
-        // checkout the staleness recheck compares against main's HEAD and
-        // reports a misleading 'stale' verdict. Fail closed BEFORE the mux
-        // check when the worktree cannot be verified.
-        const commitCwd = await resolveCommitReviewCwd(pi, ctx.cwd, p.sha)
-        if (!commitCwd.ok) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Review refused: checkout mismatch — ${commitCwd.reason}. Pinning commit ${p.sha} from ${ctx.cwd} would re-check HEAD against the wrong checkout and report a misleading 'stale' verdict. Fix or re-bind the flow worktree (run /flow <ref> to resume so the flow loop session holds the worktree context), then re-run the review.`,
-              },
-            ],
-            // AIDEV-NOTE: isError results omit details — a fabricated
-            // empty hint would mislead consumers. See pr-quality/index.ts.
-            details: undefined,
-            isError: true,
-          }
+      // skipped/clean-looking artifact. The routing itself lives in the
+      // exported resolveReviewCwdForTarget seam (PMR-TDJC) so it is testable
+      // without a mux; the commit checkout-mismatch refusal text stays here.
+      const cwdResult = await resolveReviewCwdForTarget(pi, ctx.cwd, p)
+      if (!cwdResult.ok) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Review refused: checkout mismatch — ${cwdResult.reason}. Pinning commit ${cwdResult.sha} from ${ctx.cwd} would re-check HEAD against the wrong checkout and report a misleading 'stale' verdict. Fix or re-bind the flow worktree (run /flow <ref> to resume so the flow loop session holds the worktree context), then re-run the review.`,
+            },
+          ],
+          // AIDEV-NOTE: isError results omit details — a fabricated
+          // empty hint would mislead consumers. See pr-quality/index.ts.
+          details: undefined,
+          isError: true,
         }
-        reviewCwd = commitCwd.cwd
       }
+      const reviewCwd = cwdResult.cwd
       // AIDEV-NOTE: PMR-R4AP (amended by PMR-7N3D) — in a flow worktree the
       // review base is resolved by resolveBranchRefForReview (see its note:
       // work → recorded sha, personal → rebase-aware local-only merge-base,
