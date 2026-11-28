@@ -1092,4 +1092,60 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
     assert.ok(warned.message.includes('worktree gone'), warned.message)
     assert.ok(warned.message.includes(`/flow ${ref}`), warned.message)
   })
+
+  // AIDEV-NOTE: PMR-C1XT — the picker race pin. askResumeThenArm awaits
+  // ctx.ui.select with NO timeout, and in RPC mode the dialog is NON-MODAL, so
+  // a flow that goes live in this session DURING the wait owns the binding
+  // (the same mayMutate rule healFlowBinding encodes). armResumedRun used to
+  // call restoreFlowBinding({ref, worktree: null}) unconditionally on a resume
+  // pick, clobbering that live ref's activeRef and dropping its worktree to
+  // null — the PMR-2424 "review diffs the main checkout" failure class. The
+  // fix re-checks getActiveFlowRef() after the select resolves and refuses to
+  // rebind when a DIFFERENT ref is live.
+  it('(g) a flow that goes live during the picker wait is never clobbered by a resume pick', async () => {
+    setActiveFlowRef(null)
+    const ref = 'PMR-RACE'
+    const liveRef = 'PMR-LIVE-DURING-WAIT'
+    seedParkedRun(agentDir, ref)
+    const gate = selectGate()
+    const notifications: Notify[] = []
+    let healCalls = 0
+    const harness = captureExtension({
+      deriveCandidates: async () => [parkedCandidate(ref)],
+      heal: async () => {
+        healCalls += 1
+        return healOk(ref)
+      },
+    })
+    harness.fireSessionStart(
+      sessionStartCtx(root, notifications, gate, { hasUI: true }),
+    )
+    await drainUntil(() => gate.calls.length > 0)
+    // the select is still open (resumeAskState === 'asking'): a DIFFERENT flow
+    // goes live in this session while the human deliberates, owning the binding
+    // with a real worktree attached.
+    setActiveFlowRef(liveRef)
+    setFlowWorktree('/tmp/wt-live-during', `flow/${liveRef}`)
+    // the human finally picks Resume on the parked candidate.
+    gate.answer(selectOption(gate, 0))
+    await settleMs(200)
+    // the live flow's binding must survive intact — never clobbered.
+    assert.equal(getActiveFlowRef(), liveRef, 'live ref preserved')
+    assert.equal(getFlowWorktree()?.ref, liveRef, 'live worktree ref kept')
+    assert.equal(getFlowWorktree()?.path, '/tmp/wt-live-during')
+    // the refused resume must not heal, rebind, consume, or inject anything.
+    assert.equal(healCalls, 0, 'a refused resume never heals the candidate')
+    assert.deepEqual(harness.sent, [], 'a refused resume sends nothing')
+    // the gate strictly precedes consumePending: the record stays untouched.
+    assert.equal(existsSync(pendingFile(agentDir, ref)), true)
+    assert.equal(existsSync(consumedFile(agentDir, ref)), false)
+    // the skip is surfaced to the human with a recovery command.
+    const text = rebindNotifications(notifications)
+      .map((n) => n.message)
+      .join('\n')
+    assert.ok(
+      text.includes('is live in this session'),
+      `expected a skip notice naming the live flow, got: ${text}`,
+    )
+  })
 })

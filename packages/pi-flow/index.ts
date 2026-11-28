@@ -598,6 +598,25 @@ export default function (
     candidate: ParkedCandidate,
   ): Promise<void> {
     const ref = candidate.ref
+    // AIDEV-NOTE: PMR-C1XT — re-check the live binding AFTER the (unbounded,
+    // and in RPC mode NON-MODAL) picker wait resolved, BEFORE restoreFlowBinding
+    // touches anything. The settle-path live-binding guard runs before the async
+    // scan, so a flow that went live in THIS session while the human
+    // deliberated is only visible now. Restore is an unconditional
+    // ({ref, worktree: null}) clobber: without this re-check it overwrites that
+    // live ref and drops its worktree binding to null, and when the candidate
+    // never declared a worktree no heal rebinds it — reproducing the PMR-2424
+    // "review diffs the main checkout" failure class. Same rule as
+    // flow/binding-heal.ts mayMutate: the live flow owns the binding, so a
+    // resume of a DIFFERENT ref is refused (clean session, recovery hint).
+    const live = getActiveFlowRef()
+    if (live !== null && live !== ref) {
+      ctx.ui.notify(
+        `pi-flow: resume skipped — flow ${live} is live in this session, so its binding stays authoritative. Recover with ${recoveryCommand(ref)} if needed.`,
+        'info',
+      )
+      return
+    }
     restoreFlowBinding({ ref, worktree: null })
     boundRef = ref
     if (candidate.hasWorktree) {
