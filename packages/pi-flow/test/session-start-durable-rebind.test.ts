@@ -449,6 +449,10 @@ describe('session_start durable rebind (PMR-DRKH + PMR-T9ZQ picker gate)', () =>
         order.push(
           `heal:${healRef}:active=${getActiveFlowRef()}:pending=${existsSync(pendingFile(agentDir, ref))}`,
         )
+        // AIDEV-NOTE (PMR-QGJ1, restored from the pre-T9ZQ single-candidate
+        // pin): emulate the real heal mutation (setActiveFlowRef +
+        // setFlowWorktree inside flow/binding-heal.ts) so the binding-change
+        // persistence path is exercised, not just the resume/send ordering.
         setActiveFlowRef(healRef)
         setFlowWorktree('/tmp/wt-cccc', `flow/${healRef}`)
         return healOk(healRef)
