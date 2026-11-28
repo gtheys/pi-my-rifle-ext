@@ -1314,8 +1314,11 @@ export default function (
   // skips a double-open when a loop-owned wait is already journaled.
   // DEFENCE IN DEPTH: correctness would survive even
   // without the primary check, because the emitter's close is Map-gated on
-  // toolCallId and can never fire for a call it did not open — but the
-  // primary check is the load-bearing mechanism, not a fallback.
+  // toolCallId and can never fire for a call this emitter did not track — the
+  // Map key is set on tracking, before the dedupe read and before any open
+  // record is journaled, so a close may still fire for a call whose open was
+  // never journaled. The primary check remains the load-bearing mechanism,
+  // not a fallback.
   // This registration is a SEPARATE handler from the bash/landing interceptor
   // above; it never blocks and never reorders that gate. Handlers registered
   // here intentionally do not unsubscribe (session lifetime, like the
