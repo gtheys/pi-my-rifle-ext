@@ -98,4 +98,5 @@ Every flow document — `plan.md`, Jira specs, brainstorm research, scout findin
 ## Packaging notes
 
 - Package manifests include `files` allowlists. Verify with `npm pack --dry-run -w <workspace>` before changing a manifest.
+- The default pi-flow test suite enforces the `files` allowlist reachability gate (`packages/pi-flow/test/packaged-allowlist.test.ts`); `bun run audit:pack` remains the all-workspace release audit.
 - Keep README install snippets and the root package table in sync when adding/removing packages.

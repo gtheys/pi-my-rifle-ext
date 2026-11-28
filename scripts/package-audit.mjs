@@ -9,6 +9,9 @@
 //    MODULE_NOT_FOUND, which checks 1-2 structurally cannot catch (they only look
 //    at what npm packs from the allowlist, never at what the code imports).
 // Exit 1 on any violation. Run: `node scripts/package-audit.mjs` (or `bun run audit:pack`).
+// The reachability core (check 3) lives in scripts/lib/package-reachability.mjs
+// and is also enforced in the default pi-flow suite
+// (packages/pi-flow/test/packaged-allowlist.test.ts, PMR-9ASP).
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

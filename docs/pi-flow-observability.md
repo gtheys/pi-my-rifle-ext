@@ -760,7 +760,9 @@ the kept-metrics `piflow-retry-budget` rule proved it was still firing through t
 | tests | `test/vocabulary.test.ts`, `ask-emitter.test.ts`, `run-state-v2.test.ts`, `state-metrics.test.ts`, `run-health-v2.test.ts`, `reconcile-tombstone-v2.test.ts`, `run-liveness-pattern-v2.test.ts`, `telemetry-step-spans.test.ts`, `loki-pusher.test.ts`, `telemetry-dispatch.test.ts`, `notify-hook.test.ts`, `config-*.test.ts`. Run `bun test packages/pi-flow`; also `bunx @biomejs/biome check packages/pi-flow`, `bunx tsc -p tsconfig.json --noEmit`. |
 
 Repo rules: no ternaries in TS, explicit `.ts` import suffixes, explicit `files` allowlist in
-`packages/pi-flow/package.json` (a new module must be added there or the published package breaks), never edit
+`packages/pi-flow/package.json` (a new module must be added there or the published package breaks —
+`test/packaged-allowlist.test.ts` now fails the default suite naming the missing path, while
+`bun run audit:pack` stays the all-workspace release audit), never edit
 existing tests without asking, implement in a git worktree (`worktree` tool), `AIDEV-NOTE` comments stay.
 
 ## 12. Operating it (copy-paste)
