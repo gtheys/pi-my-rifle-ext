@@ -53,8 +53,9 @@ Three structural rules:
    No extra metadata for grouping — `plan-path` is the only metadata written.
 2. **Ordering = phase dep chain + prefix sort.** Phase N depends on
    phase N−1 (`aven dep add`), so `aven list --ready` exposes exactly one
-   phase at a time. Subtasks carry NO deps (PMR-JVJN) — ordering within
-   a phase is the `N.M` prefix sort, done client-side.
+   phase at a time — plus that tree's open subtasks, since they carry no
+   deps (PMR-JVJN). Ordering within a phase is the `N.M` prefix sort, done
+   client-side.
 3. **Naming = `N.` / `N.M` title prefixes.** Aven does NOT sort by prefix —
    the skills sort client-side for presentation and resume. Prefixes are for
    humans.

@@ -268,7 +268,8 @@ later, in stage 2. Design points the plan must satisfy:
   the grouping key (`aven epic add <CHILD> <REF>`).
 - `N.` / `N.M` title prefixes are REQUIRED — the execution plan sorts by them.
 - **Phases chain via deps** (`aven dep add <phase N> <phase N-1>`) — aven
-  enforces execution order (`--ready` shows exactly one phase at a time); the
+  enforces execution order (`--ready` shows exactly one phase at a time, plus
+  that tree's open subtasks since they carry no deps — PMR-JVJN); the
   prefix is for humans and sorting.
 - Capture each phase ref from its `aven add` output (`created PMR-XXXX`) — **subtasks NEVER depend on their phase** (PMR-JVJN: subtask→phase deps made the first subtask of every phase permanently blocked; ordering is the N.M prefix sort).
 - Every phase AND subtask section in plan.md carries a self-contained ticket

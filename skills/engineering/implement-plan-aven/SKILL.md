@@ -148,7 +148,8 @@ Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>, plan-state=appr
   feature ticket (`aven epic list <FEATURE_REF> --json` returns the tree;
   the TUI epic view shows it too).
 - Phase ordering: **hard guarantee** — each phase depends on the previous, so
-  `--ready` exposes exactly one phase at a time. The `N.` prefix remains for
+  `--ready` exposes exactly one phase at a time, plus that tree's open
+  subtasks since they carry no deps (PMR-JVJN). The `N.` prefix remains for
   humans and sorting.
 - Subtask ordering: `N.M` title prefixes. **Aven does not sort by them — you
   do**, when presenting and when resuming. Subtasks carry no deps
