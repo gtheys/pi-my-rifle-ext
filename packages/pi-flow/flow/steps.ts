@@ -1,7 +1,11 @@
 // AIDEV-NOTE: PMR-ZV9Y 1.1 — the registered step names (v2 vocabulary). Steps
-// are the named boundaries INSIDE a phase; only these strings may appear in a
-// 'step-start'/'step-stop' journal event, a `pi_flow_step` label or a Tempo
-// step span (closed enum => bounded cardinality, ISC-A-1/A-2).
+// are the named boundaries INSIDE a phase. The registry CLOSES THE PROMETHEUS
+// LABEL SURFACE ONLY: flow/state-metrics.ts drops any (phase, step) this map
+// does not list before it reaches a `pi_flow_step` / `pi_flow_step_seconds`
+// label (closed enum => bounded cardinality, ISC-A-1). The 'step-start'/
+// 'step-stop' JOURNAL EVENTS and the Tempo step spans / Loki lines derived
+// from them are NOT registry-closed — they keep the raw step name by design,
+// so the cardinality bound lives only on the exported metric labels.
 //
 // `validate.spec-diff` and `validate.aven-notes` are documented names WITHOUT
 // machine-emitted boundaries: no tool boundary exists for them (they are

@@ -444,10 +444,15 @@ function currentPhaseLabel(events: readonly FlowRunEvent[]): FlowPhase | null {
  * same posture as the frozen run-health.ts block).
  *
  * No `mode` label: the Pushgateway group URL carries it (v1 convention).
- * Every label value comes from a closed enum or the structural step guard,
- * so a free-text halt note can never reach a label (ISC-A-1). First-seen
- * order everywhere; a bucket with nothing measured emits no line (never an
- * invented zero — the cost body takes the same posture for coverage gaps).
+ * Every value on this Prometheus label surface comes from a closed enum or,
+ * for the step label of pi_flow_step / pi_flow_step_seconds, the registry gate
+ * (isRegisteredStep), so a free-text halt note can never reach a Prometheus
+ * label (ISC-A-1). This closure is scoped to the metric LABELS only — the
+ * journal events and the Tempo step spans / Loki lines built from them still
+ * carry the raw step name by design (see the module header and flow/steps.ts).
+ * First-seen order everywhere; a bucket with nothing measured emits no line
+ * (never an invented zero — the cost body takes the same posture for coverage
+ * gaps).
  */
 export function renderStateMetricLines(
   ref: string,
