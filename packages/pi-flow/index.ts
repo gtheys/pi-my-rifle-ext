@@ -42,6 +42,7 @@ import {
   readGateAnswer,
   readJiraRef,
   readPlanState,
+  removeAvenLabel,
   setAvenSessionCwd,
   writeAvenNote,
   writeGateAnswer,
@@ -926,6 +927,10 @@ export default function (
       journalSerial(event)
     },
     readLabels: (ref) => readAvenLabels(ref),
+    // AIDEV-NOTE: PMR-B033 — the blocker route-back resets the implement
+    // completion gate through this dep (load-bearing: the loop halts
+    // label_reset_failed when it is absent or fails).
+    removeAvenLabel: (ref, label) => removeAvenLabel(ref, label),
     readPlanState: (ref) => readPlanState(ref),
     hasFreshBlockers: (ref, since) => readFreshBlockers(ref, since),
     avenNote: (ref, text) => writeAvenNote(ref, text),

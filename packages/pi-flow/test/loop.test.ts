@@ -17,6 +17,14 @@ interface Harness {
   errorLabels: { ref: string; label: string }[]
   /** false = label write fails; 'throw' = the dep itself rejects. */
   errorLabelResult?: boolean | 'throw'
+  // AIDEV-NOTE: PMR-B033 — removal-dep fake for the blocker route-back reset.
+  // removedLabels records every (ref, label) the loop asked to remove; on
+  // success the fake also strips the label from h.labels so the harness mirrors
+  // real ticket state. removeLabelResult: false = removal fails, 'throw' = the
+  // dep rejects, 'absent' = the test sets the dep key to undefined (fail-closed
+  // matrix — an absent load-bearing dep must halt, never skip).
+  removedLabels: { ref: string; label: string }[]
+  removeLabelResult?: boolean | 'throw' | 'absent'
 }
 
 function makeHarness(labels: string[] | null = []): Harness {
@@ -28,6 +36,7 @@ function makeHarness(labels: string[] | null = []): Harness {
     labels,
     planState: null,
     errorLabels: [],
+    removedLabels: [],
     deps: undefined as unknown as FlowLoopDeps,
   }
   h.deps = {
@@ -51,6 +60,19 @@ function makeHarness(labels: string[] | null = []): Harness {
       }
       const ok = h.errorLabelResult ?? true
       if (ok) h.errorLabels.push({ ref, label })
+      return ok
+    },
+    // AIDEV-NOTE: PMR-B033 — mirrors real ticket state: a successful removal
+    // strips the label from h.labels, so the next readLabels sees the reset.
+    removeAvenLabel: async (ref, label) => {
+      if (h.removeLabelResult === 'throw') {
+        throw new Error('label removal exploded')
+      }
+      const ok = h.removeLabelResult ?? true
+      if (ok) {
+        h.removedLabels.push({ ref, label })
+        h.labels = (h.labels ?? []).filter((l) => l !== label)
+      }
       return ok
     },
     sendPrompt: (prompt) => {
@@ -682,15 +704,48 @@ test('validate settled with fresh blockers: re-injects implement prompt', async 
   assert.equal(h.notes.length, 0)
 })
 
+// AIDEV-NOTE: PMR-B033 — the blocker route-back must reset the implement
+// completion gate: the stale 'active' label from the previous round may never
+// auto-complete the fix round. Before the fix this test was red — the second
+// settle found 'active' still present and advanced within the same tick.
+test('blocker route-back resets the gate: fix round never auto-completes on the stale implement label', async () => {
+  const h = blockersHarness([true])
+  const loop = createFlowLoop(h.deps)
+  await loop.start({ ...startInput(), phase: 'validate' })
+  await loop.onSettled() // validate settles with blockers -> route back
+  assert.equal(h.sent.length, 2)
+  assert.match(h.sent[1], /Implement phase/)
+  // ISC-1: the route-back removed the stale implement label first.
+  assert.deepEqual(h.removedLabels, [{ ref: 'TP-1', label: 'active' }])
+  assert.deepEqual(h.labels, ['planned'])
+  // ISC-2: the fix round settles WITHOUT re-completion -> no premature
+  // phase-complete(implement); the loop halts instead of advancing.
+  await loop.onSettled()
+  const premature = h.events.filter(
+    (e) => e.kind === 'phase-complete' && e.phase === 'implement',
+  )
+  assert.equal(
+    premature.length,
+    0,
+    'stale label must not complete the fix round',
+  )
+  assert.equal(loop.isActive(), false)
+})
+
 test('validate blockers persist: halts after the retry budget', async () => {
+  // AIDEV-NOTE: PMR-B033 — deliberately rewritten: the old sequence relied on
+  // the bug (a fix-round settle auto-advancing on the stale label). The route-
+  // back now resets the gate, so each fix round must simulate the agent
+  // re-completing implement (re-landing 'active') before its settle.
   const h = blockersHarness([true, true, true])
   const loop = createFlowLoop(h.deps)
   await loop.start({ ...startInput(), phase: 'validate' })
-  await loop.onSettled() // retry 1 -> implement sent
-  h.labels = ['planned', 'active']
+  await loop.onSettled() // retry 1 -> gate reset, implement sent
+  h.labels = ['planned', 'active'] // fix round re-completes implement
   await loop.onSettled() // implement settled -> validate sent
-  await loop.onSettled() // retry 2 -> implement sent
-  await loop.onSettled() // -> validate sent
+  await loop.onSettled() // retry 2 -> gate reset, implement sent
+  h.labels = ['planned', 'active'] // fix round re-completes implement
+  await loop.onSettled() // implement settled -> validate sent
   const before = h.sent.length
   await loop.onSettled() // budget exhausted -> halt
   assert.equal(h.sent.length, before)

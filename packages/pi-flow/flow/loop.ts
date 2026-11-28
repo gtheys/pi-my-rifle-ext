@@ -68,6 +68,15 @@ export interface FlowLoopDeps {
    * the plain halt, so a validate failure without blockers never retries.
    */
   hasFreshBlockers?(ref: string, sinceIso: string): Promise<boolean>
+  /**
+   * PMR-B033: remove a lifecycle label from the ref (the implement-gate
+   * reset on blocker route-back). false = removal failed. Optional for type
+   * compatibility only — ABSENT IS FAIL-CLOSED: the reset is load-bearing
+   * (unlike the best-effort avenLabel), so a missing dep halts the run with
+   * label_reset_failed instead of silently re-introducing the premature
+   * advance the stale label causes.
+   */
+  removeAvenLabel?(ref: string, label: string): Promise<boolean>
   /** True when the ref is an epic with open children (implement routing guard). */
   epicHasOpenChildren(ref: string): Promise<boolean>
   /** True while this session has an in-flight subagent (mid-phase async wait). */
@@ -634,6 +643,31 @@ class FlowLoopImpl implements FlowLoop {
         'validate',
         `review blockers persist after ${state.blockerRetries} implement retries (budget exhausted)`,
         'blocker_budget_exhausted',
+      )
+      return true
+    }
+    // AIDEV-NOTE: PMR-B033 — reset the implement completion gate BEFORE
+    // re-injecting: the label-presence check in onSettled would otherwise
+    // treat the stale implement label from the previous round as a completed
+    // fix round and advance within seconds. Removal happens BEFORE the
+    // increment so a failed reset consumes no retry; fail-closed (dep
+    // absent / false / throw) halts with label_reset_failed instead of
+    // re-injecting implement. On restart the label is still present, so
+    // nextPhase re-derives validate and the route-back is retried naturally.
+    const removeLabel = this.deps.removeAvenLabel
+    let reset = false
+    if (removeLabel !== undefined) {
+      try {
+        reset = await removeLabel(state.ref, PHASE_LABEL.implement)
+      } catch {
+        reset = false
+      }
+    }
+    if (!reset) {
+      await this.halt(
+        'validate',
+        `could not remove the stale "${PHASE_LABEL.implement}" label on ${state.ref} — the implement fix round would auto-advance on it; check aven and rerun /flow ${state.ref}`,
+        'label_reset_failed',
       )
       return true
     }
