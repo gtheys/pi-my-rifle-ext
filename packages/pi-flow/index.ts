@@ -1058,18 +1058,36 @@ export default function (
     // this session's worktree) or the pidfile predates tracking. A worktree's
     // own commits never move main HEAD, so they never trigger this.
     // Fire-and-forget + never-throws, like the telemetry probe above.
-    // Deliberately NOT gated on runServerEnabled — a disabled daemon is simply
-    // not alive → 'unchecked' → silent. ctx.cwd is passed explicitly because
-    // sessions may run outside the process cwd.
-    void warnDaemonStaleness(
-      sessionStalenessDeps(
-        (command: string, args: string[], options?: { cwd?: string }) =>
-          pi.exec(command, args, options),
-        getAgentDir(),
-        ctx.cwd,
-      ),
-      (message, level) => ctx.ui.notify(message, level),
-    )
+    // ctx.cwd is passed explicitly because sessions may run outside the process
+    // cwd.
+    // AIDEV-NOTE: PMR-7B8M rev 1 gated this on nothing ("a disabled daemon is
+    // simply not alive → unchecked → silent"). PMR-2FJ1 replaces that with an
+    // explicit runServer.enabled gate: the kill switch only stops THIS repo
+    // from spawning/using the daemon, so a daemon left alive by another repo
+    // or an earlier build still warned "restart the daemon" every session in a
+    // repo that never touches it. A config read failure keeps the enabled
+    // default (same posture as the resume-consumer sync below).
+    void (async () => {
+      let enabled = true
+      try {
+        const config = await loadConfig(ctx.cwd)
+        enabled = resolveRunServerEnabled(config)
+      } catch {
+        // best-effort: an unreadable config must not silence the warning
+      }
+      if (!enabled) {
+        return
+      }
+      await warnDaemonStaleness(
+        sessionStalenessDeps(
+          (command: string, args: string[], options?: { cwd?: string }) =>
+            pi.exec(command, args, options),
+          getAgentDir(),
+          ctx.cwd,
+        ),
+        (message, level) => ctx.ui.notify(message, level),
+      )
+    })()
     // AIDEV-NOTE: PMR-F8HB — register this workspace's aven project
     // prefixes so bare Jira-shaped aven refs (PMR-2424) classify as aven
     // instead of colliding with JIRA_RE. Best-effort: aven unavailable or
