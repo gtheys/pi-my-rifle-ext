@@ -125,6 +125,7 @@ import {
   runInputRecord,
 } from './flow/resume.ts'
 import {
+  ownerPidAlive,
   planResumePickerOutcome,
   type ResumeSelection,
 } from './flow/resume-picker.ts'
@@ -418,7 +419,17 @@ export default function (
       if (deps === null) {
         return []
       }
-      return deriveFlowRefs(deps)
+      // AIDEV-NOTE: PMR-RRW9 — ONLY the bind-adoption seam gets the
+      // owner-scoped filter inputs: the calling session's main session
+      // file (late-bound; refreshed on session_start) and the reused
+      // ownerPidAlive probe from flow/resume-picker.ts. deriveParkedCandidates
+      // (the resume picker) keeps the wide scan — the human arbitrates
+      // there via the owner-liveness hint.
+      return deriveFlowRefs({
+        ...deps,
+        callerSessionFile: mainSessionFile,
+        pidAlive: ownerPidAlive,
+      })
     }
   }
   // AIDEV-NOTE: PMR-T9ZQ 3.1 — production rich-candidate scanner for the

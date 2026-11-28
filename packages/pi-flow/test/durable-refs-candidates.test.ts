@@ -10,7 +10,8 @@ import { readRunEvents } from '../run-state.ts'
 // AIDEV-NOTE: PMR-T9ZQ — rich candidate derivation for the parked-run resume
 // picker. deriveParkedCandidates must share ONE scan with deriveFlowRefs, so
 // these tests pin the mapping (phase/status/updatedAt/owner/hasWorktree),
-// the identical filters, and the parked-first order. The fake io mirrors the
+// the shared base filters and parked-first order (the PMR-RRW9 bind-only
+// owner filter is covered separately below). The fake io mirrors the
 // real journal layout (<agentDir>/pi-flow/runs/<ref>.journal.jsonl) and the
 // production readRunEvents is used unmodified — the picker reads the same
 // projection the daemon writes.
@@ -81,22 +82,39 @@ function effectDeclarationEvent(
 }
 
 function ownerSessionEvent(ref: string) {
+  return ownerSessionEventFor(ref, '/agent/sessions/main.jsonl', 4242)
+}
+
+function ownerSessionEventFor(
+  ref: string,
+  sessionFile: string | null,
+  pid: number,
+) {
   return {
     kind: 'owner-session' as const,
     at: '2026-11-20T00:05:00Z',
     ref,
-    sessionFile: '/agent/sessions/main.jsonl',
-    pid: 4242,
+    sessionFile,
+    pid,
   }
 }
 
 type Journal = Record<string, unknown[]>
 
-function makeDeps(journals: Journal, options?: { readdirThrows?: boolean }) {
+function makeDeps(
+  journals: Journal,
+  options?: {
+    readdirThrows?: boolean
+    callerSessionFile?: string | null
+    pidAlive?: (pid: number) => boolean
+  },
+) {
   const deps: DurableRefDeps = {
     pendingDir: PENDING_DIR,
     agentDir: AGENT_DIR,
     gitRoot: GIT_ROOT,
+    callerSessionFile: options?.callerSessionFile,
+    pidAlive: options?.pidAlive,
     io: {
       readdir: async () => {
         if (options?.readdirThrows === true) {
@@ -304,5 +322,135 @@ describe('deriveParkedCandidates', () => {
       ),
       [],
     )
+  })
+})
+
+// AIDEV-NOTE: PMR-RRW9 — bind-adoption is owner-scoped, the picker scan is
+// not. deriveFlowRefs must skip pending records whose journaled owner is a
+// LIVE session other than the caller (another session's live flow in the
+// same repo is not a resume candidate), while dead-owner records (the
+// cross-session restart case PMR-DRKH/PMR-T9ZQ were built for) and records
+// owned by the calling session itself stay adoptable.
+describe('deriveFlowRefs owner-scoped adoption', () => {
+  test('skips a record owned by a live foreign session', async () => {
+    const refs = await deriveFlowRefs(
+      makeDeps(
+        {
+          'PMR-FOREIGN': [
+            runStartEvent('PMR-FOREIGN'),
+            inputEvent('PMR-FOREIGN', GIT_ROOT),
+            phaseStartEvent('PMR-FOREIGN', 'implement'),
+            loopEvent('PMR-FOREIGN', 'running', false),
+            ownerSessionEventFor(
+              'PMR-FOREIGN',
+              '/agent/sessions/other.jsonl',
+              4242,
+            ),
+          ],
+        },
+        {
+          callerSessionFile: '/agent/sessions/main.jsonl',
+          pidAlive: () => true,
+        },
+      ),
+    )
+    assert.deepEqual(refs, [])
+  })
+
+  test('still adopts a record whose owner pid is dead (restart case)', async () => {
+    const refs = await deriveFlowRefs(
+      makeDeps(
+        {
+          'PMR-RESTART': [
+            runStartEvent('PMR-RESTART'),
+            inputEvent('PMR-RESTART', GIT_ROOT),
+            phaseStartEvent('PMR-RESTART', 'implement'),
+            loopEvent('PMR-RESTART', 'running', false),
+            ownerSessionEventFor(
+              'PMR-RESTART',
+              '/agent/sessions/old.jsonl',
+              4242,
+            ),
+          ],
+        },
+        {
+          callerSessionFile: '/agent/sessions/main.jsonl',
+          pidAlive: () => false,
+        },
+      ),
+    )
+    assert.deepEqual(refs, ['PMR-RESTART'])
+  })
+
+  test('still adopts a record owned by the calling session itself', async () => {
+    const refs = await deriveFlowRefs(
+      makeDeps(
+        {
+          'PMR-SELF': [
+            runStartEvent('PMR-SELF'),
+            inputEvent('PMR-SELF', GIT_ROOT),
+            phaseStartEvent('PMR-SELF', 'implement'),
+            loopEvent('PMR-SELF', 'running', false),
+            ownerSessionEventFor(
+              'PMR-SELF',
+              '/agent/sessions/main.jsonl',
+              4242,
+            ),
+          ],
+        },
+        {
+          callerSessionFile: '/agent/sessions/main.jsonl',
+          pidAlive: () => true,
+        },
+      ),
+    )
+    assert.deepEqual(refs, ['PMR-SELF'])
+  })
+
+  test('fail-closed: a live owner with no sessionFile is skipped', async () => {
+    const refs = await deriveFlowRefs(
+      makeDeps(
+        {
+          'PMR-NOSESSION': [
+            runStartEvent('PMR-NOSESSION'),
+            inputEvent('PMR-NOSESSION', GIT_ROOT),
+            phaseStartEvent('PMR-NOSESSION', 'implement'),
+            loopEvent('PMR-NOSESSION', 'running', false),
+            ownerSessionEventFor('PMR-NOSESSION', null, 4242),
+          ],
+        },
+        {
+          callerSessionFile: '/agent/sessions/main.jsonl',
+          pidAlive: () => true,
+        },
+      ),
+    )
+    assert.deepEqual(refs, [])
+  })
+
+  test('deriveParkedCandidates keeps the wide scan for a foreign live owner', async () => {
+    const journals: Journal = {
+      'PMR-FOREIGN': [
+        runStartEvent('PMR-FOREIGN'),
+        inputEvent('PMR-FOREIGN', GIT_ROOT),
+        phaseStartEvent('PMR-FOREIGN', 'implement'),
+        loopEvent('PMR-FOREIGN', 'running', true),
+        ownerSessionEventFor(
+          'PMR-FOREIGN',
+          '/agent/sessions/other.jsonl',
+          4242,
+        ),
+      ],
+    }
+    const options = {
+      callerSessionFile: '/agent/sessions/main.jsonl',
+      pidAlive: () => true,
+    }
+    const candidates = await deriveParkedCandidates(makeDeps(journals, options))
+    assert.deepEqual(
+      candidates.map((c) => c.ref),
+      ['PMR-FOREIGN'],
+    )
+    assert.deepEqual(await deriveFlowRefs(makeDeps(journals, options)), [])
   })
 })

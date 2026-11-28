@@ -5,11 +5,13 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
+import { type DurableRefDeps, deriveFlowRefs } from '../flow/durable-refs.ts'
 import {
   getActiveFlowRef,
   getFlowWorktree,
   setActiveFlowRef,
 } from '../flow/worktree-context.ts'
+import { readRunEvents } from '../run-state.ts'
 import worktreeExtension from '../worktree/index.ts'
 import { mkTmpDir } from './tmpdir.ts'
 
@@ -175,5 +177,91 @@ test('bind heal: empty candidate list falls back to the unchanged refusal', asyn
   const text = result.content[0]?.text ?? ''
   assert.ok(text.startsWith('No active flow ref'), text)
   assert.equal(getActiveFlowRef(), null)
+  assert.equal(getFlowWorktree(), null)
+})
+
+// AIDEV-NOTE: PMR-RRW9 — end-to-end bind regression for the owner-scoped
+// adoption filter: the seam below is the REAL deriveFlowRefs over a fake
+// pending record owned by a LIVE foreign session (the PMR-B033 incident
+// shape), not a mocked empty list — so the zero-survivor refusal is reached
+// through the new filtering, and nothing is adopted.
+function foreignLiveOwnerDeps(): DurableRefDeps {
+  const events = [
+    {
+      kind: 'run-start',
+      at: '2026-11-28T00:00:00Z',
+      ref: 'PMR-R77R',
+      mode: 'work',
+    },
+    {
+      kind: 'run-input',
+      at: '2026-11-28T00:01:00Z',
+      ref: 'PMR-R77R',
+      input: { mode: 'work', gitRoot: '/repo', workRoots: [] },
+    },
+    {
+      kind: 'phase-start',
+      at: '2026-11-28T00:02:00Z',
+      ref: 'PMR-R77R',
+      phase: 'validate',
+    },
+    {
+      kind: 'loop-state',
+      at: '2026-11-28T00:03:00Z',
+      ref: 'PMR-R77R',
+      loop: {
+        phase: 'validate',
+        awaitingOutcome: true,
+        blockerRetries: 0,
+        validateStartedAt: '2026-11-28T00:00:00Z',
+        status: 'running',
+      },
+    },
+    {
+      kind: 'owner-session',
+      at: '2026-11-28T00:04:00Z',
+      ref: 'PMR-R77R',
+      sessionFile: '/agent/sessions/other.jsonl',
+      pid: 4242,
+    },
+  ]
+  return {
+    pendingDir: '/agent/pi-flow/pending',
+    agentDir: '/agent',
+    gitRoot: '/repo',
+    callerSessionFile: '/agent/sessions/main.jsonl',
+    pidAlive: () => true,
+    io: {
+      readdir: async () => ['PMR-R77R.json'],
+      readFile: async (p) => {
+        if (!p.endsWith('/PMR-R77R.journal.jsonl')) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        }
+        return `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
+      },
+    },
+    readRunEvents,
+  }
+}
+
+test('bind heal: a foreign live-owner record is not adopted; refusal is the zero-candidate one', async () => {
+  const dir = mkTmpDir('wt-heal-')
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }], {
+    deps: {
+      deriveFlowRefs: () => deriveFlowRefs(foreignLiveOwnerDeps()),
+    },
+  })
+  setActiveFlowRef(null)
+  const result = await execute(
+    'heal-6',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  const text = result.content[0]?.text ?? ''
+  assert.ok(text.startsWith('No active flow ref'), text)
+  assert.ok(!text.includes('PMR-R77R'), text)
+  assert.equal(getActiveFlowRef(), null, 'foreign live flow never adopted')
   assert.equal(getFlowWorktree(), null)
 })

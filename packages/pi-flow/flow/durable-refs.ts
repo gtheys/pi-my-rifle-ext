@@ -19,10 +19,17 @@ import {
 // itself so tests can run against fakes and consumers control resolution.
 // AIDEV-NOTE: PMR-T9ZQ — the scan body is shared (scanRunStates) between
 // deriveFlowRefs (plain refs, binding self-heal) and deriveParkedCandidates
-// (rich records for the parked-run resume picker). Both mappers MUST keep the
-// same filters and the same parked-first order — the picker and the self-heal
-// have to agree on what is live; test/durable-refs-candidates.test.ts pins
-// that equality.
+// (rich records for the parked-run resume picker). Both mappers keep the
+// same base filters (gitRoot match, non-terminal loop) and the same
+// parked-first order — the picker and the self-heal have to agree on what
+// is live; test/durable-refs-candidates.test.ts pins that equality.
+// AIDEV-NOTE: PMR-RRW9 — the two mappers no longer share the FULL filter
+// set: deriveFlowRefs additionally drops records owned by a LIVE foreign
+// session (owner-scoped adoption, isForeignLiveOwner below), because a
+// worktree bind must never adopt another running session's flow. The
+// picker deliberately keeps the wider scan — it puts every candidate in
+// front of the human with an owner-liveness hint (flow/resume-picker.ts),
+// so the human, not the scan, arbitrates there.
 //
 // DERIVATION-ONLY RULES (PMR-DRKH gotcha 5, consent gate added by PMR-T9ZQ):
 // this scan is a *derivation*, never a consumption — only consumePending
@@ -47,6 +54,17 @@ export interface DurableRefDeps {
   ) => Promise<FlowRunEvent[] | null>
   agentDir: string
   gitRoot: string
+  /**
+   * AIDEV-NOTE: PMR-RRW9 — bind-adoption owner filter inputs, consumed by
+   * deriveFlowRefs ONLY (deriveParkedCandidates keeps the wide scan).
+   * `callerSessionFile` is the calling session's main session file (null
+   * when the caller has none); `pidAlive` is the owner-pid liveness probe
+   * (production injects ownerPidAlive from flow/resume-picker.ts). Both
+   * optional: when `pidAlive` is absent the scan keeps the legacy
+   * owner-agnostic behavior (tests and pre-PMR-RRW9 callers).
+   */
+  callerSessionFile?: string | null
+  pidAlive?: (pid: number) => boolean
 }
 
 function isCandidateName(name: string): boolean {
@@ -58,6 +76,30 @@ function keepRef(state: FlowRunState, gitRoot: string): boolean {
   if (state.input.gitRoot !== gitRoot) return false
   if (state.loop === undefined) return false
   return NON_TERMINAL.includes(state.loop.status)
+}
+
+/**
+ * AIDEV-NOTE: PMR-RRW9 — true when the record's journaled owner is a LIVE
+ * session that is not provably the caller, so bind adoption must skip it
+ * (the PMR-B033 incident: bind adopted a different session's live flow in
+ * the same repo). Kept adoptable: records without an owner (pre-owner
+ * journals), records whose owner pid is dead (the cross-session restart
+ * resume PMR-DRKH/PMR-T9ZQ were built for), and records whose owner
+ * sessionFile matches the caller. FAIL-CLOSED: a live owner with no
+ * sessionFile (or a caller with none to compare) cannot be proven to be
+ * the caller, so it is treated as foreign. When no liveness probe is
+ * injected the legacy owner-agnostic behavior is preserved.
+ */
+function isForeignLiveOwner(
+  state: FlowRunState,
+  deps: DurableRefDeps,
+): boolean {
+  if (deps.pidAlive === undefined) return false
+  const owner = state.owner
+  if (owner === undefined) return false
+  if (!deps.pidAlive(owner.pid)) return false
+  if (owner.sessionFile === null) return true
+  return owner.sessionFile !== deps.callerSessionFile
 }
 
 /**
@@ -146,14 +188,18 @@ async function scanRunStates(deps: DurableRefDeps): Promise<ScannedRun[]> {
  * Scan <pendingDir> for pending records and return refs that are still
  * live for the given repo: latest journaled input.gitRoot matches and the
  * loop state is non-terminal (running/paused). Parked runs
- * (awaitingOutcome) sort before paused/running. Any candidate whose journal
- * is missing or unreadable is silently skipped; readdir failure yields an
- * empty list — this function never throws.
+ * (awaitingOutcome) sort before paused/running. Records owned by a LIVE
+ * foreign session are dropped (owner-scoped adoption, PMR-RRW9 — see
+ * isForeignLiveOwner; deriveParkedCandidates deliberately does NOT apply
+ * this filter). Any candidate whose journal is missing or unreadable is
+ * silently skipped; readdir failure yields an empty list — this function
+ * never throws.
  */
 export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
   const entries = await scanRunStates(deps)
   const refs: string[] = []
   for (const entry of entries) {
+    if (isForeignLiveOwner(entry.state, deps)) continue
     refs.push(entry.ref)
   }
   return refs
@@ -161,7 +207,7 @@ export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
 
 /**
  * AIDEV-NOTE: PMR-T9ZQ — rich variant of deriveFlowRefs for the parked-run
- * resume picker: same scan, same filters, same parked-first order, but one
+ * resume picker: same scan, same base filters and parked-first order, but one
  * ParkedCandidate per ref carrying what the menu label and the owner hint
  * need. Pure derivation (no consumption, no side effects).
  */

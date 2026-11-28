@@ -12,11 +12,11 @@
 // pi-interactive-subagents assignments.ts:206-214. Cross-package runtime
 // imports are forbidden, so it is duplicated here on purpose; keep both
 // copies' semantics (ESRCH=dead, EPERM=alive, other=dead) in sync.
-// Pid REUSE IS AN ACCEPTED DISPLAY-ONLY RISK (mirrors assignments.ts:64): a
-// dead owner's pid may be recycled by an unrelated process, which can make
-// the hint read "appears alive" when the owner is gone. Nothing here gates
-// on liveness — the hint never blocks, pre-selects, or auto-resumes; the
-// human decision is authoritative.
+// Pid REUSE IS AN ACCEPTED RISK (mirrors assignments.ts:64): a dead owner's
+// pid may be recycled by an unrelated process. In this picker the answer is
+// display-only and never blocks, pre-selects, or auto-resumes. PMR-RRW9 also
+// uses the probe for bind adoption: there, a reused live pid plus a session
+// mismatch fails closed and leaves explicit /flow recovery to the human.
 
 import type { OwnerRecord } from '../run-state.ts'
 import type { ParkedCandidate } from './durable-refs.ts'
@@ -93,7 +93,8 @@ function errorCode(err: unknown): string {
  * performs permission/existence checks without signalling. ESRCH → dead;
  * EPERM → alive (another user's process); success → alive; any other throw
  * (incl. a non-positive pid, which would otherwise mean "signal my own
- * process group") → dead. Display-only: nothing gates on the answer.
+ * process group") → dead. The picker displays the answer; deriveFlowRefs
+ * additionally uses it for fail-closed bind adoption (PMR-RRW9).
  */
 export function ownerPidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false
