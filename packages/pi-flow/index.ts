@@ -1249,9 +1249,11 @@ export default function (
   // `<parent id>/<n>`. PRIMARY tier: the emitter skips any open whose
   // `parentToolCallId` is set, because a nested ask is owned by a tool that
   // journals its own wait (tools/code-review.ts does exactly this). SECONDARY
-  // tier: for a non-nested open, the journal-tail `waiting_human` scan
-  // (resumeV2StateFromEvents) skips a double-open when a loop-owned wait is
-  // already journaled. DEFENCE IN DEPTH: correctness would survive even
+  // tier: for a non-nested open, the journal-tail `waiting_human` scan (the
+  // emitter's module-local `lastV2StateRecord` — the SAME derivation the close
+  // uses, so the close never demands more of the journal than the open did)
+  // skips a double-open when a loop-owned wait is already journaled.
+  // DEFENCE IN DEPTH: correctness would survive even
   // without the primary check, because the emitter's close is Map-gated on
   // toolCallId and can never fire for a call it did not open — but the
   // primary check is the load-bearing mechanism, not a fallback.
