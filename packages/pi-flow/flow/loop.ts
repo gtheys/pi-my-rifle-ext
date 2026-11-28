@@ -237,9 +237,13 @@ export interface FlowLoop {
    * reaches emitStateChange where the hold lives — no predicate, wide or narrow,
    * could suppress it. It is the PMR-ZV9Y P1 invalidation case documented just
    * above (a tool journals a wait with no running return, so the observer must
-   * un-pin lastEmittedV2), and being a newer external state whose reason is not
-   * self-closing, its observation CLEARS the flag. See the skip-rule note in
-   * emitStateChange.
+   * un-pin lastEmittedV2). Its observation also CLEARS the flag, and the
+   * clearing mechanism is the STATE dimension: the observed state is
+   * `waiting_machine`, not `waiting_human`, so the `state === 'waiting_human'`
+   * guard in the body short-circuits and the reason is never consulted
+   * (PMR-FM0F — a not-self-closing reason is a secondary property here, not the
+   * operative mechanism, since SELF_CLOSING_HUMAN_WAITS is human-only anyway).
+   * See the skip-rule note in emitStateChange.
    */
   noteExternalV2State(
     ref: string,
@@ -821,8 +825,11 @@ class FlowLoopImpl implements FlowLoop {
     //   registerDeviationReviewTool), so it never reaches this emitStateChange
     //   hold at all — neither the narrow predicate nor the reverted wide one
     //   could suppress it. It is the PMR-ZV9Y P1 invalidation case noted on
-    //   noteExternalV2State above, and as a newer external state whose reason is
-    //   not self-closing, its observation CLEARS the flag.
+    //   noteExternalV2State above. Its observation CLEARS the flag, decided on
+    //   the STATE dimension: the observed state is `waiting_machine`, so the
+    //   `state === 'waiting_human'` guard short-circuits and the reason is never
+    //   consulted (PMR-FM0F — the non-self-closing reason is a secondary note,
+    //   not the operative mechanism).
     //   Absent reason (a three-argument call) never arms, it only clears — which
     //   keeps the five protected PMR-ZV9Y tests green UNMODIFIED (they drive the
     //   observer without a reason).

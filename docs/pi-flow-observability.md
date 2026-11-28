@@ -294,7 +294,10 @@ the widening was safe and that both PMR-422Q findings were closed; neither claim
   `registerDeviationReviewTool(pi, writer)`), so it never passes through `emitStateChange` where the hold lives — no
   predicate, wide or narrow, could suppress it. It is the PMR-ZV9Y P1 invalidation case documented on
   `noteExternalV2State`: a tool journals a wait with no `running` return, so the observer must un-pin the loop's guard.
-  Its observation also CLEARS the live-wait flag, being a newer external state whose reason is not self-closing.
+  Its observation also CLEARS the live-wait flag, and that clear is decided on the **state** dimension: the observed
+  state is `waiting_machine`, not `waiting_human`, so the `state === 'waiting_human'` guard in `noteExternalV2State`
+  short-circuits and the reason is never consulted (PMR-FM0F — the non-self-closing reason is a secondary property,
+  not the operative mechanism; `SELF_CLOSING_HUMAN_WAITS` is human-only by construction anyway).
 - **The wider non-terminal hold that rode along with that fix was REVERTED (blocker 3).** It removed the loop's only
   in-run escape for a wait whose close never lands, and the paths that skip the close are ordinary ones: a fail-closed
   ask read in `flow/ask-emitter.ts` (unreadable journal, or a tail from which no valid `state-change` can be derived)
