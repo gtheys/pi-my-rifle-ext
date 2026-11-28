@@ -67,6 +67,14 @@ export interface DurableRefDeps {
    * itself) so a live owner with a null sessionFile can still be proven
    * to be the caller (headless flows journal no session file). Absent =>
    * fail closed, exactly as before.
+   * AIDEV-NOTE: PMR-MG9S — omitting `callerSessionFile` while injecting
+   * `pidAlive` fails CLOSED for every live-owned record: no owner
+   * sessionFile can be compared, so even a record owned by the caller is
+   * classified as foreign and skipped by deriveFlowRefs. The single
+   * exception is PMR-3N9N above: a live null-sessionFile owner whose pid
+   * exactly matches an injected `callerPid` stays adoptable. Production
+   * injects `callerSessionFile`, `callerPid`, and `pidAlive`, so this is
+   * a wiring sharp edge for alternate callers, not a current behavior bug.
    */
   callerSessionFile?: string | null
   callerPid?: number
