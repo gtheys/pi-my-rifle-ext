@@ -68,7 +68,9 @@
 // body drives nothing anymore; the pre-existing P2-4 "stored group the journal
 // no longer describes" limitation already covers this shape.
 //
-// AIDEV-NOTE: because a POST REPLACES THE WHOLE GROUP, the body must carry
+// AIDEV-NOTE: because a POST REPLACES THE WHOLE GROUP (official Pushgateway
+// semantics; the homelab build merges on write — PMR-WBC2, see above. The
+// full-body rule holds under both), the body must carry
 // every line that was stored — hence the GET-transform-POST round-trip via
 // `fetchGroupBody`. A body rebuilt from the journal could silently drop
 // worker cost rows (assignment records live only in extension memory), which
