@@ -49,6 +49,16 @@ export interface PlanPromptInput {
 // loop, and that restart emits the stop. So this prompt wait and those events
 // name the same step; rename in flow/steps.ts must be reflected here, and the
 // start()/advanceAfter emission sites must keep the pairing.
+// AIDEV-NOTE: PMR-S7FQ — the route gate in step 3 below is the OTHER
+// journalable plan boundary and it binds 1:1 to the evidence-only registry
+// name
+//   route confirmation = plan.route-confirmed   (flow/steps.ts STEP_REGISTRY.plan)
+// EVIDENCE-ONLY means no machine emits step-start/step-stop for it (unlike
+// plan.spec-approval above): flow_submit's step-output row is the whole record.
+// Name it in the prompt because flow/step-output.ts:301-308 hints on any
+// unregistered label once the phase registry is non-empty — before PMR-S7FQ an
+// honest route-gate submission could only ever warn. Rename in flow/steps.ts
+// must be reflected here and in docs/pi-flow-observability.md §5.
 const APPROVAL_SUFFIX = `
 Approval is recorded by the HUMAN, not the agent: the human runs
 "/flow answer <ticket ref> approve" (a human-only slash command — it starts

@@ -211,11 +211,20 @@ test('STEP_REGISTRY covers all four phases with the registered names only', () =
     'plan',
     'validate',
   ])
-  assert.deepEqual([...STEP_REGISTRY.plan], ['plan.spec-approval'])
+  // PMR-S7FQ: exhaustive snapshot — plan gained the evidence-only
+  // plan.route-confirmed, validate gained validate.review-tool and
+  // validate.land. implement/feedback stay EMPTY on purpose (the advisory is
+  // suppressed for an empty registry, see flow/step-output.ts:301-308).
+  assert.deepEqual(
+    [...STEP_REGISTRY.plan],
+    ['plan.spec-approval', 'plan.route-confirmed'],
+  )
   assert.deepEqual([...STEP_REGISTRY.validate].sort(), [
     'validate.aven-notes',
     'validate.code-review',
     'validate.deviation',
+    'validate.land',
+    'validate.review-tool',
     'validate.spec-diff',
   ])
   assert.deepEqual([...STEP_REGISTRY.implement], [])

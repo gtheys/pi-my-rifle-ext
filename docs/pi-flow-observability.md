@@ -407,13 +407,22 @@ liveness detail.
 
 | Phase | Registered steps |
 | --- | --- |
-| `plan` | `plan.spec-approval` |
+| `plan` | `plan.spec-approval`, `plan.route-confirmed` |
 | `implement` | *(empty — free-form step names only, advisory)* |
-| `validate` | `validate.code-review`, `validate.deviation`, `validate.spec-diff`, `validate.aven-notes` |
+| `validate` | `validate.code-review`, `validate.deviation`, `validate.spec-diff`, `validate.aven-notes`, `validate.review-tool`, `validate.land` |
 | `feedback` | *(empty — free-form)* |
 
-`validate.spec-diff` and `validate.aven-notes` are **documented names without machine-emitted start/stop** — no tool
-boundary exists for them (they are prose steps in `validate/prompt.ts`), so `flow_submit` evidence is all they get.
+`validate.spec-diff`, `validate.aven-notes`, `plan.route-confirmed`, `validate.review-tool` and `validate.land` are
+**documented names without machine-emitted start/stop** — no tool boundary exists for them (they are prose steps in
+`plan/prompt.ts` / `validate/prompt.ts`), so `flow_submit` evidence is all they get. PMR-S7FQ added the last three for
+exactly that reason: the prompt-mandated route, review-verdict and landing boundaries had no registered name, so every
+honest submission drew the advisory — and noise on every submission is what trains an agent to ignore it.
+
+**The empty `implement`/`feedback` registries are load-bearing — do not populate them.** `flow/step-output.ts:301-308`
+emits the advisory only when the phase registry is non-empty, so free-form labels in those phases are hint-free by
+design; registering even one name there switches the advisory on for every other free-form label and *increases* the
+noise PMR-S7FQ exists to remove (see the AIDEV anchors on those two entries in `flow/steps.ts`). The boundary they would
+name is already journaled without a registry entry.
 
 **Prompt letters are bound 1:1 to registry names via AIDEV anchors** (the D1–D3/H1 + approval-wait mapping; grep
 `PMR-ZV9Y 1.2 step registry` in `validate/prompt.ts` and `plan/prompt.ts`):
@@ -425,6 +434,9 @@ boundary exists for them (they are prose steps in `validate/prompt.ts`), so `flo
 | D2 | `validate.aven-notes` | `validate/prompt.ts` deviation gate |
 | D3 | `validate.deviation` | `validate/prompt.ts` deviation gate (the `deviation_review` tool boundary) |
 | H1 | `validate.code-review` | `validate/prompt.ts` `buildPersonalCodeReviewGate` (the `code_review` tool boundary) |
+| route gate (plan step 3) | `plan.route-confirmed` | `plan/prompt.ts` — **evidence-only**, the oneshot-vs-plan confirmation (PMR-S7FQ) |
+| review verdict (step 7/8) | `validate.review-tool` | `validate/prompt.ts` `buildReviewGateSection` + the yolo copy — **evidence-only**, the reviewer's `blockers_count` verdict (PMR-S7FQ) |
+| landing (step 9) | `validate.land` | `validate/prompt.ts` step 9 / `buildPersonalCodeReviewGate` — **evidence-only**, the `flow_land` authorization + landing command (PMR-S7FQ) |
 
 `flow_submit` (in `flow/step-output.ts`) gives an **advisory hint** on an unregistered step name (it lists the
 registered names) and **never rejects** — advisory posture throughout, a warned submission never gates a phase.

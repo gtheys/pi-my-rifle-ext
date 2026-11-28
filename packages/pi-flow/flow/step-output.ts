@@ -168,6 +168,9 @@ export type StepOutputInput = StepOutputFactFields & {
 // name (see flow/steps.ts STEP_REGISTRY). It is absent for phases whose
 // registry is empty (implement/feedback — free-form step labels are the
 // documented contract there) so the advisory never nags those runs.
+// PMR-S7FQ: that emptiness is load-bearing, not an omission — the
+// `registeredNames.length > 0` guard below is what keeps implement/feedback
+// hint-free, so registering names there would ADD noise rather than remove it.
 export type StepOutputResult =
   | { ok: true; event: StepOutputEventPayload; hint?: string }
   | { ok: false; reason: string }
@@ -299,6 +302,8 @@ export function buildStepOutputEvent(input: StepOutputInput): StepOutputResult {
   // text deliberately says "not in the <phase> step registry" +
   // "registered names" rather than "warning" so it reads as advisory
   // vocabulary and is distinguishable from the tool's verification warnings.
+  // PMR-S7FQ: the non-empty precondition is the whole reason implement and
+  // feedback never warn — see the AIDEV anchors on those STEP_REGISTRY entries.
   let hint: string | undefined
   const registeredNames = STEP_REGISTRY[input.phase]
   if (

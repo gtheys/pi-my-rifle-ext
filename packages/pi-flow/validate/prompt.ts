@@ -97,6 +97,22 @@ function buildBasePinStep(mode: 'work' | 'personal'): string {
 // deviation gate -> code_review -> labels/land/merge, so review-passed can
 // only land after the human pass and the loop cannot advance to feedback
 // before the merge.
+// AIDEV-NOTE: PMR-S7FQ — two EVIDENCE-ONLY registry names cover the validate
+// boundaries the prompts already ask an agent to journal but that had no name,
+// so every honest flow_submit there drew the registry advisory (flow_submit
+// hints only when the phase registry is non-empty: flow/step-output.ts:301-308):
+//   validate.review-tool = the review tool's blockers_count verdict (step 7/8
+//     below, BOTH modes and the yolo copy) — distinct from
+//     validate.code-review/H1, which is the HUMAN code_review gate;
+//   validate.land = the flow_land authorization plus the landing command
+//     (work step 9 push/PR, personal step 9 local ff-only merge).
+// Like validate.spec-diff / validate.aven-notes they have NO machine-emitted
+// step-start/step-stop pair: the flow_submit step-output row is the whole
+// record, so they add no boundary and no Prometheus step window. Rename in
+// flow/steps.ts must be reflected here and in docs/pi-flow-observability.md §5.
+// `gate-evidence` (the work-mode validate gate) stays FREE-FORM on purpose: it
+// is the unregistered example test/flow-submit-registry.test.ts pins the
+// advisory on, so registering it would break that protected contract.
 function buildReviewGateSection(
   mode: 'work' | 'personal',
   ref: string,
