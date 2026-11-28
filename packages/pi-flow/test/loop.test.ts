@@ -733,6 +733,12 @@ test('blocker route-back resets the gate: fix round never auto-completes on the 
     'stale label must not complete the fix round',
   )
   assert.equal(loop.isActive(), false)
+  // AIDEV-NOTE: PMR-85V1 — pin the halt to the label_miss path: isActive()
+  // alone would also pass on any other halt reason (e.g. aven_read_failed).
+  assert.match(
+    h.notes[0].text,
+    /flow halted at implement: phase completed without landing the "active" label/,
+  )
 })
 
 test('validate blockers persist: halts after the retry budget', async () => {
