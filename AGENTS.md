@@ -16,6 +16,26 @@ When working in this repository, read the OpenWiki quickstart first, then follow
 - TypeScript ESM npm workspaces monorepo. Packages live under `packages/*` and expose entrypoints through each package's `pi.extensions` manifest.
 - Extensions run inside Pi with user-level permissions. Treat config parsing, filesystem writes, and monkey-patches of Pi internals as high-risk changes.
 
+## Per-package verification commands #verification
+
+- **Scope a package's suite with `cd`, never with `-w`**:
+
+  ```bash
+  cd packages/<pkg> && bun run test     # the gate for a subtask/oneshot
+  ```
+
+  `bun run test -w <pkg>` is broken here: bun expands it to
+  `bun run --workspaces --if-present test -w <pkg>`, so the `-w` leaks into every
+  other workspace's test script — those fail with `error: Invalid Argument '-w'`
+  (`pi-sem` exits 9), and the whole command exits 1 even when the target
+  package's suite is fully green. Root `bun run test` (no `-w`) is the
+  all-workspaces suite; that is the correct, slower landing-gate command.
+- **From the repo root** the equivalent scoped forms are
+  `bun run --filter @gtheys/<pkg> test` and `bun run --cwd packages/<pkg> test`;
+  both run only that package and neither leaks flags.
+- Plan/subtask acceptance criteria and flow artifacts must print the `cd` form —
+  see the `feature-plan-aven` and `implement-plan-aven` skills.
+
 ## Style and code conventions
 
 - TypeScript is strict (`tsconfig.json`) and ESM (`type: module`). Keep explicit `.ts` suffixes on local imports.

@@ -280,6 +280,12 @@ later, in stage 2. Design points the plan must satisfy:
 - **Acceptance criteria must be checkable** — each phase's criteria end with
   the verification command (test runner, script, or manual check) captured in
   the interview, so a worker proves the phase done instead of guessing.
+  In a npm/bun workspaces repo the per-package command is
+  `cd packages/<pkg> && bun run test`, **never** `bun run test -w <pkg>`: bun
+  expands that to `--workspaces` and leaks `-w` into every other workspace's
+  test script, so it exits 1 even when the target package is green. Root
+  `bun run test` (all workspaces) stays the landing-gate command.
+  See the repo `AGENTS.md` (#verification).
 - **Phases must be testable blocks**: the planner designs each phase so the repo
   is left green at its end. Commits are scoped per SUBTASK, not per phase:
   the implement-phase flow rules mandate one commit per subtask whose message

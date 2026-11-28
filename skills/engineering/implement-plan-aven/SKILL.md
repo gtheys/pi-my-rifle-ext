@@ -328,7 +328,7 @@ inline; same steps otherwise. When in doubt, spawn the worker.
        "",
        "Files: <files to create/modify>",
        "",
-       "Write tests first, then implementation. Run the relevant tests via bash and show real output.",
+       "Write tests first, then implementation. Run the relevant tests via bash and show real output. In a bun/npm workspaces repo scope a package with `cd packages/<pkg> && bun run test` — never `bun run test -w <pkg>` (bun expands it to `--workspaces`, leaks `-w` into every other package, and exits 1 on a green target suite).",
        "Do NOT commit. Do NOT touch aven. Report changed files and test results in your final message.",
      ].join("\n"),
    })
@@ -352,7 +352,9 @@ inline; same steps otherwise. When in doubt, spawn the worker.
 
 ### Phase close — the test/commit cycle
 
-1. Run the project's full check once more (`run_tests({})` / repo runner).
+1. Run the project's full check once more (`run_tests({})` / repo runner). For a
+   single package use `cd packages/<pkg> && bun run test`; `bun run test -w <pkg>`
+   is not a thing that works here — see the repo `AGENTS.md` (#verification).
 2. Post the verification gate and **wait for human confirmation**:
 
    ```
