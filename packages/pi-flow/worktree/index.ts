@@ -14,6 +14,7 @@ import type {
 import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { recoveryCommand } from '../flow/binding-heal.ts'
+import type { FlowRefDerivation } from '../flow/durable-refs.ts'
 import { DEFAULT_RECIPES } from '../flow/effect-gate.ts'
 import {
   type FlowWorktree,
@@ -385,10 +386,28 @@ async function bindFlow(
     // zero/absent seam keeps the original refusal byte-for-byte (worktree
     // tests assert it), multiple lists a per-ref recovery command.
     let candidates: string[] = []
-    if (deps?.deriveFlowRefs) {
+    // AIDEV-NOTE: PMR-YN61 — the detailed seam additionally reports the
+    // refs the owner filter dropped as foreign-live, so the zero-survivor
+    // refusal can name them and their `/flow <ref>` recovery commands
+    // instead of hiding that a live foreign run exists. Foreign-skipped
+    // refs are NEVER adopted — they never enter `candidates`.
+    let foreignSkipped: string[] = []
+    if (deps?.deriveFlowRefsDetailed) {
+      const derivation = await deps.deriveFlowRefsDetailed()
+      candidates = derivation.refs
+      foreignSkipped = derivation.foreignSkipped
+    } else if (deps?.deriveFlowRefs) {
       candidates = await deps.deriveFlowRefs()
     }
     if (candidates.length === 0) {
+      if (foreignSkipped.length > 0) {
+        const lines = foreignSkipped.map((skipped) => {
+          return `  ${recoveryCommand(skipped)} — ${skipped}`
+        })
+        return errorResult(
+          `No active flow ref — nothing to bind to. ${NO_ACTIVE_FLOW_WARNING}\nSkipped foreign live flow(s) owned by another running session (NOT adopted):\n${lines.join('\n')}\nRecover one explicitly with the matching command above, then bind again.`,
+        )
+      }
       return errorResult(
         `No active flow ref — nothing to bind to. ${NO_ACTIVE_FLOW_WARNING}`,
       )
@@ -1229,9 +1248,14 @@ async function pruneFlow(
 // AIDEV-NOTE: PMR-DRKH — optional deriveFlowRefs seam for bind-time
 // self-heal; inject a scanner here from pi-flow/index.ts (real) or tests
 // (fake). Absent seam = zero candidates = original refusal.
+// AIDEV-NOTE: PMR-YN61 — optional detailed variant: when present it takes
+// precedence over deriveFlowRefs and additionally carries the foreign-live
+// refs the owner filter skipped, so the zero-survivor refusal can name
+// them (and their `/flow <ref>` recovery commands) without adopting them.
 export interface WorktreeDeps {
   effects?: EffectJournal
   deriveFlowRefs?: () => Promise<string[]>
+  deriveFlowRefsDetailed?: () => Promise<FlowRefDerivation>
 }
 
 export default function (pi: ExtensionAPI, deps?: WorktreeDeps) {

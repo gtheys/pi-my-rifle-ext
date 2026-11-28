@@ -78,8 +78,9 @@ import {
 } from './flow/cost-command.ts'
 import {
   type DurableRefDeps,
-  deriveFlowRefs,
+  deriveFlowRefsDetailed,
   deriveParkedCandidates,
+  type FlowRefDerivation,
   type ParkedCandidate,
 } from './flow/durable-refs.ts'
 import { mergeIntercept } from './flow/effect-gate.ts'
@@ -413,11 +414,11 @@ export default function (
       gitRoot,
     }
   }
-  const makeDeriveRefs = (): (() => Promise<string[]>) => {
+  const makeDeriveRefsDetailed = (): (() => Promise<FlowRefDerivation>) => {
     return async () => {
       const deps = await durableScanDeps()
       if (deps === null) {
-        return []
+        return { refs: [], foreignSkipped: [] }
       }
       // AIDEV-NOTE: PMR-RRW9 — ONLY the bind-adoption seam gets the
       // owner-scoped filter inputs: the calling session's main session
@@ -428,12 +429,22 @@ export default function (
       // AIDEV-NOTE: PMR-3N9N — callerPid is injected HERE (the only place
       // process.pid is read) so a live self-owned headless run (null
       // sessionFile, same pid after a reload) stays adoptable.
-      return deriveFlowRefs({
+      return deriveFlowRefsDetailed({
         ...deps,
         callerSessionFile: mainSessionFile,
         callerPid: process.pid,
         pidAlive: ownerPidAlive,
       })
+    }
+  }
+  const makeDeriveRefs = (): (() => Promise<string[]>) => {
+    // AIDEV-NOTE: PMR-YN61 — the plain string[] seam is a projection of the
+    // detailed one so the two owner-scoped wirings can never drift (same
+    // single-construction rule as durableScanDeps above).
+    const detailed = makeDeriveRefsDetailed()
+    return async () => {
+      const derivation = await detailed()
+      return derivation.refs
     }
   }
   // AIDEV-NOTE: PMR-T9ZQ 3.1 — production rich-candidate scanner for the
@@ -1449,9 +1460,14 @@ export default function (
   const worktreeEffects = createEffectJournal(getAgentDir())
   // AIDEV-NOTE: PMR-DRKH — worktree bind self-heal seam; the scanner is
   // the shared makeDeriveRefs() above (PMR-86NN).
+  // AIDEV-NOTE: PMR-YN61 — the detailed seam is wired alongside so the bind
+  // refusal can name foreign-live filtered refs and their `/flow <ref>`
+  // recovery commands; both seams share makeDeriveRefsDetailed's
+  // owner-scoped construction (callerSessionFile/callerPid/pidAlive).
   worktreeExtension(pi, {
     effects: worktreeEffects,
     deriveFlowRefs: makeDeriveRefs(),
+    deriveFlowRefsDetailed: makeDeriveRefsDetailed(),
   })
 
   // AIDEV-NOTE: PMR-YG2N 4.1 — background worktree sweep, latched fire-and-

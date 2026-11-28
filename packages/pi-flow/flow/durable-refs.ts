@@ -221,14 +221,39 @@ async function scanRunStates(deps: DurableRefDeps): Promise<ScannedRun[]> {
  * silently skipped; readdir failure yields an empty list — this function
  * never throws.
  */
-export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
+/**
+ * AIDEV-NOTE: PMR-YN61 — detailed bind-adoption derivation: the same scan
+ * and the same owner-scoped filter as deriveFlowRefs, but the refs dropped
+ * by the foreign-live-owner filter are returned alongside instead of
+ * vanishing. The worktree bind refusal uses `foreignSkipped` to name each
+ * filtered live foreign run and its `/flow <ref>` recovery command — it
+ * NEVER adopts them (they are not in `refs`). `deriveFlowRefs` keeps its
+ * plain string[] contract for its other callers by projecting `refs`.
+ */
+export interface FlowRefDerivation {
+  refs: string[]
+  foreignSkipped: string[]
+}
+
+export async function deriveFlowRefsDetailed(
+  deps: DurableRefDeps,
+): Promise<FlowRefDerivation> {
   const entries = await scanRunStates(deps)
   const refs: string[] = []
+  const foreignSkipped: string[] = []
   for (const entry of entries) {
-    if (isForeignLiveOwner(entry.state, deps)) continue
+    if (isForeignLiveOwner(entry.state, deps)) {
+      foreignSkipped.push(entry.ref)
+      continue
+    }
     refs.push(entry.ref)
   }
-  return refs
+  return { refs, foreignSkipped }
+}
+
+export async function deriveFlowRefs(deps: DurableRefDeps): Promise<string[]> {
+  const derivation = await deriveFlowRefsDetailed(deps)
+  return derivation.refs
 }
 
 /**
