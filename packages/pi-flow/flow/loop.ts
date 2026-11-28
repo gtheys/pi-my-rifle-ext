@@ -1110,7 +1110,7 @@ export function resumePlanApprovalOpenFromEvents(
 function fixRoundSuffix(ref: string): string {
   return `
 
-FIX ROUND (automatic retry after validate): read the MOST RECENT aven note on ${ref} containing "reviewed-at:" (aven show ${ref} --full). It lists the review blockers or deviation report. Fix EVERY item in it first, then run tests and commit.`
+FIX ROUND (automatic retry after validate): read the MOST RECENT aven note on ${ref} containing "reviewed-at:" (aven show ${ref} --full). It lists the review blockers or deviation report. Fix EVERY item in it first, then run tests and commit. The fix round RESETS the phase-completion gate (the stale completion label was removed) — after fixing, testing, and committing, call the flow_phase_complete tool with ref=${ref} and phase="implement" again; this round does not complete without a fresh call.`
 }
 
 function now(): string {
