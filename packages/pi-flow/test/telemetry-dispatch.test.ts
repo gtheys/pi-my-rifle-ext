@@ -944,6 +944,16 @@ test('index.ts wraps its ONE session writer in the fan-out dispatcher', () => {
     index.includes('const { ref, state, at, reason } = event'),
     'index.ts must destructure ref/state/at/reason FROM event so the values threaded into the loop guard are the event fields, not lookalike locals',
   )
+  // PMR-422Q 2.2: the heartbeat must be WIRED, not just implemented. The ask
+  // emitter gates its interval on `deps.renewLease` (flow/ask-emitter.ts), so
+  // dropping this line silently starts no timer at all: every self-closing
+  // live wait would break after ONE lease window — the exact stale-hold strand
+  // PMR-422Q exists to prevent — while the whole suite stayed green because the
+  // heartbeat units inject the dep themselves and never read index.ts.
+  assert.ok(
+    index.includes('renewLease: (ref) => loop.renewLiveWaitLease(ref)'),
+    'index.ts must wire the ask emitter heartbeat to loop.renewLiveWaitLease so the live-wait lease renews while asks are in flight',
+  )
 })
 
 test('the daemon side never gets the fan-out (Loki is session-side only)', () => {

@@ -1305,6 +1305,13 @@ export default function (
   // the fan-out's `onV2StateChangeObserved` handler is what calls
   // loop.noteExternalV2State to keep the loop's emission guard in sync with
   // tool-journaled waits (see the PMR-ZV9Y note at the fan-out construction).
+  // PMR-422Q 2.2 — the `renewLease` dep below is an IN-PROCESS PING, never a
+  // journal write: this emitter is the ask-liveness oracle (its heartbeatAsks
+  // map tracks nested asks too), so it may renew the loop's live-wait lease
+  // directly via loop.renewLiveWaitLease. That keeps the SINGLE-WRITER RULE
+  // intact — a beat touches neither `writer` nor the journal, so the journal
+  // can never grow from heartbeats (ISC-A-2) — and it is why the renewal is
+  // NOT routed through the onV2StateChangeObserved observer above.
   // NESTED-CALL CONTRACT (two-tier dedupe, doc-cited): a tool-owned ask made
   // via ctx.executeTool DOES re-fire these hooks — docs/extensions.md
   // "Calling Other Tools" (line 2794) states nested calls go through the
@@ -1333,6 +1340,7 @@ export default function (
     writer,
     readEvents: (ref) => readRunEvents(getAgentDir(), ref),
     now: () => new Date().toISOString(),
+    renewLease: (ref) => loop.renewLiveWaitLease(ref),
   })
   pi.on('tool_call', askEmitter.onToolCall)
   pi.on('tool_result', askEmitter.onToolFinalized)
