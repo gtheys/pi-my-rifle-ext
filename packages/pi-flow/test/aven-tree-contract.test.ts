@@ -42,6 +42,20 @@ describe('aven tree dependency contract (PMR-JVJN)', () => {
         if (/Subtask\s+title=/.test(line)) {
           assert.doesNotMatch(line, /depends_on/, `${name}: ${line.trim()}`)
         }
+        // AIDEV-NOTE: PMR-TJV1 — structural dep-add guard. The literal
+        // phrases above only catch exact wording, so a quoted shell form
+        // (the refs wrapped in double quotes) or a placeholder-rewrapped
+        // operand slipped past them and stayed green. Any line running
+        // `dep add` must not name a subtask operand — the only legal
+        // operands are phase/prev-phase, <phase N>, epic/jira, and the
+        // <blocked> <blocker> placeholder pair.
+        if (/\bdep add\b/.test(line)) {
+          const operands = line.slice(
+            line.indexOf('dep add') + 'dep add'.length,
+          )
+          assert.doesNotMatch(operands, /subtask/i, `${name}: ${line.trim()}`)
+          assert.doesNotMatch(operands, /\bSUB\b/, `${name}: ${line.trim()}`)
+        }
       }
     }
   })
