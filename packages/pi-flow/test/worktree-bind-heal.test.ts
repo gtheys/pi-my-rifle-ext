@@ -200,29 +200,44 @@ test('bind heal: empty candidate list falls back to the unchanged refusal', asyn
 // shape), not a mocked empty list — so the zero-survivor refusal is reached
 // through the new filtering, and nothing is adopted.
 function foreignLiveOwnerDeps(): DurableRefDeps {
+  return ownedRunDeps('PMR-R77R', () => true)
+}
+
+// AIDEV-NOTE: PMR-TTY7 — same journal shape as foreignLiveOwnerDeps but with
+// a DEAD owner pid: pidAlive: () => false makes the foreign sessionFile
+// irrelevant, so the record is the cross-session restart case
+// (PMR-DRKH/PMR-T9ZQ) and must be adopted, not skipped.
+function deadOwnerDeps(): DurableRefDeps {
+  return ownedRunDeps('PMR-DEAD1', () => false)
+}
+
+function ownedRunDeps(
+  ref: string,
+  pidAlive: (pid: number) => boolean,
+): DurableRefDeps {
   const events = [
     {
       kind: 'run-start',
       at: '2026-11-28T00:00:00Z',
-      ref: 'PMR-R77R',
+      ref,
       mode: 'work',
     },
     {
       kind: 'run-input',
       at: '2026-11-28T00:01:00Z',
-      ref: 'PMR-R77R',
+      ref,
       input: { mode: 'work', gitRoot: '/repo', workRoots: [] },
     },
     {
       kind: 'phase-start',
       at: '2026-11-28T00:02:00Z',
-      ref: 'PMR-R77R',
+      ref,
       phase: 'validate',
     },
     {
       kind: 'loop-state',
       at: '2026-11-28T00:03:00Z',
-      ref: 'PMR-R77R',
+      ref,
       loop: {
         phase: 'validate',
         awaitingOutcome: true,
@@ -234,7 +249,7 @@ function foreignLiveOwnerDeps(): DurableRefDeps {
     {
       kind: 'owner-session',
       at: '2026-11-28T00:04:00Z',
-      ref: 'PMR-R77R',
+      ref,
       sessionFile: '/agent/sessions/other.jsonl',
       pid: 4242,
     },
@@ -244,11 +259,11 @@ function foreignLiveOwnerDeps(): DurableRefDeps {
     agentDir: '/agent',
     gitRoot: '/repo',
     callerSessionFile: '/agent/sessions/main.jsonl',
-    pidAlive: () => true,
+    pidAlive,
     io: {
-      readdir: async () => ['PMR-R77R.json'],
+      readdir: async () => [`${ref}.json`],
       readFile: async (p) => {
-        if (!p.endsWith('/PMR-R77R.journal.jsonl')) {
+        if (!p.endsWith(`/${ref}.journal.jsonl`)) {
           throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
         }
         return `${events.map((e) => JSON.stringify(e)).join('\n')}\n`
@@ -278,6 +293,39 @@ test('bind heal: a foreign live-owner record is not adopted; refusal is the zero
   assert.ok(!text.includes('PMR-R77R'), text)
   assert.equal(getActiveFlowRef(), null, 'foreign live flow never adopted')
   assert.equal(getFlowWorktree(), null)
+})
+
+// AIDEV-NOTE: PMR-TTY7 — the missing bind-level half of dead-owner restart
+// adoption: the candidate-derivation level already pins it
+// (durable-refs-candidates.test.ts 'still adopts a record whose owner pid is
+// dead'), but nothing drove a dead-owner record through the REAL
+// deriveFlowRefs to an adopted AND bound worktree. This is that integration
+// test; the foreign-live refusal coverage above stays the negative half.
+test('bind heal: a dead-owner record is adopted and bound through the real deriveFlowRefs', async () => {
+  const dir = mkTmpDir('wt-heal-')
+  const execute = makeWorktreeTool([{ path: dir, branch: 'fix/x' }], {
+    deps: {
+      deriveFlowRefs: () => deriveFlowRefs(deadOwnerDeps()),
+    },
+  })
+  setActiveFlowRef(null)
+  const result = await execute(
+    'heal-12',
+    { action: 'bind', path: dir, branch: 'fix/x' },
+    new AbortController().signal,
+    undefined,
+    bindCtx,
+  )
+  const text = result.content[0]?.text ?? ''
+  assert.match(text, /Bound worktree/)
+  assert.match(text, /PMR-DEAD1/)
+  assert.match(text, /adopt/i)
+  assert.equal(getActiveFlowRef(), 'PMR-DEAD1')
+  assert.deepEqual(getFlowWorktree(), {
+    ref: 'PMR-DEAD1',
+    path: dir,
+    branch: 'fix/x',
+  })
 })
 
 // AIDEV-NOTE: PMR-3N9N — end-to-end bind seam for the self-owned headless
