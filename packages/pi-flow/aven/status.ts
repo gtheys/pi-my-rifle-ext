@@ -359,6 +359,27 @@ async function showTicketStatus(
   return { kind: 'ticket', status: record.status }
 }
 
+// AIDEV-NOTE (PMR-STDK): avenErrorText and classifyTicketStatuses each carry
+// the fail-closed error-text rule, and they are DELIBERATELY not the same
+// predicate. Do NOT consolidate them into one shared helper: it is
+// correctness/security-critical (a missed error line reads as a live ticket
+// and skips a tombstone, or the inverse), and unifying two slightly different
+// strictness levels is riskier than keeping two local copies.
+//
+// HOW the in-file copy differs from classifyTicketStatuses's inline rule:
+//   • classifyTicketStatuses checks `^(Error:|error\s)` across BOTH streams but
+//     the `^error\b` anchor on STDERR ONLY (stdout is the JSON payload, so a
+//     bare `error:` token there is tolerated until the JSON.parse fails closed).
+//   • avenErrorText applies `^(Error:|error\s)` AND `^error\b` to BOTH streams,
+//     so it is the STRICTER superset — a stdout line like `error: ...` trips it
+//     but not classifyTicketStatuses. Its caller (showTicketStatus, line ~343)
+//     reads a single-ticket show payload where the error can ride on either
+//     stream, hence the wider net.
+// WHAT MUST STAY IN SYNC: the two core `^(Error:|error\s)` patterns and the
+// "any error text on either stream => fail closed, never trust the exit code"
+// contract (aven exits 0 on its own errors). If one caller's `Error:` /
+// `error ` shape changes, audit the other in the same edit; the `^error\b`
+// stream scope is the ONLY intended divergence.
 /** The aven error-text rule (`Error:` / `error ` / indented `error:`) that
  *  classifyTicketStatuses applies inline, in one pass: returns the offending
  *  line, or null when neither stream carries one. NOT shared with
