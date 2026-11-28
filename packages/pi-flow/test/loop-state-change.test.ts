@@ -501,6 +501,66 @@ test('fix-round-3 #1: halt before plan completes still journals the step-stop, B
   )
 })
 
+// AIDEV-NOTE: PMR-F79K — the invariant behind removing advanceAfter's
+// "idempotent fallback" stop. That branch could never fire: the spec-approval
+// pause sets specApprovalStepOpen AND nulls this.state in the same block,
+// onSettled bails on a null state, and start() always clears the flag before
+// it can reach advanceAfter. So the restart path in start() is the ONLY close,
+// which means a run that pauses for approval and is never re-entered keeps its
+// plan.spec-approval step open (the journal says the human still owes an
+// answer — true). These two pins hold both halves of that statement.
+test('PMR-F79K: the restart in start() is the ONLY plan.spec-approval close', async () => {
+  // Half 1: pause, then settle again with the plan label landed and NO restart
+  // -> no step-stop anywhere. advanceAfter never runs on a nulled instance, so
+  // the deleted fallback branch had nothing to close.
+  const open = makeHarness([])
+  open.planState = 'review'
+  const openLoop = createFlowLoop(open.deps)
+  await openLoop.start(startInput())
+  await openLoop.onSettled() // pause -> step-start, state nulled
+  open.planState = 'approved'
+  open.labels = ['planned']
+  await openLoop.onSettled() // bails: this.state === null
+  assert.equal(
+    open.v2.filter((e) => e.kind === 'step-stop').length,
+    0,
+    'a never-re-entered pause must not emit a step-stop',
+  )
+  assert.deepEqual(
+    v2View(open).filter((e) => e.kind === 'step-start'),
+    [{ kind: 'step-start', phase: 'plan', step: 'plan.spec-approval' }],
+    'the approval step stays open until a restart closes it',
+  )
+
+  // Half 2: the restart closes it exactly once, ordered before the running
+  // snapshot, and advancing the plan phase afterwards adds nothing.
+  const closed = makeHarness([])
+  closed.planState = 'review'
+  const closedLoop = createFlowLoop(closed.deps)
+  await closedLoop.start(startInput())
+  await closedLoop.onSettled() // pause -> step-start
+  closed.planState = 'approved'
+  closed.labels = ['planned']
+  const beforeRestart = closed.v2.length
+  await closedLoop.start({
+    ...startInput(),
+    resumeState: 'waiting_human',
+    resumePlanApprovalOpen: true,
+  }) // restart -> the only step-stop
+  // Behaviour 3 order, measured on the restart's OWN events (the initial start
+  // already journaled a running snapshot further back).
+  assert.deepEqual(v2View(closed).slice(beforeRestart, beforeRestart + 2), [
+    { kind: 'step-stop', phase: 'plan', step: 'plan.spec-approval' },
+    { kind: 'state-change', state: 'running', reason: undefined },
+  ])
+  await closedLoop.onSettled() // planned lands -> advanceAfter('plan')
+  assert.equal(
+    closed.v2.filter((e) => e.kind === 'step-stop').length,
+    1,
+    'advancing the plan phase must not emit a second stop',
+  )
+})
+
 test('fix-round-3 #1: no double step-stop when advanceAfter later closes the plan phase', async () => {
   const h = makeHarness([])
   h.planState = 'review'

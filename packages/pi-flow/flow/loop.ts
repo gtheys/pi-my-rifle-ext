@@ -483,11 +483,15 @@ class FlowLoopImpl implements FlowLoop {
     // and the step would leak. /flow answer reject routes the spec back to
     // draft (more plan work, no label) — the wait STILL ENDED, so step-stop is
     // correct there too; both answers restart the loop and neither keeps the
-    // approval step open. This does NOT replace the advanceAfter close, it
-    // pre-empts it: the flag is cleared here, so the same `if (phase === 'plan'
-    // && this.specApprovalStepOpen)` guard in advanceAfter (kept as an
-    // idempotent fallback for the same-instance pause→advance path that skips a
-    // fresh start) cannot double-stop — at-most-once is guaranteed by the flag.
+    // approval step open. PMR-F79K: this is the ONLY close. The advanceAfter
+    // "idempotent fallback" stop that used to sit here as a second safety net
+    // was provably unreachable — the pause below sets the flag AND nulls
+    // `this.state` in the same block, onSettled bails on a null state, and this
+    // method clears the flag on every re-entry — so it was removed; the pin is
+    // 'PMR-F79K: the restart in start() is the ONLY plan.spec-approval close'
+    // in test/loop-state-change.test.ts. Consequence, stated plainly: a run that
+    // pauses for approval and is never re-entered keeps its step open, which is
+    // honest — the human still owes an answer.
     if (this.specApprovalStepOpen) {
       this.emitStep('step-stop', 'plan', 'plan.spec-approval')
       this.specApprovalStepOpen = false
@@ -577,11 +581,13 @@ class FlowLoopImpl implements FlowLoop {
           // plan.spec-approval step boundary. The matching step-stop is emitted
           // at the EARLIEST restart site — start(), when the seeded
           // specApprovalStepOpen flag says the step is still open (fix-round-3,
-          // deviation #1) — ordered BEFORE the running snapshot, with the
-          // advanceAfter plan phase-complete close kept as an idempotent
-          // fallback for the same-instance pause→advance path. The
-          // specApprovalStepOpen flag pairs them so a run that never paused
-          // emits no orphan stop and at-most-once stop is journaled.
+          // deviation #1) — ordered BEFORE the running snapshot. PMR-F79K: that
+          // restart close is the ONLY close (the unreachable advanceAfter
+          // fallback is gone), and `this.state = null` two lines below is what
+          // makes it so: no settle can advance a paused instance, so a run that
+          // is never re-entered legitimately keeps the step open. The
+          // specApprovalStepOpen flag pairs start and stop so a run that never
+          // paused emits no orphan stop and at-most-one stop is journaled.
           this.snapshot('paused', 'spec_approval_pending')
           this.emitStep('step-start', 'plan', 'plan.spec-approval')
           this.specApprovalStepOpen = true
@@ -931,20 +937,13 @@ class FlowLoopImpl implements FlowLoop {
       phase,
       label: PHASE_LABEL[phase],
     })
-    // AIDEV-NOTE: PMR-ZV9Y 2.1 — spec-approval step-stop (IDEMPOTENT FALLBACK
-    // only). The PRIMARY close is now in start() (fix-round-3, deviation #1):
-    // a restart-after-answer emits step-stop BEFORE the running snapshot. This
-    // plan phase-complete close stays for the SAME-INSTANCE pause→advance path
-    // that reaches advanceAfter without a fresh start() — e.g. the loop pauses
-    // for approval, the human answers, and the next onSettled lands the label
-    // on the still-running instance. It is guarded by the SAME
-    // specApprovalStepOpen flag start() clears, so it can never double-emit: at
-    // most one stop is ever journaled. `this.state` is still set here
-    // (teardown happens only in the done branch below).
-    if (phase === 'plan' && this.specApprovalStepOpen) {
-      this.emitStep('step-stop', 'plan', 'plan.spec-approval')
-      this.specApprovalStepOpen = false
-    }
+    // AIDEV-NOTE: PMR-ZV9Y 2.1 / PMR-F79K — there is deliberately NO
+    // plan.spec-approval step-stop here. An earlier "idempotent fallback" close
+    // in this method was unreachable (the pause nulls this.state, onSettled
+    // bails on a null state, and start() clears the pairing flag on every
+    // re-entry) and its comment described a pause→advance path that cannot
+    // exist; keeping it invited a simplification that would re-break
+    // fix-round-3 deviation #1. start() owns the close.
     const next = nextPhase(labels, this.state?.promptInput.mode)
     if (next.kind === 'done') {
       this.deps.journal({
