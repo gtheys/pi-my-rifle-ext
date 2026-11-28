@@ -1295,6 +1295,11 @@
                                 "index": 2,
                                 "text": "aven label miss"
                               },
+                              "label_reset_failed": {
+                                "color": "orange",
+                                "index": 7,
+                                "text": "label reset failed"
+                              },
                               "prompt_send_failed": {
                                 "color": "red",
                                 "index": 5,
@@ -1317,7 +1322,7 @@
                             "options": {
                               "match": "__other__",
                               "result": {
-                                "index": 7,
+                                "index": 8,
                                 "text": "—"
                               }
                             },
@@ -1871,6 +1876,11 @@
                                 "index": 5,
                                 "text": "label miss"
                               },
+                              "label_reset_failed": {
+                                "color": "orange",
+                                "index": 12,
+                                "text": "label reset failed"
+                              },
                               "prompt_send_failed": {
                                 "color": "red",
                                 "index": 8,
@@ -1903,7 +1913,7 @@
                             "options": {
                               "match": "__other__",
                               "result": {
-                                "index": 12,
+                                "index": 13,
                                 "text": "—"
                               }
                             },

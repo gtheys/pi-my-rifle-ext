@@ -53,6 +53,7 @@ export type FlowReason =
   | 'retry_budget_exhausted'
   | 'blocker_budget_exhausted'
   | 'label_miss'
+  | 'label_reset_failed'
   | 'deviation_gate_rerun'
   | 'subagent_in_flight'
   | 'subagent_ask_pending'
@@ -81,6 +82,7 @@ export const FLOW_REASONS: readonly FlowReason[] = [
   'retry_budget_exhausted',
   'blocker_budget_exhausted',
   'label_miss',
+  'label_reset_failed',
   'deviation_gate_rerun',
   'subagent_in_flight',
   'subagent_ask_pending',
@@ -113,6 +115,11 @@ export const WAIT_KIND: Readonly<Record<FlowReason, WaitKind>> = {
   retry_budget_exhausted: 'machine',
   blocker_budget_exhausted: 'machine',
   label_miss: 'machine',
+  // AIDEV-NOTE: PMR-B033 — machine wait: the blocker route-back could not
+  // reset the stale implement completion label (removal dep absent, returned
+  // false, or threw). Nothing interactive to answer; recovery is fixing aven
+  // reachability/the ticket labels and rerunning /flow <ref>.
+  label_reset_failed: 'machine',
   deviation_gate_rerun: 'machine',
   subagent_in_flight: 'machine',
   subagent_ask_pending: 'human',

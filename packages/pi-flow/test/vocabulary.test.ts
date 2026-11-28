@@ -29,7 +29,7 @@ test('FLOW_STATES is the v2 state enum (6 values)', () => {
   )
 })
 
-test('FLOW_REASONS is the v2 reason enum (12 values)', () => {
+test('FLOW_REASONS is the v2 reason enum (13 values)', () => {
   assert.deepEqual(
     [...FLOW_REASONS],
     [
@@ -39,6 +39,9 @@ test('FLOW_REASONS is the v2 reason enum (12 values)', () => {
       'retry_budget_exhausted',
       'blocker_budget_exhausted',
       'label_miss',
+      // PMR-B033: blocker route-back could not reset the stale implement
+      // completion label — fail-closed halt, machine wait.
+      'label_reset_failed',
       'deviation_gate_rerun',
       'subagent_in_flight',
       'subagent_ask_pending',

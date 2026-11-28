@@ -86,7 +86,7 @@ single source `flow/vocabulary.ts` (zero-import, pure) and mirrored in the Grafa
 | `state` | `running \| waiting_human \| waiting_machine \| halted \| done \| stale` | `flow/vocabulary.ts FlowState` |
 | `phase` | `plan \| implement \| validate \| feedback` | unchanged `FlowPhase` (loop / `PHASE_LABEL` world) |
 | `step` | registered names only (§4): `plan.spec-approval`, `validate.code-review`, `validate.deviation`, `validate.spec-diff`, `validate.aven-notes` | `flow/steps.ts STEP_REGISTRY` |
-| `reason` (closed enum, 12) | `spec_approval_pending \| code_review_pending \| escalation \| retry_budget_exhausted \| blocker_budget_exhausted \| label_miss \| deviation_gate_rerun \| subagent_in_flight \| subagent_ask_pending \| human_ask_pending \| prompt_send_failed \| aven_read_failed` | `flow/vocabulary.ts FlowReason` |
+| `reason` (closed enum, 13) | `spec_approval_pending \| code_review_pending \| escalation \| retry_budget_exhausted \| blocker_budget_exhausted \| label_miss \| label_reset_failed \| deviation_gate_rerun \| subagent_in_flight \| subagent_ask_pending \| human_ask_pending \| prompt_send_failed \| aven_read_failed` | `flow/vocabulary.ts FlowReason` |
 | `wait_kind` | `human \| machine` — derived from the reason | `reasonWaitKind()` (`spec_approval_pending`, `code_review_pending`, `escalation`, `subagent_ask_pending`, `human_ask_pending` → human; all others → machine) |
 | `gate` | `spec-review \| code-review \| deviation \| answer` | existing gate-answer labels, unchanged |
 
@@ -629,8 +629,8 @@ Four header **stat tiles** — `Waiting on me` (count of `pi_flow_state{state="w
 dash until its value mapping exists. The two panels use **different text on purpose**, because they answer different
 questions: **Waiting on me — act now** shows the `EXPECTED_ACTION` prose (`answer the agent (the ask in this session)`)
 since that column tells the operator what to do, while **Live state — all runs** shows the short label
-`mid-turn ask`. That panel's Reason mapping has twelve entries: `mid-turn ask` plus eleven siblings, of which TEN are
-short labels (`spec approval`, `code review`, `escalation`, `retry budget`, `blocker budget`, `label miss`, `gate rerun`,
+`mid-turn ask`. That panel's Reason mapping has thirteen entries: `mid-turn ask` plus twelve siblings, of which ELEVEN are
+short labels (`spec approval`, `code review`, `escalation`, `retry budget`, `blocker budget`, `label miss`, `label reset failed`, `gate rerun`,
 `subagent in flight`, `prompt send failed`, `aven read failed`) and ONE is the existing prose exception —
 `subagent_ask_pending` carries the long `answer the subagent (its pane or answer_subagent)` text, so the next person
 editing that panel should not "normalize" it to a short label by mistake. Colour is `light-blue` in both: green /
