@@ -818,6 +818,38 @@ export async function writeAvenLabel(
   }
 }
 
+// AIDEV-NOTE: PMR-B033 — the removal counterpart of writeAvenLabel. The ONLY
+// caller is the flow loop's blocker route-back (removeAvenLabel dep): when
+// validate routes back to implement for a fix round, the stale 'active' label
+// from the previous round must be cleared so the loop's label-presence check
+// cannot auto-complete the fix round. The agent bash interceptor keeps
+// blocking model-side removals, so lifecycle labels stay extension-governed
+// in BOTH directions. PMR-F8HB exact-ref guard first (an inexact ref must
+// never strip a lifecycle label from the wrong ticket); idempotent: label
+// already absent -> true with no exec (also sidesteps unknown CLI behavior
+// when removing a label the ticket doesn't have).
+export async function removeAvenLabel(
+  ref: string,
+  label: string,
+): Promise<boolean> {
+  const labels = await readAvenLabels(ref)
+  if (labels === null) return false
+  if (!labels.includes(label)) return true
+  try {
+    const args = await avenArgsWithWorkspace(
+      ['edit', ref, '--remove-label', label],
+      ref,
+    )
+    await execFileAsync('aven', args, {
+      timeout: AVEN_TIMEOUT_MS,
+    })
+    return true
+  } catch (error: unknown) {
+    recordAvenFailure(error)
+    return false
+  }
+}
+
 /**
  * PMR-F8HB — best-effort discovery of aven project prefixes (PMR, MNT, …)
  * via `aven project list --json`. Feeds registerAvenPrefixes (flow/ref-kind)

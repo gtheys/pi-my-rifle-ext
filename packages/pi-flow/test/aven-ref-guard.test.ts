@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict'
-import { chmodSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  chmodSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import {
   lastAvenResolutionFailure,
   readAvenLabels,
   readAvenSnapshot,
+  removeAvenLabel,
+  setAvenSessionCwd,
   ticketSnapshotFor,
 } from '../aven/client.ts'
 import { mkTmpDir } from './tmpdir.ts'
@@ -219,6 +227,129 @@ test('readAvenSnapshot: exec failure (non-zero exit) → null + recorded failure
         'expected a recorded exec failure',
       )
       assert.equal(await readAvenLabels('PMR-TPN7', 'ws'), null)
+    },
+    1,
+  )
+})
+
+// --- PMR-B033: removeAvenLabel — the removal counterpart of writeAvenLabel.
+// Dedicated shim (separate BIN dir): records every argv to a log file and
+// fails ONLY `edit` calls when RM_EDIT_EXIT is set, so the guard read can
+// succeed while the removal write fails. The shared shim above stays
+// byte-identical for the existing snapshot tests. ---
+
+const RM_BIN_DIR = mkTmpDir('pi-flow-aven-rm-bin-')
+const RM_ARGS_LOG = path.join(RM_BIN_DIR, 'argv.log')
+writeFileSync(
+  path.join(RM_BIN_DIR, 'aven'),
+  '#!/bin/sh\nprintf "%s\\n" "$*" >> "' +
+    RM_ARGS_LOG +
+    '"\nif [ "$1" = "edit" ] && [ -n "$RM_EDIT_EXIT" ]; then exit "$RM_EDIT_EXIT"; fi\nprintf "%s\\n" "$RM_SHOW_JSON"\nexit 0\n',
+)
+chmodSync(path.join(RM_BIN_DIR, 'aven'), 0o755)
+
+async function withRmAven<T>(
+  showJson: string,
+  fn: () => Promise<T>,
+  editExit?: number,
+): Promise<T> {
+  const previousPath = process.env.PATH ?? ''
+  const previousJson = process.env.RM_SHOW_JSON
+  const previousExit = process.env.RM_EDIT_EXIT
+  // A deterministic no-config cwd so avenOverrideArg finds no avenWorkspace
+  // override and the removal argv stays free of --workspace flags.
+  const emptyCwd = mkTmpDir('pi-flow-aven-rm-cwd-')
+  process.env.PATH = `${RM_BIN_DIR}:${previousPath}`
+  process.env.RM_SHOW_JSON = showJson
+  if (editExit !== undefined) process.env.RM_EDIT_EXIT = String(editExit)
+  rmSync(RM_ARGS_LOG, { force: true })
+  appendFileSync(RM_ARGS_LOG, '')
+  setAvenSessionCwd(emptyCwd)
+  try {
+    return await fn()
+  } finally {
+    process.env.PATH = previousPath
+    if (previousJson === undefined) delete process.env.RM_SHOW_JSON
+    else process.env.RM_SHOW_JSON = previousJson
+    if (previousExit === undefined) delete process.env.RM_EDIT_EXIT
+    else process.env.RM_EDIT_EXIT = previousExit
+    setAvenSessionCwd(undefined)
+  }
+}
+
+function rmArgsLines(): string[] {
+  return readFileSync(RM_ARGS_LOG, 'utf8').split('\n').filter(Boolean)
+}
+
+test('removeAvenLabel: success runs the removal argv with the exact ref', async () => {
+  const out = JSON.stringify({ ref: 'PMR-TPN7', labels: ['planned', 'active'] })
+  await withRmAven(out, async () => {
+    const ok = await removeAvenLabel('PMR-TPN7', 'active')
+    assert.equal(ok, true)
+    const lines = rmArgsLines()
+    const editLine = lines.find((l) => l.startsWith('edit '))
+    assert.equal(editLine, 'edit PMR-TPN7 --remove-label active')
+  })
+})
+
+test('removeAvenLabel: idempotent — label already absent returns true with no edit exec', async () => {
+  const out = JSON.stringify({ ref: 'PMR-TPN7', labels: ['planned'] })
+  await withRmAven(out, async () => {
+    const ok = await removeAvenLabel('PMR-TPN7', 'active')
+    assert.equal(ok, true)
+    const lines = rmArgsLines()
+    assert.equal(
+      lines.some((l) => l.startsWith('edit ')),
+      false,
+      'no removal exec when the label is already absent',
+    )
+  })
+})
+
+test('removeAvenLabel: fuzzy ref refuses with false and no edit exec (PMR-F8HB)', async () => {
+  const out = JSON.stringify({ ref: 'PMR-TPN7', labels: ['planned', 'active'] })
+  await withRmAven(out, async () => {
+    const ok = await removeAvenLabel('PMR-TPN', 'active')
+    assert.equal(ok, false)
+    assert.match(
+      lastAvenResolutionFailure() ?? '',
+      /aven matched PMR-TPN to PMR-TPN7 — not an exact ticket ref/,
+    )
+    const lines = rmArgsLines()
+    assert.equal(
+      lines.some((l) => l.startsWith('edit ')),
+      false,
+      'an inexact ref must never strip a label from the wrong ticket',
+    )
+  })
+})
+
+test('removeAvenLabel: failed label read returns false with no edit exec', async () => {
+  // show returns a ticket without a labels array -> bad-json -> read null.
+  const out = JSON.stringify({ ref: 'PMR-TPN7' })
+  await withRmAven(out, async () => {
+    const ok = await removeAvenLabel('PMR-TPN7', 'active')
+    assert.equal(ok, false)
+    const lines = rmArgsLines()
+    assert.equal(
+      lines.some((l) => l.startsWith('edit ')),
+      false,
+      'fail-closed: no removal without a verified read',
+    )
+  })
+})
+
+test('removeAvenLabel: edit exec failure returns false and records the failure', async () => {
+  const out = JSON.stringify({ ref: 'PMR-TPN7', labels: ['planned', 'active'] })
+  await withRmAven(
+    out,
+    async () => {
+      const ok = await removeAvenLabel('PMR-TPN7', 'active')
+      assert.equal(ok, false)
+      assert.ok(
+        lastAvenResolutionFailure() !== undefined,
+        'expected a recorded exec failure',
+      )
     },
     1,
   )
