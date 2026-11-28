@@ -21,6 +21,9 @@
 // guarded this by accident (merge-base exits 128 for an object absent from the
 // repo → unknown/git-error → silent); rev 1's plain equality dropped it.
 // The pidfile now carries a second advisory field, gitRoot — the MAIN-worktree
+// path of the spawning repo — surfaced on ProbeResult as `mainWorktree` (PMR-8620:
+// the on-disk key keeps its name for upgrade compatibility, but it is NOT the
+// journal run-input gitRoot, which is the session's own worktree root).
 // path of the spawning repo — and the verdict checks repo identity BEFORE the
 // SHA verdict (see checkDaemonStaleness).
 //
@@ -74,8 +77,8 @@ export interface StalenessDeps {
  *  1. main checkout unresolvable → unchecked/no-repo (silent)
  *  2. daemon not alive          → unchecked/daemon-not-running (silent)
  *  3. pidfile has no usable gitSha → unknown/no-gitsha (**warns**)
- *  4. pidfile has no usable gitRoot → unchecked/no-gitroot (silent)
- *  5. pidfile gitRoot ≠ this main worktree → unchecked/other-repo (silent)
+ *  4. pidfile has no usable gitRoot (probe.mainWorktree) → unchecked/no-gitroot (silent)
+ *  5. probe.mainWorktree ≠ this main worktree → unchecked/other-repo (silent)
  *  6. gitSha === main.headSha → fresh, else stale
  *
  * AIDEV-NOTE: PMR-7B8M rev 2 — repo identity is checked BEFORE the SHA verdict
@@ -104,15 +107,17 @@ export async function checkDaemonStaleness(
     return { kind: 'unknown', pid: probe.pid, reason: 'no-gitsha' }
   }
   // Rev 2: same "empty counts as absent" posture for the repo identity, but
-  // the verdict is silent (see the AIDEV-NOTE above).
-  if (probe.gitRoot === undefined || probe.gitRoot === '') {
+  // the verdict is silent (see the AIDEV-NOTE above). PMR-8620: the probe field
+  // is `mainWorktree` — the MAIN worktree of the spawning repo, which is what
+  // `main.path` is too; a session's own worktree root would never match.
+  if (probe.mainWorktree === undefined || probe.mainWorktree === '') {
     return { kind: 'unchecked', reason: 'no-gitroot' }
   }
   // Rev 2: plain string equality on paths is enough — both sides come from the
   // same git plumbing (`worktree list` prints absolute, un-normalised paths),
   // so a symlinked or trailing-slash variant would have to differ in git's own
   // output, not ours.
-  if (probe.gitRoot !== main.path) {
+  if (probe.mainWorktree !== main.path) {
     return { kind: 'unchecked', reason: 'other-repo' }
   }
   // Rev 1: string equality, not ancestry. A worktree session stays quiet while

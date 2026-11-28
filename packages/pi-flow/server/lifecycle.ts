@@ -191,13 +191,22 @@ export type ProbeResult =
        */
       gitSha?: string
       /**
-       * PMR-7B8M rev 2: main-worktree path of the repo the daemon was spawned
+       * PMR-7B8M rev 2: MAIN-worktree path of the repo the daemon was spawned
        * from — repo identity. The daemon is one global process serving every
        * repo, so a SHA alone cannot say whether it describes this repo; this
        * path is what lets a session stay silent about another repo's daemon.
        * Never consulted by the liveness/respawn decision.
+       *
+       * AIDEV-NOTE: PMR-8620 — this is the MAIN worktree, NOT the session's own
+       * root: do not compare it against `resolveSessionRepoRoot()` or a journaled
+       * run-input `gitRoot`, which are the session's own (worktree) path for any
+       * herdr worktree session — the check would mismatch on every worktree and
+       * go permanently silent. `server/staleness.ts` compares it only against
+       * `MainCheckout.path` (also the main worktree). Read from the pidfile's
+       * `gitRoot` key; that on-disk name is unchanged so pidfiles written by
+       * already-running daemons stay readable after an upgrade.
        */
-      gitRoot?: string
+      mainWorktree?: string
     }
   | {
       alive: false
@@ -275,9 +284,10 @@ export async function probeDaemon(
   const result: ProbeResult = { alive: true, pid: parsed.pid }
   // PMR-7B8M: assigned conditionally so callers can distinguish "pre-feature
   // pidfile" (key absent) from a present SHA. PMR-7B8M rev 2 does the same for
-  // the repo identity (gitRoot).
+  // the repo identity, surfaced as `mainWorktree` (PMR-8620: the pidfile key is
+  // `gitRoot` but the value is the MAIN worktree, never the session's worktree).
   if (parsed.gitSha !== undefined) result.gitSha = parsed.gitSha
-  if (parsed.gitRoot !== undefined) result.gitRoot = parsed.gitRoot
+  if (parsed.gitRoot !== undefined) result.mainWorktree = parsed.gitRoot
   return result
 }
 

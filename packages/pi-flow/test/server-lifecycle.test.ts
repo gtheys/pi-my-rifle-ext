@@ -279,14 +279,15 @@ test('probe: pidfile with gitRoot → alive result carries it', async () => {
     alive: true,
     pid: 123,
     gitSha: SHA40,
-    gitRoot: MAIN_PATH,
+    // PMR-8620: the pidfile key is `gitRoot`, the probe field is `mainWorktree`.
+    mainWorktree: MAIN_PATH,
   })
 })
 
 test('probe: pidfile WITHOUT gitRoot (rev-1 daemon) → alive, key absent', async () => {
   const io = makeIo(`{"pid":123,"version":"1","gitSha":"${SHA40}"}`)
   const res = await probeDaemon(AGENT_DIR, io)
-  assert.equal('gitRoot' in res, false, 'must be absent, not undefined')
+  assert.equal('mainWorktree' in res, false, 'must be absent, not undefined')
 })
 
 // AIDEV-NOTE: PMR-7B8M rev 2 — same advisory posture as gitSha (ISC-8): a
@@ -304,7 +305,7 @@ test('probe: wrong-typed gitRoot degrades to absent, still alive (never malforme
     const io = makeIo(raw)
     const res = await probeDaemon(AGENT_DIR, io)
     assert.equal(res.alive, true, `alive expected for ${raw}`)
-    if (res.alive) assert.equal('gitRoot' in res, false)
+    if (res.alive) assert.equal('mainWorktree' in res, false)
   }
 })
 
@@ -800,12 +801,14 @@ test('ensure: {gitRoot} → spawn env carries PI_FLOW_DAEMON_GIT_ROOT and the pi
   assert.equal(io.spawns[0].env.PI_FLOW_DAEMON_GIT_ROOT, MAIN_PATH)
   assert.equal(io.spawns[0].env.PI_FLOW_DAEMON_GIT_SHA, SHA40)
   // Round-trip: a later session probing this pidfile sees the repo identity.
+  // PMR-8620: the on-disk pidfile key stays `gitRoot`; the probe surfaces it as
+  // `mainWorktree` (it is the MAIN worktree, never a session's worktree root).
   const probed = await probeDaemon(AGENT_DIR, io)
   assert.deepEqual(probed, {
     alive: true,
     pid: 4242,
     gitSha: SHA40,
-    gitRoot: MAIN_PATH,
+    mainWorktree: MAIN_PATH,
   })
 })
 

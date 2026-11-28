@@ -56,7 +56,7 @@ function fakeDeps(
     alive: true,
     pid: PID,
     gitSha: DAEMON_SHA,
-    gitRoot: MAIN_PATH,
+    mainWorktree: MAIN_PATH,
   }
   if (input.probe !== undefined) {
     probe = input.probe
@@ -137,7 +137,12 @@ function porcelain(mainSha: string, linkedSha: string): string {
 
 test('staleness: pidfile SHA equals main HEAD → fresh, silent', async () => {
   const { deps, calls } = fakeDeps({
-    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, gitRoot: MAIN_PATH },
+    probe: {
+      alive: true,
+      pid: PID,
+      gitSha: DAEMON_SHA,
+      mainWorktree: MAIN_PATH,
+    },
     mainCheckout: { path: MAIN_PATH, headSha: DAEMON_SHA },
   })
   const got = await checkDaemonStaleness(deps)
@@ -206,7 +211,7 @@ test('staleness: no-repo wins over a dead daemon (check order is pinned)', async
 test('staleness: an empty-string gitSha in the pidfile is treated as no-gitsha', async () => {
   // parsePidfile keeps any string, so staleness must not treat '' as a SHA.
   const { deps, calls } = fakeDeps({
-    probe: { alive: true, pid: PID, gitSha: '', gitRoot: MAIN_PATH },
+    probe: { alive: true, pid: PID, gitSha: '', mainWorktree: MAIN_PATH },
   })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unknown', pid: PID, reason: 'no-gitsha' })
@@ -215,7 +220,7 @@ test('staleness: an empty-string gitSha in the pidfile is treated as no-gitsha',
 
 // --- rev 2: the repo-identity guard (validate review P1, the blocker) ---
 
-test('staleness: pidfile gitRoot differs from the session main worktree → unchecked/other-repo', async () => {
+test('staleness: probe mainWorktree differs from the session main worktree → unchecked/other-repo', async () => {
   // The rev-1 false positive: the global daemon was spawned from another repo,
   // so its SHA can never equal this repo's main HEAD. Silent, never a warning.
   const { deps, calls } = fakeDeps({
@@ -223,7 +228,7 @@ test('staleness: pidfile gitRoot differs from the session main worktree → unch
       alive: true,
       pid: PID,
       gitSha: DAEMON_SHA,
-      gitRoot: OTHER_PATH,
+      mainWorktree: OTHER_PATH,
     },
   })
   const got = await checkDaemonStaleness(deps)
@@ -235,14 +240,19 @@ test('staleness: other-repo wins over a differing SHA (identity precedes the SHA
   // Same SHAs as the STALE row above, only the recorded repo differs — the
   // guard order is the whole fix, so it is pinned here explicitly.
   const { deps } = fakeDeps({
-    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, gitRoot: OTHER_PATH },
+    probe: {
+      alive: true,
+      pid: PID,
+      gitSha: DAEMON_SHA,
+      mainWorktree: OTHER_PATH,
+    },
     mainCheckout: { path: MAIN_PATH, headSha: HEAD_SHA },
   })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unchecked', reason: 'other-repo' })
 })
 
-test('staleness: pidfile gitSha without gitRoot → unchecked/no-gitroot, silent', async () => {
+test('staleness: pidfile gitSha without mainWorktree → unchecked/no-gitroot, silent', async () => {
   // An intermediate build (rev 1) recorded a SHA but no repo identity: that SHA
   // could belong to ANY repo, so warning would re-create the cross-repo false
   // positive. Never guess.
@@ -254,9 +264,9 @@ test('staleness: pidfile gitSha without gitRoot → unchecked/no-gitroot, silent
   assert.deepEqual(calls, ['mainCheckout', 'probe'])
 })
 
-test('staleness: empty-string gitRoot counts as absent → unchecked/no-gitroot', async () => {
+test('staleness: empty-string mainWorktree counts as absent → unchecked/no-gitroot', async () => {
   const { deps } = fakeDeps({
-    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, gitRoot: '' },
+    probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, mainWorktree: '' },
   })
   const got = await checkDaemonStaleness(deps)
   assert.deepEqual(got, { kind: 'unchecked', reason: 'no-gitroot' })
@@ -568,7 +578,12 @@ test('warn: fresh and unchecked verdicts notify nothing', async () => {
   // cross-repo and unverifiable-identity cases).
   const silent: Array<Parameters<typeof fakeDeps>[0]> = [
     {
-      probe: { alive: true, pid: PID, gitSha: DAEMON_SHA, gitRoot: MAIN_PATH },
+      probe: {
+        alive: true,
+        pid: PID,
+        gitSha: DAEMON_SHA,
+        mainWorktree: MAIN_PATH,
+      },
       mainCheckout: { path: MAIN_PATH, headSha: DAEMON_SHA },
     },
     { probe: { alive: false, reason: 'no-pidfile' } },
@@ -582,7 +597,7 @@ test('warn: fresh and unchecked verdicts notify nothing', async () => {
         alive: true,
         pid: PID,
         gitSha: DAEMON_SHA,
-        gitRoot: OTHER_PATH,
+        mainWorktree: OTHER_PATH,
       },
     },
     // Rev 2: a rev-1 pidfile (SHA, no repo identity) must never warn either.
