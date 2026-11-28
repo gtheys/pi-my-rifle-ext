@@ -882,7 +882,7 @@ test('P1 observer (c): onV2StateChangeObserved alone (onStateChange undefined) s
   assert.equal(runnings.length, 2, 'observer-only wiring un-pins the loop')
 })
 
-test('P1 observer (d, mutation guard): WITHOUT the observer the loop guard stays stale and the running snapshot is suppressed', async () => {
+test('P1 observer (d, counterfactual): WITHOUT the observer the loop guard stays stale and the running snapshot is suppressed', async () => {
   // The failure mode the P1 blocker described: the loop is wired ONLY through
   // the dispatcher's observer block, so if that ~7-line block were deleted or
   // reordered out of route(), the wait never reaches the loop. Model that here
