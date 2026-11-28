@@ -285,11 +285,13 @@ independent properties, changed in sequence, only one of which survived). The ea
 the widening was safe and that both PMR-422Q findings were closed; neither claim survived the code.
 
 - **Reason-aware arming is what fixed the escalate latch (PMR-422Q blocker 2) and it is UNCHANGED.** A flag armed on
-  `state === 'waiting_human'` alone latched on `escalation` (`tools/run-attempt.ts`) and `deviation_gate_rerun`
-  (`tools/deviation.ts`): those seams journal a wait but never a `running` return, and the loop's own
-  `snapshot('running')` that would unstick such a journal is recency-skipped in `noteExternalV2State`, so nothing
-  cleared the flag until `start()` — every later loop-emitted wait was silently dropped for the rest of the process's
-  run. Only a reason whose owning seam journals its own close may arm the hold.
+  `state === 'waiting_human'` alone latched on `escalation` (`tools/run-attempt.ts`): that seam journals a human wait but
+  never a `running` return, and the loop's own `snapshot('running')` that would unstick such a journal is recency-skipped
+  in `noteExternalV2State`, so nothing cleared the flag until `start()` — every later loop-emitted wait was silently
+  dropped for the rest of the process's run. Only a reason whose owning seam journals its own close may arm the hold.
+  `deviation_gate_rerun` is not an arming case and never was: it journals `waiting_machine` (`tools/deviation.ts`,
+  WAIT_KIND machine in `flow/vocabulary.ts`), so a flag keyed on `waiting_human` could not latch on it. It belongs to the
+  independent WIDTH dimension — its emission was one of the waits the reverted wide hold suppressed (next bullet).
 - **The wider non-terminal hold that rode along with that fix was REVERTED (blocker 3).** It removed the loop's only
   in-run escape for a wait whose close never lands, and the paths that skip the close are ordinary ones: a fail-closed
   ask read in `flow/ask-emitter.ts` (unreadable journal, or a tail from which no valid `state-change` can be derived)

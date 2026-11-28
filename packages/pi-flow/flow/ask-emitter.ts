@@ -88,19 +88,20 @@
 //    so the recovery this asymmetry relies on holds. See the skip-rule note in
 //    flow/loop.ts.
 //
-// MAP-GATED CLOSE: openAsks (toolCallId -> ref) guarantees a close can NEVER
-// fire for a call this emitter did not open (defence in depth for tool-owned
-// nested asks), delete-on-first-close makes tool_result-then-
-// tool_execution_end emit exactly ONE running record, and an id is only
-// remembered when writer.record actually returned true (a failed open must
-// not produce a close).
-// AIDEV-NOTE: PMR-0NRH fix round — SUPERSEDED in part by the refcount above:
-// an id is now remembered for every tracked ask whether or not its open write
-// landed, so the record() boolean no longer decides tracking. The property
-// that note protected (a failed open must not produce an orphan close) still
-// holds, now enforced one level later: the failed write never reached the
-// journal, so at close time the tail does not read our wait and rule 3 above
-// writes nothing.
+// AIDEV-NOTE: PMR-0NRH fix round — MAP-GATED CLOSE, stated ONCE (the older
+// pre-refcount paragraph that sat here next to its own SUPERSEDED correction is
+// folded into this one accurate contract). openAsks (toolCallId -> ref)
+// guarantees a close can NEVER fire for a call this emitter did not open
+// (defence in depth for tool-owned nested asks). TRACKING IS UNCONDITIONAL: an
+// id is remembered for every tracked non-nested ask whether or not its open
+// write landed, so the record() boolean does not decide tracking. The close is
+// refcounted (rule 2) and reason-checked (rule 3), so it may write nothing:
+// tool_result-then-tool_execution_end emits AT MOST ONE running record, not
+// exactly one (docs/pi-flow-observability.md already says "at most one"). The
+// property the older wording protected — a failed open must not produce an
+// orphan close — still holds, enforced one level later: the failed write never
+// reached the journal, so at close time the tail does not read our wait and
+// rule 3 writes nothing.
 //
 // NEVER-THROW (ISC-A-5): handler bodies swallow all errors — a journal
 // failure must never fail the ask or the tool call. OPTIONAL WRITER

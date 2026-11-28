@@ -225,12 +225,17 @@ export interface FlowLoop {
    * parameter makes the live-wait hold REASON-AWARE. `state` alone cannot tell a
    * wait that closes itself (the ask emitter, the code-review gate — each journals
    * its own `state-change{running}`) from one that NEVER journals the running
-   * return (`escalation`, `deviation_gate_rerun`), and only the former may arm the
-   * hold: a hold nothing can release is a latch. See SELF_CLOSING_HUMAN_WAITS in
-   * flow/vocabulary.ts (ISC-A-1 — the property lives with the other reason
-   * semantics, not in a second list here). The parameter is optional so the
-   * PMR-ZV9Y call sites keep working unchanged: an ABSENT reason can never arm
-   * the hold, it only clears it. index.ts threads `event.reason`.
+   * return (`escalation` — a `waiting_human` nobody closes), and only the former
+   * may arm the hold: a hold nothing can release is a latch. See
+   * SELF_CLOSING_HUMAN_WAITS in flow/vocabulary.ts (ISC-A-1 — the property lives
+   * with the other reason semantics, not in a second list here). The parameter is
+   * optional so the PMR-ZV9Y call sites keep working unchanged: an ABSENT reason
+   * can never arm the hold, it only clears it. index.ts threads `event.reason`.
+   * `deviation_gate_rerun` is NOT an arming case: it journals `waiting_machine`
+   * (tools/deviation.ts, WAIT_KIND machine), so a flag keyed on `waiting_human`
+   * could never latch on it — it belongs to the WIDTH dimension, whose reverted
+   * wide hold suppressed that emission. See the skip-rule note in
+   * emitStateChange.
    */
   noteExternalV2State(
     ref: string,
@@ -795,14 +800,18 @@ class FlowLoopImpl implements FlowLoop {
     //   for a `waiting_human` whose reason is in SELF_CLOSING_HUMAN_WAITS
     //   (flow/vocabulary.ts: human_ask_pending, code_review_pending — seams that
     //   journal their own `running` close). WHY: a reason-blind flag latched on
-    //   `escalation` / `deviation_gate_rerun` — which journal a wait but NEVER a
-    //   running return — and the loop's own snapshot('running') that would unstick
-    //   such a journal is recency-skipped in noteExternalV2State, so nothing could
-    //   ever clear the flag until start(); every later loop-emitted wait was then
+    //   `escalation` — a `waiting_human` that journals a wait but NEVER a running
+    //   return — and the loop's own snapshot('running') that would unstick such a
+    //   journal is recency-skipped in noteExternalV2State, so nothing could ever
+    //   clear the flag until start(); every later loop-emitted wait was then
     //   silently dropped for the rest of the process's run (that latch was review
-    //   blocker 2). Absent reason (a three-argument call) never arms, it only
-    //   clears — which keeps the five protected PMR-ZV9Y tests green UNMODIFIED
-    //   (they drive the observer without a reason).
+    //   blocker 2). `deviation_gate_rerun` is NOT an arming case and never was: it
+    //   journals `waiting_machine` (tools/deviation.ts, WAIT_KIND machine), so a
+    //   flag keyed on `waiting_human` could not latch on it — it belongs to the
+    //   WIDTH dimension below, whose reverted wide hold suppressed its emission.
+    //   Absent reason (a three-argument call) never arms, it only clears — which
+    //   keeps the five protected PMR-ZV9Y tests green UNMODIFIED (they drive the
+    //   observer without a reason).
     //   WIDTH is the TWO COMPETING WAIT STATES ONLY: while the flag is armed,
     //   emitStateChange holds `waiting_machine` and `waiting_human` (a settle must
     //   not flip the board off the live human wait to a DIFFERENT wait) but NOT

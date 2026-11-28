@@ -11,10 +11,14 @@
 // production journal semantics, which the refcount/reason-checked close
 // depends on: `recorded` is every write the emitter ATTEMPTED (what the tests
 // assert), while the journal the emitter re-reads holds only the writes that
-// LANDED (record returning true), and every journal is seeded with the
-// `run-start` line production always writes first (index.ts:2218) because
-// projectRunState can only derive currentState from a foldable run. The
-// parallel-batch cases below reproduce pi's default parallel tool execution:
+// LANDED (record returning true). Every journal is ALSO seeded with the
+// `run-start` line production always writes first (index.ts:2218) — not because
+// the emitter needs one (at HEAD it never calls projectRunState: both tail reads
+// go through the module-local lastV2StateRecord, a raw state-change scan with no
+// run-start precondition, which the 'P2-a: a journal with NO run-start' test
+// below pins) but because the fake stays a faithful copy of a real journal, and
+// `noRunStart: true` drops exactly that one line to reproduce the P2-a shape.
+// The parallel-batch cases below reproduce pi's default parallel tool execution:
 // every tool_call handler runs before any tool executes, so asks #2..N see
 // the open wait that ask #1 just journaled and then serialize on the UI lock.
 import assert from 'node:assert/strict'
