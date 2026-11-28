@@ -131,11 +131,12 @@ stop and route to `feature-plan-aven`.
 
 ## Aven data model — what to expect
 
-```text
 <!-- AIDEV-NOTE: PMR-JVJN — subtasks carry no deps; only phases dep-chain.
      The old subtask→phase dep deadlocked the first subtask of every phase
      against the implement prompt's blocked-check. Order is the N.M prefix
      sort. aven-tree-contract.test.ts pins this. -->
+
+```text
 Feature ticket  labels=[...]  metadata: plan-path=<abs plan.md>, plan-state=approved  is_epic=true
   └── Phase task   title="1. Phase: <name>"  labels=[phase,impl]  epic child, plan-path  status: todo|active|done
         └── Subtask  title="1.1 <title>"     labels=[impl]        epic child, plan-path  status: todo|active|done
