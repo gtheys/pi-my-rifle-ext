@@ -58,14 +58,18 @@
 // labelString/escapeLabelValue seam above, and adds NO import — the node-only
 // closure guarded by test/cost-rows-node-only.test.ts is untouched. Dashboards
 // join it as `* on (ref) group_left (title)`. flow/push.ts prunes this family
-// from re-posted group bodies, which protects the join under OFFICIAL
-// Pushgateway REPLACE semantics (a series omitted from the POST is deleted, so
-// the tombstone GET→transform→POST round-trip would otherwise resurrect an
-// earlier run's title). On the homelab gateway, which MERGES on write
-// (PMR-WBC2), that prune is a no-op — merging is exactly why omitting the line
-// cannot delete an already-stored series, so a title change can leave the old
-// series served until a fresh push overwrites it or it is removed by hand
-// (accepted residual; see the push.ts PMR-9DZ0 2.2 note).
+// from re-posted group bodies. That prune only ever runs on a DEAD run (it is
+// reachable only through fetchGroupBody → the reconcile tombstone, which fires
+// once a state line flips to `stale`), and its real effect is NOT to protect
+// the join: under OFFICIAL Pushgateway REPLACE semantics omitting the line
+// DELETES the run's CURRENT title on tombstone — cost/history panels lose their
+// `group_left (title)` join and fall back to the bare ref — while on the
+// homelab gateway, which MERGES on write (PMR-WBC2), omitting the line cannot
+// delete an already-stored series, so it is a NO-OP and a title change can
+// leave the old series served until a fresh push overwrites it or it is removed
+// by hand (accepted residual; see the push.ts PMR-9DZ0 2.2 / PMR-2CPZ note).
+// The drop is kept anyway as the conservative choice: a retired run has no live
+// title to advertise under replace semantics, and under merge it costs nothing.
 import type { FlowRunEvent } from '../run-state.ts'
 import { projectRunState } from '../run-state.ts'
 import { labelString } from './cost-rows.ts'

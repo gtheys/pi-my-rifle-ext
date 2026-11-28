@@ -385,21 +385,30 @@ function filterGroupLines(
     // push_failure_time_seconds) carry the group labels but must never be
     // re-POSTed — see the header note. Only `pi_flow*` metrics are ours.
     if (!line.slice(0, open).trim().startsWith('pi_flow')) continue
-    // AIDEV-NOTE (PMR-9DZ0 2.2): title_info never survives a re-POST. The
-    // gateway merges on write (PMR-WBC2), so a stale title series from an older
-    // run of this trackRef group could coexist with the current one and fan out
-    // group_left(title) joins on the dashboards. Dropping it here is correct
-    // under official replace semantics (the GET-transform-POST round-trip
-    // would otherwise RESURRECT that stale title on every tombstone) and a
-    // harmless no-op on the homelab merge gateway — the same belt-and-braces
-    // shape as the pi_flow_step open-gauge drop in the tombstone path
-    // (flow/reconcile.ts). Accepted residual on that merge gateway: a title
-    // CHANGE across runs of one trackRef keeps the old series served until it
-    // is overwritten or deleted by hand (duplicate join rows on the boards);
-    // `topk by (ref) (1, pi_flow_run_title_info)` is the pre-analyzed
-    // dashboard-side lever if it ever bites. The fresh push re-adds exactly the
-    // current title. Match is the EXACT metric name: a hypothetical
-    // `pi_flow_run_title_info_seconds` family survives like any other line.
+    // AIDEV-NOTE (PMR-9DZ0 2.2, rationale corrected by PMR-2CPZ): title_info
+    // never survives a re-POST. This prune is reachable ONLY through
+    // fetchGroupBody, whose lone caller is the reconcile tombstone, and that
+    // re-POST fires only once `tombstoneBody` has flipped a state line to
+    // `stale` — so it can only ever affect a DEAD run's group. The accurate
+    // consequence (the earlier "would otherwise RESURRECT that stale title on
+    // every tombstone" claim was wrong: the stored group from the last fresh
+    // push carries the CURRENT title, not a stale one): under OFFICIAL
+    // Pushgateway REPLACE semantics dropping the line DELETES the run's title
+    // on tombstone, so cost/history panels lose their `group_left(title)`
+    // join and fall back to the bare ref; on the deployed homelab gateway that
+    // MERGES on write (PMR-WBC2) an omitted series keeps being served, so the
+    // drop is a NO-OP and cannot delete or resurrect anything. We keep the drop
+    // anyway: it is the conservative choice (a retired run has no live title to
+    // advertise under replace semantics, and under merge it costs nothing), the
+    // same belt-and-braces shape as the pi_flow_step open-gauge drop in the
+    // tombstone path (flow/reconcile.ts). Accepted residual on the merge
+    // gateway: a title CHANGE across runs of one trackRef keeps the old series
+    // served until it is overwritten or deleted by hand (duplicate join rows on
+    // the boards); `topk by (ref) (1, pi_flow_run_title_info)` is the
+    // pre-analyzed dashboard-side lever if it ever bites. The fresh push
+    // (running phase) re-adds exactly the current title. Match is the EXACT
+    // metric name: a hypothetical `pi_flow_run_title_info_seconds` family
+    // survives like any other line.
     if (line.slice(0, open).trim() === 'pi_flow_run_title_info') continue
     const survivors = tokens.filter(
       (token) => !(token.key === 'instance' && token.value === ''),

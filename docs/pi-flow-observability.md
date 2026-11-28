@@ -367,12 +367,17 @@ v2 lines. Bare lines are the repo convention, not an omission — see the module
 3. **run-title tail block (PMR-9DZ0)** — `pi_flow_run_title_info{ref,title} 1`, the additive journal-derived info
    series rendered by `run-health.ts` itself (last title-carrying `run-start` wins, no line when the journal has no
    title). It is neither frozen vocabulary nor a v2 state family, and it appends after both, so every line above it
-   keeps its exact position byte-for-byte. `filterGroupLines` (`flow/push.ts`) strips it from a re-POSTed group body:
-   under official Pushgateway replace semantics omitting it from the POST deletes the series, which is what stops a
-   tombstone round-trip from resurrecting an earlier run's title; on the merge-on-write homelab gateway the drop is a
-   no-op and a title *change* can leave the old series served until a fresh push overwrites it or it is deleted by
-   hand (accepted residual — same class as the `pi_flow_step` drop below; `topk by (ref) (1, pi_flow_run_title_info)`
-   is the dashboard-side lever).
+   keeps its exact position byte-for-byte. `filterGroupLines` (`flow/push.ts`) strips it from a re-POSTed group body.
+   That prune only ever runs on a **dead** run: `filterGroupLines` is reachable only through `fetchGroupBody`, whose
+   lone caller is the reconcile tombstone, and the re-POST fires only once `tombstoneBody` flips a state line to
+   `stale`. Its effect is NOT to protect the join — the stored group from the last fresh push carries the *current*
+   title, so: under official Pushgateway **replace** semantics dropping the line on tombstone **deletes the run's
+   current title**, and the cost/history panels lose their `group_left (title)` join and fall back to the bare ref;
+   on the **merge-on-write** homelab gateway the drop is a **no-op** (an omitted series keeps being served, so it
+   cannot delete a stored title either) and a title *change* can leave the old series served until a fresh push
+   overwrites it or it is deleted by hand (accepted residual — same class as the `pi_flow_step` drop below;
+   `topk by (ref) (1, pi_flow_run_title_info)` is the dashboard-side lever). The drop is kept as the conservative
+   choice: a retired run has no live title to advertise under replace semantics, and under merge it costs nothing.
 
 **Retired (PMR-ZV9Y 7.1), rendered nowhere:** `pi_flow_run_status`, `pi_flow_run_halt_reason`,
 `pi_flow_human_wait_seconds`, `pi_flow_gate_wait_seconds`.
