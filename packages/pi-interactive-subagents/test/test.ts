@@ -7637,6 +7637,60 @@ describe('launchSubagent role-prefix refusal (PMR-C0WG)', () => {
       }
     })
   })
+
+  // AIDEV-NOTE (PMR-74WZ): the role-prefix check is pure — it must run
+  // BEFORE allocateSpawnIdentity so a refused spawn claims no durable
+  // spawn-seq marker. This pins that ordering; the worktree+cwd conflict
+  // stays as the backstop so even a broken refusal can never spawn.
+  it('refuses before allocating a durable spawn-seq marker', async () => {
+    await withIsolatedAgentEnv(async () => {
+      const ctx = {
+        cwd: process.cwd(),
+        ui: {
+          notify() {},
+        },
+        sessionManager: {
+          getSessionFile: () => '/tmp/pmr-74wz/session.jsonl',
+          getSessionId: () => 'pmr-74wz-parent-session',
+          getSessionDir: () => '/tmp/pmr-74wz',
+        },
+      }
+
+      try {
+        await assert.rejects(
+          (subagentsModule as any).launchSubagent(
+            {
+              name: 'scout: map the repo',
+              task: 'map the repo',
+              worktree: true,
+              cwd: '/tmp/pmr-74wz-elsewhere',
+            },
+            ctx,
+          ),
+          (err: unknown) => {
+            let message = String(err)
+            if (err instanceof Error) {
+              message = err.message
+            }
+            assert.match(message, /Refusing to spawn/)
+            return true
+          },
+        )
+
+        // No durable spawn-seq marker was claimed for this parent session —
+        // the refusal is completely side-effect-free.
+        assert.ok(
+          !existsSync(
+            join(subagentsDataRoot(), 'spawn-seq', 'pmr-74wz-parent-session'),
+          ),
+        )
+        // No assignment record either (retained from the PMR-C0WG contract).
+        assert.deepEqual(listAssignments(), [])
+      } finally {
+        subagentsModule.__test__.updateWidgetForTest(undefined)
+      }
+    })
+  })
 })
 
 describe('delivered.ts exactly-once dedup (PMR-KY0E)', () => {

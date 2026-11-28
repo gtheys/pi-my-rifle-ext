@@ -2575,6 +2575,17 @@ async function launchSubagent(
   if (!sessionFile) throw new Error('No session file')
   const sessionId = ctx.sessionManager.getSessionId()
 
+  // AIDEV-NOTE (PMR-74WZ): the role-prefix refusal (PMR-C0WG) is pure, so
+  // it runs BEFORE allocateSpawnIdentity — a refused spawn must not claim a
+  // durable spawn-seq marker, let alone an assignment, worktree, session,
+  // or tab.
+  const driftRole = rolePrefixWithoutAgent(params.name, params.agent)
+  if (driftRole) {
+    throw new Error(
+      `Refusing to spawn "${params.name}": name suggests role "${driftRole}" but no agent was passed — agent frontmatter (model, skills, thinking) would NOT apply. Pass agent: "${driftRole}" or rename without the role prefix.`,
+    )
+  }
+
   // AIDEV-NOTE (PMR-YKAC): replay-safe spawn — lookup BEFORE any side
   // effect. A 'starting' assignment record from this parent session with the
   // same name+task is a spawn that crashed after its record write but before
@@ -2590,12 +2601,6 @@ async function launchSubagent(
   const replayed = spawnIdentity.replay
 
   const agentDefs = params.agent ? loadAgentDefaults(params.agent) : null
-  const driftRole = rolePrefixWithoutAgent(params.name, params.agent)
-  if (driftRole) {
-    throw new Error(
-      `Refusing to spawn "${params.name}": name suggests role "${driftRole}" but no agent was passed — agent frontmatter (model, skills, thinking) would NOT apply. Pass agent: "${driftRole}" or rename without the role prefix.`,
-    )
-  }
   const effectiveModel = params.model ?? agentDefs?.model
   const effectiveTools = params.tools ?? agentDefs?.tools
   const effectiveSkills = params.skills ?? agentDefs?.skills
